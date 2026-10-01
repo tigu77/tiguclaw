@@ -10,7 +10,7 @@
  * ★조건(`if (pathname === …)`)은 `index.ts` 에 남겼다. 본문의 `return;` 을 한 글자도
  *  안 건드리려는 것이다(자세한 이유는 `routes-gateway.ts` 머리말).
  */
-import { setLocale, setProfileColor, setTheme } from "../../src/core/settings.js";
+import { setDashboardTitle, setLocale, setProfileColor, setTheme } from "../../src/core/settings.js";
 import { listOutboundChannels } from "../../src/core/channel-outbound.js";
 import { BUILTIN_DEFAULT_TIER, resolveModelProfiles } from "../../src/core/llm-runtime/builtin-profiles.js";
 import { writeJson } from "../../src/core/net/write-json.js";
@@ -214,6 +214,10 @@ export const handleSetTheme = async (ctx: RouteCtx): Promise<void> => {
         return;
       }
       changed.theme = want;
+    }
+    // 탭 제목 — 화면 모양의 한 줄이라 같은 저장 요청에 싣는다(경로를 따로 만들지 않는다). 빈 값 = 기본 제목.
+    if (tbody.dashboardTitle !== undefined) {
+      changed.dashboardTitle = setDashboardTitle(typeof tbody.dashboardTitle === "string" ? tbody.dashboardTitle : undefined);
     }
     writeJson(res, 200, { ok: true, ...changed });
   } catch (e) {

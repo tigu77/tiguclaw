@@ -305,6 +305,7 @@
         page.appendChild(buildMemoryCapRow());
         page.appendChild(buildLocaleRow());
         page.appendChild(buildThemeRow());
+        page.appendChild(buildTitleRow());
         page.appendChild(buildLogRow());
         page.appendChild(buildChangelogRow());
         page.appendChild(buildUpdateNotesRow());
@@ -501,6 +502,59 @@
             showToast(i18n("theme.changed"), "good");
           },
         );
+      };
+
+      /**
+       * 「탭 제목」 항목 (2026-10-01 정태님) — 브라우저 탭에 뜨는 이름. 비우면 기본 제목.
+       * ★현재값은 서버가 주입한 값(`__TIGU_THEME__.title`) — 테마와 같은 규약(조회 엔드포인트를 따로 두지 않는다).
+       * ★바꾸면 탭이 바로 바뀐다(새로고침 불요). 기본 제목은 서버가 주입한 원본(`__TIGU_THEME__.defaultTitle`) — 서버가 이미
+       *  사용자 제목으로 바꿔 내보내므로 화면이 `document.title` 로 기억하면 «비우면 기본» 이 안 됐다(적대 검토 F2).
+       */
+      const buildTitleRow = () => {
+        const st = window.__TIGU_THEME__ || {};
+        const row = document.createElement("div");
+        row.className = "settings-row";
+        const meta = document.createElement("div");
+        meta.className = "settings-meta";
+        const name = document.createElement("div");
+        name.className = "settings-name";
+        name.textContent = i18n("theme.title.head");
+        const desc = document.createElement("div");
+        desc.className = "settings-desc";
+        desc.textContent = i18n("theme.title.hint");
+        meta.appendChild(name);
+        meta.appendChild(desc);
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.className = "plugin-setting-input";
+        inp.maxLength = 60;
+        inp.value = st.title || "";
+        const defaultTitle = typeof st.defaultTitle === "string" && st.defaultTitle !== "" ? st.defaultTitle : document.title;
+        inp.placeholder = defaultTitle;
+        let saved = inp.value;
+        const save = async () => {
+          const next = inp.value.trim();
+          if (next === saved) return;
+          inp.disabled = true;
+          try {
+            const r = await postTheme({ dashboardTitle: next });
+            saved = typeof r.dashboardTitle === "string" ? r.dashboardTitle : next;
+            inp.value = saved;
+            if (window.__TIGU_THEME__) window.__TIGU_THEME__.title = saved;
+            document.title = saved || defaultTitle;
+            showToast(i18n("theme.changed"), "good");
+          } catch (e) {
+            showToast(i18n("theme.changeFailed", { err: e.message }), "bad");
+            inp.value = saved;
+          } finally {
+            inp.disabled = false;
+          }
+        };
+        inp.addEventListener("change", () => { void save(); });
+        inp.addEventListener("keydown", (e) => { if (e.key === "Enter") inp.blur(); });
+        row.appendChild(meta);
+        row.appendChild(inp);
+        return row;
       };
 
       /**

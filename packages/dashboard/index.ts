@@ -344,6 +344,19 @@ const server = http.createServer((req, res) => {
           /* 해시 실패 — 종전대로 나간다(화면은 정상, 캐시만 늦게 갱신) */
         }
 
+        // ★탭 제목 — 테마 주입과 **따로** 실패한다(한쪽이 던져도 다른 쪽은 산다, 적대 검토 F5). 사용자가 정했으면 첫 렌더부터 그것.
+        //  원본 제목(`defaultTitle`)도 같이 넘긴다 — 설정 화면이 «비우면 기본 제목» 으로 돌아갈 자리를 서버가 이미 바꿔 내보내서
+        //  화면은 알 길이 없었다(적대 검토 F2). HTML 이스케이프, 치환자는 함수로(`$` 특수문자 — 아래 i18n 과 같은 이유).
+        const tabTitle: { title: string; defaultTitle: string } = { title: "", defaultTitle: /<title>([\s\S]*?)<\/title>/.exec(withHash)?.[1] ?? "" };
+        try {
+          const { readDashboardTitle } = await import("../../src/core/settings.js");
+          tabTitle.title = readDashboardTitle();
+          const esc = tabTitle.title.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          if (tabTitle.title !== "") withHash = withHash.replace(/<title>[\s\S]*?<\/title>/, () => `<title>${esc}</title>`);
+        } catch {
+          /* 기본 제목이 남는다 */
+        }
+
         // ★테마 상태 주입 — 실패해도 화면은 뜬다(기본 자리표시자가 남는다).
         let withMode = withHash;
         try {
@@ -352,7 +365,7 @@ const server = http.createServer((req, res) => {
           );
           // ★설정 화면이 쓸 목록·현재값. 조회 엔드포인트를 따로 만들면 "무슨 테마가 있나"
           //  의 정본이 둘이 된다(언어가 `__TIGU_I18N__.available` 로 이미 그렇게 한다).
-          const payload = { theme: readTheme(), themes: availableThemes() };
+          const payload = { theme: readTheme(), themes: availableThemes(), ...tabTitle };
           withMode = withHash.replace(
             /<script id="tigu-appearance">[\s\S]*?<\/script>/,
             () =>

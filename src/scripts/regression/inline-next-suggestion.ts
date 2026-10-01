@@ -6,13 +6,18 @@
  * 매 턴 바뀌는 대화라 **프리픽스 캐시도 못 탔다**. 메인 턴은 이미 그 맥락을 들고 캐시도
  * 태웠으므로, 거기서 한 줄 더 받으면 **출력 토큰 스무 개 남짓**이다.
  *
- * ★이 방식의 **유일한 실패 모드는 유출**이다 — 표식이 사용자 화면이나 다음 턴 히스토리에
- *  남는 것. 그래서 뜯는 자리를 코어 한 곳(`callAdapter` 반환 직후, `persistOutput`·
- *  `publishTurnDone` 보다 **앞**)에 두었다. 그 순서가 깨지면 transcripts 에 태그가 쌓이고,
- *  그건 다음 턴 프롬프트로 되돌아온다(조용하고 누적된다).
+ * ★이 방식의 **유일한 실패 모드는 유출**이다 — 표식이 **사용자 화면·채널·채팅 기록**에 남는 것.
+ *  그래서 뜯는 자리를 코어 한 곳(`callAdapter` 반환 직후, `persistOutput`·`publishTurnDone`
+ *  보다 **앞**)에 두었다.
+ * ★★**모델이 읽는 기록(transcripts)엔 일부러 남긴다** (2026-10-01 — 종전엔 이것도 유출로 봤다).
+ *  Claude 는 SDK 가 자기 기록에 태그를 날것으로 남겨 다음 턴 이력에서 «내가 늘 붙이던 것» 을 보는데,
+ *  Codex·OpenAI 는 뗀 글을 저장해 이력에 태그가 없었다 — 자기 지난 답을 따라 하는 모델이 후속
+ *  턴에서 태그를 놓았다(실측: 같은 대화 후속 턴 31% → 남기니 63%). 늘어나는 양은 지난 턴마다 한 줄이다.
  *
- * ★두 번째 계약은 **관용**이다. 모델이 안 붙이면 제안이 없을 뿐 실패가 아니다. 종전 동작도
- *  "확신 없으면 빈 줄"이었으므로 폭이 같다 — 강제하면 억지 제안이 나온다.
+ * ★두 번째 계약은 **관용**이다. 모델이 안 붙이면 제안이 없을 뿐 실패가 아니다 — 강제하면 억지
+ *  제안이 나온다. 규칙은 «정말 없을 때만 생략» + «새 화제를 꺼내야만 나오는 제안은 붙이지 마라»
+ *  (2026-10-01 실측: 종전 «확신 없으면 붙이지 마라» 는 Codex 도구 보고 턴에서 45% 로 너무 보수적이었고,
+ *  그걸 풀자 «고마워» 에 «오늘 일정 정리해줘» 같은 억지가 생겨 둘째 줄로 막았다).
  *
  * ★등급: **행동 게이트**. 추출·정규화가 순수 함수라 실행해서 본다. 배선(코어가 실제로
  *  persist 앞에서 부르는가 · 프롬프트 규칙이 메인에만 실리는가)은 실행 + 소스 대조를 섞었고,
@@ -216,9 +221,10 @@ const run = async (): Promise<Assertion[]> => {
       ),
     ),
     assert(
-      "규칙 본문이 태그와 '확신 없으면 붙이지 마라'를 둘 다 말한다",
+      "규칙 본문이 태그 · 생략 허용(관용) · 새 화제 억지 금지 · 도구 보고 뒤에도를 말한다",
       inlineSuggestionRule().includes("<next-message>") &&
-        /확신이 안 서면/.test(inlineSuggestionRule()),
+        /정말 없을 때만 생략/.test(inlineSuggestionRule()) && /새 화제를 꺼내야만/.test(inlineSuggestionRule()) &&
+        /도구로 일을 마친 보고 뒤에도/.test(inlineSuggestionRule()),
       `${inlineSuggestionRule().length}B`,
     ),
   );
@@ -239,6 +245,42 @@ const run = async (): Promise<Assertion[]> => {
         : `★extract=${at} publish=${publishAt} persist=${persistAt}`,
     ),
   );
+
+  // ── ⑤-b ★[실행] 화면·채널로 나가는 답에선 뜯고, **모델이 읽는 기록**(transcripts)엔 모델이 낸 모양 그대로 ─────
+  //  어댑터를 시험용으로 바꿔 실제 runRegionA 를 돌린다 — Codex·OpenAI 저장 경로(appendApiTurn). ★제안을 껐으면 안 남긴다.
+  {
+    const { initStore, getDb } = await import("../../store/sessions.js");
+    initStore();
+    const RT = await import("../../core/llm-runtime/index.js");
+    const { getPaths } = await import("../../core/paths.js");
+    const { existsSync, readFileSync, writeFileSync, unlinkSync } = await import("node:fs");
+    const file = getPaths().settings;
+    const before = existsSync(file) ? readFileSync(file, "utf8") : null;
+    const base = before !== null ? (JSON.parse(before) as Record<string, unknown>) : {};
+    const runOnce = async (enabled: boolean): Promise<{ outText: string; outSug?: string; asst: string }> => {
+      writeFileSync(file, JSON.stringify({ ...base, suggestions: { nextMessage: { enabled } } }));
+      const sid = `s-inline-${enabled ? "on" : "off"}-${Date.now()}`;
+      const undo = RT.__setAdapterForTest(async () => ({ text: "결과입니다.\n\n<next-message>파일도 보여줘</next-message>", sessionId: sid }));
+      try {
+        const o = await RT.runRegionA({ channel: "http-bridge", threadKey: `regr:inline-persist:${sid}`, text: "해줘" } as never, { specs: [{ adapter: "codex-oauth", model: "gpt-6-sol" } as never] });
+        const rows = getDb().prepare(`SELECT role, content FROM transcripts WHERE claude_session_id = ? ORDER BY id`).all(sid) as Array<{ role: string; content: string }>;
+        return { outText: o.text, outSug: (o as { nextSuggestion?: string }).nextSuggestion, asst: rows.find((r) => r.role === "assistant")?.content ?? "" };
+      } finally { undo(); }
+    };
+    let on: Awaited<ReturnType<typeof runOnce>>, off: Awaited<ReturnType<typeof runOnce>>;
+    try {
+      on = await runOnce(true);
+      off = await runOnce(false);
+    } finally {
+      if (before === null) { try { unlinkSync(file); } catch { /* 없음 */ } } else writeFileSync(file, before);
+    }
+    out.push(assert(
+      "★[실행] 나가는 답엔 태그가 없고 제안은 따로 · 제안이 켜져 있으면 모델이 읽는 기록엔 태그 그대로(Claude 기록과 같은 모양) · 꺼져 있으면 안 남긴다",
+      on.outText === "결과입니다." && on.outSug === "파일도 보여줘" && on.asst === "결과입니다.\n\n<next-message>파일도 보여줘</next-message>" &&
+        off.asst === "결과입니다.",
+      { on, off },
+    ));
+  }
 
   // ── ⑥ 옛 배관이 되살아나지 않았다 ─────────────────────────────────────────
   //  별도 LLM 호출을 없앤 게 이 변경의 값이다. 되살아나면 그 값이 조용히 사라진다.
@@ -439,7 +481,7 @@ const run = async (): Promise<Assertion[]> => {
 export const check: RegressionCheck = {
   name: "inline-next-suggestion",
   guards:
-    "다음 메시지 제안이 매 턴 별도 LLM 호출(컨텍스트 상한 39,600자·캐시 미적중)을 쓰던 것 + 끼워 받으면서 생기는 유일한 실패 모드(표식이 화면·transcripts 로 유출)",
+    "다음 메시지 제안이 매 턴 별도 LLM 호출(컨텍스트 상한 39,600자·캐시 미적중)을 쓰던 것 + 끼워 받으면서 생기는 유일한 실패 모드(표식이 화면·채널로 유출) + Codex·OpenAI 기록만 태그를 떼어 후속 턴 제안이 줄던 것",
   run,
 };
 export default check;

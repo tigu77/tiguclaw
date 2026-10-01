@@ -116,6 +116,20 @@ export const makeCredentialWatch = (envPath: string, env: NodeJS.ProcessEnv = pr
 
 let home: ReturnType<typeof makeCredentialWatch> | null = null;
 
+/**
+ * 데몬이 홈 `.env` 에 **자기 값을 쓰는 중**인 저장 수 — 그동안의 파일은 바깥 변경이 아니라 **우리 쓰기의 중간 상태**다 (2026-10-01).
+ * ★회전 키 저장 A→B 가 겹치면 메모리는 이미 B 인데 파일은 A 까지만 쓰인 순간이 있다. 거기서 따라가기가 끼면 A 를 «바깥 변경» 으로
+ *  읽어 메모리를 A 로 되돌리고, 이어 파일에 B 가 오면 B 는 «거쳐 간 값» 이라 거부된다 — **무효가 된 A 에 고정**(적대 검토).
+ *  쓰는 동안은 따라가지 않는다. 다 쓰면 파일 == 메모리라 따를 것이 없다.
+ */
+let selfWrites = 0;
+export const trackSelfEnvWrite = <T>(p: Promise<T>): Promise<T> => {
+  selfWrites += 1;
+  const done = (): void => { selfWrites -= 1; };
+  p.then(done, done);
+  return p;
+};
+
 /** 이 Node 에서 재시작 없이 따라갈 수 있나 — 없으면 재발급 안내가 «재시작하세요» 라고 말해야 한다. */
 export const credentialFollowAvailable = (): boolean => parseEnv !== undefined;
 
@@ -131,6 +145,7 @@ export const startHomeCredentialWatch = (envPath: string): void => {
 
 /** 입구마다 — 바뀐 인증 키를 반영하고 그 이름을 돌려준다(쉼 해제는 호출자 `followHomeCredentials`). 로더가 꺼져 있으면 아무것도 안 한다. */
 export const refreshHomeCredentials = (): string[] => {
+  if (selfWrites > 0) return [];
   const changed = home?.refresh() ?? [];
   if (changed.length > 0) {
     console.log(`[env] 인증값 변경 반영: ${changed.join(", ")} — 홈 .env 가 바뀌어 재시작 없이 다음 호출부터 씁니다.`);

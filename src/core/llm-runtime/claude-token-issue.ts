@@ -43,9 +43,11 @@ while True:
     if 0 in r:
         d = os.read(0, 65536)
         if not d:
-            inputs.remove(0)
-        else:
-            os.write(fd, d)
+            # 입력이 닫혔다 = 부모(데몬)가 죽었다 — 정상 흐름엔 입력을 닫는 길이 없다(코드는 쓰기만 한다). 발급기를 같이 끝낸다:
+            # 종전엔 입력만 빼고 pty 를 계속 기다려, 재시작·배포 때마다 발급기와 이 중계가 고아로 남았다(적대 검토 실측).
+            os.kill(pid, signal.SIGKILL)
+            os._exit(0)
+        os.write(fd, d)
 _, st = os.waitpid(pid, 0)
 sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)
 `;
@@ -76,10 +78,13 @@ interface IssueSession {
 }
 let session: IssueSession | null = null;
 
-const closeSession = (): void => {
-  const s = session;
-  session = null;
+/**
+ * 그 발급을 치운다 — ★**자기 것만.** 코드를 넣고 기다리는(최대 1분) 사이 버튼을 다시 누르면 새 발급기가 뜨는데,
+ *  종전엔 늦게 끝난 앞 마무리가 «지금 발급» 을 닫아 **새 발급기를 죽였다**(적대 검토). 지금 발급이 그것일 때만 비운다.
+ */
+const closeSession = (s: IssueSession | null = session): void => {
   if (s === null) return;
+  if (session === s) session = null;
   clearTimeout(s.ttl);
   if (!s.exited) s.child.kill("SIGTERM");
 };
@@ -111,7 +116,7 @@ export const beginClaudeTokenIssue = async (issuer?: readonly string[]): Promise
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, BROWSER: "true" },
   });
-  const s: IssueSession = { child, out: "", exited: false, ttl: setTimeout(closeSession, SESSION_TTL_MS) };
+  const s: IssueSession = { child, out: "", exited: false, ttl: setTimeout(() => closeSession(s), SESSION_TTL_MS) };
   s.ttl.unref();
   session = s;
   child.stdout?.setEncoding("utf8");
@@ -123,7 +128,7 @@ export const beginClaudeTokenIssue = async (issuer?: readonly string[]): Promise
   await waitFor(s, (t) => AUTHORIZE_URL.test(t) && PASTE_PROMPT.test(t), BEGIN_TIMEOUT_MS);
   const url = AUTHORIZE_URL.exec(plain(s.out))?.[0];
   if (url === undefined) {
-    closeSession();
+    closeSession(s);
     const tail = plain(s.out).replace(/\s+/g, " ").trim().slice(-160);
     return {
       ok: false,
@@ -147,7 +152,7 @@ export const finishClaudeTokenIssue = async (
   const s = session;
   const text = String(pasted ?? "");
   if (s === null || s.exited || claudeTokenCandidates(text).length > 0) {
-    closeSession();
+    closeSession(s);
     return accept(text);
   }
   const code = text.trim();
@@ -161,7 +166,7 @@ export const finishClaudeTokenIssue = async (
   // 조금 더 기다린다 — 토큰이 여러 조각으로 도착할 수 있다(끝까지 받아야 이어 붙일 게 없다).
   await waitFor(s, () => false, 1_500);
   const after = plain(s.out.slice(before));
-  closeSession();
+  closeSession(s);
   if (claudeTokenCandidates(after).length === 0) {
     // 붙여넣은 코드는 문구에 싣지 않는다(발급기가 가려 찍지만 일부가 보인다) — 오류 줄만.
     const why = ISSUE_ERROR.exec(after)?.[0].replace(/\s*Press\s*Enter.*$/i, "").trim();

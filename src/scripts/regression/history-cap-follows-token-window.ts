@@ -79,6 +79,23 @@ export const check: RegressionCheck = {
       await RT.runRegionA({ channel: "http-bridge", threadKey: "regr:facade-fb", text: "질문".repeat(500) } as never, { specs: [{ adapter: "claude", model: "claude-sonnet-5" } as never] });
     } finally { undo(); }
     const facadeFb = tokenDensityOf("regr:facade-fb");
+    // ★OpenAI 턴의 도구 항목도 섞는다 — 이력에 붙는 건 발화만이 아니다. 종전엔 발화 글자만 섞어, 도구 결과가 큰 턴을 붙여도
+    //  비율이 안 움직였다(적대 재검토 P2 — 이력은 커지는데 상한은 옛 비율 그대로).
+    recordTokenDensity("regr:facade-oa", 220_000, 100_000);
+    const oaItems = [
+      { type: "function_call", call_id: "c1", name: "Read", arguments: '{"path":"big.log"}' },
+      { type: "function_call_output", call_id: "c1", output: "X".repeat(200_000) },
+    ];
+    const undoOa = RT.__setAdapterForTest(async () => ({ text: "답".repeat(1_000), sessionId: "s-oa", turnItems: oaItems as never }));
+    let oaErr = "";
+    try {
+      await RT.runRegionA({ channel: "http-bridge", threadKey: "regr:facade-oa", text: "질문".repeat(500) } as never, { specs: [{ adapter: "openai", model: "gpt-6-sol" } as never] });
+    } catch (e) { oaErr = String(e).slice(0, 200); } finally { undoOa(); }
+    const oaReplayed = H.turnItemsReplayedChars(oaItems as never);
+    const oaAdded = 1_000 + 1_000 + oaReplayed;
+    const oaExpect = (220_000 + oaAdded) / (100_000 + Math.round(oaAdded / 1.4));
+    const facadeOa = tokenDensityOf("regr:facade-oa");
+    const smallItems = [{ type: "function_call", call_id: "c", name: "Ls", arguments: "{}" }];
     // 모델 창 — 실사용 모델 전부(순수 Codex CLI 메타데이터 27.2만 · gpt-5 계열 입력 한도 27.2만)
     const windows = Object.fromEntries(["gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.1", "gpt-5"].map((m) => [m, lookupContextWindow(m)]));
 
@@ -126,7 +143,7 @@ export const check: RegressionCheck = {
       /budget: \{ instructionsChars: instructions\.length, promptChars: promptWithMemory\.length, capChars \},\s*capFor,/.test(oa) &&
       /budgetUsedChars: instructions\.length \+ promptWithMemory\.length \+ summary\.length,\s*charCap: capChars,/.test(oa);
     const facade = await src("../../core/llm-runtime/index.ts");
-    const blendBeforePersist = /blendTokenDensity\(input\.threadKey, input\.text\.length \+ output\.text\.length\);[^]*?\}\s*persistOutput\(input, output\);/.test(facade);
+    const blendBeforePersist = /blendTokenDensity\(input\.threadKey, input\.text\.length \+ output\.text\.length \+ turnItemsReplayedChars\(output\.turnItems\)\);[^]*?\}\s*persistOutput\(input, output\);/.test(facade);
     const cx = await src("../../core/llm-runtime/adapters/openai-codex-oauth.ts");
     const cxCeiling = /ceilingChars: requestCeilingChars\(model, input\.threadKey, loadModelInputLimits\(\)\.get\(`codex:\$\{model\}`\)\),/.test(cx) &&
       /requestChars: lastReqBytes\.total - lastReqBytes\.mediaChars,/.test(cx) && /mediaChars: mediaCharsOf\(body\.input\),/.test(cx) &&
@@ -154,6 +171,10 @@ export const check: RegressionCheck = {
         { blendShort, blendLong, blendNone }),
       assert("★퍼사드(동작): Claude 가 턴을 끝내도 비율을 지우지 않고 그 턴 글자만큼 섞는다(폴백 한 턴이 이력을 접게 만들지 않는다)",
         facadeFb !== undefined && facadeFb > 2.15 && facadeFb < 2.2, facadeFb),
+      assert("★퍼사드(동작): OpenAI 턴은 도구 항목이 다음 요청에 실려 갈 크기까지 섞는다(되살리기 상한으로 깎인 크기) · 작은 항목은 그대로 · 없으면 0",
+        oaErr === "" && facadeOa !== undefined && Math.abs(facadeOa - oaExpect) < 1e-9 && oaReplayed <= H.turnItemsReplayChars() && oaReplayed >= H.turnItemsReplayChars() * 0.95 &&
+          H.turnItemsReplayedChars(smallItems as never) === JSON.stringify(smallItems[0]).length && H.turnItemsReplayedChars(undefined) === 0,
+        { oaErr, facadeOa, oaExpect, oaReplayed }),
       assert("★그림·PDF base64 글자를 센다(글·도구 결과 안의 같은 문자열은 아님)", media === 1_000 + 22 + 2_000 + 28, media),
       assert("★설정된 모델 입력 상한이 실제 요청 조립까지 간다(비율 5 · 설정 40만 → 이력 34만)", D.limitCap === 340_000, D.limitCap),
       assert("★모델 창: 실사용 모델 전부 27.2만(과대 추정은 곧 창 초과)", Object.values(windows).every((w) => w === 272_000), windows),

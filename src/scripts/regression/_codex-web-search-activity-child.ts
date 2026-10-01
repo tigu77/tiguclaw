@@ -14,10 +14,12 @@ console.warn = (...args) => { warnings.push(args.map(String).join(" ")); };
 let searches = true;
 let requests = 0;
 let include = false;
+let wsTool: unknown = null;
 globalThis.fetch = fakeNetwork(async (_url, init) => {
   requests++;
-  const body = JSON.parse(String(init?.body ?? "{}")) as { include?: string[] };
+  const body = JSON.parse(String(init?.body ?? "{}")) as { include?: string[]; tools?: Array<{ type?: string }> };
   if (searches && body.include?.includes("web_search_call.action.sources")) include = true;
+  if (searches && wsTool === null) wsTool = body.tools?.find((t) => t.type === "web_search") ?? null;
   const events = searches ? [
     { type: "response.web_search_call.in_progress", item_id: "ws_test", output_index: 0 },
     { type: "response.web_search_call.searching", item_id: "ws_test", output_index: 0 },
@@ -60,5 +62,5 @@ for (const enabled of [true, false]) {
   outcomes.push({ searches: enabled, status: getJob(child)?.status, warned: warnings.slice(before).some(x => x.includes("[agent-no-tools]")) });
 }
 console.warn = warn;
-console.log("SEARCH_RESULT " + JSON.stringify({ requests, outcomes, searchActivity, searchCard, include }));
+console.log("SEARCH_RESULT " + JSON.stringify({ requests, outcomes, searchActivity, searchCard, include, wsTool, tz: Intl.DateTimeFormat().resolvedOptions().timeZone }));
 process.exit(0);

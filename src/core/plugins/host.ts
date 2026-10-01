@@ -455,7 +455,9 @@ export const createPluginHost = (
   settingsSpec: readonly PluginSettingSpec[] = [],
 ): PluginHost => ({
   ...(turn !== undefined ? { turn } : {}),
-  locale: readLocale(),
+  // ★읽을 때마다 새로 — 설정 언어를 바꾸면 재시작 없이 다음 호출부터(설정류는 매번 fresh, 2026-10-01). 종전엔 플러그인 시작 때
+  //  한 번 읽어, 언어를 바꿔도 구독 인증 버튼·안내가 재시작 전까지 옛 언어였다.
+  get locale(): string { return readLocale(); },
   // ★**매 호출 새로 읽는다** — 이 레포는 설정류를 매 턴 fresh 하게 읽으므로
   //  ([[reference_config_reload_boundary]]) 값을 바꾸면 재시작 없이 다음 호출부터 먹는다.
   settings: effectiveSettings(plugin, settingsSpec),

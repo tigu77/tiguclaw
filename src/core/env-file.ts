@@ -18,6 +18,7 @@
  */
 import fs from "node:fs/promises";
 import { homeEnvPath } from "./load-env.js";
+import { trackSelfEnvWrite } from "./credential-env.js";
 
 /**
  * 여러 키를 한 번에 upsert. 반환값은 **쓴 파일 경로**(호출자가 사용자에게 보여준다).
@@ -38,7 +39,7 @@ export const upsertHomeEnvVars = (
   updates: Record<string, string>,
 ): Promise<string> => {
   for (const k of Object.keys(updates)) process.env[k] = updates[k]; // ④ — 줄 서기 전에, 즉시
-  const run = writeChain.then(() => writeHomeEnvVars(updates));
+  const run = trackSelfEnvWrite(writeChain.then(() => writeHomeEnvVars(updates))); // 쓰는 동안 턴 입구가 파일을 «바깥 변경» 으로 안 읽게
   writeChain = run.catch(() => {}); // 앞 저장의 실패가 뒤 저장을 막지 않는다(실패는 그 호출자에게 그대로 간다)
   return run;
 };
@@ -76,8 +77,15 @@ const writeHomeEnvVars = async (updates: Record<string, string>): Promise<string
   const out = next.join("\n");
   const finalBody = out.endsWith("\n") ? out : `${out}\n`;
   const tmp = `${envPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-  await fs.writeFile(tmp, finalBody, { encoding: "utf8", mode: 0o600 }); // ②③
-  await fs.rename(tmp, envPath);
+  // ★실패하면 임시 파일을 지운다 — 이름이 저장마다 달라(동시 저장 대비) 남은 것이 쌓이고, 하나하나가 **모든 토큰을 담은 사본**이다
+  //  (적대 검토: rename 을 EPERM 으로 세 번 실패시키니 세 개가 남았다 — 윈도우 백신·인덱서가 잡고 있으면 실제로 난다).
+  try {
+    await fs.writeFile(tmp, finalBody, { encoding: "utf8", mode: 0o600 }); // ②③
+    await fs.rename(tmp, envPath);
+  } catch (e) {
+    await fs.unlink(tmp).catch(() => {});
+    throw e;
+  }
   await fs.chmod(envPath, 0o600).catch(() => {}); // 구 설치본 치유
   return envPath;
 };

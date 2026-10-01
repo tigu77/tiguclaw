@@ -943,6 +943,31 @@ export const setTheme = (name: string | undefined): boolean => {
 };
 
 /**
+ * 대시보드 **브라우저 탭 제목** — `settings.json` 의 `dashboardTitle` (2026-10-01 정태님 «다른 걸로 바꿀 수 있으면»).
+ * 비우면 기본 제목(`index.html` 의 것). 길이는 `DASHBOARD_TITLE_MAX` 로 자른다 — 탭에 다 보이지도 않는다.
+ */
+export const DASHBOARD_TITLE_MAX = 60;
+/** 자르기는 **글자 단위**(UTF-16 단위로 자르면 이모지 반쪽이 남아 탭에 � 가 뜬다) · 자른 뒤 공백 정리 · 읽기·쓰기 같은 함수. */
+const clampTitle = (v: string): string => Array.from(v.trim()).slice(0, DASHBOARD_TITLE_MAX).join("").trim();
+export const readDashboardTitle = (cwd: string = process.cwd()): string => {
+  let picked = "";
+  for (const layer of loadSettingsLayers(cwd)) {
+    const v = (layer as { dashboardTitle?: unknown }).dashboardTitle;
+    if (typeof v === "string" && v.trim() !== "") picked = v;
+  }
+  return clampTitle(picked); // 손으로 고친 긴 값도 같은 상한
+};
+export const setDashboardTitle = (title: string | undefined): string => {
+  const want = clampTitle(title ?? "");
+  const file = getPaths().settings;
+  const root = readSettingsRootForWrite(file); // 깨져 있으면 던진다 — 다른 설정을 덮지 않는다(setTheme 과 같은 규칙).
+  if (want === "") delete root.dashboardTitle;
+  else root.dashboardTitle = want;
+  writeSettingsRootAtomic(file, root);
+  return want;
+};
+
+/**
  * 프로파일 **배지 색**을 쓴다 (2026-08-25 사용자 요청 — 대시보드에서 고른다).
  *
  * `color === undefined` 면 **지운다**(= 기본색으로 되돌리기). 형식은 `isBadgeColor` 한 곳이

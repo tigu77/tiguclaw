@@ -1436,6 +1436,12 @@ const shrinkBody = (it: CodexTurnItem, keep: number): CodexTurnItem => {
   return { ...it, text: `${head}${note}` };
 };
 const itemLen = (it: CodexTurnItem): number => JSON.stringify(it).length;
+/**
+ * 이 턴의 도구 항목이 **다음 요청에 실려 갈 크기** — 되살리기(`replayTurnItems`)와 같은 판정. 다른 어댑터(OpenAI) 턴을
+ * 글자당 토큰에 섞을 때 쓴다 — 종전엔 발화 글자만 섞어, 도구 결과가 큰 턴이 이력에 붙여도 비율이 안 움직였다(적대 재검토 P2).
+ */
+export const turnItemsReplayedChars = (items: CodexTurnItem[] | undefined): number =>
+  items === undefined || items.length === 0 ? 0 : replayTurnItems(items).reduce((n, it) => n + itemLen(it), 0);
 /** 깎은 본문에 남기는 최소 머리 — 이보다 짧은 본문은 깎지 않는다(표식이 본문보다 길어지는 역효과). */
 const REPLAY_MIN_KEEP = 200;
 /** 깎은 항목의 JSON 길이가 `target` 이하가 되는 가장 긴 머리 — 이스케이프를 **남기는 조각으로** 잰다. */

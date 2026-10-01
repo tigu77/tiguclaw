@@ -142,8 +142,9 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★서버 호스트도 **설정 언어를 준다**(외부 API 에 언어를 넘겨야 하는 플러그인이 있다)",
-        /readonly locale: string;/.test(shost) && /locale: readLocale\(\)/.test(shost),
-        /locale: readLocale\(\)/.test(shost) ? "host.locale" : "★없음",
+        // 읽을 때마다 새로 읽는 getter(2026-10-01) — 동작은 `auth-login-follows-locale` 이 실행으로 본다.
+        /readonly locale: string;/.test(shost) && /get locale\(\): string \{ return readLocale\(\); \}/.test(shost),
+        /get locale\(\): string \{ return readLocale\(\); \}/.test(shost) ? "host.locale(getter)" : "★없음",
       ),
       assert(
         "★★플러그인이 언어를 **박지 않는다**(첫 판은 `language=ko` 를 박아 영어 사용자가 한국어 지명을 받았다)",

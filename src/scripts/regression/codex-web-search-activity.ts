@@ -43,6 +43,7 @@ export const check: RegressionCheck = {
     const r = await spawnWithin(45000, "검색 실제 어댑터와 자식 경고", ["--import", "tsx", fileURLToPath(new URL("./_codex-web-search-activity-child.ts", import.meta.url))]);
     const line = r.out.split("\n").find(x => x.startsWith("SEARCH_RESULT "));
     const result = line ? JSON.parse(line.slice(14)) : {};
+    const envBlock = (await import("../../core/runtime-env.js")).formatEnvContext({ cwd: process.cwd() });
     // ★끝난 검색이 «⏳ 실행 중» 으로 남지 않게 — 시작만 있고 끝이 없으면 대시보드가 잡이 끝날 때까지
     //  실행 중 뱃지를 켜 둔다(2026-09-26 적대 검토 P3). 같은 seq 의 시작·끝 한 쌍, 끝엔 소요 시간.
     const acts: { seq: unknown; phase: unknown; durationMs: unknown }[] = result.searchActivity ?? [];
@@ -62,6 +63,12 @@ export const check: RegressionCheck = {
       assert("★카드: 입력=검색어(`query=…`) · 출력=출처 URL(실제 어댑터 발행)",
         typeof card.detail === "string" && card.detail.includes("query=node lts") && typeof card.output?.text === "string" && card.output.text.includes("https://nodejs.org/en/download"), card),
       assert("★검색을 켠 요청은 출처를 요청한다(`include`)", result.include === true, result.include),
+      // ★위치 단서 — 종전엔 위치 없이 검색해 한국어 질문에 미국 극장·축제를 추천했다(실측 위치 질문 5/8). 이 기계 시간대를 근사 위치로.
+      assert("★검색 도구에 이 기계 시간대가 근사 위치로 실린다(`user_location`)",
+        (result.wsTool as { user_location?: { type?: string; timezone?: string } } | null)?.user_location?.type === "approximate" &&
+          (result.wsTool as { user_location?: { timezone?: string } }).user_location?.timezone === result.tz && typeof result.tz === "string" && result.tz !== "",
+        { wsTool: result.wsTool, tz: result.tz }),
+      assert("환경 블록이 모델에게 시간대를 알린다(같은 값 — `localTimeZone`)", envBlock.includes(`Time zone: ${result.tz}`), envBlock.split("\n").find((l: string) => l.startsWith("Time zone")) ?? "(없음)"),
       assert("★검색 활동은 같은 seq 의 시작·끝 한 쌍이고 끝에 소요 시간이 실린다(«실행 중» 고착 방지)", paired, acts),
       assert("검색 완료 중복 제거·서로 다른 검색 보존", positive.count === 2 && positive.localCalls === 0, positive),
       assert("진행·답변 주장·식별자 없는 이벤트는 완료로 세지 않음", negative.count === 0, negative),

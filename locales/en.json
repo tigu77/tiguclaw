@@ -628,6 +628,8 @@
   "tab.view": "View",
   "theme.changeFailed": "Couldn't update: {err}",
   "theme.changed": "Updated.",
+  "theme.title.head": "Tab title",
+  "theme.title.hint": "The name shown on the browser tab. Leave empty for the default.",
   "theme.preset.head": "Theme",
   "theme.preset.hint": "{n} themes to choose from — drop a .css file into themes/ in your home folder and it shows up here.",
   "time.daysAgo": "{n}d ago",

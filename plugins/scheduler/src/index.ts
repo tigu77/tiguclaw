@@ -36,6 +36,7 @@ import {
   type ScheduleRow,
 } from "../../../src/store/schedules.js";
 import { runClaude } from "../../../src/core/claude.js";
+import { attachmentSenderFor, optionsPresenterFor } from "../../../src/core/outbound.js";
 import { withExternalTurn } from "../../../src/core/inflight-turns.js";
 import { runScheduleFiring, type RunnerDeps } from "./runner.js";
 import { setSchedulerLifecycleHooks, createSchedulerMcpServer } from "./mcp.js";
@@ -290,6 +291,21 @@ class SchedulerPlugin {
   }
 }
 
+/** 스케줄 목적지로 묶은 선택지·파일 통로 — 채널이 그 능력이 없으면 비운다(종전 동작). */
+export const scheduleChannels = (
+  dest: Parameters<RunnerDeps["runClaude"]>[0]["notifyDest"],
+  threadKey: string,
+): { presentOptions?: NonNullable<ReturnType<typeof optionsPresenterFor>>; sendAttachment?: NonNullable<ReturnType<typeof attachmentSenderFor>> } => {
+  if (dest === undefined) return {};
+  const presentOptions = optionsPresenterFor(dest.channel, dest.target ?? null, threadKey);
+  // 파일은 답 글자(dispatch)와 같은 규칙 — 발원 세션 없이 목적지로.
+  const sendAttachment = attachmentSenderFor(dest.channel, dest.target ?? null);
+  return {
+    ...(presentOptions !== undefined ? { presentOptions } : {}),
+    ...(sendAttachment !== undefined ? { sendAttachment } : {}),
+  };
+};
+
 // 데몬 정상 부팅 시 runClaude default — 영역 A 직접 호출.
 // spike 는 deps.runClaude mock 으로 대체.
 const defaultRunClaude: RunnerDeps["runClaude"] = async (input) => {
@@ -313,6 +329,9 @@ const defaultRunClaude: RunnerDeps["runClaude"] = async (input) => {
         // 매니저 통지 dest forward — runner 가 채운 generic 좌표를 RegionASdkInput.notifyDest 로
         // 그대로 넘긴다(어댑터는 미독해, 매니저 발사 도구만 읽음). 미지정이면 회귀 0.
         notifyDest: input.notifyDest,
+        // ★선택지·파일도 스케줄의 목적지로 (2026-10-01) — 이 발화는 핸들러를 우회해 채널이 주는 통로가 없어, 선택지 도구가
+        //  아예 안 붙고(글로만) `send_file` 도 막혔다. 매니저 완료 보고(worker-jobs)와 같은 처방. 고른 값은 물어본 이 스레드로.
+        ...scheduleChannels(input.notifyDest, input.threadKey),
       }),
   );
 };

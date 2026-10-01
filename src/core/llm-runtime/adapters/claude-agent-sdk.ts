@@ -467,7 +467,7 @@ let lastRateLimitSig = "";
 const reportFastMode = createFastModeReporter();
 
 import { assertLiveModelAllowed } from "../regression-model-guard.js";
-import { publishTurnMeta } from "../turn-meta.js";
+import { publishTurnMeta, REASONING_NOT_SENT } from "../turn-meta.js";
 
 /**
  * ★회귀 전용 SDK 주입구 (2026-09-29) — 턴 경계 로직을 **실제로 돌려** 검사하기 위해서다.
@@ -570,7 +570,9 @@ export const runClaude = async (
   //  순서: 풀 원소(input.reasoning) > models.reasoning(전역) > 카탈로그 기본(세 어댑터 같은 순서).
   const claudeEffort = input.reasoning ?? resolveReasoningEffort(input.provider ?? "anthropic", input.model ?? "", cwd);
   // 턴 시작에 «이 모델 · 이 강도» — 보낼 변수 그대로(`turn-meta.ts`). 없으면 실행기가 모델 기본을 보낸다.
-  publishTurnMeta({ threadKey: input.threadKey, internal: input.internal, adapter: "claude", model: input.model, reasoning: claudeEffort });
+  // 화면·기록에 싣는 값 — 안 보냈으면 «실행기 기본» 을 **명시**한다(없는 것은 «모름» 이라 화면이 아무것도 안 붙인다).
+  const shownEffort = claudeEffort ?? REASONING_NOT_SENT;
+  publishTurnMeta({ threadKey: input.threadKey, internal: input.internal, adapter: "claude", model: input.model, reasoning: shownEffort });
   const depth = input.subagentDepth ?? 0;
   // ★**도구 노출 사다리** (2026-08-28) — 어느 칸의 턴인가를 **한 번** 도출한다.
   //  종전엔 `depth === 0 && (input.workerDepth ?? 0) === 0` 이 이 파일에만 8곳,
@@ -2560,7 +2562,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     return {
       text,
       ...(lastModel !== undefined && lastModel !== null ? { model: lastModel } : {}),
-      ...(claudeEffort !== undefined ? { reasoning: claudeEffort } : {}),
+      reasoning: shownEffort,
       replyToTrigger,
       externalToolCalls: pendingExternalToolCalls,
       ...(toolCallUsage !== undefined ? { usage: requestUsage.withUsage(toolCallUsage) } : {}),
@@ -2577,7 +2579,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       text,
       sessionId,
       model: lastModel,
-      ...(claudeEffort !== undefined ? { reasoning: claudeEffort } : {}),
+      reasoning: shownEffort,
       systemPromptHash: SYSTEM_PROMPT_HASH,
       jsonlPath: jsonl,
       replyToTrigger,

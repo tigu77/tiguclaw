@@ -1024,6 +1024,11 @@ const deliverCheckin = async (
         reply: reinjectReply,
         // ★점검 재주입도 같은 좌표로 나간다 — 중복 차단 대상.
         replyTarget: { channel: dest.channel, target: dest.target ?? null },
+        // 선택지도 같은 좌표로(완료 재주입과 같은 처방 — 없으면 «함께 보낼 채널» 에만 간다).
+        ...((): { presentOptions?: NonNullable<ReturnType<typeof optionsPresenterFor>> } => {
+          const p = optionsPresenterFor(dest.channel, dest.target ?? null, reportJob.threadKey); // 고른 값은 물어본 스레드로
+          return p !== undefined ? { presentOptions: p } : {};
+        })(),
         text:
           `[백그라운드 작업 점검] 당신이 띄운 작업의 상태입니다. 그대로 옮기지 말고, 맥락을 ` +
           `아는 당신이 판단해 **필요할 때만** 당신 인격으로 알리세요 — 계속 둘 만하면 아무 말도 ` +
@@ -2284,7 +2289,7 @@ export const threadHasQueuedTurn = (threadKey: string): boolean => threadTails.h
 // 단 dispatcher 는 결과 텍스트 직접 push 였고, 여기선 핸들러 재진입의 reply 통로.
 // (telegram threadKey "tg:<chatId>" → chatId 복원, cli → console.log.)
 
-import { attachmentSenderFor, deliverOutbound } from "./outbound.js";
+import { attachmentSenderFor, deliverOutbound, optionsPresenterFor } from "./outbound.js";
 import type { ReplyOptions } from "../channels/types.js";
 import {
   canonicalSessionChannel,
@@ -2916,6 +2921,11 @@ export const onWorkerComplete = async (
   const idChannel = canonicalSessionChannel(job.threadKey, job.channel);
   // 파일도 글 보고와 같은 발원 세션으로 묶는다 — 파일에 답글을 달면 매니저를 띄운 세션으로 돌아온다.
   const completionSendAttachment = attachmentSenderFor(dest.channel, dest.target ?? null, notifySessionThreadKey(job.threadKey));
+  // 선택지도 같은 좌표로 — 없으면 이 턴의 선택지가 «함께 보낼 채널» 에만 가고 이 대화엔 안 뜬다(2026-10-01).
+  //  ★고른 값이 돌아갈 자리는 **물어본 스레드**(job.threadKey — 이 완료 턴이 도는 곳)다. 표시 세션(`notifySessionThreadKey`)을
+  //   넘기면 내부 스레드 잡(스케줄 등)의 버튼 답이 질문 없는 기본 세션에 떨어진다 — egress 도 같은 턴에서 msg.threadKey 를 넘긴다
+  //   (적대 검토: 한 턴 안에서 두 규칙이 갈렸다).
+  const completionPresentOptions = optionsPresenterFor(dest.channel, dest.target ?? null, job.threadKey);
   const synthetic = {
     channel: job.channel,
     channelUserId: job.channelUserId,
@@ -2940,6 +2950,7 @@ export const onWorkerComplete = async (
     // ★결과물도 같은 좌표로 보낼 수 있게 (2026-09-30) — 종전엔 이 자리가 비어 `send_file` 이 매번 «자동 보고 턴이라
     //  보낼 통로가 없습니다» 로 막혔다(회사돌쇠 09-29 5회). 채널이 파일 발송을 못 하면(CLI) 비워 두고 종전 동작.
     ...(completionSendAttachment !== undefined ? { sendAttachment: completionSendAttachment } : {}),
+    ...(completionPresentOptions !== undefined ? { presentOptions: completionPresentOptions } : {}),
     // ★이 답이 실제로 나가는 좌표 — egress fan-out 이 같은 곳에 또 보내지 않게.
     replyTarget: { channel: dest.channel, target: dest.target ?? null },
   };

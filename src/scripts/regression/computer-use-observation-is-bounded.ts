@@ -494,7 +494,7 @@ export const check: RegressionCheck = {
       {
         ok: false,
         reason: "failed",
-        detail: "Exception calling Save with 3 argument(s): C:\\Users\\tigu7\\AppData\\Local\\Temp\\x.jpg",
+        detail: "Exception calling Save with 3 argument(s): C:\\Users\\alice\\AppData\\Local\\Temp\\x.jpg",
       },
       "win32",
     );

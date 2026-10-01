@@ -110,7 +110,7 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ③ 원격(Tailscale)이 안 깨진다 ─────────────────────────────────────────
   //  실측값 그대로 — 지어낸 이름이 아니다.
-  const TS = "tigu77-mac-macbookpro.taild26be9.ts.net";
+  const TS = "example-host.tail0000.ts.net";
   const allowed = parseAllowedHosts(` ${TS}:3101 , other.example `);
   out.push(
     assert(

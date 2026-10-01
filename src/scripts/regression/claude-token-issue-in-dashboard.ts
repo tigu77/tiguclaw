@@ -7,7 +7,7 @@
  * ★회귀는 실제 실행기를 띄우지 않는다 — **진짜처럼 TTY 가 아니면 침묵하는** 가짜 발급기를 넣는다(중계가 빠지면 빨개진다).
  * ★저장(`acceptClaudeToken` — Anthropic 확인·.env·쉼 해제)은 대역으로 받는다. 그 판단은 `claude-token-accept` 가 본다.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assert, skip, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -26,7 +26,16 @@ export const check: RegressionCheck = {
     const saved: string[] = [];
     const accept = async (t: string) => { saved.push(t); return { ok: true, message: "saved" }; };
     const out: Assertion[] = [];
-
+    // ★실패해도 러너가 멈추지 않게 — 변이로 세션을 놓친 발급기가 남으면 이벤트 루프를 붙잡아 스위트가 끝나지 않았다(적대 검토).
+    //  이 검사가 띄운 가짜 발급기만 pid 로 모아 끝에 치운다.
+    const { mkdtempSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const pidDir = mkdtempSync(`${tmpdir()}/tiguclaw-regression-issuer-`);
+    let pidN = 0;
+    const savedPidEnv = process.env.FAKE_ISSUER_PIDFILE;
+    const nextPidFile = (): string => { const f = `${pidDir}/pid-${pidN++}`; process.env.FAKE_ISSUER_PIDFILE = f; return f; };
+    try {
+    nextPidFile();
     const b1 = await m.beginClaudeTokenIssue(issuer);
     const bad = await m.finishClaudeTokenIssue("wrong-code#st", accept);
     out.push(assert(
@@ -35,6 +44,7 @@ export const check: RegressionCheck = {
       { b1: b1.ok ? b1.url.length : b1, bad },
     ));
 
+    nextPidFile();
     const b2 = await m.beginClaudeTokenIssue(issuer);
     const good = await m.finishClaudeTokenIssue("  good-code#st\n", accept);
     out.push(assert(
@@ -44,6 +54,7 @@ export const check: RegressionCheck = {
     ));
 
     // 토큰을 직접 붙여넣으면(이미 받아 둔 것) — 발급기가 떠 있어도 종전 길로 저장하고 발급기는 치운다.
+    nextPidFile();
     await m.beginClaudeTokenIssue(issuer);
     const direct = await m.finishClaudeTokenIssue(`sk-ant-oat01-${"B".repeat(90)}`, accept);
     const noSession = await m.finishClaudeTokenIssue("some-code", accept);
@@ -52,6 +63,42 @@ export const check: RegressionCheck = {
       direct.ok && saved[1]!.includes("B".repeat(90)) && noSession.ok && saved[2] === "some-code",
       { direct, noSession, saved: saved.length },
     ));
+    // ★코드를 넣고 기다리는 사이 버튼을 다시 누르면, 늦게 끝난 앞 마무리가 **새 발급기를 닫지 않는다**(적대 검토 — 종전엔 전역 «지금 발급» 을 닫았다).
+    nextPidFile();
+    await m.beginClaudeTokenIssue(issuer);
+    const slow = m.finishClaudeTokenIssue("silent-code#st", accept);
+    await new Promise((res) => setTimeout(res, 300));
+    nextPidFile();
+    const b3 = await m.beginClaudeTokenIssue(issuer);
+    const slowDone = await slow;
+    const savedBefore = saved.length;
+    const fresh = await m.finishClaudeTokenIssue("good-code#st", accept);
+    out.push(assert(
+      "★기다리던 앞 마무리가 끝나도 다시 누른 발급기는 살아 있다 — 그 발급기에 넣은 코드로 토큰이 나온다",
+      b3.ok && !slowDone.ok && fresh.ok && saved.length === savedBefore + 1 && saved.at(-1)!.includes(`sk-ant-oat01-${"A".repeat(90)}`),
+      { b3: b3.ok, slowDone: slowDone.ok, fresh, last: saved.at(-1)?.slice(0, 20) },
+    ));
+    // ★부모(데몬)가 갑자기 죽으면 발급기도 같이 끝난다 — 코드를 안 넣은 채 배포·재시작하면 발급기·중계가 고아로 남던 것(적대 검토 실측).
+    const pidfile = nextPidFile();
+    const mod = fileURLToPath(new URL("../../core/llm-runtime/claude-token-issue.ts", import.meta.url));
+    const script = `const m = await import(${JSON.stringify(mod)}); const b = await m.beginClaudeTokenIssue(${JSON.stringify(issuer)}); console.log(b.ok ? "READY" : "FAIL"); process.exit(0);`;
+    const r = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { env: { ...process.env, FAKE_ISSUER_PIDFILE: pidfile, FAKE_ISSUER_IGNORE_HUP: "1" }, encoding: "utf8", timeout: 30_000 });
+    const issuerPid = existsSync(pidfile) ? Number(readFileSync(pidfile, "utf8")) : 0;
+    const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const deadline = Date.now() + 5_000;
+    while (issuerPid > 0 && alive(issuerPid) && Date.now() < deadline) await new Promise((res) => setTimeout(res, 100));
+    const orphan = issuerPid > 0 && alive(issuerPid);
+    if (orphan) { try { process.kill(issuerPid, "SIGKILL"); } catch { /* 이미 끝남 */ } }
+    out.push(assert("★데몬이 갑자기 끝나면 발급기도 같이 끝난다(고아 프로세스가 남지 않는다)",
+      r.stdout.includes("READY") && issuerPid > 0 && !orphan, { ready: r.stdout.trim().slice(0, 40), issuerPid, orphan }));
     return out;
+    } finally {
+      if (savedPidEnv === undefined) delete process.env.FAKE_ISSUER_PIDFILE; else process.env.FAKE_ISSUER_PIDFILE = savedPidEnv;
+      for (const f of readdirSync(pidDir)) {
+        const pid = Number(readFileSync(`${pidDir}/${f}`, "utf8"));
+        if (pid > 0) { try { process.kill(pid, "SIGKILL"); } catch { /* 이미 끝남 */ } }
+      }
+      rmSync(pidDir, { recursive: true, force: true });
+    }
   },
 };

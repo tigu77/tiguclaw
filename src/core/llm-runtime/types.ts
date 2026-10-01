@@ -322,7 +322,8 @@ export interface RegionASdkOutput {
   /** 사용 모델 — saveSession 저장용. */
   model?: string | null;
   /**
-   * **이 턴에 실제로 보낸 추론 강도** (2026-09-29). 어댑터가 요청에 실은 값 그대로 — 안 보냈으면 없다(거짓값 금지).
+   * **이 턴에 실제로 보낸 추론 강도** (2026-09-29). 어댑터가 요청에 실은 값 그대로. 안 보냈다는 것을 아는 어댑터는
+   *  `REASONING_NOT_SENT`("default")를 싣는다(Claude — 화면이 «강도 기본» 으로 읽는다). 없으면 «모름» 이다(거짓값 금지).
    * ★화면·기록이 설정을 다시 읽어 계산하지 않는다 — 턴 도중 설정이 바뀌거나 어댑터마다 해석이 다르면 갈린다.
    */
   reasoning?: string;
@@ -773,7 +774,7 @@ export interface RegionATurnDonePayload {
   adapter: "claude" | "codex" | "openai";
   /** 사용 모델 (어댑터가 보고하면). spec.model "" (어댑터 디폴트) 거나 미보고면 생략. */
   model?: string;
-  /** 이 턴에 실제로 보낸 추론 강도(`RegionASdkOutput.reasoning`). 안 보냈으면 생략. */
+  /** 이 턴에 실제로 보낸 추론 강도(`RegionASdkOutput.reasoning`) — «안 보냄» 표식 포함. 모르면 생략. */
   reasoning?: string;
   /** 이 턴(어댑터 run() 호출)의 wall-clock 소요. 항상 채움 (facade 가 측정 — 어댑터 무관). */
   durationMs: number;

@@ -27,6 +27,24 @@ import {
 } from "../../src/core/llm-runtime/adapters/openai-codex-oauth-login.js";
 import { fetchCodexUsage, setUsageLogSink } from "./usage.js";
 
+/** 사용자에게 보이는 문구 — 설정 언어(`host.locale`)로(2026-10-01, 종전엔 한국어 고정). 모르는 언어는 영어. */
+const TEXT = {
+  ko: {
+    label: "ChatGPT 로 로그인",
+    summaryAuto: "새 탭에서 ChatGPT 에 로그인하면 이 기계로 돌아와 자동으로 끝납니다. 안 넘어가면 아래에 주소를 붙여넣으세요.",
+    summaryPaste: "새 탭에서 ChatGPT 에 로그인한 뒤, 돌아온 주소창 전체를 아래에 붙여넣으세요(자동 콜백은 못 씁니다).",
+    hint: "로그인 뒤 브라우저 주소창 전체(code=… 포함)",
+  },
+  en: {
+    label: "Sign in with ChatGPT",
+    summaryAuto: "Sign in to ChatGPT in the new tab; it returns to this machine and finishes on its own. If it doesn't, paste the address below.",
+    summaryPaste: "Sign in to ChatGPT in the new tab, then paste the full address bar you land on below (automatic callback isn't available).",
+    hint: "Full browser address after sign-in (including code=…)",
+  },
+} as const;
+const say = (host: { locale?: string }, key: keyof typeof TEXT.ko): string =>
+  (String(host.locale ?? "").toLowerCase().startsWith("ko") ? TEXT.ko : TEXT.en)[key];
+
 export default class CodexSubscriptionAuth {
   async startService(_bus: EventBus, host?: PluginHost): Promise<void> {
     if (host === undefined) return; // 옛 런타임(호스트 미전달)에선 조용히 아무것도 안 한다.
@@ -51,15 +69,14 @@ export default class CodexSubscriptionAuth {
        *  자동 콜백은 원래 못 믿는다(2026-08-11 윈도우 실사고).
        */
       login: {
-        label: "ChatGPT 로 로그인",
+        // 화면이 목록을 받을 때의 설정 언어로(getter).
+        get label(): string { return say(host, "label"); },
         begin: async () => {
           const { url, autoCallback } = await beginCodexLogin();
           return {
-            summary: autoCallback
-              ? "새 탭에서 ChatGPT 에 로그인하면 이 기계로 돌아와 자동으로 끝납니다. 안 넘어가면 아래에 주소를 붙여넣으세요."
-              : "새 탭에서 ChatGPT 에 로그인한 뒤, 돌아온 주소창 전체를 아래에 붙여넣으세요(자동 콜백은 못 씁니다).",
+            summary: say(host, autoCallback ? "summaryAuto" : "summaryPaste"),
             openUrl: url,
-            pasteHint: "로그인 뒤 브라우저 주소창 전체(code=… 포함)",
+            pasteHint: say(host, "hint"),
             needsRestart: false,
           };
         },

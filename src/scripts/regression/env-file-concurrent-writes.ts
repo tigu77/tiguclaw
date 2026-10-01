@@ -32,7 +32,21 @@ export const check: RegressionCheck = {
       const val = (k: string) => lines.find((l) => l.startsWith(`${k}=`))?.slice(k.length + 1);
       const leftovers = readdirSync(home).filter((f) => f.startsWith(".env.tmp"));
       const mode = (statSync(envPath).mode & 0o777).toString(8);
+      // ★rename 이 실패하면 임시 파일(토큰 전부의 사본)을 남기지 않는다 — 검사 동안만 rename 을 EPERM 으로 실패시킨다
+      //  (윈도우 백신·인덱서가 `.env` 를 잡고 있을 때와 같은 모양). env-file 은 호출 때 `fs.promises.rename` 을 읽는다.
+      const fsp = (await import("node:fs/promises")).default as unknown as { rename: (...a: unknown[]) => Promise<void> };
+      const realRename = fsp.rename;
+      fsp.rename = async () => { const e = new Error("EPERM: operation not permitted, rename") as NodeJS.ErrnoException; e.code = "EPERM"; throw e; };
+      let threw = 0;
+      try {
+        for (let i = 0; i < 3; i++) { try { await upsertHomeEnvVars({ REGR_ENV_FAIL: `f${i}` }); } catch { threw++; } }
+      } finally {
+        fsp.rename = realRename;
+      }
+      const failLeft = readdirSync(home).filter((f) => f.startsWith(".env.tmp"));
+      delete process.env.REGR_ENV_FAIL;
       return [
+        assert("★rename 이 실패하면 던지되 비밀이 든 임시 파일을 남기지 않는다(실패 3회 → 잔재 0)", threw === 3 && failLeft.length === 0, { threw, failLeft }),
         assert("겹친 저장이 전부 성공한다(rename 충돌로 던지지 않는다)", rs.every((r) => r.status === "fulfilled"), rs.map((r) => r.status)),
         assert("★겹친 저장의 모든 키가 파일에 남는다", keys.every((k, i) => val(k) === `v${i}`), lines.map((l) => l.split("=")[0])),
         assert("같은 키는 나중에 부른 저장의 값이 남고, 한 줄뿐이다", val("REGR_ENV_SAME") === `same-${keys.length - 1}` && lines.filter((l) => l.startsWith("REGR_ENV_SAME=")).length === 1, val("REGR_ENV_SAME")),

@@ -125,7 +125,19 @@ export const resolveEgressTargets = async (
     //  판정을 여기(좌표가 확정된 뒤)에 두는 이유: 위 이름 비교는 좌표를 풀기 전이라
     //  `scheduler` vs `telegram` 처럼 이름만 보고는 겹침을 알 수가 없다.
     const rt = input.replyTarget;
-    if (rt !== undefined && rt.channel === ch && (rt.target ?? null) === target) continue;
+    if (rt !== undefined && rt.channel === ch) {
+      // ★답 좌표의 `null` 은 «그 채널의 기본 좌표» 다 — **같은 규칙으로 풀어** 비교한다(2026-10-01 적대 검토 P3).
+      //  종전엔 null 을 그대로 비교해, 좌표를 생략한 스케줄 매니저의 완료 보고가 같은 텔레그램 채팅에 답 두 번·선택지 두 번을 냈다.
+      let rtTarget = rt.target ?? null;
+      if (rtTarget === null) {
+        try {
+          rtTarget = (await outbound.defaultOutboundTarget()) ?? null;
+        } catch {
+          rtTarget = null;
+        }
+      }
+      if (rtTarget === target) continue;
+    }
     out.push({ channel: ch, target, outbound });
   }
   return out;

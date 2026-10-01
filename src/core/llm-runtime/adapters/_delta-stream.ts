@@ -34,6 +34,7 @@
 import type { ChannelName } from "../../../channels/types.js";
 import { getEventBus } from "../../eventbus.js";
 import type { RegionADeltaPayload } from "../types.js";
+import { releaseCitationHold, stepCitationStream } from "../../citation-markers.js";
 
 /** coalesce 시간 윈도 — 마지막 flush 후 이 ms 경과 시 버퍼 flush. 사람 눈 "타이핑" 하한. */
 const COALESCE_MS = Number(process.env.TIGUCLAW_DELTA_COALESCE_MS ?? 80);
@@ -151,6 +152,9 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
   // 제안 표식 억제 상태 — **태그 안쪽만** 가린다(닫는 태그에서 해제, 적대 검토 P2).
   let suppressing = false;
   let heldTail = "";
+  // 인용 표식(Codex 웹 검색) — 안 닫힌 표식을 다음 조각과 이어 판정하려 붙든다(`citation-markers.ts`).
+  let citeHeld = "";
+  let citeEat = false;
 
   const clearTimer = (): void => {
     if (timer !== undefined) {
@@ -186,23 +190,15 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
   return {
     push(delta: string): void {
       if (delta.length === 0) return;
-      const split = stepSuggestionStream(heldTail + delta, suppressing);
-      heldTail = split.hold;
-      suppressing = split.suppressing;
-      if (split.emit.length === 0) return; // 전부 태그 안쪽이거나 보류 — 화면엔 아직 없다.
-      const shown = split.emit;
-      segBuf += shown; // closeSegment() 용 — coalesce 타이머와 무관하게 즉시 동기 적재.
-      buf += shown;
-      if (buf.length >= COALESCE_CHARS) {
-        emit(); // 글자 상한 — 즉시 flush(레이턴시 가드).
-        return;
-      }
-      if (timer === undefined) {
-        timer = setTimeout(emit, COALESCE_MS); // 시간 윈도 — 마지막 적재 후 ~80ms.
-      }
+      // ★인용 표식을 먼저 걷는다 — 제안 태그 판정과 독립이라 앞에 둔다(표식이 태그 안에 있든 밖이든 화면엔 안 나간다).
+      const cite = stepCitationStream(citeHeld + delta, citeEat);
+      citeHeld = cite.hold;
+      citeEat = cite.eatSpace;
+      if (cite.emit.length === 0) return;
+      feed(cite.emit);
     },
     flush(): void {
-      // 보류분은 태그가 아니었던 것으로 확정 — 내보낸다(안 그러면 마지막 몇 글자가 사라진다).
+      releaseCite();
       // 보류분은 태그가 아니었던 것으로 확정 — 내보낸다(안 그러면 마지막 몇 글자가 사라진다).
       // 억제 중이면 그 꼬리는 태그 **안쪽**이므로 버린다.
       if (!suppressing && heldTail.length > 0) {
@@ -216,6 +212,7 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
       if (m !== undefined) model = m;
     },
     closeSegment(): string | undefined {
+      releaseCite();
       // ★보류분을 여기서 확정한다 — 세그먼트 경계(도구 호출·턴 종료)를 태그가 가로지를 수는
       //  없다(태그는 답변 끝에 한 덩어리로 나온다). 안 흘려보내면 `<` 로 끝나는 정상 텍스트의
       //  마지막 몇 글자가 조용히 사라진다("본문은 한 글자도 안 깎는다"는 이 기능의 계약이다).
@@ -230,4 +227,30 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
       return text;
     },
   };
+
+  /** 걷어 낸 조각을 제안 태그 판정에 넘기고 화면 버퍼에 싣는다. */
+  function feed(text: string): void {
+    const split = stepSuggestionStream(heldTail + text, suppressing);
+    heldTail = split.hold;
+    suppressing = split.suppressing;
+    if (split.emit.length === 0) return; // 전부 태그 안쪽이거나 보류 — 화면엔 아직 없다.
+    const shown = split.emit;
+    segBuf += shown; // closeSegment() 용 — coalesce 타이머와 무관하게 즉시 동기 적재.
+    buf += shown;
+    if (buf.length >= COALESCE_CHARS) {
+      emit(); // 글자 상한 — 즉시 flush(레이턴시 가드).
+      return;
+    }
+    if (timer === undefined) {
+      timer = setTimeout(emit, COALESCE_MS); // 시간 윈도 — 마지막 적재 후 ~80ms.
+    }
+  }
+
+  /** 끝났는데 안 닫힌 표식 — 출처면 버리고 아니면 제어 문자만 빼서 흘린다. */
+  function releaseCite(): void {
+    if (citeHeld.length === 0) return;
+    const rest = releaseCitationHold(citeHeld);
+    citeHeld = "";
+    if (rest.length > 0) feed(rest);
+  }
 }

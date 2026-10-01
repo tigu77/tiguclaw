@@ -915,7 +915,6 @@
       /* 토큰·캐시 줄은 **한 색**(2026-09-30 정태님) — 종전엔 입력 20만↑ 턴만 노란색(heavy)이라 줄마다 색이 갈렸다. */
       .turn-cost { color:var(--warn); font-weight:700; font-size:0.625rem; font-variant-numeric:tabular-nums; opacity:1; flex:none; white-space:nowrap; }
       /* 실제 응답 모델 — adapter 배지(누가)와 달리 *어떤 모델*인지. 값 없으면 빈 span = 자리 차지 0. */
-      .turn-model { color:var(--text-dim); font-size:0.625rem; font-weight:600; flex:none; white-space:nowrap; opacity:.75; }
       .turn-elapsed { color:var(--accent-2); font-size:0.625rem; font-weight:700; font-variant-numeric:tabular-nums; flex:none; white-space:nowrap; }
       .turn-card.done .turn-elapsed { color:var(--text-dim); font-weight:600; }
       .turn-body { padding:2px 10px 8px 28px; }
@@ -1256,7 +1255,12 @@
       .bg-job-tier[data-tier="mid"], .agent-card-tier[data-tier="mid"] { background:rgb(var(--accent-rgb) / .16); color:var(--accent); border-color:rgb(var(--accent-rgb) / .4); }
       .bg-job-tier[data-tier="high"], .agent-card-tier[data-tier="high"] { background:rgb(var(--warn-rgb) / .16); color:var(--warn); border-color:rgb(var(--warn-rgb) / .4); }
       /* 실제 응답 모델 — 티어(요청) 옆의 결과값. 소문자 유지(모델 id 는 대문자화하면 안 읽힌다). */
-      .bg-job-model { flex:none; font-size:0.5625rem; font-weight:700; padding:1px 6px; border-radius:999px; white-space:nowrap; background:rgb(var(--fg-rgb) / .04); color:var(--text-dim); border:1px solid var(--border); }
+      /* 모델 표시 = **한 모양** (2026-10-01 정태님 «백그라운드 잡 카드처럼») — 채팅 턴 카드·답변 버블·기록 카드·잡 카드가 같은
+         알약을 쓴다. 종전엔 채팅 쪽만 흐린 맨글씨라 강도 배지와 따로 놀았다. 두 벌로 두면 다시 갈린다 — 규칙은 여기 하나. */
+      .turn-model, .bg-job-model { flex:none; font-size:0.5625rem; font-weight:700; padding:1px 6px; border-radius:999px; white-space:nowrap; background:rgb(var(--fg-rgb) / .04); color:var(--text-dim); border:1px solid var(--border); }
+      .turn-model:empty { display:none; } /* 모델을 아직 모르는 카드에 빈 알약을 그리지 않는다 */
+      /* 강도 배지는 알약 **오른쪽 끝**에 붙인다 — 바깥 안쪽 여백(6px)만큼 당겨 위·아래와 같은 간격(테두리에 맞닿음)으로. */
+      .turn-model .model-spec-reasoning, .bg-job-model .model-spec-reasoning { margin-right:-6px; }
       .agent-card-tier { font-size:0.625rem; padding:2px 8px; }
       /* ── 모델 프로파일 카드 (표시 전용, provider-card·bg-job-tier 스타일 재사용) ── */
       .models-shell { display:grid; gap:10px; }

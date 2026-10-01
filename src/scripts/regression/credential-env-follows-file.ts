@@ -6,7 +6,7 @@
  *  codex 토큰(파일 쓰기 실패)이 **무효가 된 옛 값으로 되돌아간다**. 셸 환경변수 우선 규칙도 부팅 때는 그대로다.
  * 임시 파일 + 가짜 env 객체로 제품 코드(`makeCredentialWatch`)를 그대로 돌린다.
  */
-import { chmodSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -165,6 +165,57 @@ export const check: RegressionCheck = {
         else process.env.CLAUDE_CODE_OAUTH_TOKEN = before;
         startHomeCredentialWatch(path.join(dir2, "gone.env")); // 전역 감시를 없는 파일로 돌려 둔다
         rmSync(dir2, { recursive: true, force: true });
+      }
+    }
+    // ★회전 키 저장 둘이 겹친 사이에 턴 입구가 끼어도 메모리가 앞 저장(무효)에 고정되지 않는다 — 우리 쓰기의 중간 파일을
+    //  «바깥 변경» 으로 읽어 A 로 되돌리고, 이어 온 B 는 «거쳐 간 값» 이라 거부하던 것(적대 검토).
+    {
+      const { startHomeCredentialWatch, refreshHomeCredentials } = await import("../../core/credential-env.js");
+      const { upsertHomeEnvVars } = await import("../../core/env-file.js");
+      const { homeEnvPath } = await import("../../core/load-env.js");
+      const K = "OPENAI_CODEX_OAUTH_TOKEN";
+      const savedHome = process.env.TIGUCLAW_HOME;
+      const before = process.env[K];
+      const dir3 = mkdtempSync(path.join(tmpdir(), "cred-rotate-"));
+      try {
+        process.env.TIGUCLAW_HOME = dir3;
+        const f = homeEnvPath();
+        writeFileSync(f, `${K}=rot-0\n`);
+        process.env[K] = "rot-0";
+        startHomeCredentialWatch(f);
+        const pA = upsertHomeEnvVars({ [K]: "rot-A" });
+        const pB = upsertHomeEnvVars({ [K]: "rot-B" });
+        await pA; // 파일 = A, B 는 아직 쓰는 중
+        const midFile = readFileSync(f, "utf8").trim();
+        const mid = refreshHomeCredentials();
+        const midMem = process.env[K];
+        await pB;
+        const end = refreshHomeCredentials();
+        const endMem = process.env[K];
+        writeFileSync(f, `${K}=rot-relogin\n`); // 바깥 재로그인은 여전히 따른다
+        const outside = refreshHomeCredentials();
+        const outsideMem = process.env[K];
+        // ★쓰기가 **실패**해도 «쓰는 중» 표시는 내려간다 — 안 내려가면 재시작 전까지 따라가기가 조용히 꺼진다(적대 검토 G2:
+        //  실패 쪽 감소를 빼도 초록이었다). 쓸 수 없는 홈으로 저장을 실패시킨 뒤 바깥 재로그인을 따르는지 본다.
+        chmodSync(dir3, 0o500);
+        let rejected = false;
+        try { await upsertHomeEnvVars({ [K]: "rot-fail" }); } catch { rejected = true; }
+        chmodSync(dir3, 0o700);
+        writeFileSync(f, `${K}=rot-relogin2\n`);
+        const afterFail = refreshHomeCredentials();
+        out.push(assert("★저장이 실패해도 따라가기는 살아 있다(root 처럼 쓰기가 안 막히는 환경은 이 단언을 건너뛴다)",
+          !rejected || (afterFail.includes(K) && process.env[K] === "rot-relogin2"), { rejected, afterFail }));
+        out.push(assert(
+          "★회전 키 저장이 겹친 사이 턴 입구가 끼어도 메모리는 마지막 저장 값 — 무효가 된 앞 값에 고정되지 않는다 · 바깥 재로그인은 따른다",
+          midFile === `${K}=rot-A` && mid.length === 0 && midMem === "rot-B" && end.length === 0 && endMem === "rot-B" &&
+            outside.includes(K) && outsideMem === "rot-relogin",
+          { midFile: midFile.replace(/=.*/, "=…"), mid, midMem, end, endMem, outside },
+        ));
+      } finally {
+        if (savedHome === undefined) delete process.env.TIGUCLAW_HOME; else process.env.TIGUCLAW_HOME = savedHome;
+        if (before === undefined) delete process.env[K]; else process.env[K] = before;
+        startHomeCredentialWatch(path.join(dir3, "gone.env"));
+        rmSync(dir3, { recursive: true, force: true });
       }
     }
     // 배선 — 부팅 때 스냅샷, 턴 입구에서 갱신(모든 어댑터가 이 입구를 지난다).

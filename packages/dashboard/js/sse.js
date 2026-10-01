@@ -201,13 +201,14 @@
           // 성공·실패 모두 잡 원장의 관측값/미보고 상태를 다시 받는다.
           if (typeof tk === "string" && /^(?:worker|agent):/.test(tk) &&
               typeof window.refreshJobUsageSoon === "function") window.refreshJobUsageSoon();
-          markTurnCardDone(tk); // 턴 카드 마지막 스텝 pulse 정지(응답 누락·에러·hang 종료 대비).
           if (ev.type === "llm.turn_done") {
             cancelErrClear(tk); markTurnDone(tk); // 성공 종결 = 즉시.
             setTurnCost(tk, ev.payload || {});    // 턴 비용(토큰) 카드에 고정 — 2026-07-26.
             setTurnEffort(tk, ev.payload || {});  // 실제로 보낸 추론 강도를 모델 옆에 — 2026-09-29.
           }
-          else {
+          // ★값을 붙인 **뒤에** «이 시도는 끝났다» 를 단다 — 앞에 달면 자기 턴의 비용·강도까지 막힌다(그 표시가 끝난 카드를 지킨다).
+          markTurnCardDone(tk); // 턴 카드 마지막 스텝 pulse 정지(응답 누락·에러·hang 종료 대비).
+          if (ev.type === "llm.turn_error") {
             scheduleErrClear(tk); // 에러 = 폴백 가능 → 유예 클리어(후속 진행 이벤트가 취소).
             renderTurnFailure(ev.payload || {}, ev.ts);
           }

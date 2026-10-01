@@ -108,9 +108,9 @@ export const check: RegressionCheck = {
     });
     vm.runInContext(
       [fn(token, "fmtTokens"), fn(token, "effortOf"), fn(token, "modelWithEffort"), fn(token, "renderModelLabel"), fn(token, "setTurnModel"), fn(token, "setTurnEffort"),
-        fn(token, "turnMetaByThread") /* metaEffort 까지 같이 온다(한 줄 선언) */, fn(token, "setTurnMeta"), fn(token, "usageSummary"), fn(token, "costLine"),
+        fn(token, "turnMetaByThread") /* metaEffort 까지 같이 온다(한 줄 선언) */, fn(token, "setTurnMeta"), fn(token, "markTurnCardDone"), fn(token, "usageSummary"), fn(token, "setTurnCost"), fn(token, "costLine"),
         fn(historySrc, "canonicalBodyFor"), fn(historySrc, "groupMergedItems"), fn(historySrc, "buildHistoryTextEl"), fn(drawerSrc, "setJobModel"),
-        "globalThis.api = { modelWithEffort, setTurnModel, setTurnEffort, setTurnMeta, metaEffort, costLine, groupMergedItems, buildHistoryTextEl, setJobModel };"].join("\n"),
+        "globalThis.api = { modelWithEffort, setTurnModel, setTurnEffort, setTurnMeta, markTurnCardDone, setTurnCost, metaEffort, costLine, groupMergedItems, buildHistoryTextEl, setJobModel };"].join("\n"),
       ctx,
     );
     type Api = {
@@ -118,6 +118,8 @@ export const check: RegressionCheck = {
       setTurnModel: (c: unknown, m?: string, r?: string) => void;
       setTurnEffort: (t: string, p: unknown) => void;
       setTurnMeta: (t: string, p: unknown) => void;
+      markTurnCardDone: (t: string) => void;
+      setTurnCost: (t: string, p: unknown) => void;
       metaEffort: (t: string, m: string) => string | undefined;
       costLine: (s: unknown, o?: unknown) => { text: string } | null;
       groupMergedItems: (e: unknown[], a: unknown[]) => Array<{ kind: string; act?: Record<string, unknown>; entry?: unknown; reasoning?: string }>;
@@ -135,15 +137,22 @@ export const check: RegressionCheck = {
     const a3 = shown(card.modelEl);
     api.setTurnModel(card, "claude-opus-5");            // 모델이 바뀌면(폴백) 앞 모델의 강도를 물려받지 않는다
     const a4 = shown(card.modelEl);
+    // ★«강도 기본» 은 어댑터가 «안 보냈다» 를 **명시**했을 때만 — 강도가 없는 것은 «모름»(옛 기록·새로고침 중 진행 턴·모델 미지정 턴)이라
+    //  아무것도 안 붙인다(적대 검토: 종전엔 claude 모델이면 «기본» 이라 단언해, high 를 보낸 턴도 그렇게 보였다).
+    const { REASONING_NOT_SENT } = await import("../../core/llm-runtime/turn-meta.js");
+    api.setTurnModel(card, "claude-opus-5", REASONING_NOT_SENT);
+    const a5 = shown(card.modelEl);
+    const unknownOld = lbl("claude-opus-5-5");
     const hist = api.costLine(spend, { missingRequests: 0 });
     const histPartial = api.costLine(spend, { missingRequests: 1 });
     out.push(
       assert(
-        "★모델 옆 강도: 턴 끝에 붙고, 뒤늦은 모델-only 이벤트가 안 지우고, 모델이 바뀌면 떨어진다 · 기록 카드 비용 줄에 캐시 % (미보고면 «+», 캐시 말 안 함)",
-        a1 === "gpt-6-sol" && a2 === lbl("gpt-6-sol", "high") && a3 === lbl("gpt-6-sol", "high") && a4 === lbl("claude-opus-5") && a4.includes("models.effort.default") &&
+        "★모델 옆 강도: 턴 끝에 붙고, 뒤늦은 모델-only 이벤트가 안 지우고, 모델이 바뀌면 떨어진다 · «기본» 은 «안 보냄» 표식일 때만(없으면 모름 = 아무것도) · 기록 카드 비용 줄에 캐시 % (미보고면 «+», 캐시 말 안 함)",
+        a1 === "gpt-6-sol" && a2 === lbl("gpt-6-sol", "high") && a3 === lbl("gpt-6-sol", "high") && a4 === "claude-opus-5" && unknownOld === "claude-opus-5-5" &&
+          a5.includes("models.effort.default") && !a5.includes("models.effort.badge") &&
           a2.includes("models.effort.badge") &&
           hist !== null && hist.text.includes("tok.cacheRate") && histPartial !== null && histPartial.text.endsWith("+") && !histPartial.text.includes("tok.cacheRate"),
-        { a1, a2, a3, a4, hist: hist?.text, histPartial: histPartial?.text },
+        { a1, a2, a3, a4, a5, unknownOld, hist: hist?.text, histPartial: histPartial?.text },
       ),
     );
 
@@ -206,9 +215,42 @@ export const check: RegressionCheck = {
     cardByThread.set("t6", openCard);
     api.setTurnMeta("t6", { model: "gpt-6-sol", reasoning: "medium" });
     const openShown = shown(openCard.modelEl);
-    out.push(assert("★끝난 앞 턴 카드의 모델·강도는 다음 턴 시작 값으로 안 바뀐다 · 열린 카드는 받는다",
-      prevBefore.includes("gpt-6-sol") && prevAfter === prevBefore && !prevAfter.includes("claude") && openShown.includes("gpt-6-sol"),
-      { prevBefore, prevAfter, openShown }));
+    // ★폴백 시도 카드 — turn_error 는 카드를 닫지 않는다(폴백이 이어질 수 있다). 다음 어댑터의 turn_meta 가 그 카드에 붙으면
+    //  codex 시도 카드가 «claude» 라벨을 단 채 남는다(적대 검토 — claude 는 seq 를 새로 시작해 자기 카드를 따로 만든다).
+    const failedCard = { modelEl: el(), closed: false };
+    cardByThread.set("t7", failedCard);
+    api.setTurnModel(failedCard, "gpt-6-sol", "high");
+    const failedBefore = shown(failedCard.modelEl);
+    api.markTurnCardDone("t7"); // turn_error
+    api.setTurnMeta("t7", { model: "claude-opus-5-5", reasoning: "default" });
+    const failedAfter = shown(failedCard.modelEl);
+    const fallbackHeld = api.metaEffort("t7", "claude-opus-5-5");
+    out.push(assert("★끝난 앞 턴 카드의 모델·강도는 다음 턴 시작 값으로 안 바뀐다 · 열린 카드는 받는다 · 폴백 전 실패한 시도 카드도 안 바뀌고 값은 새 카드 몫으로 남는다",
+      prevBefore.includes("gpt-6-sol") && prevAfter === prevBefore && !prevAfter.includes("claude") && openShown.includes("gpt-6-sol") &&
+        failedAfter === failedBefore && failedBefore.includes("gpt-6-sol") && fallbackHeld === "default",
+      { prevBefore, prevAfter, openShown, failedBefore, failedAfter, fallbackHeld }));
+    // ③-i ★조용한 턴(델타·활동 0 — 카드를 안 만든다)의 turn_done 이 **끝난 앞 턴 카드**의 강도·비용을 덮지 않는다 · 자기 턴 카드는 받는다
+    //  (적대 검토 F5). sse 는 값을 붙인 **뒤에** «끝났다» 를 단다.
+    {
+      const quiet = { modelEl: el(), costEl: el(), closed: false };
+      cardByThread.set("t8", quiet);
+      api.setTurnEffort("t8", { model: "gpt-6-sol", reasoning: "high" }); // 자기 턴의 turn_done
+      api.setTurnCost("t8", { spend });
+      api.markTurnCardDone("t8");
+      const ownLabel = shown(quiet.modelEl), ownCost = quiet.costEl.textContent;
+      api.setTurnEffort("t8", { model: "claude-opus-5-5", reasoning: "default" }); // 다음 조용한 턴의 turn_done
+      api.setTurnCost("t8", { spend: { ...spend, input: 1, output: 1, cached: 0, requests: 1 } });
+      out.push(assert("★조용한 다음 턴의 turn_done 은 끝난 앞 카드의 모델·강도·비용을 안 바꾼다 · 자기 턴 카드는 받는다",
+        ownLabel.includes("gpt-6-sol") && ownLabel.includes("models.effort.badge") && ownCost !== "" &&
+          shown(quiet.modelEl) === ownLabel && quiet.costEl.textContent === ownCost,
+        { ownLabel, after: shown(quiet.modelEl), ownCost, afterCost: quiet.costEl.textContent }));
+      const sseSrc = read("packages/dashboard/js/sse.js");
+      const order = /setTurnEffort\(tk, ev\.payload \|\| \{\}\);[\s\S]{0,300}markTurnCardDone\(tk\);/.test(sseSrc) &&
+        !/markTurnCardDone\(tk\);[\s\S]{0,300}setTurnEffort\(tk, ev\.payload/.test(sseSrc);
+      const resets = (token.match(/card\.attemptEnded = false;/g) ?? []).length;
+      out.push(assert("배선: turn_done 은 값을 붙인 뒤 «끝났다» 를 단다 · 새 내용이 붙는 세 자리(델타·텍스트·도구)가 표시를 푼다(폴백이 같은 카드에 이어 쓸 때)",
+        order && resets === 3, { order, resets }));
+    }
     // ③-f ★기록 도구 카드 — 같은 턴 답변 행의 강도를 **짝 모델 카드에만**, 다음 턴 카드엔 안 넘긴다.
     const tu = api.groupMergedItems(
       [
@@ -249,6 +291,45 @@ export const check: RegressionCheck = {
       metas.length === 2 && metas[0]?.reasoning === "low" && !("reasoning" in (metas[1] ?? {})) && metas[1]?.model === "claude-opus-5",
       metas,
     ));
+    // ③-h ★요청 쪽 — «안 보냄» 표식은 화면·기록에만. 요청 `effort` 로 새면 강도를 안 정한 모든 Claude 턴이 "default" 를 보내
+    //  거부된다(적대 검토 G3: 지키는 게 정규식 하나라 `effort: e ?? shownEffort` 변이가 전체 스위트를 통과했다). 가짜 SDK 로 실제로 돌린다.
+    {
+      const { runClaude, withFakeClaudeQuery } = await import("../../core/llm-runtime/adapters/claude-agent-sdk.js");
+      const seen: Array<Record<string, unknown>> = [];
+      const fake = ((args: { prompt: unknown; options?: Record<string, unknown> }) => {
+        seen.push(args.options ?? {});
+        const it = typeof args.prompt === "string" ? undefined : (args.prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+        return (async function* () {
+          if (it !== undefined) await it.next();
+          yield { type: "system", subtype: "init", session_id: "sess-eff", model: "claude-opus-5-5" };
+          yield { type: "result", subtype: "success", is_error: false, result: "ok", num_turns: 1, session_id: "sess-eff", modelUsage: {}, usage: { input_tokens: 1, output_tokens: 1 } };
+        })();
+      }) as never;
+      const prevKey = process.env.ANTHROPIC_API_KEY;
+      process.env.ANTHROPIC_API_KEY = "regression-fake-key";
+      const effMetas: Array<Record<string, unknown>> = [];
+      const unsubEff = getEventBus().subscribe((e: { type: string; payload: Record<string, unknown> }) => {
+        if (e.type === "llm.turn_meta" && String(e.payload.threadKey).startsWith("regr:effort-req")) effMetas.push(e.payload);
+      });
+      const outs: Array<{ reasoning?: string }> = [];
+      let effErr = "";
+      try {
+        await withFakeClaudeQuery(fake, async () => {
+          outs.push(await runClaude({ text: "q", threadKey: "regr:effort-req:1", channel: "cli", model: "claude-opus-5-5" } as never) as { reasoning?: string });
+          outs.push(await runClaude({ text: "q", threadKey: "regr:effort-req:2", channel: "cli", model: "claude-opus-5-5", reasoning: "high" } as never) as { reasoning?: string });
+        });
+      } catch (e) { effErr = String(e).slice(0, 200); } finally {
+        unsubEff();
+        if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prevKey;
+      }
+      out.push(assert(
+        "★요청에는 보낸 강도만(안 정했으면 effort 키 없음 · high 면 high) — «안 보냄» 표식은 출력·턴 시작 알림에만",
+        effErr === "" && seen.length === 2 && !("effort" in seen[0]!) && seen[1]!.effort === "high" &&
+          outs[0]?.reasoning === REASONING_NOT_SENT && outs[1]?.reasoning === "high" &&
+          effMetas.map((m) => m.reasoning).join(",") === `${REASONING_NOT_SENT},high`,
+        { effErr, effort: seen.map((o) => o.effort ?? null), outs: outs.map((o) => o.reasoning ?? null), metas: effMetas.map((m) => m.reasoning ?? null) },
+      ));
+    }
     // ③-c ★잡 카드 — 강도는 그 강도를 보낸 모델과 짝일 때만(폴백 뒤 다른 모델에 안 붙음) · 합계가 먼저 와도 쥐고 있다 · 강도 없는 턴이면 떨어진다.
     const badge = (): El => { const b = el(); b.style.display = "none"; return b; };
     const j1 = { modelBadgeEl: badge() };
@@ -301,8 +382,9 @@ export const check: RegressionCheck = {
       // 식 전체를 대조한다 — 조건을 `false ?` 로 바꾼 변이가 부분 문자열 대조를 통과했다(적대 검토 G3).
       codex: /body\.reasoning = \{ effort: turnReasoning \}/.test(codex) &&
         (codex.match(/\.\.\.\(turnReasoning !== undefined \? \{ reasoning: turnReasoning \} : \{\}\)/g) ?? []).length === 2,
-      claude: /const e = claudeEffort;/.test(claude) &&
-        (claude.match(/\.\.\.\(claudeEffort !== undefined \? \{ reasoning: claudeEffort \} : \{\}\)/g) ?? []).length === 2,
+      // 요청엔 보낸 값만(`effort`), 화면·기록엔 «안 보냄» 을 명시한 값 — 둘이 섞이면 SDK 에 "default" 가 가거나 «기본» 이 다시 «모름» 을 덮는다.
+      claude: /const e = claudeEffort;/.test(claude) && /const shownEffort = claudeEffort \?\? REASONING_NOT_SENT;/.test(claude) &&
+        /publishTurnMeta\(\{[^}]*reasoning: shownEffort \}\)/.test(claude) && (claude.match(/\n\s+reasoning: shownEffort,/g) ?? []).length === 2,
       openai: (openai.match(/\.\.\.\(reasoningEffort !== undefined \? \{ reasoning: reasoningEffort \} : \{\}\)/g) ?? []).length === 2,
       outEvent: /\.\.\.\(typeof out\.reasoning === "string" && out\.reasoning !== "" \? \{ reasoning: out\.reasoning \} : \{\}\)/.test(entry) &&
         /const spend = turnSpend\(out\.usage\);\s*if \(spend === undefined\) return \{\};\s*const missing = out\.usage\?\.unreportedRequests;\s*return \{ spend: \{ \.\.\.spend, \.\.\.\(typeof missing === "number" && missing > 0 \? \{ unreportedRequests: missing \} : \{\}\) \} \};/.test(entry),
@@ -314,7 +396,7 @@ export const check: RegressionCheck = {
         /if \(ev\.type === "llm\.turn_meta"\) \{[\s\S]{0,160}setTurnMeta\(tk, ev\.payload\); handleJobTurnMeta\(ev\.payload\);/.test(sse),
       // 턴 시작 알림은 **보낼 변수 그대로** — 세 어댑터가 같은 함수로.
       turnMeta: /publishTurnMeta\(\{[^}]*adapter: "codex", model, reasoning: turnReasoning \}\)/.test(codex) &&
-        /publishTurnMeta\(\{[^}]*adapter: "claude", model: input\.model, reasoning: claudeEffort \}\)/.test(claude) &&
+        /publishTurnMeta\(\{[^}]*adapter: "claude", model: input\.model, reasoning: shownEffort \}\)/.test(claude) &&
         /publishTurnMeta\(\{[^}]*adapter: "openai", model: input\.model, reasoning: reasoningEffort \}\)/.test(openai),
       job: /u\.reasoning = payload\.reasoning;[\s\S]{0,200}u\.reasoningModel = payload\.model;[\s\S]{0,200}\} else \{\s*delete u\.reasoning;\s*delete u\.reasoningModel;/.test(jobs) &&
         /entry\.usage = u;[\s\S]{0,400}setJobModel\(entry, undefined, typeof u\.reasoning === "string" \? u\.reasoning : "", u\.reasoningModel\);/.test(drawer),

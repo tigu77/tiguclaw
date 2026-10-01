@@ -317,7 +317,7 @@ export const createModelSettingsMcpServer = (
         },
       ),
       /**
-       * 화면 테마 — `themes/<이름>.css` 중 하나를 고른다(홈 settings.json 의 `theme`).
+       * 화면 설정 — 테마(`themes/<이름>.css` 중 하나, 홈 settings.json 의 `theme`)와 브라우저 탭 제목(`dashboardTitle`).
        *
        * ★**같은 서버에 얹는다.** 서버를 하나 더 만들면 3어댑터 배선이 늘고 매 턴 프롬프트도
        *  그만큼 붇는다(MCP 도구 수엔 상한이 없다). 이 서버의 규약은 *"범용 settings writer 를
@@ -327,22 +327,29 @@ export const createModelSettingsMcpServer = (
        *  "테마 뭐 있어?" 에 별도 도구가 필요 없다(도구 수를 늘리지 않는 게 이 자리의 값이다).
        */
       tool(
-        "set_theme",
-        "대시보드 테마를 선택해 홈 settings.json의 theme에 저장합니다. " +
-          "name 생략: 현재 테마·설치 목록 조회. `none`: 기본 팔레트로 복귀. 미설치 이름: 거절하고 목록 반환. " +
+        "set_appearance",
+        "대시보드 화면 설정 — 테마(`name`)와 브라우저 탭 제목(`title`). 둘 다 생략: 현재값·테마 목록 조회. " +
+          "테마: 홈 settings.json의 theme에 저장, `none`이면 기본 팔레트, 미설치 이름은 거절하고 목록 반환. " +
           "재시작 없이 대시보드를 다시 열거나 활성화하면 반영됩니다. " +
           "세밀한 색 수정은 `<home>/theme.css`에서 하세요. 프리셋 위에 얹혀 지정한 CSS 토큰만 덮습니다(예: `:root { --accent: #ff00aa; }`). " +
           // 생성 경로·이름 제약·홈 위치를 보존한다: 생략하면 새 테마 만들기에 도달하지 못한다.
           "새 테마는 `<home>/themes/<이름>.css`에 만들면 별도 등록 없이 목록에 뜹니다. " +
           "이름은 영숫자로 시작하고 `[A-Za-z0-9_-]`만 사용하며 최대 64자입니다. 위반하면 목록에서 제외됩니다. " +
-          "홈 위치는 `<env>`의 `tiguclaw home`을 보세요. 번들 dark·light는 업데이트로 덮이므로 고치지 말고 홈에 새로 만드세요.",
+          "홈 위치는 `<env>`의 `tiguclaw home`을 보세요. 번들 dark·light는 업데이트로 덮이므로 고치지 말고 홈에 새로 만드세요. " +
+          // ★탭 제목은 테마가 아니다 — 그래서 도구 이름을 «화면 설정»(set_appearance)으로 바꿨다(2026-10-01 정태님 «타이틀도 테마라고
+          //  봐야 하나?»). 도구를 하나 더 만들면 매 턴 도구 목록이 길어지므로 같은 도구 안의 다른 인자로 둔다.
+          "`title`: 탭 제목(최대 60자, `none`이면 기본 제목). 새로고침하면 반영됩니다.",
         {
           name: z
             .string()
             .optional()
             .describe("고를 테마 이름. 비우면 조회, `none` 이면 해제."),
+          title: z
+            .string()
+            .optional()
+            .describe("브라우저 탭 제목. `none` 이면 기본 제목으로."),
         },
-        async (args: { name?: string }) => {
+        async (args: { name?: string; title?: string }) => {
           try {
             // 지연 로드 — 이 서버는 매 턴 만들어지므로 부팅 경로에 얹지 않는다.
             const { availableThemes, readTheme } = await import("../../theme.js");
@@ -350,22 +357,40 @@ export const createModelSettingsMcpServer = (
             const list = availableThemes();
             const shown = list.length === 0 ? "(설치된 테마 없음)" : list.join(", ");
             const want = args.name?.trim() ?? "";
+            // ★테마부터 검증한다 — 틀린 테마로 실패를 알리면서 제목은 이미 바꿔 둔 «부분 성공 + 오류» 를 만들지 않는다(적대 검토 F5).
+            if (want !== "" && want.toLowerCase() !== "none" && !list.includes(want)) {
+              return errText(`'${want}' 는 설치된 테마가 아닙니다. 설치됨: ${shown}`);
+            }
+            // 탭 제목 — 테마와 독립이다. ★빈 값은 «변경 없음»(name 과 같은 규칙) · 해제는 `none` 만(적대 검토 F4: 안 쓰는 인자를 ""
+            //  로 채워 보낸 호출이 사용자 제목을 지웠다). 제목만 바꾸러 온 호출이면(name 없음) 여기서 끝낸다.
+            let titleNote = "";
+            if (args.title !== undefined && args.title.trim() !== "") {
+              const { setDashboardTitle } = await import("../../settings.js");
+              const t = args.title.trim();
+              const saved = setDashboardTitle(t.toLowerCase() === "none" ? "" : t);
+              titleNote = saved === "" ? "탭 제목을 기본으로 되돌렸습니다." : `탭 제목을 **${saved}** 로 바꿨습니다.`;
+              titleNote += " 대시보드를 새로고침하면 보입니다.";
+              if (want === "") return okText(titleNote);
+            }
 
             if (want === "") {
               const now = readTheme(cwd);
+              const { readDashboardTitle } = await import("../../settings.js");
+              const title = readDashboardTitle(cwd);
               return okText(
-                `현재 테마: **${now === "" ? "(없음 — 제품 기본)" : now}**\n설치됨: ${shown}`,
+                `현재 테마: **${now === "" ? "(없음 — 제품 기본)" : now}**\n설치됨: ${shown}\n탭 제목: ${title === "" ? "(기본)" : title}`,
               );
             }
+            const withTitle = (t: string): string => (titleNote === "" ? t : `${t}\n${titleNote}`);
             if (want.toLowerCase() === "none") {
               setTheme(undefined);
-              return okText("테마 해제 — 제품 기본 팔레트로 돌아갑니다.");
+              return okText(withTitle("테마 해제 — 제품 기본 팔레트로 돌아갑니다."));
             }
             if (!setTheme(want)) {
-              return errText(`'${want}' 는 설치된 테마가 아닙니다. 설치됨: ${shown}`);
+              return errText(withTitle(`'${want}' 는 설치된 테마가 아닙니다. 설치됨: ${shown}`));
             }
             return okText(
-              `테마 **${want}** 로 바꿨습니다. 대시보드를 새로 열거나 창을 다시 활성화하면 보입니다.`,
+              withTitle(`테마 **${want}** 로 바꿨습니다. 대시보드를 새로 열거나 창을 다시 활성화하면 보입니다.`),
             );
           } catch (e) {
             return errText(e instanceof Error ? e.message : String(e));

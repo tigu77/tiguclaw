@@ -106,6 +106,12 @@ const toYmd = (d: Date): string => {
 };
 
 /**
+ * 이 기계의 시간대(IANA) — 모델이 «어디 사는 사용자인가» 를 짐작할 유일한 단서다 (2026-10-01). 종전엔 환경 블록에 날짜만 있어
+ * Codex 가 한국어 질문에 미국 극장·미국 축제를 추천했다(실측 위치 질문 5/8). 환경 블록과 Codex 웹 검색 위치가 **이 한 값**을 쓴다.
+ */
+export const localTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+/**
  * `<env>` 블록 문자열 렌더. Claude Code `<env>` 컨벤션 파리티 + tiguclaw 확장(Shell).
  * cwd=턴 cwd(프로젝트/홈). now 미지정 시 `new Date()`(매 턴 fresh — 캐시 무해,
  * 계약 §1.5).
@@ -121,6 +127,7 @@ export const formatEnvContext = (input: {
     `Platform: ${process.platform}`,
     `OS Version: ${os.type()} ${os.release()}`,
     `Today's date: ${toYmd(input.now ?? new Date())}`,
+    `Time zone: ${localTimeZone()}`,
     `Shell: ${shell.label} — ${shell.syntaxHint}`,
     // ★홈과 앱 루트를 **매 턴 싣는다** (2026-08-27 사용자 지적: "비서가 테마 파일을
     //  <home>/themes 에 두는 걸 모르나? 원본 레포 위치는 아나?").

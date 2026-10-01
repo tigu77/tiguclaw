@@ -36,7 +36,7 @@ import { openaiCarriesSpeed } from "./adapters/_openai-speed.js";
 import { listProviderNames, resolveProviderConn } from "./provider-registry.js";
 import { assertLiveModelAllowed } from "./regression-model-guard.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
-import { compactHistoryAfterTurn } from "./adapters/openai-codex-oauth-history.js";
+import { compactHistoryAfterTurn, turnItemsReplayedChars } from "./adapters/openai-codex-oauth-history.js";
 import { blendTokenDensity } from "../../store/token-density.js";
 import { setSummarizerCooldownPort, type CooldownPort } from "./adapters/openai-codex-oauth-history.js";
 import { saveSession } from "../../store/sessions.js";
@@ -74,7 +74,8 @@ import {
   AUTH_COOLDOWN_MS,
   isAuthRejected,
 } from "./rate-limit.js";
-import { applyInlineSuggestion } from "../next-message-suggestion.js";
+import { applyInlineSuggestion, readSuggestionSettings, withInlineSuggestion } from "../next-message-suggestion.js";
+import { stripCitationMarkers } from "../citation-markers.js";
 import { redactSecrets } from "../outbound-sanitize.js";
 import {
   resolveProfileChain,
@@ -1487,13 +1488,16 @@ const persistOutput = (
         attachmentBlock.length > 0
           ? `${attachmentBlock}\n\n${input.text}`
           : input.text;
+      // 기록은 모델이 낸 모양 그대로(제안 태그 포함) — Claude 기록과 같은 모양이라 다음 턴 이력이 어댑터마다 갈리지 않는다.
+      //  ★제안을 껐으면 다시 붙이지 않는다 — 안 그러면 «지난 답 모방» 이 꺼진 기능의 태그를 계속 낳는다(적대 검토).
+      const storedAssistant = readSuggestionSettings().enabled ? withInlineSuggestion(output.text, output.nextSuggestion) : output.text;
       // 한 턴 = 한 트랜잭션(사용자 행·비서 행·도구 항목·색인) — 일부만 남지 않는다.
       appendApiTurn({
         channel: idChannel,
         threadKey: input.threadKey,
         claudeSessionId: sessionId,
         userContent,
-        assistantContent: output.text,
+        assistantContent: storedAssistant,
         ...(output.turnItems !== undefined ? { items: output.turnItems } : {}),
         ...(output.sentUserText !== undefined ? { userSent: output.sentUserText } : {}),
       });
@@ -1550,6 +1554,8 @@ const runPool = async (
       //  channel.message.out·응답이 **전부** 깨끗하다. 아래 한 곳이라도 놓치면 사용자
       //  화면이나 다음 턴 히스토리에 태그가 샌다(그게 이 방식의 유일한 실패 모드다).
       //  모델이 안 붙였으면 no-op — `includes` 한 번으로 끝난다.
+      // 인용 표식(Codex 웹 검색 출처 자리) — 화면·텔레그램·기록 어디에도 «citeturn0search…» 를 남기지 않는다(`citation-markers.ts`).
+      output.text = stripCitationMarkers(output.text ?? "");
       applyInlineSuggestion(output);
       // turn_done — 성공 종료 1회 (parity: 세 어댑터 동일 지점). persist 전에 발행해
       // persist 예외와 무관하게 효율 지표가 남게(persist 는 자체 try/catch 라 throw 0이나
@@ -1563,7 +1569,8 @@ const runPool = async (
         // 글자당 토큰은 Codex 만 잰다 — 다른 어댑터가 늘린 글자는 보수값으로 섞는다(`token-density.ts`). ★저장보다 **먼저** — 저장이 부르는
         //  턴 뒤 요약이 섞인 비율로 상한을 잡아야 한다(늦으면 뒤에선 안 접고 다음 요청 때 접는다 — 적대 재검토 P2).
         if (spec.adapter !== "codex-oauth") {
-          try { blendTokenDensity(input.threadKey, input.text.length + output.text.length); } catch { /* 저장소 실패가 턴을 무르지 않는다 */ }
+          // 섞는 양 = 이 턴이 이력에 붙이는 것 — 발화 둘 + **도구 항목이 다음 요청에 실려 갈 크기**(OpenAI 턴은 도구 기록을 남긴다).
+          try { blendTokenDensity(input.threadKey, input.text.length + output.text.length + turnItemsReplayedChars(output.turnItems)); } catch { /* 저장소 실패가 턴을 무르지 않는다 */ }
         }
         persistOutput(input, output);
       }

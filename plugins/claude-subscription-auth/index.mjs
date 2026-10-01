@@ -327,6 +327,28 @@ const fetchClaudeUsageInner = async (force = false) => {
   }
 };
 
+/**
+ * 사용자에게 보이는 문구 — 설정 언어(`host.locale`)로 고른다(2026-10-01, 종전엔 한국어 고정). 모르는 언어는 영어,
+ * 한국어 설정이면 한국어. 로그(`host.log`)는 운영자용이라 그대로 둔다.
+ */
+const TEXT = {
+  ko: {
+    label: "구독 토큰 발급",
+    summaryWeb: "새 탭에서 Claude 에 로그인하면 코드가 나옵니다. 그 코드를 아래에 붙여넣으면 발급·저장까지 끝납니다(재시작 없음).",
+    hintWeb: "로그인 뒤 나온 코드 (이미 받은 토큰도 됩니다)",
+    summaryTerminal: "이 기계에선 화면 안에서 발급기를 띄울 수 없습니다 — 아래 명령을 그 기계 터미널에서 실행하면 발급·저장까지 됩니다(재시작 없음). 이미 받은 토큰이 있으면 붙여넣으세요.",
+    hintTerminal: "발급된 토큰 (sk-ant- 로 시작합니다)",
+  },
+  en: {
+    label: "Get subscription token",
+    summaryWeb: "Sign in to Claude in the new tab and you'll get a code. Paste that code below to issue and save the token (no restart).",
+    hintWeb: "Code shown after sign-in (an existing token works too)",
+    summaryTerminal: "This machine can't run the issuer inside the dashboard — run the command below in a terminal on that machine to issue and save a token (no restart). If you already have a token, paste it.",
+    hintTerminal: "Issued token (starts with sk-ant-)",
+  },
+};
+const say = (host, key) => (String(host.locale ?? "").toLowerCase().startsWith("ko") ? TEXT.ko : TEXT.en)[key];
+
 export default class ClaudeSubscriptionAuth {
   async startService(_bus, host) {
     if (host === undefined) return; // 옛 런타임(호스트 미전달)에선 조용히 아무것도 안 한다.
@@ -356,7 +378,8 @@ export default class ClaudeSubscriptionAuth {
        *  지키기 위해서다(그게 이 플러그인이 홈으로 옮겨 살아남는 근거다). 확인·쿨다운 해제도 그쪽이 한다.
        */
       login: {
-        label: "구독 토큰 발급",
+        // 화면이 목록을 받을 때의 설정 언어로(getter) — 이 플러그인은 아무것도 import 하지 않으므로 문구는 여기 둔다.
+        get label() { return say(host, "label"); },
         // ★화면에서 끝까지 (2026-09-30 정태님 — «복사해서 터미널에서 하라는 건 아니지»). 코어가 발급기를 가짜 터미널로
         //  띄워 로그인 주소를 준다 → 새 탭에서 로그인 → 나온 코드를 붙여넣으면 발급·확인·저장·반영까지 끝난다.
         //  못 띄우는 기계(Windows·python3 없음)나 옛 코어면 종전 방식(그 기계 터미널 한 줄 + 토큰 붙여넣기)으로.
@@ -364,19 +387,17 @@ export default class ClaudeSubscriptionAuth {
           const r = typeof host.beginClaudeTokenIssue === "function" ? await host.beginClaudeTokenIssue() : { ok: false, reason: "" };
           if (r.ok) {
             return {
-              summary: "새 탭에서 Claude 에 로그인하면 코드가 나옵니다. 그 코드를 아래에 붙여넣으면 발급·저장까지 끝납니다(재시작 없음).",
+              summary: say(host, "summaryWeb"),
               openUrl: r.url,
-              pasteHint: "로그인 뒤 나온 코드 (이미 받은 토큰도 됩니다)",
+              pasteHint: say(host, "hintWeb"),
               needsRestart: false,
             };
           }
           if (r.reason) host.log(`화면 발급을 못 띄워 터미널 방식으로 안내합니다: ${r.reason}`);
           return {
-            summary:
-              "이 기계에선 화면 안에서 발급기를 띄울 수 없습니다 — 아래 명령을 그 기계 터미널에서 돌리면 발급·저장까지 됩니다" +
-              "(재시작 없음). 이미 받은 토큰이 있으면 붙여넣으세요.",
+            summary: say(host, "summaryTerminal"),
             command: "npm run claude-auth",
-            pasteHint: "발급된 토큰 (sk-ant- 로 시작합니다)",
+            pasteHint: say(host, "hintTerminal"),
             needsRestart: false,
           };
         },

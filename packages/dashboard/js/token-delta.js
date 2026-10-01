@@ -15,6 +15,7 @@
           cardByThread.set(thread, card);
           vtAppend(card.group);
         }
+        card.attemptEnded = false; // 새 내용이 붙었다 = 이 카드는 지금 시도의 것이다(폴백한 어댑터가 같은 카드에 이어 쓸 때).
         ensureReplyBubble(card, ts);
         setTurnModel(card, p.model, metaEffort(thread, p.model)); // 델타에도 model 이 실린다 — 스트리밍 시작 즉시 표시.
         // 평문 누적(textContent) — 스트리밍 중 부분 마크다운/미완 코드펜스 위험·깜빡임 회피.
@@ -46,6 +47,7 @@
             cardByThread.set(thread, card);
             vtAppend(card.group);
           }
+          card.attemptEnded = false; // 새 내용 = 지금 시도의 카드
           const txt = String(p.text || "");
           if (!card.replyBubble && txt !== "") ensureReplyBubble(card, ts); // 델타 없는 세그먼트 = 버블 신설.
           setTurnModel(card, p.model, metaEffort(thread, p.model));
@@ -84,6 +86,7 @@
           cardByThread.set(thread, card);
           vtAppend(card.group);
         }
+        card.attemptEnded = false; // 새 스텝 = 지금 시도의 카드
         setTurnModel(card, p.model, metaEffort(thread, p.model)); // 도구 스텝 — 시작/완료 모두 model 을 싣는다(어댑터 수정 후).
         card.body.appendChild(buildActivityLine(p));
         card.lastSeq = p.seq ?? 0;
@@ -107,7 +110,12 @@
       // Edit hang·타임아웃 종료) turn_done/turn_error 에서 이걸 불러 스텝이 영영 깜빡이는 것 방지.
       const markTurnCardDone = (thread) => {
         const card = cardByThread.get(thread);
-        if (card && card.el && !card.el.classList.contains("done")) {
+        if (!card) return;
+        // 이 시도는 끝났다 — 뒤에 오는 turn_meta(폴백한 다음 어댑터·답 없이 끝난 턴 뒤의 다음 턴)는 이 카드 것이 아니다.
+        //  turn_error 는 카드를 닫지 않아(폴백이 이어질 수 있다), 종전엔 codex 시도 카드가 claude 의 turn_meta 로
+        //  «claude · 강도 기본» 라벨을 단 채 남았다 — claude 는 seq 를 새로 시작해 자기 카드를 따로 만든다(적대 검토).
+        card.attemptEnded = true;
+        if (card.el && !card.el.classList.contains("done")) {
           card.el.classList.add("done");
         }
       };
@@ -130,13 +138,15 @@
       //  실시간 카드·기록 카드·잡 카드가 이 한 모양을 쓴다(두 벌이면 한쪽만 바뀐다). 없으면 모델만.
       /**
        * 모델 옆 강도 — **판단은 여기 한 곳** (2026-09-30 정태님: 채팅·잡 카드가 모델 프로파일 화면과 같은 모양으로).
-       * 보낸 강도가 있으면 «강도 high», 없으면 Claude 는 «강도 기본»(실행기가 모델별 기본을 보낸다 — 실측 opus-5-5 는
-       * medium. 그 값을 런타임에 알 길이 없어 지어내지 않는다). 다른 모델은 강도를 안 보냈으면 아무것도 안 붙인다.
+       * 보낸 강도가 있으면 «강도 high». 어댑터가 «안 보냈다» 를 **명시**했으면(`"default"` = 서버 `REASONING_NOT_SENT` —
+       * Claude 는 실행기가 모델별 기본을 보낸다, 실측 opus-5-5 는 medium. 그 값을 알 길이 없어 지어내지 않는다) «강도 기본».
+       * ★강도가 **없으면 모름**이다 — 아무것도 안 붙인다. 종전엔 «claude 모델 + 강도 없음» 을 «기본» 으로 읽어, 옛 기록·새로고침 중
+       *  진행 턴·모델 미지정 턴까지 «기본» 이라 단언했다(적대 검토 — high 를 보낸 턴도 그렇게 보였다).
        */
       const effortOf = (m, r) => {
         const v = typeof r === "string" ? r.trim() : "";
+        if (v === "default") return { text: i18n("models.effort.default"), title: i18n("tok.effort.default") };
         if (v !== "") return { text: i18n("models.effort.badge", { v }), title: i18n("tok.effort.title") };
-        if (/^claude-/i.test(String(m || ""))) return { text: i18n("models.effort.default"), title: i18n("tok.effort.default") };
         return null;
       };
       /** 같은 판단의 글자 모양 — 바뀌었나 비교하는 키·툴팁 등 글자만 필요한 자리. */
@@ -179,7 +189,9 @@
       /** 턴이 끝났다 — 실제로 보낸 추론 강도를 모델 옆에 붙인다(turn_done 이 싣는다). */
       const setTurnEffort = (thread, payload) => {
         const card = cardByThread.get(thread);
-        if (card && payload) setTurnModel(card, payload.model, payload.reasoning);
+        // ★끝난 시도의 카드엔 붙이지 않는다 — 카드를 안 만드는 조용한 턴(델타·활동 0)의 turn_done 이 앞 턴 카드의 모델·강도를
+        //  덮었다(적대 검토 F5). turn_done 은 값을 붙인 **뒤에** 표시를 단다(sse.js) — 그래서 자기 턴의 카드는 받는다.
+        if (card && payload && !card.attemptEnded) setTurnModel(card, payload.model, payload.reasoning);
       };
       /**
        * 턴 시작의 «이 모델 · 이 강도»(`llm.turn_meta`) — 카드는 첫 활동 때 생기므로 **스레드별로 들고 있다가** 카드에
@@ -199,7 +211,7 @@
         //  것이다. 종전엔 그 카드의 모델·강도를 새 턴 값으로 덮어써, 앞 턴을 gpt-6-sol·high 로 답했는데 다음 턴이 Claude 로
         //  가면 앞 카드가 «claude · 강도 기본» 으로 바뀌었다(적대 검토 — 거짓값).
         const open = cardByThread.get(thread);
-        if (open && !open.closed) setTurnModel(open, payload.model, payload.reasoning);
+        if (open && !open.closed && !open.attemptEnded) setTurnModel(open, payload.model, payload.reasoning);
       };
 
       /**
@@ -269,6 +281,7 @@
 
       const setTurnCost = (thread, payload) => {
         const card = cardByThread.get(thread);
+        if (card && card.attemptEnded) return; // 끝난 시도의 카드 — 조용한 턴의 비용이 앞 턴 카드를 덮지 않게(setTurnEffort 와 같은 판정).
         // 스텝 카드 헤더 우선, 없으면(도구 0 = 텍스트만 답한 턴) 답변 버블 헤더.
         const target = card && (card.costEl || card.replyCostEl);
         if (!target) return;

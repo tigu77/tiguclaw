@@ -86,7 +86,7 @@ import {
   splitSystemContext,
 } from "../../prompt-assembly.js";
 import { claimToolNames, keepClaimed, probeBridgeTools } from "../tool-name-claim.js";
-import { formatEnvContext } from "../../runtime-env.js";
+import { formatEnvContext, localTimeZone } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
@@ -1122,7 +1122,7 @@ export const runOpenAiCodex = async (
   // toolPolicy:none 으로 tiguclaw 도구를 꺼도 앱 함수 스키마는 그대로 노출된다(스파이크 §1.1
   // 확정, architect 결정 불요 — 순수 배열 concat).
   const responsesTools = [
-    ...(webSearchEnabled ? [...functionTools, { type: "web_search" as const }] : functionTools),
+    ...(webSearchEnabled ? [...functionTools, { type: "web_search" as const, user_location: { type: "approximate" as const, timezone: localTimeZone() } }] : functionTools),
     ...externalFunctionTools,
   ];
 

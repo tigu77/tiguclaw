@@ -46,6 +46,7 @@ import { getPaths, appRoot } from "../../src/core/paths.js";
 import { getChannelPresence } from "../../src/core/channel-registry.js";
 import type { Observer } from "../../src/core/observers/types.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
+import { publishPromptOptions } from "./prompt-options-publish.js";
 import {
   collectInventory,
   collectContextMenuContributions,
@@ -246,6 +247,19 @@ class HttpBridge implements Channel, Observer {
         filePath,
         ...(opts?.caption !== undefined ? { caption: opts.caption } : {}),
       }),
+    // 선택지 — 좌표(=세션 threadKey)로 그 대화에 띄운다. 인입 턴과 같은 발행(2026-10-01): 종전엔 이게 없어 매니저 완료 보고처럼
+    //  인입 없는 턴의 선택지가 텔레그램에만 가고 대시보드엔 안 떴다(회사돌쇠 실사용 «간혹 텔레그램에만»).
+    presentOptionsTo: async (target, question, options, opts) => {
+      const threadKey = target ?? opts?.replyToSession ?? null;
+      if (threadKey === null) return { ok: false as const, error: "어느 대화에 띄울지 좌표가 없습니다" };
+      return publishPromptOptions(this.bus, {
+        channel: this.name,
+        threadKey,
+        question,
+        options,
+        ...(opts?.note !== undefined ? { note: opts.note } : {}),
+      });
+    },
   };
 
   private server: http.Server | null = null;

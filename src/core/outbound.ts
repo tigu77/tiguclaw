@@ -328,3 +328,28 @@ export const attachmentSenderFor = (
     });
   };
 };
+
+/**
+ * **좌표만으로 선택지를 띄우는 콜백** — 인입 메시지가 없는 턴(매니저 완료 보고·점검)의 `prompt_options` 자리 (2026-10-01).
+ * ★`attachmentSenderFor` 와 같은 처방이다: 종전엔 이 턴에 선택지 통로가 없어, 비서가 선택지를 띄우면 «함께 보낼 채널»
+ *  (텔레그램)에만 가고 그 턴이 나가는 대화(대시보드)엔 안 떴다(회사돌쇠 10-01 «간혹 텔레그램에만»). 채널이 `presentOptionsTo` 를
+ *  등록했으면 좌표에 묶어 돌려주고, 없으면 `undefined` — 종전 동작(egress·텍스트 폴백). 채널 이름은 모른다.
+ */
+export const optionsPresenterFor = (
+  channel: string,
+  target: string | null,
+  /** 물어본 세션 — 고른 값이 돌아갈 자리(`replyToSession`). */
+  originThreadKey?: string,
+): IncomingMessage["presentOptions"] | undefined => {
+  const o = getChannelOutbound(channel);
+  const present = o?.presentOptionsTo;
+  if (o === undefined || present === undefined) return undefined;
+  return async (question, options, opts) => {
+    const resolved =
+      target ?? (o.defaultOutboundTarget !== undefined ? await o.defaultOutboundTarget() : null);
+    return present(resolved, question, options, {
+      ...(opts?.note !== undefined ? { note: opts.note } : {}),
+      ...(originThreadKey !== undefined ? { replyToSession: originThreadKey } : {}),
+    });
+  };
+};

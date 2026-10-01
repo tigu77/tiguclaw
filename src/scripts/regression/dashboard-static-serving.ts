@@ -18,7 +18,8 @@
  *  토큰은 합성값 — 실제 어디에도 안 붙는다.
  */
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +59,27 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
     const dash = path.join(REPO, "packages/dashboard");
+    // 탭 제목 저장 — 앞뒤 공백 제거 · 60자 자르기 · 빈 값이면 키 삭제(기본 제목으로). 격리 홈의 settings.json 에서.
+    {
+      const S = await import("../../core/settings.js");
+      const saved = S.setDashboardTitle(`  ${"가".repeat(70)}  `);
+      const read1 = S.readDashboardTitle();
+      S.setDashboardTitle("");
+      const read2 = S.readDashboardTitle();
+      const raw = JSON.parse(readFileSync((await import("../../core/paths.js")).getPaths().settings, "utf8")) as Record<string, unknown>;
+      out.push(assert("탭 제목 저장: 공백 제거·60자 상한 · 비우면 키 삭제(기본 제목)",
+        saved === "가".repeat(60) && read1 === saved && read2 === "" && !("dashboardTitle" in raw), { saved: saved.length, read2, keys: Object.keys(raw) }));
+      // ★비서가 바꿀 수 있다 — «탭 제목 바꿔줘» 가 갈 길(`set_appearance` 의 title). 등록된 핸들러를 그대로 부른다.
+      const { createModelSettingsMcpServer } = await import("../../core/llm-runtime/capabilities/model-settings-mcp.js");
+      const reg = (createModelSettingsMcpServer(process.cwd()) as unknown as { instance: { _registeredTools: Record<string, { handler: (a: unknown, x: unknown) => Promise<{ isError?: boolean; content?: Array<{ text?: string }> }> }> } }).instance._registeredTools;
+      const r1 = await reg["set_appearance"]!.handler({ title: "회사 비서" }, {});
+      const viaTool = S.readDashboardTitle();
+      const look = await reg["set_appearance"]!.handler({}, {});
+      await reg["set_appearance"]!.handler({ title: "none" }, {});
+      out.push(assert("★비서 도구(set_appearance title)로 탭 제목을 바꾸고 · 조회에 보이고 · none 이면 기본으로",
+        r1.isError !== true && viaTool === "회사 비서" && (look.content?.[0]?.text ?? "").includes("탭 제목: 회사 비서") && S.readDashboardTitle() === "",
+        { viaTool, look: look.content?.[0]?.text?.slice(-40), after: S.readDashboardTitle() }));
+    }
 
     // ★목록은 index.html 에서 뽑는다 — 손으로 들면 새 자산을 빠뜨린다.
     const html = readFileSync(path.join(dash, "index.html"), "utf8");
@@ -84,12 +106,17 @@ export const check: RegressionCheck = {
     //  "환경 문제" 로 분류돼 아무도 안 보는 게이트가 된다([[feedback_gate_must_actually_run]]).
     //  resolve 로 찾으면 워크트리·호이스팅·설치 위치와 무관하다.
     const port = await freePort();
+    // ★탭 제목 설정(`dashboardTitle`)이 첫 렌더부터 실린다 — 전용 홈에 HTML 특수문자와 `$&`(replace 특수문자)를 넣어 둔다.
+    const home = mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-dashtitle-"));
+    const TITLE = '<b>회사 $& 대시</b>';
+    writeFileSync(path.join(home, "settings.json"), JSON.stringify({ dashboardTitle: TITLE }));
     const child = spawn(
       process.execPath,
       [tsxCli(), path.join(dash, "index.ts")],
       {
         env: {
           ...process.env,
+          TIGUCLAW_HOME: home,
           DASHBOARD_PORT: String(port),
           DASHBOARD_HOST: "127.0.0.1",
           // 합성 토큰 — 정적 서빙은 bridge 를 안 탄다. 실제 자격증명 아님.
@@ -119,6 +146,25 @@ export const check: RegressionCheck = {
         ),
       );
       if (!up) return out;
+
+      const page = await (await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(2000) })).text();
+      const titleTag = /<title>([\s\S]*?)<\/title>/.exec(page)?.[1] ?? "";
+      out.push(
+        assert(
+          "★탭 제목 설정이 첫 렌더부터 실린다 — HTML 이스케이프 · `$&` 가 치환 특수문자로 안 먹힌다 · 설정 화면이 읽을 현재값도 주입",
+          titleTag === "&lt;b&gt;회사 $&amp; 대시&lt;/b&gt;" && page.includes('"title":"\\u003cb>회사 $& 대시\\u003c/b>"'),
+          { titleTag, injected: /__TIGU_THEME__ = (\{[^<]*?\});/.exec(page)?.[1]?.slice(0, 160) },
+        ),
+      );
+
+      // ★신원 판정 이음매 — 제목을 바꾼 채 서빙된 페이지를 데몬의 실제 판정 함수로 본다(적대 검토 F1: 제목이 표식이라 «남의 앱» 오판).
+      const { probeLocalPort } = await import("../../core/local-port-probe.js");
+      const marker = /const DASHBOARD_MARKER = "([^"]+)"/.exec(readFileSync(path.join(REPO, "plugins/dashboard/index.ts"), "utf8"))?.[1] ?? "";
+      const probe = await probeLocalPort(String(port), marker, 2000);
+      // 표식의 **정본 자리**는 제목 밖(`<meta name="application-name">`)이다 — 서빙 때 주입한 원본 제목(defaultTitle)도 같은 글자를
+      //  실어 판정이 우연히 성립할 수 있으니, 원본 index.html 에서 <title> 을 뺀 나머지에 표식이 있는지 따로 본다.
+      const outsideTitle = html.replace(/<title>[\s\S]*?<\/title>/, "").includes(`content="${marker}"`);
+      out.push(assert("★탭 제목을 바꿔도 데몬이 자기 대시보드로 알아본다 · 표식은 제목 밖(meta)에도 있다", marker !== "" && probe === "ours" && outsideTitle, { marker, probe, outsideTitle }));
 
       const bad: string[] = [];
       for (const a of assets) {
@@ -203,6 +249,7 @@ export const check: RegressionCheck = {
       child.kill("SIGTERM");
       await sleep(200);
       child.kill("SIGKILL");
+      rmSync(home, { recursive: true, force: true });
     }
     return out;
   },

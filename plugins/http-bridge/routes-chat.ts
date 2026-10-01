@@ -5,6 +5,7 @@
  *  낙관 버블을 발행하고, 비서에게 넘긴다. **인입의 유일한 문**이라 여기서 새면 대화가 샌다.
  */
 import { AttachmentError } from "./attachments.js";
+import { publishPromptOptions } from "./prompt-options-publish.js";
 import { HANDLER_TIMEOUT_MS } from "./route-ctx.js";
 import type { Attachment, IncomingMessage } from "../../src/channels/types.js";
 import { getAssistantName } from "../../src/core/identity.js";
@@ -83,29 +84,14 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
     question,
     options,
     presentOpts,
-  ) => {
-    if (bus === null) {
-      return { ok: false, error: "control bus not started (관측 미연결)" };
-    }
-    try {
-      bus.publish({
-        type: "prompt.options",
-        ts: Date.now(),
-        payload: {
-          channel: ctx.channelName,
-          threadKey,
-          question,
-          options,
-          ...(presentOpts?.note !== undefined
-            ? { note: presentOpts.note }
-            : {}),
-        },
-      });
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
-    }
-  };
+  ) =>
+    publishPromptOptions(bus, {
+      channel: ctx.channelName,
+      threadKey,
+      question,
+      options,
+      ...(presentOpts?.note !== undefined ? { note: presentOpts.note } : {}),
+    });
   // 답글 인용(대시보드 등) — body.replyToText 를 중립 필드로 실어 route 직전 인용 주입
   // (telegram 의 reply_to_message 와 동형·LLM-agnostic, index.ts 934 단일 지점). 캡 1500.
   const replyToText =

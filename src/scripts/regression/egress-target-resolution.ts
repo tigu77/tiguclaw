@@ -153,6 +153,19 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
   {
+    // ★답 좌표가 `null`(= 그 채널의 기본 좌표)이어도 같은 규칙으로 풀어 비교한다 — 좌표를 생략한 스케줄 매니저의 완료 보고가
+    //  같은 채팅에 답 두 번·선택지 두 번을 내던 것(2026-10-01 적대 검토 P3).
+    const nullDest = await resolveEgressTargets(
+      { channel: "scheduler", threadKey: "scheduler:21", egressChannels: ["telegram"], replyTarget: { channel: "telegram", target: null } },
+      deps(null),
+    );
+    out.push({
+      name: "★답 좌표가 null(기본 좌표)이어도 같은 곳이면 fan-out 하지 않는다",
+      ok: nullDest.length === 0,
+      got: nullDest.length === 0 ? "중복 0" : `★또 보냄: ${nullDest.map((t) => `${t.channel}:${t.target}`).join(",")}`,
+    });
+  }
+  {
     // 같은 채널이어도 **다른 사람**에게 가는 것이면 막으면 안 된다.
     const other = await resolveEgressTargets(
       { channel: "scheduler", threadKey: "scheduler:9", egressChannels: ["telegram"],

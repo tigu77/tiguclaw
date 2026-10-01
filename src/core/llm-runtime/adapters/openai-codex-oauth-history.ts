@@ -1094,6 +1094,12 @@ export interface HistoryCompactionPlan {
   toFold: CodexTurnWithId[];
   nextWatermark: number;
   /**
+   * 접는 턴들이 **이력에서 차지하던 크기**(자, `turnSize` — 도구 항목 포함). 요약기에 넣는 글(`foldPromptOf`)과 다르다 — 긴 도구 결과는
+   * 참조+앞부분만 들어가 요약 입력이 원문의 몇 분의 1이다. ★사용자에게 «얼마나 접었나» 로 보여줄 수는 이것이다(2026-10-01 회사돌쇠:
+   * 알림이 요약 입력 1.4만 자를 «접은 양» 으로 보여 «1.4만 → 1.5만, 왜 했나» 로 읽혔다).
+   */
+  historyChars: number;
+  /**
    * 예산보다 큰 한 턴을 통째로 받아들였을 때만 — 그 예산(조각 크기). 요약 호출부가 이 크기로 나눠 부른다
    * (`summarizeInChunks`). 평소 패스엔 없다: 역할 머리말·줄바꿈만큼 예산을 살짝 넘는 것을 조각으로 떼면 안 된다.
    */
@@ -1332,6 +1338,7 @@ export interface CompactionAccum {
   summary: string;
   watermark: number;
   foldedTurns: number;
+  /** 접은 턴들이 이력에서 차지하던 크기(`HistoryCompactionPlan.historyChars` 합) — 요약기 입력 길이가 아니다. */
   foldedChars: number;
 }
 export const applyFoldResult = (
@@ -1688,11 +1695,11 @@ const loadHistoryTurns = (
  * 예산보다 큰 단위(큰 턴 하나, 또는 질문 + 큰 답) — 조각 요약(`summarizeInChunks`)이 삼킬 수 있으면 통째로, 그보다
  * 크면 잘라서라도 접어 진행을 보장한다. 판정은 **최종 요약 입력**(머리말 포함)으로 한다 — 실행이 나누는 것도 그것이다.
  */
-const foldOversizeUnit = (unit: CodexTurnWithId[], budget: number, itemCount: number): HistoryCompactionPlan => {
+const foldOversizeUnit = (unit: CodexTurnWithId[], budget: number, itemCount: number, historyChars: number): HistoryCompactionPlan => {
   const capacity = budget * CODEX_FOLD_MAX_CHUNKS;
   const promptLen = foldPromptOf(unit).length;
   const last = unit[unit.length - 1] as CodexTurnWithId;
-  if (promptLen <= capacity) return { needed: true, toFold: unit, nextWatermark: last.id, chunkChars: budget };
+  if (promptLen <= capacity) return { needed: true, toFold: unit, nextWatermark: last.id, historyChars, chunkChars: budget };
   const body = last.content;
   const marker = (omitted: number) => `…[요약 입력 상한으로 앞쪽 ${omitted}자 생략 — 이 부분은 요약에 없다]\n`;
   // 머리말·표식까지 붙여 4조각 용량 안에 드는 만큼 **뒤쪽을** 남긴다 — 본문은 «도구 항목 → 답» 순이라 끝이 결론이다
@@ -1711,6 +1718,7 @@ const foldOversizeUnit = (unit: CodexTurnWithId[], budget: number, itemCount: nu
     needed: true,
     toFold: [...unit.slice(0, -1), { ...last, content: `${marker(body.length - tail.length)}${tail}` }],
     nextWatermark: last.id,
+    historyChars,
     chunkChars: budget,
   };
 };
@@ -1750,12 +1758,12 @@ export const planHistoryCompaction = (
     0,
   );
   if (totalChars <= triggerChars) {
-    return { needed: false, toFold: [], nextWatermark: currentWatermark };
+    return { needed: false, toFold: [], nextWatermark: currentWatermark, historyChars: 0 };
   }
   // 최근 keepRecent 는 원문 유지, 그 이전만 접는다.
   const foldCount = unsummarizedTurns.length - keepRecent;
   if (foldCount <= 0) {
-    return { needed: false, toFold: [], nextWatermark: currentWatermark };
+    return { needed: false, toFold: [], nextWatermark: currentWatermark, historyChars: 0 };
   }
   const candidates = unsummarizedTurns.slice(0, foldCount);
 
@@ -1783,6 +1791,7 @@ export const planHistoryCompaction = (
   const budget = opts?.maxFoldChars ?? CODEX_HISTORY_COMPACT_MAX_FOLD_CHARS;
   const toFold: CodexTurnWithId[] = [];
   let used = 0;
+  let historyChars = 0;
   // ★예산은 **최종 요약 입력**(`foldPromptOf` — 역할 머리말·줄바꿈 포함)으로 센다. 본문 길이로 세면 짧은 턴이 많을 때
   //  실제 입력이 예산을 크게 넘는다(재검토 재현: 극단 입력에서 3.2배).
   const lineLen = (t: CodexTurnWithId): number => foldPromptOf([t]).length + 1;
@@ -1790,17 +1799,17 @@ export const planHistoryCompaction = (
     // 도구 항목까지 펼친 본문으로 접는다 — 계획과 요약 입력이 같은 것을 본다.
     const t: CodexTurnWithId = { id: t0.id, role: t0.role, content: foldBody(t0) };
     const len = lineLen(t);
-    if (used + len <= budget) { toFold.push(t); used += len; continue; }
+    if (used + len <= budget) { toFold.push(t); used += len; historyChars += turnSize(t0); continue; }
     // 예산을 넘는 턴 — 혼자이거나, **바로 앞 사용자 질문과 한 단위로** 접는다. ★질문만 따로 한 패스를 먹으면 10자
     //  요약 호출이 나가고(«목표에 크게 못 미침»), 실모델에선 하한에 걸려 예산이 반감될 수 있다(재검토 E3·E7).
     const prev = toFold[0];
     const unit = toFold.length === 0 ? [t] : toFold.length === 1 && prev?.role === "user" && t.role === "assistant" ? [prev, t] : undefined;
     if (unit === undefined) break;
-    return foldOversizeUnit(unit, budget, t0.items?.length ?? 0);
+    return foldOversizeUnit(unit, budget, t0.items?.length ?? 0, (unit.length === 2 ? historyChars : 0) + turnSize(t0));
   }
   // 접힌 마지막 턴의 transcript id 가 새 watermark (그 id 이하 = 요약에 흡수됨).
   const last = toFold[toFold.length - 1] as CodexTurnWithId;
-  return { needed: true, toFold, nextWatermark: last.id };
+  return { needed: true, toFold, nextWatermark: last.id, historyChars };
 };
 
 /** 요약 합성 턴 1개 ([summary] → user role 스캐폴딩 메시지). 빈 요약이면 undefined. */
@@ -2021,12 +2030,13 @@ export const buildSteeringInputItem = async (
  */
 const compactionDiag = (
   threadKey: string,
-  plan: { toFold: unknown[]; nextWatermark: number },
+  plan: { toFold: unknown[]; nextWatermark: number; historyChars: number },
   promptChars: number,
   totalTurns: number,
   watermark: number,
 ): string =>
-  `threadKey=${threadKey} fold=${plan.toFold.length}턴/${promptChars}자 ` +
+  // 원문=이력에서 빠지는 크기 · 입력=요약기에 넣은 글(긴 도구 결과는 참조+앞부분) — 둘이 몇 배 다르다.
+  `threadKey=${threadKey} fold=${plan.toFold.length}턴/원문 ${plan.historyChars}자·입력 ${promptChars}자 ` +
   `watermark=${watermark}→${plan.nextWatermark} 전체=${totalTurns}턴`;
 
 const compactThreadNowUnlocked = async (
@@ -2096,7 +2106,7 @@ const compactThreadNowUnlocked = async (
     return {
       ok: true,
       foldedTurns: plan.toFold.length,
-      foldedChars: prompt.length,
+      foldedChars: plan.historyChars,
       summaryChars: fresh.trim().length,
     };
   } catch (e) {
@@ -2321,6 +2331,8 @@ const compactThreadHistoryUnlocked = async (args: {
   //  새어 나온 것**이다. 관측은 사용자가 겪는 단위로 묶는다.
   let foldedTurnsTotal = 0;
   let foldedCharsTotal = 0;
+  /** 이번에 **새로** 쓴 요약 글 — 알림의 «→ N자» (누적 요약 전체를 대면 옛 요약까지 «방금 만든 것» 처럼 보인다). */
+  let freshSummaryChars = 0;
 
   // ★압축 **직전** 알림 (2026-08-10). 종전엔 사후(`llm.compacted`)만 있어서 사용자는
   //  이미 접힌 뒤에야 알았다. 접기 전에 알면 남길 것을 저장하거나 `/compact` 로 직접
@@ -2375,7 +2387,7 @@ const compactThreadHistoryUnlocked = async (args: {
         { summary, watermark, foldedTurns: foldedTurnsTotal, foldedChars: foldedCharsTotal },
         fresh,
         plan,
-        foldedText.length,
+        plan.historyChars,
       );
       if (applied.accepted) {
         if (!stillOurs()) return reloadedHistory(args);
@@ -2383,6 +2395,7 @@ const compactThreadHistoryUnlocked = async (args: {
         watermark = applied.next.watermark;
         foldedTurnsTotal = applied.next.foldedTurns;
         foldedCharsTotal = applied.next.foldedChars;
+        freshSummaryChars += fresh.trim().length;
         upsertThreadSummary({
           threadKey: args.threadKey,
           summary,
@@ -2413,8 +2426,8 @@ const compactThreadHistoryUnlocked = async (args: {
           );
         }
         // 알림은 루프가 끝난 뒤 **합계로 한 번** 나간다(아래). 여기선 세기만 한다.
-        //  ★자 수는 `foldedText` 를 센다 — `prompt` 는 패스마다 **직전 요약을 앞에 달아**
-        //   보내므로 그걸 합치면 요약이 중복 계상된다.
+        //  ★자 수는 계획의 `historyChars`(이력에서 빠지는 원문)를 센다 — 요약기 입력(`foldedText`)은 긴 도구 결과가
+        //   참조+앞부분만 들어가 원문의 몇 분의 1이라, 그걸 «접은 양» 으로 보이면 알림이 «1.4만 → 1.5만» 처럼 읽힌다.
       } else {
         // 빈/토막 요약 = 무의미 → 폴백(요약 미반영, watermark 유지). 조용히 X.
         //  ★수치를 실어야 로그만으로 잡힌다 — "빈 결과" 만으로는 5자가 온 건지 0자가 온
@@ -2533,7 +2546,7 @@ const compactThreadHistoryUnlocked = async (args: {
           adapter: args.adapter, // ★누가 접었나 — 시작 이벤트만 싣고 있었다(2026-09-15).
           foldedTurns: foldedTurnsTotal,
           foldedChars: foldedCharsTotal,
-          summaryChars: summary.length,
+          summaryChars: freshSummaryChars,
           elapsedMs: Date.now() - compactStartedAt,
         },
       });

@@ -72,9 +72,19 @@ export const check: RegressionCheck = {
       // ★앞·뒤 조각을 남긴다 — 패스마다 **다른 구간**을 접는지 보려면 크기만으론 안 된다
       //  (같은 목록을 다시 넘기면 같은 턴을 3번 접는데 크기는 똑같다 — 변이 AK).
       calls.push({ chars: text.length, target, head: text.slice(0, 40) + "|" + text.slice(-40) });
-      return `요약${calls.length}:` + "약".repeat(Math.max(0, target - 5));
+      const out = `요약${calls.length}:` + "약".repeat(Math.max(0, target - 5));
+      returned.push(out.length);
+      return out;
     });
 
+    // ★알림 수치 — 접은 양은 이력 원문(요약기 입력엔 «사용자: » 머리말·줄바꿈이 붙는다), 요약은 **이번에 새로 쓴 것**(누적 전체 아님).
+    //  회사돌쇠 2026-10-01: 요약기 입력 1.4만 자와 누적 요약 1.5만 자를 나란히 보여 «왜 했나» 로 읽혔다.
+    const done: { foldedChars?: number; summaryChars?: number }[] = [];
+    const returned: number[] = [];
+    const { getEventBus } = await import("../../core/eventbus.js");
+    const unsub = getEventBus().subscribe((e: { type: string; payload: { threadKey?: string; foldedChars?: number; summaryChars?: number } }) => {
+      if (e.type === "llm.compacted" && e.payload.threadKey === TK) done.push(e.payload);
+    });
     let items: unknown[] = [];
     try {
       items = (await buildTurnHistory(
@@ -87,6 +97,7 @@ export const check: RegressionCheck = {
       )) as unknown[];
     } finally {
       setSummarizerPort(null);
+      unsub();
     }
 
     const saved = getThreadSummary(TK);
@@ -120,6 +131,14 @@ export const check: RegressionCheck = {
           saved !== undefined &&
           sections.length === calls.length,
         `서로 다른 구간 ${new Set(calls.map((c) => c.head)).size}/${calls.length} · 요약 구간 ${sections.length}개`,
+      ),
+      assert(
+        "★완료 알림: 접은 양=이력 원문(요약기 입력보다 작다) · 요약=이번에 새로 쓴 글의 합",
+        done.length === 1 &&
+          done[0]!.summaryChars === returned.reduce((a, b) => a + b, 0) &&
+          (done[0]!.foldedChars ?? 0) > 0 &&
+          (done[0]!.foldedChars ?? 0) < calls.reduce((a, c) => a + c.chars, 0),
+        { done, returned, inputs: calls.map((c) => c.chars) },
       ),
       assert(
         "누적 요약 재압축이 **꺼져 있지 않다**(0 이면 상한이 무의미해진다)",

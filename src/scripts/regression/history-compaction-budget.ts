@@ -13,7 +13,7 @@
  * 실증: 같은 내용을 9만 자로 나눠 보내니 15.6초에 441자 요약 성공. 크기만이 문제였다.
  * 그래서 "얼마나 많이 접느냐"보다 **진행이 보장되느냐**를 불변식으로 잡는다.
  */
-import { planHistoryCompaction } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
+import { foldPromptOf, planHistoryCompaction, turnSize } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const turns = (n: number, chars: number) =>
@@ -53,6 +53,22 @@ export const check: RegressionCheck = {
       triggerChars: 150_000,
       keepRecent: 30,
     });
+    // ★접은 양은 **이력 원문**으로 센다 (2026-10-01 회사돌쇠 «요약을 왜 했는지 모르겠다»). 도구 결과가 긴 턴은 요약기에 참조+앞부분만
+    //  들어가 입력이 원문의 몇 분의 1이다 — 그 입력 길이를 «접은 양» 으로 알렸더니 «1.4만 자 → 1.5만 자» 로 보였다(실제론 수만 자가 빠졌다).
+    const heavy = Array.from({ length: 12 }, (_, i) => {
+      const id = i + 1;
+      if (i % 2 === 0) return { id, role: "user" as const, content: "확인해줘" };
+      const call = { type: "function_call" as const, call_id: `c${id}`, name: "Read", arguments: "{}" };
+      const out = { type: "function_call_output" as const, call_id: `c${id}`, output: "x".repeat(20_000) };
+      return {
+        id, role: "assistant" as const, content: "봤습니다",
+        items: [call, out], foldItems: [{ seq: 1, item: call }, { seq: 2, item: out }],
+        itemsChars: JSON.stringify(call).length + JSON.stringify(out).length,
+      };
+    });
+    const heavyPlan = planHistoryCompaction(heavy, 0, { triggerChars: 50_000, keepRecent: 4 });
+    const heavyRaw = heavy.filter((t) => heavyPlan.toFold.some((f) => f.id === t.id)).reduce((n, t) => n + turnSize(t), 0);
+    const heavyInput = foldPromptOf(heavyPlan.toFold).length;
     // 단일 턴이 예산을 넘어도 진행해야 한다(무진행 = 영구 실패).
     const oversize = planHistoryCompaction(turns(140, 500_000), 0, {
       triggerChars: 150_000,
@@ -93,6 +109,11 @@ export const check: RegressionCheck = {
         "예산 안에 들면 잘라내지 않고 전량 접는다(과잉 절단 0)",
         small.toFold.length === 90 && foldedChars(small.toFold) === 9000,
         `${small.toFold.length}턴 / ${foldedChars(small.toFold)}자`,
+      ),
+      assert(
+        "★접은 양(historyChars)은 이력 원문 크기다 — 참조로 줄어든 요약기 입력이 아니다",
+        heavyPlan.needed && heavyPlan.toFold.length === 8 && heavyPlan.historyChars === heavyRaw && heavyRaw > heavyInput * 5,
+        { turns: heavyPlan.toFold.length, historyChars: heavyPlan.historyChars, raw: heavyRaw, input: heavyInput },
       ),
       assert(
         "★가벼운 대화는 턴이 많아도 트리거되지 않는다(불필요한 요약 호출 0)",

@@ -592,7 +592,7 @@
   "stream.truncated": "… (truncated — size limit)",
   "stream.truncated.nl": "\n… (truncated — size limit)",
   "sys.agentNoTools": "⚠️ Subagent '{name}' finished without using a single tool (returned {chars} characters). If the instruction needed file or command access, double-check the result.",
-  "sys.compact.done": "🗜 The conversation got long, so the previous {turns} turns were compacted into a summary ({from} → {to} characters){took}. Recent messages are kept verbatim.",
+  "sys.compact.done": "🗜 The conversation got long, so the previous {turns} turns ({from} characters) were compacted into a {to}-character summary{took}. Recent messages are kept verbatim.",
   "sys.compact.doneNoCounts": "🗜 The conversation got long, so earlier messages were compacted into a summary ({to} characters){took}. Recent messages are kept verbatim.",
   "sys.compact.failed": "⚠️ Compaction failed, so older context was dropped (reason: {reason}). It continues without a summary, so earlier parts may be forgotten.",
   "sys.compact.took": " · took {sec}s",

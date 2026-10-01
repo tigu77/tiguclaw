@@ -566,8 +566,8 @@ export const handleCompact = async (ctx: SlashCtx): Promise<void> => {
       await replyCommand(
         msg,
         r.ok
-          ? `🗜 압축했습니다 — 이전 ${r.foldedTurns}턴을 요약으로 접었습니다 ` +
-            `(${r.foldedChars.toLocaleString()}자 → ${r.summaryChars.toLocaleString()}자).\n` +
+          ? `🗜 압축했습니다 — 이전 ${r.foldedTurns}턴(${r.foldedChars.toLocaleString()}자)을 ` +
+            `요약 ${r.summaryChars.toLocaleString()}자로 접었습니다.\n` +
             `최근 대화는 원문 그대로 유지됩니다.`
           : `압축하지 않았습니다 — ${r.reason}`,
       );

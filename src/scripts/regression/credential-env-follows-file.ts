@@ -260,6 +260,111 @@ export const check: RegressionCheck = {
         rmSync(dir4, { recursive: true, force: true });
       }
     }
+    // ★같은 반쪽 실패 뒤 **따라가기가 한 번도 돌기 전에** 다른 공급자 키(Claude)만 바깥에서 바뀐다 — Codex 는 B 그대로여야 한다
+    //  (2026-10-02 외부 검토 실측: 인증 키 «전체» 비교라 보호가 풀려 무효가 된 A 로 되돌렸다). 중간 따라가기가 끼면 A 가 «본 값» 이 돼 안 드러난다.
+    {
+      const { startHomeCredentialWatch, refreshHomeCredentials } = await import("../../core/credential-env.js");
+      const { upsertHomeEnvVars } = await import("../../core/env-file.js");
+      const { homeEnvPath } = await import("../../core/load-env.js");
+      const K = "OPENAI_CODEX_OAUTH_TOKEN";
+      const C = "CLAUDE_CODE_OAUTH_TOKEN";
+      const savedHome = process.env.TIGUCLAW_HOME;
+      const beforeK = process.env[K];
+      const beforeC = process.env[C];
+      const dir5 = mkdtempSync(path.join(tmpdir(), "cred-mixed-"));
+      const fsp = (await import("node:fs/promises")).default as unknown as { rename: (...a: unknown[]) => Promise<void> };
+      const realRename = fsp.rename;
+      try {
+        process.env.TIGUCLAW_HOME = dir5;
+        const f = homeEnvPath();
+        writeFileSync(f, `${K}=mix-O\n${C}=mix-c0\n`);
+        process.env[K] = "mix-O";
+        process.env[C] = "mix-c0";
+        startHomeCredentialWatch(f);
+        let n = 0;
+        fsp.rename = async (...a: unknown[]) => { n++; if (n === 2) { const e = new Error("EPERM") as NodeJS.ErrnoException; e.code = "EPERM"; throw e; } return realRename(...a); };
+        const pA = upsertHomeEnvVars({ [K]: "mix-A" });
+        const pB = upsertHomeEnvVars({ [K]: "mix-B" });
+        await pA;
+        let bFailed = false;
+        try { await pB; } catch { bFailed = true; }
+        fsp.rename = realRename;
+        writeFileSync(f, `${K}=mix-A\n${C}=mix-c1\n`); // 바깥에서 Claude 만 재로그인
+        const changed = refreshHomeCredentials();
+        out.push(assert("★반쪽 실패 뒤 다른 공급자 키만 바뀌어도 회전 키는 무효가 된 앞 저장값으로 안 되돌아간다 · 바뀐 키는 따른다",
+          bFailed && process.env[K] === "mix-B" && !changed.includes(K) && changed.includes(C) && process.env[C] === "mix-c1",
+          { bFailed, changed, codexIsB: process.env[K] === "mix-B" }));
+      } finally {
+        fsp.rename = realRename;
+        if (savedHome === undefined) delete process.env.TIGUCLAW_HOME; else process.env.TIGUCLAW_HOME = savedHome;
+        if (beforeK === undefined) delete process.env[K]; else process.env[K] = beforeK;
+        if (beforeC === undefined) delete process.env[C]; else process.env[C] = beforeC;
+        startHomeCredentialWatch(path.join(dir5, "gone.env"));
+        rmSync(dir5, { recursive: true, force: true });
+      }
+    }
+    // ★3R F1′(기존) — 터미널 재로그인으로 파일에 새 Codex 토큰 X 가 들어온 뒤, 따라가기 전에 데몬이 **다른 키**(Claude)를 저장하면
+    //  본문에 X 가 실려 간다. 그걸 «우리 쓰기» 로 보면 X 를 영영 안 따랐다 — 이번에 쓴 키만 우리 것이다.
+    // + 3R G2 — 회전 안 하는 키(Claude)도 반쪽 실패 뒤 무효가 된 앞 저장값으로 되돌아가지 않는다.
+    {
+      const { startHomeCredentialWatch, refreshHomeCredentials } = await import("../../core/credential-env.js");
+      const { upsertHomeEnvVars } = await import("../../core/env-file.js");
+      const { homeEnvPath } = await import("../../core/load-env.js");
+      const K = "OPENAI_CODEX_OAUTH_TOKEN";
+      const C = "CLAUDE_CODE_OAUTH_TOKEN";
+      const savedHome = process.env.TIGUCLAW_HOME;
+      const beforeK = process.env[K];
+      const beforeC = process.env[C];
+      const dir6 = mkdtempSync(path.join(tmpdir(), "cred-carry-"));
+      const fsp = (await import("node:fs/promises")).default as unknown as { rename: (...a: unknown[]) => Promise<void> };
+      const realRename = fsp.rename;
+      try {
+        process.env.TIGUCLAW_HOME = dir6;
+        const f = homeEnvPath();
+        writeFileSync(f, `${K}=carry-W\n${C}=carry-c0\n`);
+        process.env[K] = "carry-W";
+        process.env[C] = "carry-c0";
+        startHomeCredentialWatch(f);
+        writeFileSync(f, `${K}=carry-X\n${C}=carry-c0\n`); // 터미널 codex 재로그인
+        await upsertHomeEnvVars({ [C]: "carry-c1" }); // 따라가기 전에 대시보드에서 Claude 저장 — 본문에 X 가 실려 간다
+        const changed = refreshHomeCredentials();
+        out.push(assert("★데몬이 다른 키를 저장하며 실어 간 바깥 값(터미널 재로그인)도 따른다 — 이번에 쓴 키만 우리 것",
+          process.env[K] === "carry-X" && changed.includes(K) && process.env[C] === "carry-c1", { changed, codexIsX: process.env[K] === "carry-X" }));
+
+        // G2 — Claude 반쪽 실패: A 저장 성공 · B rename 실패 → 메모리 B 유지.
+        let n = 0;
+        fsp.rename = async (...a: unknown[]) => { n++; if (n === 2) { const e = new Error("EPERM") as NodeJS.ErrnoException; e.code = "EPERM"; throw e; } return realRename(...a); };
+        const pA = upsertHomeEnvVars({ [C]: "carry-cA" });
+        const pB = upsertHomeEnvVars({ [C]: "carry-cB" });
+        await pA;
+        let bFailed = false;
+        try { await pB; } catch { bFailed = true; }
+        fsp.rename = realRename;
+        const after = refreshHomeCredentials();
+        // 4R F1 — 우리가 쓴 값을 바깥에서 지나간 뒤 다시 그 값으로 **되돌리면** 따른다(기록이 영구히 막지 않는다).
+        const A = "ANTHROPIC_API_KEY";
+        const beforeA = process.env[A];
+        await upsertHomeEnvVars({ [A]: "carry-key-X" });
+        writeFileSync(f, readFileSync(f, "utf8").replace("carry-key-X", "carry-key-Y"));
+        refreshHomeCredentials();
+        const wentY = process.env[A] === "carry-key-Y";
+        writeFileSync(f, readFileSync(f, "utf8").replace("carry-key-Y", "carry-key-X"));
+        refreshHomeCredentials();
+        const backX = process.env[A] === "carry-key-X";
+        if (beforeA === undefined) delete process.env[A]; else process.env[A] = beforeA;
+        out.push(assert("우리가 쓴 값을 바깥에서 지나간 뒤 그 값으로 되돌리면 따른다(재시작까지 막지 않는다)", wentY && backX, { wentY, backX }));
+
+        out.push(assert("회전 안 하는 키(Claude)도 반쪽 실패 뒤 앞 저장값으로 안 되돌아간다",
+          bFailed && process.env[C] === "carry-cB" && !after.includes(C), { bFailed, after, claudeIsB: process.env[C] === "carry-cB" }));
+      } finally {
+        fsp.rename = realRename;
+        if (savedHome === undefined) delete process.env.TIGUCLAW_HOME; else process.env.TIGUCLAW_HOME = savedHome;
+        if (beforeK === undefined) delete process.env[K]; else process.env[K] = beforeK;
+        if (beforeC === undefined) delete process.env[C]; else process.env[C] = beforeC;
+        startHomeCredentialWatch(path.join(dir6, "gone.env"));
+        rmSync(dir6, { recursive: true, force: true });
+      }
+    }
     // 배선 — 부팅 때 스냅샷, 턴 입구에서 갱신(모든 어댑터가 이 입구를 지난다).
     const { readSourceSync } = await import("./_wiring.js");
     const loader = readSourceSync("src/core/load-env.ts");

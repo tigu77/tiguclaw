@@ -82,7 +82,7 @@ const writeHomeEnvVars = async (updates: Record<string, string>): Promise<string
   try {
     await fs.writeFile(tmp, finalBody, { encoding: "utf8", mode: 0o600 }); // ②③
     await fs.rename(tmp, envPath);
-    noteSelfEnvWrite(finalBody); // 감시가 이 상태를 바깥 변경으로 오인하지 않게(뒤 저장이 실패해 파일이 메모리보다 옛 값일 때)
+    noteSelfEnvWrite(updates); // 이번에 쓴 키만 — 감시가 우리 쓰기를 바깥 변경으로 오인하지 않게(뒤 저장 실패), 실려 간 남의 값은 그대로 따르게
   } catch (e) {
     await fs.unlink(tmp).catch(() => {});
     throw e;

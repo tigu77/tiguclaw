@@ -8,6 +8,33 @@
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-10-02
+
+### Added
+
+- **오래 걸리는 명령을 비서가 한 번에 기다립니다.** 백그라운드 명령이 끝나거나, 기다리던 글자가 출력되거나, 출력이 한동안 멎으면 바로 결과를 봅니다. 기다리는 동안 새 메시지를 보내면 곧바로 멈추고 답합니다.
+- **대시보드 브라우저 탭 제목을 설정에서 바꿀 수 있습니다.** 비서에게 부탁해도 바꿔 줍니다.
+- **대시보드 헤더 오른쪽 끝에 GitHub 저장소 링크(⭐)가 생겼습니다.**
+
+### Changed
+
+- **다음 메시지 제안이 기본으로 켜집니다.** 설정에서 끌 수 있습니다.
+- **비서가 묻지 않고 진행할 때 고른 방향을 한 줄로 밝히고, 결과는 무슨 뜻인지까지 알려 줍니다.**
+- **Codex 웹 검색이 사용자 시간대에 맞는 지역의 결과를 찾습니다.**
+
+### Fixed
+
+- **메시지를 보낸 뒤에도 이전 제안이 남던 문제를 수정했습니다.** 선택지·텔레그램·다른 탭으로 보냈거나 다시 접속했을 때 생겼습니다.
+- **Codex 웹 검색 답에 인용 표식이 글자로 남던 문제를 수정했습니다.**
+- **매니저 완료 보고의 선택지가 대시보드에는 뜨지 않던 문제, 스케줄 실행에서 선택지·파일 보내기가 막히던 문제를 수정했습니다.**
+- **Claude 로 답하는 중에 `/stop` 을 보내도 실행 중인 명령이 멈추지 않던 문제를 수정했습니다.**
+- **대화 요약 알림과 `/compact` 결과가 접은 대화 양을 잘못 표시하던 문제를 수정했습니다.**
+- **Codex 로그인 키가 갱신될 때 다른 저장과 겹치면 무효가 된 키로 돌아가 다시 로그인해야 하던 드문 문제를 수정했습니다.**
+- **토큰 발급 중 버튼을 다시 누르면 새 발급이 끊기던 문제, 발급 중 데몬이 재시작되면 발급 프로세스가 남던 문제를 수정했습니다.**
+- **대시보드 카드의 모델·강도 표시가 다른 턴이나 실패한 시도의 값으로 바뀌거나, 알 수 없는 강도를 «강도 기본» 으로 표시하던 문제를 수정했습니다.**
+- **영어 설정에서 구독 로그인 버튼·안내와 탭 제목 등 일부가 한국어로 나오던 문제를 수정했습니다.**
+- **`.env` 저장이 실패하면 토큰이 든 임시 파일이 남던 문제를 수정했습니다.**
+
 ## [0.63.0] - 2026-10-01
 
 ### Added
@@ -2341,7 +2368,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...HEAD
+[0.64.0]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...v0.63.0
 [0.62.0]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...v0.61.0

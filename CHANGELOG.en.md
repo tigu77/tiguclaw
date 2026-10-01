@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-10-02
+
+### Added
+
+- **The assistant waits on long-running commands in one go.** It gets the result as soon as a background command finishes, prints the text it was waiting for, or goes quiet for a while. Sending a new message while it waits stops the wait and gets a reply right away.
+- **The dashboard browser tab title can be changed in Settings.** You can also ask the assistant to change it.
+- **A GitHub repository link (⭐) now sits at the right end of the dashboard header.**
+
+### Changed
+
+- **Next-message suggestions are on by default.** You can turn them off in Settings.
+- **When the assistant goes ahead without asking, it states the direction it chose in one line, and explains what a result means.**
+- **Codex web search finds results for the region of your time zone.**
+
+### Fixed
+
+- **Fixed the previous suggestion staying on screen after a message was sent** — when sending through an option, Telegram or another tab, or after reconnecting.
+- **Fixed citation markers left as raw text in Codex web search answers.**
+- **Fixed manager completion-report options not appearing on the dashboard, and options and file sending being blocked in scheduled runs.**
+- **Fixed `/stop` not stopping a running command while Claude was answering.**
+- **Fixed the conversation-summary notice and `/compact` showing the wrong amount of folded conversation.**
+- **Fixed a rare case where a Codex login key refresh that overlapped another save reverted to an invalidated key and required logging in again.**
+- **Fixed pressing the issue button again during token issuing cutting off the new issue, and the issuing process being left behind when the daemon restarted mid-issue.**
+- **Fixed dashboard cards taking the model and effort of another turn or a failed attempt, and showing an unknown effort as “default effort”.**
+- **Fixed parts of the UI, such as the subscription login buttons and guidance and the tab title, appearing in Korean with English selected.**
+- **Fixed a temporary file containing tokens being left behind when saving `.env` failed.**
+
 ## [0.63.0] - 2026-10-01
 
 ### Added
@@ -791,7 +818,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...HEAD
+[0.64.0]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...v0.63.0
 [0.62.0]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/tigu77/tiguclaw/compare/v0.60.0...v0.61.0

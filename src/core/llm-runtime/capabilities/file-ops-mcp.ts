@@ -67,6 +67,7 @@ import { getPaths } from "../../paths.js";
 import { loadWebSearchConfig } from "../../settings.js";
 import { detectShell, shellSpawnOptions } from "../../runtime-env.js";
 import { getEventBus } from "../../eventbus.js";
+import { toolSlowWarnMs } from "../tool-watchdog.js";
 // 셸의 원 세션 환원 — 매니저·서브가 띄운 셸은 threadKey 가 잡 좌표(worker:/agent:)라 세션 키가
 // 아니다. 잡 레지스트리를 보는 코어가 환원해서 관측면에 실어 준다(대시보드 추측 제거).
 import { resolveOwnerThreadKey } from "../../worker-jobs.js";
@@ -227,7 +228,35 @@ interface BgShell {
   // 어느 대화 턴이 이 셸을 띄웠나 (ADR §1 shell.started.threadKey). 팩토리/Bash 도구가
   // 전파 안 하면 "" 폴백(회귀 0) — 대시보드 관측용, 실행/추적 로직엔 영향 0.
   threadKey: string;
+  /**
+   * ★받은 출력의 **실제 총량**(두 스트림 합, 글자) — 버퍼는 1MB 에서 멈추지만 이건 계속 는다. «진전» 판정의 정본
+   *  (버퍼 길이로 재면 상한에 닿은 순간 출력이 계속 나와도 «멈춤» 으로 읽혔다 — 적대 검토 F2).
+   */
+  received: number;
+  /** 최근 출력 꼬리(두 스트림 도착 순, 바운드) — «멈춘 듯» 할 때 보여 줄 **지금** 출력(버퍼 상한 뒤에도 새로 찬다). */
+  recent: string;
+  /** 지금 이 셸을 기다리는 `BashOutput` 들 — 들어오는 조각마다 찾는 글자를 **한 번씩만** 훑는다. */
+  waiters: Set<ShellWaiter>;
 }
+/** 기다림 하나 — 찾는 글자(그대로 비교, 정규식 아님)와 조각 경계에 걸친 꼬리. */
+interface ShellWaiter {
+  needles: readonly string[];
+  carry: string;
+  hit: string | undefined;
+}
+const SHELL_RECENT_KEEP = 4_000;
+/** 들어온 조각을 기다림들에 먹인다 — 각 바이트를 한 번씩만 본다(새 출력이 없으면 아무것도 안 돈다). */
+const feedWaiters = (shell: BgShell, chunk: string): void => {
+  shell.received += chunk.length;
+  shell.recent = (shell.recent + chunk).slice(-SHELL_RECENT_KEEP);
+  for (const w of shell.waiters) {
+    if (w.hit !== undefined) continue;
+    const text = w.carry + chunk;
+    w.hit = w.needles.find((n) => text.includes(n));
+    const keep = Math.max(0, Math.max(...w.needles.map((n) => n.length)) - 1);
+    w.carry = keep === 0 ? "" : text.slice(-keep);
+  }
+};
 const BG_SHELLS = new Map<string, BgShell>();
 const BG_MAX = 20; // 동시 백그라운드 셸 상한(메모리 바운드).
 
@@ -441,12 +470,19 @@ const launchBgShell = async (
     exitCode: null,
     startedAt,
     threadKey,
+    received: 0,
+    recent: "",
+    waiters: new Set(),
   };
   child.stdout?.on("data", (d: Buffer) => {
-    shell.stdout = appendCapped(shell.stdout, d.toString("utf8"));
+    const chunk = d.toString("utf8");
+    shell.stdout = appendCapped(shell.stdout, chunk);
+    feedWaiters(shell, chunk);
   });
   child.stderr?.on("data", (d: Buffer) => {
-    shell.stderr = appendCapped(shell.stderr, d.toString("utf8"));
+    const chunk = d.toString("utf8");
+    shell.stderr = appendCapped(shell.stderr, chunk);
+    feedWaiters(shell, chunk);
   });
   // shell.exited 페이로드 — close/error(자연종료) 공용 빌더. status="exited"(kill 경로는
   // killShellById/killAllBgShells 가 별도로 "killed" 를 발행 — 이 핸들러는 status==="running"
@@ -919,6 +955,42 @@ const READ_CACHE_MAX_STUBS = 2; // 같은 키에 스텁 2회까지 — 그 이�
 //  드러났다). 캐시의 값어치는 "큰 본문이 여러 벌 쌓이는 것"을 막는 데 있으므로 그 구간만 건다.
 const READ_CACHE_MIN_BYTES = 1024;
 
+/**
+ * **백그라운드 셸을 기다릴 때 언제 깨우나** — 순수 판정 (2026-10-01 정태님 «오래 걸리는 도구, 거의 멈춘 상황을 어떻게 타개하나»).
+ *
+ * ★없던 것: `BashOutput` 은 늘 즉시 돌아와, 매니저는 «아직 실행 중» 을 받으려고 모델 요청을 반복했다(실측 dev 09-28~10-01:
+ *  백그라운드 셸 28개에 폴링 64회, 그중 36회가 «아직 실행 중»). 요청마다 대화 전체가 실린다(회사 매니저 한 요청 160만 자).
+ *  Claude Code 는 끝나면 깨워 주고 조건 감시가 있다 — 그 빈칸이다(원칙 1).
+ * ★멈춤은 시간이 아니라 **진전**으로 본다 — 오래 걸려도 출력이 늘면 느린 것이고, 출력이 그대로면 멈춘 것일 수 있다.
+ *  그래서 «N초째 새 출력 없음» 은 **끊는 신호가 아니라 깨워서 보게 하는 신호**다(조용히 컴파일하는 정상 작업도 있다).
+ * 우선순위: 종료 → 조건 일치 → 새 지시 → 출력 없음 → 대기 상한. 아무것도 아니면 계속 기다린다(undefined).
+ * ★`until` 은 **글자 그대로**다(정규식 아님 — 적대 검토 F1: 모델이 쓴 정규식을 1MB 출력에 200ms 마다 돌려 데몬 이벤트 루프가
+ *  초 단위로 섰다, `.*(a|b)` 40KB 에 2.4초 · `(a+)+$` 29자에 18초). 조각이 들어올 때 각 바이트를 한 번만 훑는다.
+ */
+export type ShellWaitVerdict = "exited" | "matched" | "steered" | "idle" | "timeout";
+export const shellWaitVerdict = (st: {
+  running: boolean;
+  /** 찾던 글자가 새 출력에 나왔나(조각이 들어올 때 이미 판정됨). */
+  matched: boolean;
+  /** 이 대화(매니저)에 새 지시가 들어왔나 — 기다리느라 지시를 못 듣는 일이 없게(적대 검토 F4). */
+  steered?: boolean;
+  now: number;
+  waitStartedAt: number;
+  /** 대기 중 출력이 마지막으로 늘어난 시각(대기 시작 시각으로 시작). */
+  lastGrowthAt: number;
+  waitMs: number;
+  idleMs?: number;
+}): ShellWaitVerdict | undefined => {
+  if (!st.running) return "exited";
+  if (st.matched) return "matched";
+  if (st.steered === true) return "steered";
+  if (st.idleMs !== undefined && st.now - st.lastGrowthAt >= st.idleMs) return "idle";
+  if (st.now - st.waitStartedAt >= st.waitMs) return "timeout";
+  return undefined;
+};
+
+const SHELL_WAIT_POLL_MS = 200;
+
 const makeFileOpsTools = (
   base: string,
   threadKey: string,
@@ -1338,7 +1410,7 @@ const makeFileOpsTools = (
   // 밖 접근은 벽 없이 허용, 위험 경로는 sysprompt prompt-gated).
   const bashTool = tool(
     "Bash",
-    `셸 명령을 실행합니다 (${SHELL.label} 로 실행). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. 각 호출은 기본 작업폴더에서 시작합니다. Read로 다른 폴더의 파일을 읽거나 이전 Bash에서 cd해도 다음 호출의 cwd는 바뀌지 않습니다. 다른 폴더의 명령은 같은 호출에서 cd한 뒤 실행하거나 절대경로를 사용하세요. **긴 명령(빌드·서버·스크립트)은 \`run_in_background: true\` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput 으로 출력 폴링, KillShell 로 종료.**`,
+    `셸 명령을 실행합니다 (${SHELL.label} 로 실행). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. 각 호출은 기본 작업폴더에서 시작합니다. Read로 다른 폴더의 파일을 읽거나 이전 Bash에서 cd해도 다음 호출의 cwd는 바뀌지 않습니다. 다른 폴더의 명령은 같은 호출에서 cd한 뒤 실행하거나 절대경로를 사용하세요. **긴 명령(빌드·서버·스크립트)은 \`run_in_background: true\` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput(wait_seconds) 로 기다리고, KillShell 로 종료.**`,
     {
       command: z.string().min(1),
       timeout: z.number().int().min(1).optional().describe("타임아웃 (초 단위, 기본 120, 최대 600)"),
@@ -1365,7 +1437,7 @@ const makeFileOpsTools = (
         const id = await launchBgShell(args.command, base, threadKey);
         return okText(
           `백그라운드 실행 시작 (bash_id: ${id}). ` +
-            `BashOutput({ bash_id: "${id}" }) 로 출력 폴링, KillShell 로 종료.`,
+            `BashOutput({ bash_id: "${id}", wait_seconds: … }) 로 끝날 때까지 기다리고(되묻지 말고 한 번에), KillShell 로 종료.`,
         );
       }
 
@@ -1457,16 +1529,93 @@ const makeFileOpsTools = (
   // ─── BashOutput / KillShell (BG_SHELLS 조회 — cwd 무관) ─────────────────
   const bashOutputTool = tool(
     "BashOutput",
-    "백그라운드 Bash(run_in_background)의 *새로 쌓인* 출력을 가져옵니다. bash_id 로 조회 — 마지막 호출 이후의 증분 stdout/stderr + 상태(running / 완료 시 exit code)를 반환합니다.",
+    "백그라운드 Bash(run_in_background)의 *새로 쌓인* 출력을 가져옵니다(마지막 호출 이후 증분 + 상태). " +
+      "**wait_seconds 를 주면 서버가 대신 기다렸다가** 끝나거나 · until 의 글자가 새 출력에 나오거나 · 이 대화에 새 지시가 오거나 · idle_seconds 동안 새 출력이 없거나 · 대기 상한에 닿으면 돌아옵니다(기다리는 동안 요청 0). " +
+      "얼마나 걸릴지 모르면 짧게 여러 번 묻지 말고 한 번 길게 기다리세요. «새 출력 없음» 으로 깼으면 마지막 출력으로 원인을 보고 **스스로 푸세요** — 입력 대기면 비대화형 옵션으로 다시, 앱 창이면 화면 도구로. 사용자에게는 OS 권한·관리자 암호·로그인처럼 **동의가 필요한 것만** 넘깁니다.",
     {
       bash_id: z.string().min(1),
+      wait_seconds: z.number().int().min(0).max(600).optional().describe("최대 대기(초, 0~600). 없거나 0 이면 바로 돌아온다."),
+      until: z.union([z.string().min(1), z.array(z.string().min(1)).min(1).max(10)]).optional()
+        .describe("새 출력에 이 글자가(여러 개면 그중 하나가) **그대로** 나오면 바로 돌아온다 — 정규식 아님(예: ['Build succeeded','Build failed']). wait_seconds 와 함께."),
+      idle_seconds: z.number().int().min(1).max(600).optional().describe("이 시간 동안 새 출력이 없으면 «멈췄을 수 있음» 으로 돌아온다(끊지는 않는다). wait_seconds 와 함께."),
     },
-    async (args) => {
+    async (args, extra) => {
       const s = BG_SHELLS.get(args.bash_id);
       if (s === undefined) {
         return errText(
           `bash_id 없음: ${args.bash_id} (종료 후 정리됐거나 잘못된 id).`,
         );
+      }
+      // 조건만 주고 기다림을 안 주면 조용히 무시하지 않는다(적대 검토 F5) — 무엇을 빠뜨렸는지 말한다.
+      if ((args.until !== undefined || args.idle_seconds !== undefined) && (args.wait_seconds ?? 0) === 0) {
+        return errText("until·idle_seconds 는 wait_seconds(최대 대기 초)와 함께 써야 기다립니다.");
+      }
+      const needles = args.until === undefined ? [] : typeof args.until === "string" ? [args.until] : args.until;
+      // ★대기 상한은 **느림 경고 기준보다 짧게** — 같거나 길면 사용자가 시킨 기다림이 «도구가 멈춤» 경고로 사람에게 간다.
+      //  숫자를 따로 두지 않고 그 기준에서 파생한다(TOOL_SLOW_WARN_MS 를 낮춘 설치에서도 순서가 유지된다).
+      const waitMs = Math.min((args.wait_seconds ?? 0) * 1000, Math.max(0, toolSlowWarnMs("BashOutput") - 5_000));
+      const requestedMs = (args.wait_seconds ?? 0) * 1000;
+      let verdict: ShellWaitVerdict | "aborted" | "disabled" | undefined;
+      if (requestedMs > 0 && waitMs <= 0) verdict = "disabled";
+      // ★취소 신호 둘 — 턴(/stop, 팩토리)과 **이 도구 호출 자체**(MCP 요청 취소: claude 는 SDK 가, codex·openai 는 브리지 시간 초과가
+      //  보낸다). 하나만 들으면 호출한 쪽은 떠났는데 기다림이 남아 다음 출력을 허공에 소비한다(적대 검토 F3).
+      const signals = [abortSignal, (extra as { signal?: AbortSignal } | undefined)?.signal].filter((x): x is AbortSignal => x !== undefined);
+      const aborted = (): boolean => signals.some((x) => x.aborted);
+      let matchedNeedle: string | undefined;
+      if (waitMs > 0) {
+        const waiter: ShellWaiter = { needles, carry: "", hit: undefined };
+        // 기다리기 전에 이미 와 있던(아직 안 읽은) 출력도 본다 — 글자 비교라 한 번 훑는 데 1MB 도 가볍다.
+        if (needles.length > 0) {
+          const unread = s.stdout.slice(s.stdoutRead) + s.stderr.slice(s.stderrRead);
+          waiter.hit = needles.find((n) => unread.includes(n));
+          // 이미 와 있던 꼬리와 다음 조각에 걸친 글자도 찾게 — 꼬리를 이어 붙일 자리에 둔다(적대 검토 2R N2).
+          const keep = Math.max(...needles.map((n) => n.length)) - 1;
+          waiter.carry = keep > 0 ? unread.slice(-keep) : "";
+        }
+        s.waiters.add(waiter);
+        let steered = false;
+        const unsub = getEventBus().subscribe((ev) => {
+          const pl = ev.payload as { threadKey?: unknown; synthetic?: unknown; jobId?: unknown; text?: unknown; outcome?: unknown };
+          // 진짜 지시만 — 합성 알림·슬래시 명령(/logs·/stop 등 대화 밖 처리)·다른 대화로 간 steer 는 이 턴에 안 닿는다(적대 검토 2R N3).
+          if (ev.type === "channel.message.in" && pl.threadKey === threadKey && pl.synthetic !== true && !(typeof pl.text === "string" && pl.text.trimStart().startsWith("/"))) steered = true;
+          else if (ev.type === "worker.steered" && pl.outcome === "delivered" && typeof pl.jobId === "string" && pl.jobId !== "" && `worker:${pl.jobId}` === threadKey) steered = true;
+        });
+        try {
+          const waitStartedAt = Date.now();
+          let lastReceived = s.received;
+          let lastGrowthAt = waitStartedAt;
+          for (;;) {
+            const now = Date.now();
+            if (s.received > lastReceived) { lastReceived = s.received; lastGrowthAt = now; }
+            // ★중단을 **판정보다 먼저** 본다 — /stop 은 «새 메시지» 에코를 먼저 내고 곧바로 중단하므로, 판정을 먼저 보면 «새 지시» 로
+            //  끝나 죽은 턴에 출력을 소비했다(적대 검토 2R N1, 순서 결함).
+            if (aborted()) { verdict = "aborted"; break; }
+            verdict = shellWaitVerdict({
+              running: s.status === "running",
+              matched: waiter.hit !== undefined,
+              steered,
+              now,
+              waitStartedAt,
+              lastGrowthAt,
+              waitMs,
+              ...(args.idle_seconds !== undefined ? { idleMs: args.idle_seconds * 1000 } : {}),
+            });
+            if (verdict !== undefined) break;
+            await new Promise<void>((resolve) => {
+              const t = setTimeout(done, SHELL_WAIT_POLL_MS);
+              function done(): void { clearTimeout(t); for (const x of signals) x.removeEventListener("abort", done); resolve(); }
+              for (const x of signals) x.addEventListener("abort", done, { once: true });
+            });
+          }
+        } finally {
+          s.waiters.delete(waiter);
+          unsub();
+        }
+        // ★중단이면 출력을 **소비하지 않는다** — 이 결과를 받을 쪽이 이미 떠났다. 다음 BashOutput 이 그대로 받는다(적대 검토 F3).
+        if (verdict === "aborted") {
+          return okText(`깨운 이유: 대기 중단(/stop·호출 취소) — 셸은 그대로, 출력은 다음 BashOutput 에서 받을 수 있음\n\nstatus: ${s.status}`);
+        }
+        matchedNeedle = waiter.hit;
       }
       const newOut = s.stdout.slice(s.stdoutRead);
       s.stdoutRead = s.stdout.length;
@@ -1479,6 +1628,21 @@ const makeFileOpsTools = (
       if (newErr.length > 0) parts.push(`stderr(new):\n${newErr}`);
       if (newOut.length === 0 && newErr.length === 0)
         parts.push("(새 출력 없음)");
+      if (verdict !== undefined) {
+        const why =
+          verdict === "exited" ? "끝남"
+          : verdict === "matched" ? `새 출력에 '${matchedNeedle ?? ""}' 가 나옴 — 아직 실행 중일 수 있음`
+          : verdict === "steered" ? "이 대화에 새 지시가 들어옴 — 셸은 아직 실행 중일 수 있음"
+          : verdict === "idle" ? `${args.idle_seconds}초째 새 출력 없음 — 멈췄을 수 있음(입력 대기·창·잠금?). 끊지 않았다`
+          : verdict === "disabled" ? "기다리지 않음 — 느림 경고 기준(TOOL_SLOW_WARN_MS)이 5초 이하라 대기를 쓸 수 없다"
+          : `${Math.round(waitMs / 1000)}초 대기 상한 — 아직 실행 중(다시 기다리려면 한 번 더 부르세요)`;
+        parts.unshift(`깨운 이유: ${why}`);
+        // 멈춘 듯하면 원인을 볼 재료가 있어야 한다 — **지금** 출력의 끝(버퍼 상한 뒤에 온 것도 포함, 두 스트림 도착 순).
+        if (verdict === "idle" && newOut.length === 0 && newErr.length === 0) {
+          const tail = s.recent.slice(-2000);
+          if (tail.trim() !== "") parts.push(`마지막 출력(끝 2000자, 이미 읽은 것 포함):\n${tail}`);
+        }
+      }
       return okText(parts.join("\n\n"));
     },
   );

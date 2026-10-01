@@ -67,13 +67,14 @@ const read = (envPath: string): Seen | null => {
 export const makeCredentialWatch = (envPath: string, env: NodeJS.ProcessEnv = process.env) => {
   let seen: Seen | null = null;
   /**
-   * **우리가 마지막으로 쓴 파일 상태**(인증 키만) — 파일이 이것과 같으면 바깥 변경이 아니라 우리 쓰기의 결과다 (2026-10-01).
-   * ★회전 키 저장 A→B 에서 A 는 성공하고 B 의 rename 만 실패하면 파일 A · 메모리 B 가 된다. A 는 «거쳐 간 값» 에 한 번도
-   *  안 들어가(메모리에 머문 적이 없다) 다음 따라가기가 A 를 바깥 재로그인으로 읽고 메모리를 무효가 된 A 로 되돌렸다(외부 검토 실측).
-   *  바깥에서 다시 로그인하면 파일이 이 상태와 달라지므로 그대로 따른다.
+   * **우리가 직접 쓴 값 — 키별로** (2026-10-01 → 10-02 적대 검토 3R). 파일의 그 키가 이 값과 같으면 바깥 변경이 아니라 우리 쓰기의 결과다.
+   * ★왜 필요한가: 저장 A→B 에서 A 는 성공하고 B 의 rename 만 실패하면 파일 A · 메모리 B 가 된다. 이 기록이 없으면 다음 따라가기가
+   *  A 를 바깥 재로그인으로 읽고 메모리를 (회전 키면 무효가 된) A 로 되돌렸다(외부 검토 실측). Claude 처럼 회전 안 하는 키도 같다.
+   * ★왜 **키별**이고 **쓴 키만**인가: 처음엔 «파일 전체 = 마지막에 쓴 본문» 으로 봤다. 그러면 ①다른 공급자 키만 바깥에서 바뀌어도
+   *  보호가 풀렸고(외부 검토) ②데몬은 파일을 읽고-고치고-쓰므로 **바깥에서 들어와 아직 안 따른 값**(터미널 재로그인)이 본문에
+   *  실려 가, 그 값까지 «우리 쓰기» 로 보고 영영 안 따랐다(3R F1′, 기존). 실제로 이번에 바꾼 키와 값만 기억한다.
    */
-  let lastSelf: Seen | null = null;
-  const sameCreds = (a: Seen, b: Seen): boolean => CREDENTIAL_ENV_KEYS.every((k) => (a[k] ?? "") === (b[k] ?? ""));
+  const selfWritten = new Map<string, string>();
   /**
    * **회전하는 키**(codex OAuth)마다 거쳐 간 값 — 여기 있는 값으로는 되돌아가지 않는다.
    * ★회전된 갱신 토큰은 한 번 바뀌면 옛 값이 서버에서 무효다. 다른 프로세스(터미널 CLI)가 파일을 읽은 뒤 데몬이
@@ -98,16 +99,13 @@ export const makeCredentialWatch = (envPath: string, env: NodeJS.ProcessEnv = pr
         remember(k, env[k]);
       }
     },
-    /** 데몬이 이 파일에 쓴 직후 — 그 본문의 인증 키를 «우리 쓰기의 결과» 로 기억한다(`env-file.ts`). */
-    noteSelfWrite(body: string): void {
-      if (parseEnv === undefined) return;
-      try {
-        const all = parseEnv(body);
-        const vals: Seen = {};
-        for (const k of CREDENTIAL_ENV_KEYS) if (all[k] !== undefined) vals[k] = all[k];
-        lastSelf = vals;
-      } catch {
-        /* 못 읽으면 종전 동작 */
+    /** 데몬이 이 파일에 쓴 직후 — **이번에 쓴 키와 값**만 «우리 쓰기의 결과» 로 기억한다(`env-file.ts`). 회전 키는 «거쳐 간 값» 에도. */
+    noteSelfWrite(written: Readonly<Record<string, string>>): void {
+      for (const k of CREDENTIAL_ENV_KEYS) {
+        const v = written[k];
+        if (v === undefined) continue;
+        selfWritten.set(k, v);
+        remember(k, v);
       }
     },
     /** 턴마다 — 바뀐 인증 키를 반영하고 그 이름을 돌려준다. 스냅샷이 없거나 못 읽으면 아무것도 안 한다. */
@@ -115,16 +113,16 @@ export const makeCredentialWatch = (envPath: string, env: NodeJS.ProcessEnv = pr
       if (seen === null) return [];
       const now = read(envPath);
       if (now === null) return [];
-      // 파일이 우리가 마지막으로 쓴 그대로다 — 따를 바깥 변경이 없다(메모리가 그보다 새로울 수 있다: 뒤 저장이 실패한 경우).
-      if (lastSelf !== null && sameCreds(now, lastSelf)) {
-        seen = now;
-        return [];
-      }
       const changed: string[] = [];
       for (const k of CREDENTIAL_ENV_KEYS) {
         remember(k, env[k]); // 데몬이 스스로 바꾼 값(갱신)도 «거쳐 간 값» 이다.
         const v = now[k];
+        // 파일이 우리가 쓴 값을 지나갔으면 그 기록은 끝났다 — 안 버리면 나중에 바깥에서 그 값으로 **되돌린** 것을 재시작까지 조용히
+        //  무시한다(4R F1: API 키를 업무/개인으로 오가는 경우). 쓰는 동안엔 `selfWrites` 가 따라가기를 막아 중간 상태로 버리는 일은 없다.
+        if (v !== undefined && v !== "" && selfWritten.has(k) && selfWritten.get(k) !== v) selfWritten.delete(k);
         if (v === undefined || v === "" || v === seen[k] || v === env[k]) continue;
+        // 그 키가 우리가 직접 쓴 값 그대로다 — 메모리가 그보다 새로울 수 있다(뒤 저장 실패). 바깥 변경이 아니다.
+        if (selfWritten.get(k) === v) continue;
         if (past.get(k)?.has(v) === true) {
           console.warn(`[env] ${k} 가 이전 값으로 돌아간 파일 변경은 따르지 않습니다(회전된 토큰 — 옛 값은 무효). 다시 로그인하면 새 값이 들어옵니다.`);
           continue;
@@ -148,9 +146,9 @@ let home: ReturnType<typeof makeCredentialWatch> | null = null;
  *  쓰는 동안은 따라가지 않는다. 다 쓰면 파일 == 메모리라 따를 것이 없다.
  */
 let selfWrites = 0;
-/** 데몬이 홈 `.env` 에 쓴 본문 — 감시가 «우리 쓰기의 결과» 로 기억한다(위 `noteSelfWrite`). 홈 감시가 없으면 아무것도 안 한다. */
-export const noteSelfEnvWrite = (body: string): void => {
-  home?.noteSelfWrite(body);
+/** 데몬이 홈 `.env` 에 **이번에 쓴 키와 값** — 감시가 «우리 쓰기의 결과» 로 기억한다(위 `noteSelfWrite`). 홈 감시가 없으면 아무것도 안 한다. */
+export const noteSelfEnvWrite = (written: Readonly<Record<string, string>>): void => {
+  home?.noteSelfWrite(written);
 };
 export const trackSelfEnvWrite = <T>(p: Promise<T>): Promise<T> => {
   selfWrites += 1;

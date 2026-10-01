@@ -1230,6 +1230,8 @@ export const runClaude = async (
         : {
             "file-ops": createFileOpsMcpServer(input.cwd, input.threadKey, {
               shellsOnly: true,
+              // 턴 중단(/stop·유휴 타임아웃)이 셸 도구의 기다림까지 닿게 — codex·openai 와 같은 신호(적대 검토 F3).
+              abortSignal: effectiveAc.signal,
             }),
             // 할일 — codex·openai 와 **같은 도구**(같은 이벤트·같은 카드). 위 disallow 와 한 쌍:
             // 빌트인을 막았으면 대체를 반드시 줘야 능력이 준다(원칙 1 슈퍼셋).

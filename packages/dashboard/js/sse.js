@@ -221,6 +221,9 @@
           // 엔드포인트 turn(기계 API 호출)은 채팅서 제외 — 방어적(보통 endpoint 는 channel.message
           // 미발생, llm.delta/turn 만; 캡처는 delta 누적 경로가 담당). 진행표시도 스킵.
           if (isEndpointThread(tk)) return;
+          // ★새 인바운드 = 그 세션의 이전 제안은 끝났다 — 어느 길로 왔든(입력창·선택지·텔레그램·다른 탭, 합성 완료 보고 포함).
+          //  아래 합성·대기 버블 분기가 일찍 return 하므로 **그보다 먼저** 부른다.
+          if (ev.type === "channel.message.in" && typeof window.endChatSuggestion === "function") window.endChatSuggestion(tk, ev.ts);
           // ★합성 인바운드(매니저·에이전트 완료 재주입) — **그리지 말고 켜기만** (2026-08-13).
           //  이 턴은 사용자가 친 말이 아니라 메인이 결과를 맥락 입혀 정리하는 구간이다.
           //  버블로 그리면 스캐폴딩이 "나" 로 새고, 안 그리면 종전처럼 화면이 통째로 빈다

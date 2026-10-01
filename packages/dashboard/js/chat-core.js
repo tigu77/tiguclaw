@@ -21,6 +21,8 @@
       }
       let firstEvent = true;
       let evCount = 0;
+      // 첫 이벤트 전에도 화면 언어로 — 원본 HTML 에 한국어 «0개 이벤트» 가 박혀 영어 화면에 새던 것(2026-10-01).
+      if (evCountEl) evCountEl.textContent = i18n("sys.eventCount", { n: evCount });
       let localChatCount = 0;
       let filterText = "";
 

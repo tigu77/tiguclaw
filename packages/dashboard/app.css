@@ -221,10 +221,10 @@
       header .live .dot.up { background: var(--good); box-shadow: 0 0 14px rgb(var(--good-rgb) / 0.65); }
       header .live .dot.down { background: var(--bad); }
       header .meter { color: var(--text-dim); font-family:var(--font-mono); font-size:0.6875rem; }
-      /* «⭐ GitHub» — 아이콘 둘만, 평소엔 흐리게 · 올리면 또렷하게. 모바일에서도 남는다(34px 칸 하나). */
+      /* «⭐ GitHub» — 아이콘 둘만. GitHub 마크만 흐린 색(currentColor)이고 별은 제 색 그대로 — 칸 전체를 opacity 로 흐리면 별까지 어두워진다(정태님 지적). */
       header .repo-star { display:inline-flex; align-items:center; gap:3px; flex:none; height:30px; padding:0 8px; border-radius:999px;
-        border:1px solid var(--border); color:var(--text-mute); text-decoration:none; font-size:0.8125rem; opacity:0.85; }
-      header .repo-star:hover, header .repo-star:focus-visible { color:var(--text); border-color:var(--accent); opacity:1; }
+        border:1px solid var(--border); color:var(--text-mute); text-decoration:none; font-size:0.8125rem; }
+      header .repo-star:hover, header .repo-star:focus-visible { color:var(--text); border-color:var(--accent); }
 
       #tab-bar { display: none; background: rgb(var(--bg-rgb) / 0.9); border-bottom: 1px solid var(--border); }
       #tab-bar .tab { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; padding:9px 4px; background:transparent; border:0; color:var(--text-mute); cursor:pointer; }

@@ -1,6 +1,6 @@
       // ── 다음 메시지 제안 고스트 (2026-08-10) ─────────────────────────────────
       // 턴이 끝나면 서버가 `chat.suggestion` 이벤트로 "사용자가 이어서 할 만한 말" 한 줄을
-      // 보낸다(기본 꺼짐 — 설정 화면 토글). 입력창이 **비어 있을 때만** 회색으로 겹쳐 보이고,
+      // 보낸다(기본 켜짐 — 설정 화면 토글). 입력창이 **비어 있을 때만** 회색으로 겹쳐 보이고,
       // Tab(또는 →)이면 입력창에 **채워진다**. 보내는 건 여전히 사용자다.
       //
       // ★Enter 는 절대 수락이 아니다. Enter=전송이라 수락과 겹치면 오발신이 되고, 그건
@@ -39,13 +39,14 @@
             localStorage.setItem(LS_KEY, JSON.stringify(all));
           } catch { /* quota·프라이빗 모드 — 저장만 못 할 뿐 */ }
         };
-        const lsDrop = (tk) => {
+        // ★제안을 끝낼 때 **지우지 않고 «여기까지 끝났다» 를 남긴다** (2026-10-01 정태님 «보냈는데 이전 제안이 남는다»).
+        //  종전엔 항목을 통째로 지워 아래 replay 가드의 기준(ts)까지 사라졌다 — 그래서 재접속(폰 복귀) 때 서버가 다시 흘리는
+        //  **옛 제안이 되살아났다**(재현). 빈 글 + 끝난 시각을 두면 sync 는 안 띄우고, 그 시각 이하의 replay 는 버려진다.
+        const lsEnd = (tk, ts) => {
           if (!tk) return;
-          try {
-            const all = lsAll();
-            delete all[tk];
-            localStorage.setItem(LS_KEY, JSON.stringify(all));
-          } catch { /* noop */ }
+          const prev = lsAll()[tk];
+          const prevTs = prev && typeof prev.ts === "number" ? prev.ts : 0;
+          lsSave(tk, "", Math.max(prevTs, typeof ts === "number" && Number.isFinite(ts) ? ts : 0));
         };
 
         const visible = () => !ghostEl.hidden;
@@ -125,7 +126,7 @@
               return;
             }
             if (e.key === "Escape") {
-              lsDrop(suggestionThread);
+              lsEnd(suggestionThread);
               suggestion = null; // 이번 제안은 버린다(다음 턴에 새로 온다).
               hide();
               e.stopPropagation();
@@ -209,11 +210,29 @@
           sync();
         };
 
-        // 전송하면 그 제안은 수명이 끝난다(다음 턴에 새 제안이 온다).
+        // 전송하면 그 제안은 수명이 끝난다(다음 턴에 새 제안이 온다). 화면을 바로 비우는 몫 — 판정의 정본은 아래 `endChatSuggestion`.
+        //  ★메모리에 아직 안 올라온 제안(입력창을 안 건드린 새로고침 직후)도 끝낸다 — 그때 `suggestionThread` 는 null 이다.
         window.clearChatSuggestion = () => {
-          lsDrop(suggestionThread);
+          lsEnd(suggestionThread || (typeof activeThreadKey === "string" ? activeThreadKey : ""));
           suggestion = null;
           suggestionThread = null;
           hide();
+        };
+
+        // ★**그 세션에 새 메시지가 들어오면 그 앞의 제안은 끝난다 — 어느 길로 왔든** (2026-10-01).
+        //  종전엔 대시보드 입력창의 전송 한 곳만 지웠다. 선택지 클릭·텔레그램·다른 탭/기기로 보내면 아무도 안 지워
+        //  옛 제안이 남았다(재현). 판정을 보내는 자리마다 두지 않고, 서버가 알리는 인바운드(`channel.message.in`)
+        //  하나로 한다 — sse.js 가 부른다. 제안보다 **먼저** 들어온 메시지(replay)는 그 제안을 끝내지 않는다.
+        window.endChatSuggestion = (tk, ts) => {
+          if (typeof tk !== "string" || tk === "") return;
+          const prev = lsAll()[tk];
+          const prevTs = prev && typeof prev.ts === "number" ? prev.ts : 0;
+          if (typeof ts === "number" && ts > 0 && prevTs > 0 && ts <= prevTs) return;
+          lsEnd(tk, ts);
+          if (suggestionThread === tk || (suggestionThread === null && typeof activeThreadKey === "string" && activeThreadKey === tk)) {
+            suggestion = null;
+            suggestionThread = null;
+            hide();
+          }
         };
       })();

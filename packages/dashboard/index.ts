@@ -347,14 +347,27 @@ const server = http.createServer((req, res) => {
         // ★탭 제목 — 테마 주입과 **따로** 실패한다(한쪽이 던져도 다른 쪽은 산다, 적대 검토 F5). 사용자가 정했으면 첫 렌더부터 그것.
         //  원본 제목(`defaultTitle`)도 같이 넘긴다 — 설정 화면이 «비우면 기본 제목» 으로 돌아갈 자리를 서버가 이미 바꿔 내보내서
         //  화면은 알 길이 없었다(적대 검토 F2). HTML 이스케이프, 치환자는 함수로(`$` 특수문자 — 아래 i18n 과 같은 이유).
-        const tabTitle: { title: string; defaultTitle: string } = { title: "", defaultTitle: /<title>([\s\S]*?)<\/title>/.exec(withHash)?.[1] ?? "" };
+        const htmlTitle = /<title>([\s\S]*?)<\/title>/.exec(withHash)?.[1] ?? "";
+        const tabTitle: { title: string; defaultTitle: string } = { title: "", defaultTitle: htmlTitle };
+        // ★기본 제목도 **화면 언어**로 (2026-10-01) — 원본 `<title>` 은 한국어라 영어 화면 탭에 «티구클로 대시보드» 가 떴다.
+        //  신원 표식은 제목이 아니라 `<meta name="application-name">` 이라 바꿔도 안전하다(위 표식 주석).
+        try {
+          const { translate } = await import("../../src/core/i18n.js");
+          const localized = translate("app.title");
+          if (localized !== "app.title" && localized !== "") tabTitle.defaultTitle = localized;
+        } catch {
+          /* 원본 제목이 남는다 */
+        }
         try {
           const { readDashboardTitle } = await import("../../src/core/settings.js");
           tabTitle.title = readDashboardTitle();
-          const esc = tabTitle.title.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          if (tabTitle.title !== "") withHash = withHash.replace(/<title>[\s\S]*?<\/title>/, () => `<title>${esc}</title>`);
         } catch {
           /* 기본 제목이 남는다 */
+        }
+        const shownTitle = tabTitle.title !== "" ? tabTitle.title : tabTitle.defaultTitle;
+        if (shownTitle !== htmlTitle) {
+          const esc = shownTitle.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          withHash = withHash.replace(/<title>[\s\S]*?<\/title>/, () => `<title>${esc}</title>`);
         }
 
         // ★제품 저장소 주소 — 루트 package.json 의 `repository` 에서(손으로 박지 않는다). github 주소만 · 실패하면 비운다(링크 없음).

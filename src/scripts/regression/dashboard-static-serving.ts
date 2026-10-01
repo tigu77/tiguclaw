@@ -109,7 +109,8 @@ export const check: RegressionCheck = {
     // ★탭 제목 설정(`dashboardTitle`)이 첫 렌더부터 실린다 — 전용 홈에 HTML 특수문자와 `$&`(replace 특수문자)를 넣어 둔다.
     const home = mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-dashtitle-"));
     const TITLE = '<b>회사 $& 대시</b>';
-    writeFileSync(path.join(home, "settings.json"), JSON.stringify({ dashboardTitle: TITLE }));
+    // 언어는 영어 — 기본 제목(설정 화면의 «비우면 돌아갈 자리»)도 화면 언어여야 한다(원본 <title> 은 한국어).
+    writeFileSync(path.join(home, "settings.json"), JSON.stringify({ dashboardTitle: TITLE, locale: "en" }));
     const child = spawn(
       process.execPath,
       [tsxCli(), path.join(dash, "index.ts")],
@@ -159,6 +160,13 @@ export const check: RegressionCheck = {
           { titleTag, injected: /__TIGU_THEME__ = (\{[^<]*?\});/.exec(page)?.[1]?.slice(0, 160) },
         ),
       );
+
+      const enDefault = String((JSON.parse(readFileSync(path.join(REPO, "locales/en.json"), "utf8")) as Record<string, string>)["app.title"] ?? "");
+      out.push(assert(
+        "기본 탭 제목이 화면 언어다(영어 화면에 원본 한국어 제목이 «기본» 으로 넘어가지 않는다)",
+        enDefault !== "" && page.includes(`"defaultTitle":${JSON.stringify(enDefault)}`),
+        { enDefault, injected: /"defaultTitle":"[^"]*"/.exec(page)?.[0] },
+      ));
 
       // ★신원 판정 이음매 — 제목을 바꾼 채 서빙된 페이지를 데몬의 실제 판정 함수로 본다(적대 검토 F1: 제목이 표식이라 «남의 앱» 오판).
       const { probeLocalPort } = await import("../../core/local-port-probe.js");

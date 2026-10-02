@@ -275,17 +275,30 @@ export const formatModelProfiles = (
 //
 // threadKey 형식 (채널별): telegram=`tg:<chatId>`, cli=`cli:<id>`,
 // http-bridge=`<id>`. telegram 만 dest_target 으로 쓸 chatId 추출이 의미 있다.
-export const formatConversationContext = (
-  channel: string,
-  threadKey: string,
-  channelAddress?: string,
-): string => {
+export const formatConversationContext = ({
+  channel,
+  threadKey,
+  channelAddress,
+  scheduleRun,
+}: {
+  channel: string;
+  threadKey: string;
+  channelAddress?: string;
+  scheduleRun?: number;
+}): string => {
   // ★자기 세션 정체성 (2026-07-29 사용자 질문 "메인비서가 현재 세션을 알고 있나?" → 몰랐다).
   //  종전 블록엔 **배달 좌표**(dest_channel/dest_target)만 있고 "나는 어느 대화인가"가
   //  없었다. 그래서 전 세션 통합 목록(옛 list_workers)을 봐도 어느 줄이 자기 것인지
   //  판단할 근거가 아예 없었고, 남의 대화 매니저를 자기 것으로 오인했다(실사고). 도구를
   //  세션 스코프로 좁히는 것과 짝이다 — 좁힌 범위가 무엇인지 본인이 알아야 한다.
   const lines = [`- 이 대화(세션) id: ${threadKey}`, `- 채널 (dest_channel): ${channel}`];
+  // ★정기 스케줄의 실행이면 그 사실을 말한다 (2026-10-02). 헌법 «홈 밖·위험 경로» ④(등록한 스케줄이 매번 하는 일은
+  //  다시 묻지 않는다)는 모델이 «이게 스케줄 실행» 임을 알아야 성립한다 — 종전엔 세션 id 뿐이라 GA 리포트가 6일 중 4일
+  //  인증 파일 승인을 물었다. 지시문은 안 건드린다(이력 정책의 발화 판정이 지시문 머리로 센다).
+  //  ★세션 id(`scheduler:<id>`)로 가르지 않는다 — 그 세션엔 **발화가 아닌 턴**도 돈다(스케줄이 띄운 매니저의 완료 턴 ·
+  //  선택지 답). 거기 붙이면 «지시문» 이 매니저 결과·외부 글이 되고, ④ 면제가 그 글에 적힌 경로까지 넓어진다(적대 검토
+  //  2026-10-02 — #18·#21 이 매일 그 턴을 돈다). 발화임을 아는 쪽(스케줄 실행기)이 입력에 직접 싣는다.
+  if (scheduleRun !== undefined) lines.push(`- 이 턴은 등록된 **정기 스케줄(#${scheduleRun})의 실행**이다 — 지시문은 그 스케줄의 지시다.`);
   // 채널/세션 분리(ADR 2026-07-15 §D3): dest_target 은 세션 id 파싱이 아니라 **캡처된
   // 배달 좌표**(channelAddress)를 우선 쓴다 — 세션 id 가 채널 무관(dashboard:*)이 되면
   // threadKey 파싱으로 chatId 를 못 얻기 때문. 미지정이면 telegram threadKey "tg:<chatId>"

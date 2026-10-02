@@ -1,11 +1,12 @@
 /**
  * scheduler MCP — SDK in-process MCP server (memory.ts 동형).
  *
- * tools 4종 (contract §5):
+ * tools 5종 (contract §5):
  *  - add_schedule    — cron expression dry-parse + nextRun ISO 응답
  *  - list_schedules  — only_enabled 옵션 + 각 row 의 next_run ISO 계산
  *  - update_schedule — 부분 패치 + cron 재검증 + enable/disable 토글 흡수
  *  - delete_schedule — 멱등
+ *  - run_schedule    — 지금 한 번 실행(정해진 시각과 같은 실행 경로 — 이력 정책·겹침 방지·목적지 그대로)
  *
  * SDK 외부 노출 이름: mcp__scheduler__{tool}.
  * 권한 게이트가 차단하려면 src/auth/permissions.ts DISALLOWED_TOOLS 에 그 이름으로 추가 가능.
@@ -15,6 +16,7 @@
  */
 import { z } from "zod";
 import { listOutboundChannels } from "../../../src/core/channel-outbound.js";
+import { onDemand } from "../../../src/core/llm-runtime/tool-load-policy.js";
 import {
   createSdkMcpServer,
   tool,
@@ -43,6 +45,11 @@ type LifecycleHooks = {
   onScheduleDeleted?: (id: number) => void;
   /** update_schedule 성공 시 갱신 row 전달 — cron 재등록/해제는 plugin index.ts 가 판단. */
   onScheduleUpdated?: (row: ScheduleRow) => void;
+  /**
+   * run_schedule — 지금 한 번 실행. 정해진 시각의 실행과 **같은 경로**(runScheduleFiring)를 탄다.
+   * `busy` = 그 스케줄이 이미 실행 중 · `unavailable` = 실행기가 아직 안 떴다.
+   */
+  onScheduleRunNow?: (row: ScheduleRow) => "started" | "busy" | "unavailable";
 };
 
 let lifecycle: LifecycleHooks = {};
@@ -314,6 +321,36 @@ const deleteScheduleTool = tool(
   },
 );
 
+// ★지금 실행 (2026-10-02 정태님: *"스케쥴을 즉시 실행은 안되나?"*). 고친 스케줄 동작을 다음 정해진 시각(내일 아침)까지
+//  기다려야만 확인할 수 있었다. 별도 실행 경로를 만들지 않는다 — cron 과 같은 runScheduleFiring 이라 이력 정책·겹침
+//  방지·결과 목적지가 그대로다(그래서 «내일 실제로 어떻게 도는지» 를 지금 그대로 본다).
+const runScheduleTool = tool(
+  "run_schedule",
+  "등록된 schedule 을 **지금 한 번** 실행합니다(정해진 시각과 같은 실행 — 결과는 그 스케줄의 목적지로 갑니다, 다음 정기 실행은 그대로). " +
+    "스케줄을 고친 뒤 바로 확인하거나 사용자가 «지금 돌려줘» 할 때 씁니다. 실행은 이 대화와 따로 돌고, 이미 실행 중이면 겹쳐 돌리지 않습니다.",
+  { id: z.number().int().min(1) },
+  async (args) => {
+    const row = getSchedule(args.id);
+    if (row === undefined) return okJson({ ok: false, error: "not_found" });
+    let outcome: "started" | "busy" | "unavailable" = "unavailable";
+    try {
+      outcome = lifecycle.onScheduleRunNow?.(row) ?? "unavailable";
+    } catch (e) {
+      console.error("scheduler: onScheduleRunNow hook threw", e);
+      return okJson({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    if (outcome === "busy") return okJson({ ok: false, error: "already_running", note: "이 스케줄이 지금 실행 중입니다 — 끝난 뒤 다시 부르세요." });
+    if (outcome === "unavailable") return okJson({ ok: false, error: "runner_unavailable" });
+    return okJson({
+      ok: true,
+      started: true,
+      label: row.label,
+      dest: { channel: row.destChannel, target: row.destTarget },
+      note: "실행을 시작했습니다 — 결과는 이 대화가 아니라 그 스케줄의 목적지로 갑니다.",
+    });
+  },
+);
+
 /**
  * SDK in-process MCP server **팩토리** — 부를 때마다 새 인스턴스.
  *
@@ -328,10 +365,9 @@ export const createSchedulerMcpServer = (): McpSdkServerConfigWithInstance =>
   createSdkMcpServer({
     name: "scheduler",
     version: "0.1.0",
-    tools: [
-      addScheduleTool,
-      listSchedulesTool,
-      updateScheduleTool,
-      deleteScheduleTool,
-    ],
+    // 드물게 쓰는 «지금 실행» 은 접는다(이름은 목록에 남고 쓸 때 스키마를 연다 — tool-load-policy).
+    tools: onDemand(
+      [addScheduleTool, listSchedulesTool, updateScheduleTool, deleteScheduleTool, runScheduleTool],
+      ["run_schedule"],
+    ),
   });

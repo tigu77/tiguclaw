@@ -24,6 +24,7 @@ import {
   rememberSpawn,
   spawnKey,
 } from "../../core/spawn-dedupe.js";
+import { __resetJobsForTest, markDone, registerJob } from "../../core/worker-jobs.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const LONG_PROMPT =
@@ -37,6 +38,13 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
 
+    // ★판정은 잡 상태를 직접 본다(끝난 잡은 중복이 아니다) — 그래서 **실제로 등록한 잡**으로 잰다.
+    __resetJobsForTest();
+    const liveJob = (label: string): string => registerJob({ label, task: "회귀", threadKey: "regr-dedupe:1", channel: "regr-dedupe", channelUserId: "u" });
+    const J1 = liveJob("회귀-1");
+    const J3 = liveJob("회귀-3");
+    let dedupeRunning: string | undefined;
+    let dedupeEnded: string | undefined;
     // ── ① 같은 인자 재발행은 새로 안 띄운다 ─────────────────────────────────────
     __resetSpawnDedupeForTest();
     {
@@ -46,11 +54,11 @@ export const check: RegressionCheck = {
       out.push(
         assert("첫 소환은 중복이 아니다", findDuplicateSpawn(tk, k, t0) === undefined, "통과"),
       );
-      rememberSpawn(tk, k, "job-1", t0);
+      rememberSpawn(tk, k, J1, t0);
       out.push(
         assert(
           "★같은 배치의 동일 인자 재발행은 **첫 jobId 로 흡수**된다 — 안 그러면 같은 일을 두 번 한다",
-          findDuplicateSpawn(tk, k, t0 + 50) === "job-1",
+          findDuplicateSpawn(tk, k, t0 + 50) === J1,
           String(findDuplicateSpawn(tk, k, t0 + 50)),
         ),
         assert(
@@ -71,6 +79,14 @@ export const check: RegressionCheck = {
           "창이 지나면 다시 띄울 수 있다(영구 차단 아님)",
           findDuplicateSpawn(tk, k, t0 + 60_000) === undefined,
           "해제됨",
+        ),
+        assert(
+          "★창 안이라도 **이미 끝난 잡**은 중복이 아니다 — 빨리 멈춘 일을 완료 턴이 다시 맡기면 새로 떠야 한다(2026-10-02)",
+          // ★별도 대화 키로 새로 기록한다 — 앞 단언(창 경과)이 tk 목록을 비워 이 판정이 빈 목록을 보고 공짜로 통과했다.
+          (rememberSpawn("dashboard:s3", k, J3, t0), dedupeRunning = findDuplicateSpawn("dashboard:s3", k, t0 + 50),
+          markDone(J3, "끝"), dedupeEnded = findDuplicateSpawn("dashboard:s3", k, t0 + 50),
+          dedupeRunning === J3 && dedupeEnded === undefined),
+          { running: dedupeRunning, ended: dedupeEnded ?? "새로 띄움" },
         ),
         assert(
           "매니저(run_in_background)도 같은 판정을 받는다 — 신고가 둘 다였다",

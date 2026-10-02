@@ -593,8 +593,9 @@ export const startDetachedAgent = (o: {
     }
 
     // 결과를 소환자에게 — 매니저면 그 턴의 steering 큐, 세션이면 새 턴(deliverToSummoner).
+    // ★늦게 온 지시도 넘긴다 — 싣거나 통지하는 판단은 onWorkerComplete 한 곳이다(2026-10-02).
     try {
-      await onWorkerComplete(o.jobId, outcome);
+      await onWorkerComplete(o.jobId, outcome, pendingSteerNotice);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(
@@ -602,22 +603,6 @@ export const startDetachedAgent = (o: {
       );
     }
 
-    if (pendingSteerNotice.length > 0) {
-      const job = getJob(o.jobId);
-      if (job !== undefined) {
-        try {
-          await notifyJobOwner(
-            job,
-            `⚠️ 방금 보내신 지시는 '${job.label}' 서브에이전트가 **이미 끝난 뒤** 도착해서 반영되지 않았어요:\n` +
-              pendingSteerNotice.map((t) => `· ${t}`).join("\n") +
-              `\n필요하면 위 결과를 보고 다시 시켜주세요.`,
-          );
-        } catch (e) {
-          const reason = e instanceof Error ? e.message : String(e);
-          console.error(`agent-registry: 잔여 steer 통지 실패 (job=${o.jobId}): ${reason}`);
-        }
-      }
-    }
   })();
 };
 

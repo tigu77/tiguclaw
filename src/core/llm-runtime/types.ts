@@ -284,6 +284,13 @@ export interface RegionASdkInput {
    */
   notifyDest?: WorkerNotifyDest;
   /**
+   * 이 턴이 **정기 스케줄 #id 의 발화 그 자체**다 (2026-10-02). 채우는 주체는 스케줄 실행기 하나.
+   * 대화 컨텍스트가 «이 턴은 정기 스케줄의 실행 — 지시문은 그 스케줄의 지시다» 를 말하는 근거다(헌법 «홈 밖·위험
+   * 경로» ④). ★같은 `scheduler:<id>` 세션의 다른 턴(매니저 완료 턴·선택지 답)은 채우지 않는다 — 그 턴의 지시문은
+   * 스케줄 지시가 아니다. 자식 턴(매니저·서브에이전트)에도 전파하지 않는다.
+   */
+  scheduleRun?: number;
+  /**
    * 신규(additive, 2026-07-16) — **진행 중 턴에 끼워넣을 사용자 steering 소스**(채널·LLM 무관).
    * ADR `docs/decisions/2026-07-16-midturn-steering.md` §4. 핸들러가 turn 별 SteeringChannel
    * 을 만들어 주입(inflightTurns 자매 레지스트리). 어댑터는 이 필드를 *값으로* 소비만 —

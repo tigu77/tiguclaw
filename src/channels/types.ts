@@ -8,6 +8,11 @@ export interface ReplyOptions {
    * 추상적 의도 — 채널 raw(telegram reply_parameters 등)는 채널 어댑터 안에서만.
    */
   replyToTrigger?: boolean;
+  /**
+   * 이 답이 **실패한 턴의 오류 안내**다 — 채널은 무시한다(보내는 건 같다). 매니저 완료 턴의 전달 추적이
+   * 이걸 «결과를 전했다» 로 세지 않게 하는 표식이다(그래야 raw 안전망이 결과를 대신 보낸다).
+   */
+  turnFailed?: boolean;
 }
 
 /** 중립 첨부 분류 — 채널이 자기 raw(telegram photo/document/voice 등)를 이 5종으로 매핑. */

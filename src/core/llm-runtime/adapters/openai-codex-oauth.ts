@@ -649,11 +649,7 @@ export const runOpenAiCodex = async (
   // 현재 대화 컨텍스트 — depth 0(실제 사용자 대화)만. sub-agent 는 dest 무관.
   const convoContext =
     depth === 0
-      ? formatConversationContext(
-          input.channel,
-          input.threadKey,
-          input.channelAddress,
-        )
+      ? formatConversationContext(input)
       : "";
 
   // 멀티모달 V1 — 현재 turn 첨부 placeholder (경로+메타). 미지정/빈 배열 → "" (회귀 0).

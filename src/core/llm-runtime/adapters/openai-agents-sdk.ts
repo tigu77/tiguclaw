@@ -939,11 +939,7 @@ export const runOpenAi = async (
   // 현재 대화 컨텍스트 — depth 0(실제 사용자 대화)만 (codex L814-818 parity).
   const convoContext =
     depth === 0
-      ? formatConversationContext(
-          input.channel,
-          input.threadKey,
-          input.channelAddress,
-        )
+      ? formatConversationContext(input)
       : "";
   // 스킬/에이전트 인덱스 — depth 0 turn 만 (codex L805-813 parity). depth≥1 child 는
   // spawn 도구 미등록과 정합해 인덱스도 박지 않음 (재spawn 유도 0).

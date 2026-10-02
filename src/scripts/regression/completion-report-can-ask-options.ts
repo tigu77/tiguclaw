@@ -99,7 +99,7 @@ export const check: RegressionCheck = {
         inbound: /presentOptions: IncomingMessage\["presentOptions"\] = async \([\s\S]{0,80}\) =>\s*publishPromptOptions\(bus, \{/.test(chatSrc) && !/type: "prompt\.options"/.test(chatSrc),
         // ⑤ 점검 턴도 같은 처방 — 완료·점검 두 곳.
         // ⑥ 스케줄 실행부가 그 통로를 실제로 싣는다.
-        scheduler: /notifyDest: input\.notifyDest,[\s\S]{0,400}\.\.\.scheduleChannels\(input\.notifyDest, input\.threadKey\),/.test(readSourceSync("plugins/scheduler/src/index.ts")),
+        scheduler: /\.\.\.input,[\s\S]{0,400}\.\.\.scheduleChannels\(input\.notifyDest, input\.threadKey\),/.test(readSourceSync("plugins/scheduler/src/index.ts")),
         checkin: (jobsSrc.match(/optionsPresenterFor\(dest\.channel, dest\.target \?\? null, (?:job|reportJob)\.threadKey\)/g) ?? []).length === 2,
       };
       return [

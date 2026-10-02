@@ -30,7 +30,7 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const A = "dashboard:aaa";
     const B = "dashboard:bbb";
-    const ctx = formatConversationContext("dashboard", A);
+    const ctx = formatConversationContext({ channel: "dashboard", threadKey: A });
     return [
       assert(
         "같은 세션이 띄운 잡은 소속",

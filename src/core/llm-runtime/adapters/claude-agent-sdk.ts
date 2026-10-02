@@ -1031,11 +1031,7 @@ export const runClaude = async (
   const modelProfiles = depth === 0 ? formatModelProfiles(cwd) : "";
 
   // 현재 대화 컨텍스트 — 비서가 dest_channel/dest_target 을 정확히 알게.
-  const convoContext = formatConversationContext(
-    input.channel,
-    input.threadKey,
-    input.channelAddress,
-  );
+  const convoContext = formatConversationContext(input);
 
   // 멀티모달 V1 — 현재 turn 첨부 placeholder (경로+메타). 미지정/빈 배열 → "" (회귀 0).
   const attachmentBlock = formatAttachments(input.attachments);

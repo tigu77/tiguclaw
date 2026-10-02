@@ -112,6 +112,23 @@ const toYmd = (d: Date): string => {
 export const localTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 /**
+ * ★현지 날짜와 UTC 날짜가 갈리는 동안엔 UTC 날짜를 한 줄 같이 적는다 (2026-10-02). Codex 에 호스트 웹 검색이 붙으면 서버가
+ * **UTC 날짜**를 숨은 지침으로 넣는다(실측: KST 04:32 에 «10월 1일» — `user_location` 시간대를 줘도 같다). 새벽 위키 루틴
+ * (KST 02:20)의 매니저가 «상위 지침 10월 1일 vs 요청 10월 2일» 을 충돌로 읽고 검증·커밋을 멈췄다. 같은 순간이라고 알려 주면
+ * 충돌이 아니다(실측 gpt-6-sol: 없으면 9회 중 4회 중단 · 이 문구면 28회 중 26회 진행 · 시스템 채널에 둬도 28/28 — 차이가 표본
+ * 안이라 날짜를 한 곳(이 블록)에 둔다. 남는 드문 중단은 매니저 완료 판정 턴이 이어서 끝낸다).
+ * 갈리지 않는 대부분의 시간엔 아무것도 붙이지 않는다. offsetMin = UTC 에서 현지까지의 분(KST=+540).
+ */
+export const utcDateNote = (now: Date, offsetMin: number): string | undefined => {
+  const utc = now.toISOString().slice(0, 10);
+  const local = new Date(now.getTime() + offsetMin * 60_000).toISOString().slice(0, 10);
+  if (utc === local) return undefined;
+  const abs = Math.abs(offsetMin);
+  const off = `UTC${offsetMin >= 0 ? "+" : "-"}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+  return `UTC date: ${utc} — local time is ${off}, so a date given elsewhere (e.g. by the model provider) may read ${utc}. It is the same moment, not a conflict: use ${local} and do not pause work over it.`;
+};
+
+/**
  * `<env>` 블록 문자열 렌더. Claude Code `<env>` 컨벤션 파리티 + tiguclaw 확장(Shell).
  * cwd=턴 cwd(프로젝트/홈). now 미지정 시 `new Date()`(매 턴 fresh — 캐시 무해,
  * 계약 §1.5).
@@ -121,13 +138,16 @@ export const formatEnvContext = (input: {
   now?: Date;
 }): string => {
   const shell = detectShell();
+  const now = input.now ?? new Date();
+  const utcNote = utcDateNote(now, -now.getTimezoneOffset());
   const lines = [
     "<env>",
     `Working directory: ${input.cwd}`,
     `Platform: ${process.platform}`,
     `OS Version: ${os.type()} ${os.release()}`,
-    `Today's date: ${toYmd(input.now ?? new Date())}`,
+    `Today's date: ${toYmd(now)}`,
     `Time zone: ${localTimeZone()}`,
+    ...(utcNote !== undefined ? [utcNote] : []),
     `Shell: ${shell.label} — ${shell.syntaxHint}`,
     // ★홈과 앱 루트를 **매 턴 싣는다** (2026-08-27 사용자 지적: "비서가 테마 파일을
     //  <home>/themes 에 두는 걸 모르나? 원본 레포 위치는 아나?").

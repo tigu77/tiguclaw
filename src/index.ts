@@ -1164,7 +1164,8 @@ const handler: MessageHandler = async (msg) => {
     threadKey: msg.threadKey,
   });
   if (hookOut.block) {
-    await replyCommand(msg,`요청이 훅에 의해 차단되었습니다: ${hookOut.blockReason ?? ""}`);
+    // 실패 표식 — 완료 턴이 차단되면 결과가 전해지지 않았다(raw 안전망이 대신 보낸다).
+    await replyCommand(msg, `요청이 훅에 의해 차단되었습니다: ${hookOut.blockReason ?? ""}`, { turnFailed: true });
     return;
   }
   if (hookOut.additionalContext.length > 0) {
@@ -1374,7 +1375,8 @@ const handler: MessageHandler = async (msg) => {
     // '취소' 표시되므로, 부모 턴엔 에러(⚠️)가 아닌 짧은 중립 통지만 보낸다(작업중 인디케이터도
     // 이 out 으로 꺼짐). 내부 토큰("모델 거부 아님") 노출 없이 깔끔히.
     if (e instanceof Error && e.name === "WorkerCancelledError") {
-      await replyCommand(msg, "🛑 진행 중이던 작업을 중지했어요.");
+      // 실패 표식 — 완료 턴이 이어 하던 일이 중지되면 매니저 결과는 아직 안 전해졌다(raw 안전망이 대신 보낸다).
+      await replyCommand(msg, "🛑 진행 중이던 작업을 중지했어요.", { turnFailed: true });
       await fanOutEgress(egressTargets, "🛑 진행 중이던 작업을 중지했어요.", bus, msg.threadKey);
       return;
     }
@@ -1394,7 +1396,8 @@ const handler: MessageHandler = async (msg) => {
     const detail = redactSecrets(errorDetail(e));
     // 에러 응답도 replyCommand 로 — 실패 턴에서도 대시보드 '작업 중'이 꺼지고(out 발행) 에러가
     // 대시보드 채팅에 보인다. (성공 경로는 923+929 에서 이미 발행하므로 중복 없음 — 상호배타.)
-    await replyCommand(msg, formatRegionAError(detail));
+    // ★실패 표식 — 매니저 완료 턴이 이 오류 안내를 «결과 전달» 로 세지 않게(raw 안전망이 결과를 대신 보낸다).
+    await replyCommand(msg, formatRegionAError(detail), { turnFailed: true });
     // 성공 경로와 대칭 — 실패도 egress 로 나간다(유령 신호 방지, fanOutEgress 주석 참조).
     await fanOutEgress(egressTargets, formatRegionAError(detail), bus, msg.threadKey);
     // ★StopFailure 훅 — `Stop` 의 짝 (2026-09-08). `Stop` 은 위 `try` 안에 있어 **실패한

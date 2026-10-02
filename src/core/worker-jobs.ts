@@ -2616,12 +2616,37 @@ const buildRawNotice = (job: WorkerJobRecord): string => {
   );
 };
 
+/** 작업자가 끝난 뒤 도착해 반영 못 한 지시 — raw 통지 꼬리. 비면 "". */
+export const lateNotice = (late: readonly string[], label: string): string =>
+  late.length === 0
+    ? ""
+    : `\n\n⚠️ 방금 보내신 지시는 '${label}' 작업이 **이미 끝난 뒤** 도착해서 반영되지 않았어요:\n` +
+      late.map((t) => `· ${t}`).join("\n") +
+      `\n필요하면 위 결과를 보고 다시 시켜주세요.`;
+
+/** 완료 턴에 싣는 맡긴 임무 — 앞(목표)과 끝(후처리 단계)이 판정에 필요해 둘 다 남긴다. 원문은 이 대화의 위임 호출에 있다. */
+const TASK_HEAD = 3_000;
+const TASK_TAIL = 1_000;
+const boundedTask = (task: string): string =>
+  task.length <= TASK_HEAD + TASK_TAIL
+    ? task
+    : `${task.slice(0, TASK_HEAD)}\n…(${(task.length - TASK_HEAD - TASK_TAIL).toLocaleString()}자 생략 — 원문은 이 대화의 위임 호출에 있다)…\n${task.slice(-TASK_TAIL)}`;
+
 /**
- * 성공(done) 재주입 prompt — 메인이 결과를 맥락 입혀 보고하게 하는 내부 스캐폴딩.
- * failed/cancelled 는 onWorkerComplete 가 LLM 무경유 raw 통지(buildRawNotice)로 직행하므로
- * 이 함수는 done 에만 쓰인다(호출 전 status==="done" 보장). 방어로 비-done 도 일반 문구 반환.
+ * 완료(done)·취소(cancelled) 재주입 prompt — 메인이 결과를 맥락 입혀 다루게 하는 내부 스캐폴딩.
+ * failed 는 onWorkerComplete 가 LLM 무경유 raw 통지(buildRawNotice)로 직행한다. 방어로 그 밖의 상태도 일반 문구 반환.
  */
-const buildCompletionPrompt = (job: WorkerJobRecord): string => {
+const buildCompletionPrompt = (
+  job: WorkerJobRecord,
+  ctx: { late?: readonly string[]; summonerLabel?: string } = {},
+): string => {
+  const late = ctx.late ?? [];
+  const lateBlock =
+    late.length === 0
+      ? ""
+      : `\n\n〔작업자가 끝난 뒤 도착한 사용자 지시 — 작업자는 반영하지 못했다〕\n` +
+        late.map((t) => `· ${t}`).join("\n") +
+        `\n〔/지시〕\n이 지시가 위 결과나 남은 일과 관련 있으면 이것을 먼저 따르세요.`;
   // ★취소도 메인을 거친다 (2026-08-15, 사용자 확정: "티구클로에서는 메인 비서가 아는 게 맞다").
   //
   //  종전엔 `failed` 와 한 분기로 묶여 LLM 무경유 raw 통지로 직행했다. 그 분기의 근거 셋 중
@@ -2642,7 +2667,9 @@ const buildCompletionPrompt = (job: WorkerJobRecord): string => {
       `사용자가 이 작업을 취소했습니다(실패가 아닙니다).\n` +
       `〔/알림〕\n\n` +
       `취소됐음을 한 줄로 알리고, 이 작업에 걸려 있던 후속이 있으면 어떻게 할지 물어보세요. ` +
-      `이미 한 일을 되돌리거나 새로 시작하지 마세요.`
+      (late.length === 0
+        ? `이미 한 일을 되돌리거나 새로 시작하지 마세요.`
+        : `이미 한 일을 되돌리지 말고, 아래 지시가 원하는 게 아니면 새로 시작하지 마세요.` + lateBlock)
     );
   }
   if (job.status !== "done") {
@@ -2652,12 +2679,33 @@ const buildCompletionPrompt = (job: WorkerJobRecord): string => {
       `${job.error ?? ""}\n〔/알림〕`
     );
   }
+  // ★«보고만» 이 아니다 — 덜 됐으면 이어서 끝낸다 (2026-10-02 정태님: *"문제가 생겨서 멈췄으면 다시 수정하고 반영해서 임무를
+  //  완수하면 되는데 왜 그걸 안 했지"*). 종전 문구는 «사용자에게 보고하세요» 뿐이라, 새벽 위키 루틴의 매니저가
+  //  날짜 오판으로 검증·커밋을 멈추고 done 으로 끝나자 메인은 «중단 판단은 잘못됐다» 고 정확히 짚고도 **보고하고
+  //  끝냈다**(도구는 붙어 있었다 — 시각까지 확인했다). 맡긴 임무를 같이 실어야 «다 했나» 를 잴 수 있다.
+  //  ★재시도 상한은 두지 않는다(정태님 결정 — 비서가 판단). 대신 판단 재료(같은 대화의 앞선 시도)와 기준을 준다.
+  //  ★기본은 «보고» 이고 «덜 됐으면» 이 예외다 — «먼저 판정하라» 로 시작하자 다 끝난 결과에도 5/5 확인부터 했다(옛 문구는
+  //   0/5). 실측(gpt-6-sol, 실제 02:20 결과): 덜 끝남 옛 0/6 → 새 6/6·5/5 이어서 진행 · 다 끝남 5/5 바로 보고 ·
+  //   삭제 승인 대기 — 지우기 0회(4/5 는 묻기 전에 후보 목록을 읽기만 했다).
+  //  ★실패(failed)는 여기 안 온다 — 모델 풀 소진이 흔한 원인이라 raw 직행이다(위 주석).
   return (
-    `〔백그라운드 작업 완료 알림 — 사용자에게 보고하세요〕\n` +
+    `〔백그라운드 작업 완료 알림〕\n` +
     `작업: "${job.label}"\n` +
+    (ctx.summonerLabel !== undefined
+      ? `★이 작업은 매니저 '${ctx.summonerLabel}' 가 맡긴 하위 작업이고, 그 매니저는 먼저 끝났다 — 아래 «맡긴 임무» 는 그 매니저의 지시다. ` +
+        `그 매니저의 보고가 이 대화에 이미 있으면 함께 보고 판단하세요.\n`
+      : "") +
+    `맡긴 임무:\n${boundedTask(job.task)}\n` +
     `결과:\n${job.result ?? ""}\n` +
     `〔/알림〕\n\n` +
-    `위 결과를 사용자에게 자연스럽게 보고하세요.`
+    `위 결과를 사용자에게 자연스럽게 보고하세요. 단, 결과가 맡긴 임무를 다 하지 못했거나 중간에 멈췄다면 보고로 끝내지 마세요:\n` +
+    `- 멈춘 원인을 확인하고, 이 임무로 이미 받은 권한 안에서 바로잡을 수 있으면 고쳐서 남은 일을 끝까지 하세요. ` +
+    `남은 일이 짧으면 직접 하고, 길면 다시 맡긴 뒤 이 턴은 무엇을 왜 다시 하는지 한 줄 알리고 끝내세요` +
+    `(직접 오래 붙들면 그동안 사용자에게 아무 말도 안 가고 이 대화도 막힙니다).\n` +
+    `- 사용자의 결정·승인이 필요한 일(파괴적·비가역 행위, 임무 범위 밖)이거나 작업자가 그 확인을 받으려고 멈췄으면, ` +
+    `무엇이 필요한지 적어 물어보세요.\n` +
+    `- 이 대화에서 같은 임무를 이미 다시 시도했다면 앞선 시도가 멈춘 이유와 비교하세요. 같은 이유로 또 멈췄으면 같은 방법을 ` +
+    `되풀이하지 말고 접근을 바꾸거나, 시도한 것과 남은 것을 보고하세요.` + lateBlock
   );
 };
 
@@ -2753,10 +2801,19 @@ const deliverToSummoner = (
   return ok;
 };
 
-export const onWorkerComplete = async (
+/** 잡이 아직 도는가 — 중복 소환 판정이 «이미 끝난 잡» 을 돌려주지 않게(2026-10-02 적대 검토 P-4). */
+export const isJobRunning = (jobId: string): boolean => jobs.get(jobId)?.status === "running";
+
+/**
+ * 완료 배달 — 메인 완료 턴으로 갔으면 true(늦은 지시는 그 턴·그 안전망에 실렸다). 밖에서 부르지 마라 — 늦은 지시의
+ * 별도 통지는 `onWorkerComplete` 가 이 값으로 **한 곳에서** 정한다(2026-10-02 재검토: 레지스트리 두 곳이 이 판정을
+ * 각자 들고 있어 배선을 아무도 안 쟀다 — 변이 14개 생존).
+ */
+const deliverCompletion = async (
   jobId: string,
   outcome: { result: string } | { error: string },
-): Promise<void> => {
+  lateUserMessages: readonly string[],
+): Promise<boolean> => {
   // 1) 레지스트리 마킹. 단 이미 cancelled 면(cancelJob 이 abort 전 마킹) 그 status 보존 —
   //    abort 가 runRegionA 를 reject 시켜 여기로 error 가 와도 "실패" 아닌 "취소"로 통지.
   const existing = jobs.get(jobId);
@@ -2774,7 +2831,7 @@ export const onWorkerComplete = async (
   const found = jobs.get(jobId);
   if (found === undefined) {
     console.error(`worker-jobs: onWorkerComplete unknown jobId=${jobId}`);
-    return;
+    return false;
   }
   // ─── ⓪ **합류가 선점했으면 밀어넣지 않는다** (2026-09-03) ─────────────────────────
   //  `wait_for_worker` 로 부른 쪽이 결과를 직접 받는다. 여기서 또 밀어넣으면 **같은 것을
@@ -2784,7 +2841,7 @@ export const onWorkerComplete = async (
     console.log(
       `worker-jobs: '${found.label}'(${jobId}) 는 합류(wait_for_worker)가 선점 — 재주입 생략`,
     );
-    return;
+    return false;
   }
 
   // ─── ① 소환자가 **돌고 있는 매니저**면 그 턴의 steering 큐로 (ADR 2026-08-19 §4) ────
@@ -2802,7 +2859,7 @@ export const onWorkerComplete = async (
       `worker-jobs: '${found.label}'(${jobId}) 결과를 소환자 매니저 ` +
         `${parentJobIdOf(found.threadKey) ?? "?"} 의 결과 수신함으로 전달 — 그 매니저가 턴을 마치면 거두기 턴에서 반영`,
     );
-    return;
+    return false;
   }
 
   // ─── ①-b 연쇄 취소는 **부모 알림 하나로** 닫는다 (2026-08-19) ───────────────────
@@ -2815,7 +2872,7 @@ export const onWorkerComplete = async (
     console.log(
       `worker-jobs: '${found.label}'(${jobId}) 연쇄 취소 — 상위 알림으로 갈음(개별 통지 생략)`,
     );
-    return;
+    return false;
   }
 
   // ─── ② 보고 좌표 환원 — 소환자가 **잡인데 이미 끝난** 경우 (2026-08-19) ───────────
@@ -2832,6 +2889,8 @@ export const onWorkerComplete = async (
   //  ★반드시 ① **뒤**에 온다 — 먼저 하면 좌표가 세션으로 바뀌어 "돌고 있는 매니저" 를
   //   못 찾고 매니저 라우팅이 통째로 죽는다.
   const owner = resolveOwnerThreadKey(found.threadKey);
+  // ★환원되면 «맡긴 임무» 는 메인이 아니라 먼저 끝난 매니저가 쓴 하위 지시다 — 완료 턴에 그렇게 밝힌다(2026-10-02 적대 검토 P-5).
+  const summonerJobId = parentJobIdOf(found.threadKey);
   const job =
     parentJobIdOf(found.threadKey) !== undefined &&
     owner !== "" &&
@@ -2849,7 +2908,7 @@ export const onWorkerComplete = async (
     console.error(
       `worker-jobs: 메인 핸들러 미등록 — 매니저 '${job.label}'(${jobId}) 완료 보고 불가`,
     );
-    return;
+    return false;
   }
 
   // notifyDest(스케줄 등이 주입한 generic 좌표) 우선, 없으면 channel/threadKey 폴백(회귀 0).
@@ -2879,7 +2938,7 @@ export const onWorkerComplete = async (
         `worker-jobs: ${job.status} 통지 전송 실패 (job='${job.label}' ${jobId} thread=${job.threadKey}): ${reason}`,
       );
     }
-    return;
+    return false;
   }
 
   // ─── 성공(done)·취소(cancelled) — 메인 인격 재주입 + raw 안전망 ──────────────────
@@ -2907,7 +2966,10 @@ export const onWorkerComplete = async (
     opts?: ReplyOptions,
   ): Promise<void> => {
     await reinjectReply(text, opts);
-    delivered = true; // send 성공 후에만 마킹 — throw 시 미마킹 → 안전망 발화.
+    // send 성공 후에만 마킹 — throw 시 미마킹 → 안전망 발화.
+    // ★턴이 **실패해 보낸 오류 문구**는 전달로 세지 않는다 (2026-10-02 적대 검토 P-1). 종전엔 오류 안내가 delivered 를 켜
+    //  안전망이 꺼졌고, 매니저 결과는 영영 안 갔다. 완료 턴이 이제 남은 일을 이어 하므로(길어지고 실패할 수 있다) 커졌다.
+    if (opts?.turnFailed !== true) delivered = true;
   };
   // 세션-정체성 정규화(채널/세션 분리 ADR 2026-07-15 §D1, QA §6 P1) — 재주입 완료턴이
   // route() 를 통해 **실세션 정체성**(resume/history/context boundary)에 붙도록, 사용자 세션
@@ -2930,7 +2992,10 @@ export const onWorkerComplete = async (
     channel: job.channel,
     channelUserId: job.channelUserId,
     threadKey: job.threadKey,
-    text: buildCompletionPrompt(job),
+    text: buildCompletionPrompt(job, {
+      late: lateUserMessages,
+      ...(job !== found && summonerJobId !== undefined ? { summonerLabel: jobs.get(summonerJobId)?.label ?? summonerJobId } : {}),
+    }),
     ...(idChannel !== job.channel
       ? {
           session: {
@@ -2975,7 +3040,7 @@ export const onWorkerComplete = async (
   // 무경유 raw 통지로 결과를 결정 전달한다. delivered=true 면(LLM 이 이미 보고) 생략 → 이중 0.
   if (!delivered) {
     try {
-      await baseReply(buildRawNotice(job));
+      await baseReply(buildRawNotice(job) + lateNotice(lateUserMessages, job.label));
       console.warn(
         `worker-jobs: 완료 재주입 통지 미도달 — raw 안전망 통지 발화 (job='${job.label}' ${jobId})`,
       );
@@ -2985,6 +3050,29 @@ export const onWorkerComplete = async (
         `worker-jobs: raw 안전망 통지마저 실패 (job='${job.label}' ${jobId}): ${reason}`,
       );
     }
+  }
+  return true;
+};
+
+/**
+ * region 의 runner 가 부르는 완료 훅. ★`lateUserMessages` = 작업자가 끝난 **뒤** 도착해 반영 못 한 사용자 지시 —
+ * 메인 완료 턴으로 가면 거기 «먼저 따르라» 로 싣고, 그 밖의 길(실패·매니저 큐·합류·연쇄 취소)이면 여기서 정직하게
+ * 통지한다. 결과 보고 **뒤**에 보내야 «그 작업 끝났는데 이건 못 받았다» 순서가 맞다.
+ */
+export const onWorkerComplete = async (
+  jobId: string,
+  outcome: { result: string } | { error: string },
+  lateUserMessages: readonly string[] = [],
+): Promise<void> => {
+  const carried = await deliverCompletion(jobId, outcome, lateUserMessages);
+  if (carried || lateUserMessages.length === 0) return;
+  const job = jobs.get(jobId);
+  if (job === undefined) return;
+  try {
+    await notifyJobOwner(job, lateNotice(lateUserMessages, job.label).trimStart());
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`worker-jobs: 늦은 지시 통지 실패 (job='${job.label}' ${jobId}): ${reason}`);
   }
 };
 

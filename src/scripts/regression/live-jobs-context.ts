@@ -24,19 +24,19 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     assertIsolated(); // DB 에 잡을 심으므로 라이브 홈 오염 방지(감사 실측: worker_jobs 행 증가).
     __resetJobsForTest();
-    const none = formatConversationContext("http-bridge", TK, "addr");
+    const none = formatConversationContext({ channel: "http-bridge", threadKey: TK, channelAddress: "addr" });
     const out: Assertion[] = [
       assert("진행 중 없으면 줄 없음(평시 토큰 0)", !none.includes("진행 중인 백그라운드"), `${none.split("\n").length}줄`),
     ];
     const w = registerJob({ label: "파이프라인", threadKey: TK, channel: "dashboard", channelUserId: "u", task: "t" });
     const a = registerJob({ label: "검증 서브", threadKey: `worker:${w}`, channel: "dashboard", channelUserId: "u", task: "t", kind: "agent" });
-    const withJobs = formatConversationContext("http-bridge", TK, "addr");
+    const withJobs = formatConversationContext({ channel: "http-bridge", threadKey: TK, channelAddress: "addr" });
     out.push(assert("매니저가 보인다", withJobs.includes("파이프라인"), "포함 여부"));
     // ★손자까지 — 매니저가 띄운 서브는 threadKey 가 잡 좌표라 정확 일치로는 안 걸린다.
     out.push(assert("손자(매니저가 띄운 서브)도 보인다", withJobs.includes("검증 서브"), "포함 여부"));
     markDone(a, "ok");
     markDone(w, "ok");
-    const after = formatConversationContext("http-bridge", TK, "addr");
+    const after = formatConversationContext({ channel: "http-bridge", threadKey: TK, channelAddress: "addr" });
     out.push(assert("끝나면 사라진다", !after.includes("진행 중인 백그라운드"), "잔류 여부"));
     __resetJobsForTest();
     return out;

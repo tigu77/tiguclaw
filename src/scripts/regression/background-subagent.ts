@@ -599,6 +599,16 @@ export const check: RegressionCheck = {
         code.includes(".userMessages") ? "필터 있음" : "★raw drain — 자식 결과가 섞인다",
       ),
     );
+    // ★늦게 온 지시는 **넘기기만** 한다 — 싣거나 통지하는 판단은 onWorkerComplete 한 곳(2026-10-02 재검토: 두 러너가 그 판정을
+    //  각자 들고 있어 배선을 아무도 안 쟀다). 분리 실행(detached IIFE) 안이라 구동이 어려워 자리 판정이다.
+    const agentCode = stripSrcComments(await readFile(new URL("../../core/llm-runtime/capabilities/agent-registry.ts", import.meta.url), "utf8"));
+    const passes = (c: string): string => c.match(/onWorkerComplete\([^)]*\)/g)?.join(" · ") ?? "(호출 없음)";
+    out.push(assert(
+      "★두 러너(매니저·서브)가 늦게 온 지시를 onWorkerComplete 에 넘기고, 따로 통지하지 않는다(판정 한 곳)",
+      /onWorkerComplete\(job\.jobId, outcome, pendingSteerNotice\)/.test(code) && /onWorkerComplete\(o\.jobId, outcome, pendingSteerNotice\)/.test(agentCode) &&
+        !/lateNotice|이미 끝난 뒤/.test(code) && !/lateNotice|이미 끝난 뒤/.test(agentCode),
+      { worker: passes(code), agent: passes(agentCode) },
+    ));
 
     __resetJobsForTest();
     return out;

@@ -22,6 +22,8 @@
  *  (모델에겐 "이미 띄웠다" 가 사실이고, 그게 다음 판단에 옳은 입력이다).
  */
 
+import { isJobRunning } from "./worker-jobs.js";
+
 /** 같은 턴으로 볼 창. 한 배치의 병렬 tool call 은 수백 ms 안에 다 들어온다. */
 const WINDOW_MS = 30_000;
 
@@ -57,7 +59,10 @@ export const findDuplicateSpawn = (
   const live = list.filter((r) => now - r.at < WINDOW_MS);
   if (live.length === 0) recent.delete(threadKey);
   else recent.set(threadKey, live);
-  return live.find((r) => r.key === key)?.jobId;
+  // ★끝난 잡은 «이미 띄웠다» 가 거짓이다 (2026-10-02 적대 검토 P-4) — 빨리 멈춘 작업을 완료 턴이 같은 인자로 다시
+  //  맡기면, 30초 창 안이라 끝난 jobId 와 «결과가 돌아옵니다» 를 돌려받고 아무 일도 안 일어났다. 잡 상태는 여기서 직접
+  //  본다 — 호출부가 판정 함수를 넘기게 했더니 그 배선을 아무도 안 쟀다(재검토: `() => true` 로 바꿔도 초록).
+  return live.find((r) => r.key === key && isJobRunning(r.jobId))?.jobId;
 };
 
 /** 실제로 띄운 스폰을 기록. */

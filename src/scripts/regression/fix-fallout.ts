@@ -129,6 +129,8 @@ export const check: RegressionCheck = {
       "add_mcp_server", "add_memory", "add_schedule", "add_watch",
       "cancel_worker", "delete_command", "delete_endpoint", "delete_memory",
       "delete_schedule", "delete_watch", "invoke_skill",
+      // ★지금 실행 — 루틴을 실제로 돌리고 결과를 목적지로 보낸다. 폴백이 되부르면 리포트가 두 번 간다.
+      "run_schedule",
       "project_forget", "project_register", "project_update",
       "register_command", "register_endpoint", "remove_mcp_server",
       "run_in_background", "send_file", "spawn_agent", "steer_worker",

@@ -28,11 +28,11 @@ export const EVENT_TEXT_MAX = 50_000;
  * ★남아야 할 것엔 절대 쓰지 마라 — 대화·결과 보고는 기록이 곧 가치다.
  */
 export const replyCommand = async (
-  msg: { reply: (t: string) => Promise<unknown>; channel: string; threadKey: string },
+  msg: { reply: (t: string, o?: { turnFailed?: boolean }) => Promise<unknown>; channel: string; threadKey: string },
   text: string,
-  opts?: { ephemeral?: boolean },
+  opts?: { ephemeral?: boolean; turnFailed?: boolean },
 ): Promise<void> => {
-  await Promise.resolve(msg.reply(text)).catch(() => {});
+  await Promise.resolve(opts?.turnFailed === true ? msg.reply(text, { turnFailed: true }) : msg.reply(text)).catch(() => {});
   try {
     getEventBus().publish({
       type: "channel.message.out",

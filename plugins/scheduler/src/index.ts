@@ -38,7 +38,7 @@ import {
 import { runClaude } from "../../../src/core/claude.js";
 import { attachmentSenderFor, optionsPresenterFor } from "../../../src/core/outbound.js";
 import { withExternalTurn } from "../../../src/core/inflight-turns.js";
-import { runScheduleFiring, type RunnerDeps } from "./runner.js";
+import { isInFlight, runScheduleFiring, type RunnerDeps } from "./runner.js";
 import { setSchedulerLifecycleHooks, createSchedulerMcpServer } from "./mcp.js";
 
 export interface SchedulerPluginDeps {
@@ -61,6 +61,15 @@ class SchedulerPlugin {
   // ★매 호출 새 인스턴스 — 데몬이 턴마다 부른다(싱글턴이면 동시 턴에서 깨진다).
   getMcpServer(): ReturnType<typeof createSchedulerMcpServer> {
     return createSchedulerMcpServer();
+  }
+
+  /** 실행 의존성 — cron·부팅·지금 실행이 **같은 것**을 쓴다(세 곳이 각자 만들면 갈린다). */
+  private firingDeps(): RunnerDeps {
+    return {
+      runClaude: this.deps.runClaude ?? defaultRunClaude,
+      recordFiring: this.deps.recordFiring ?? defaultRecordFiring,
+      cwd: this.deps.cwd ?? process.cwd(),
+    };
   }
 
   /** trigger capability — loader 가 startTrigger(bus, deps) 호출. */
@@ -86,6 +95,15 @@ class SchedulerPlugin {
         } else {
           this.registerCron(row);
         }
+      },
+      // MCP run_schedule → 지금 한 번. cron·reboot 과 **같은** runScheduleFiring(겹침 방지·이력 정책·목적지 그대로).
+      onScheduleRunNow: (row) => {
+        const live = this.bus;
+        if (live === null) return "unavailable";
+        if (isInFlight(row.id)) return "busy";
+        console.log(`[scheduler:${row.id}] 지금 실행 요청 — '${row.label}'`);
+        void runScheduleFiring(row, live, this.firingDeps());
+        return "started";
       },
     });
 
@@ -185,11 +203,7 @@ class SchedulerPlugin {
     for (const row of rebootRows) {
       // 격리 try/catch — 한 row 의 발화 throw 가 다른 row 진행 막지 않음.
       try {
-        void runScheduleFiring(row, bus, {
-          runClaude: this.deps.runClaude ?? defaultRunClaude,
-          recordFiring: this.deps.recordFiring ?? defaultRecordFiring,
-          cwd: this.deps.cwd ?? process.cwd(),
-        });
+        void runScheduleFiring(row, bus, this.firingDeps());
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         console.error(
@@ -223,11 +237,7 @@ class SchedulerPlugin {
         row.cronExpr,
         { timezone: row.timezone, paused: false },
         () => {
-          void runScheduleFiring(row, bus, {
-            runClaude: this.deps.runClaude ?? defaultRunClaude,
-            recordFiring: this.deps.recordFiring ?? defaultRecordFiring,
-            cwd: this.deps.cwd ?? process.cwd(),
-          });
+          void runScheduleFiring(row, bus, this.firingDeps());
         },
       );
       this.crons.set(row.id, cron);
@@ -321,14 +331,11 @@ const defaultRunClaude: RunnerDeps["runClaude"] = async (input) => {
     { ac, channel: input.channel, target: null, notifyDest: input.notifyDest },
     () =>
       runClaude({
-        text: input.text,
-        threadKey: input.threadKey,
-        channel: input.channel,
-        cwd: input.cwd,
+        // ★실행기가 채운 입력을 **통째로** 넘긴다 (2026-10-02 재검토) — 필드를 골라 넘기던 때 새로 더한 `scheduleRun` 이
+        //  여기서 떨어져, 실제 발화엔 «정기 스케줄 실행» 표식이 한 번도 안 붙었다(회귀는 이 파사드를 모의로 갈아 못 봤다).
+        //  notifyDest(매니저 통지 좌표)·scheduleRun(발화 턴 표식) 모두 실행기가 채우는 값이다.
+        ...input,
         abortSignal: ac.signal,
-        // 매니저 통지 dest forward — runner 가 채운 generic 좌표를 RegionASdkInput.notifyDest 로
-        // 그대로 넘긴다(어댑터는 미독해, 매니저 발사 도구만 읽음). 미지정이면 회귀 0.
-        notifyDest: input.notifyDest,
         // ★선택지·파일도 스케줄의 목적지로 (2026-10-01) — 이 발화는 핸들러를 우회해 채널이 주는 통로가 없어, 선택지 도구가
         //  아예 안 붙고(글로만) `send_file` 도 막혔다. 매니저 완료 보고(worker-jobs)와 같은 처방. 고른 값은 물어본 이 스레드로.
         ...scheduleChannels(input.notifyDest, input.threadKey),

@@ -473,8 +473,9 @@ export const runWorkerJob = (
     // 직행으로 *반드시* 전달한다. await 로 onComplete 예외도 본 IIFE 가 흡수(throw 0, 데몬
     // 생존). 본 IIFE 자체가 fire-and-forget(detached)이라 이 await 은 채널 폴러·메인루프를
     // 막지 않는다(매니저 격리 유지).
+    // ★늦게 온 지시도 넘긴다 — 싣거나 통지하는 판단은 onWorkerComplete 한 곳이다(2026-10-02).
     try {
-      await onWorkerComplete(job.jobId, outcome);
+      await onWorkerComplete(job.jobId, outcome, pendingSteerNotice);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(
@@ -482,22 +483,6 @@ export const runWorkerJob = (
       );
     }
 
-    // 반영 못 한 지시 정직 통지 — 결과 보고 *뒤*에 보내야 "그 작업 끝났는데 이건 못 받았다"
-    // 순서가 맞는다. raw 아웃바운드(LLM 무경유) — 모델 풀이 죽어 있어도 결정적으로 전달된다
-    // (recoverInterruptedJobs 의 중단 통지와 동형).
-    if (pendingSteerNotice.length > 0) {
-      try {
-        await notifyJobOwner(
-          job,
-          `⚠️ 방금 보내신 지시는 '${job.label}' 매니저가 **이미 끝난 뒤** 도착해서 반영되지 않았어요:\n` +
-            pendingSteerNotice.map((t) => `· ${t}`).join("\n") +
-            `\n필요하면 위 결과를 보고 다시 시켜주세요.`,
-        );
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        console.error(`worker-registry: 잔여 steer 통지 실패 (job=${job.jobId}): ${reason}`);
-      }
-    }
   })();
 };
 

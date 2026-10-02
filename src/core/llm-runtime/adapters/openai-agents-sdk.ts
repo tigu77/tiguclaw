@@ -103,6 +103,7 @@ import { createFindCapabilitiesMcpServer } from "../capabilities/find-capabiliti
 import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
 import { claimToolNames, hideTakenTools, probeBridgeTools } from "../tool-name-claim.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
+import { createRequestTimeline, openAiStreamMark } from "./_request-timing.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
@@ -1369,6 +1370,8 @@ export const runOpenAi = async (
   // mcpServers 가 listTools/callTool 을 lazy connect 하므로, 응답 후 일괄 close.
   // 실패해도 응답 흐름 영향 0(개별 try/catch).
   const runOnce = async (agentToRun: Agent = agent, closeServers = true) => {
+    // 요청별 벽시계 분해(`_request-timing.ts`, 세 어댑터 공용) — 응답 시작·첫 진전·끝·도구 결과 시각만 넘긴다.
+    const requestTimeline = createRequestTimeline(Date.now());
     try {
       const streamed = await run(agentToRun, runInput, {
         stream: true,
@@ -1396,6 +1399,7 @@ export const runOpenAi = async (
           const data = (ev as { data?: unknown }).data as
             | { type?: unknown; delta?: unknown }
             | undefined;
+          requestTimeline.mark(openAiStreamMark(data), Date.now());
           if (
             data?.type === "output_text_delta" &&
             typeof data.delta === "string"
@@ -1491,6 +1495,7 @@ export const runOpenAi = async (
           ev.type === "run_item_stream_event" &&
           (ev as { name?: unknown }).name === "tool_output"
         ) {
+          requestTimeline.toolResult(Date.now());
           // 실행시간(#3) — 도구 완료(function_call_result). 같은 callId 의 시작 기록을 찾아
           // phase:"end"+durationMs 발행(같은 seq → 대시보드가 시작 스텝에 주석). best-effort.
           const raw = (ev as { item?: { rawItem?: unknown } }).item?.rawItem as
@@ -1539,6 +1544,9 @@ export const runOpenAi = async (
       }
       // 정리 보장 — 스트림 완료까지 대기 후 finalOutput/usage 가 확정됨.
       await streamed.completed;
+      // ★턴 끝 한 줄 (2026-10-02) — 이 어댑터엔 턴 끝 로그가 없어 «도구 밖 시간» 을 볼 자리가 없었다.
+      //  정의는 codex `[codex-turn-end]`·claude `LOOP-EXIT` 의 시간 칸과 같다(`_request-timing.ts`).
+      console.log(`[openai-turn-end] ${input.threadKey} model=${input.model ?? "?"} ${requestTimeline.format()}`);
       return streamed;
     } catch (e) {
       // abort 가 1층(유휴)·2층(턴) 타임아웃이면 해당 에러로 승격 (facade 일관 신호,

@@ -58,6 +58,7 @@ import { getPaths } from "../../paths.js";
 import { bundledClaudeMissingHint } from "../../claude-cli.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { buildActivityDetail } from "./_activity-detail.js";
+import { claudeStreamMark, createRequestTimeline } from "./_request-timing.js";
 import { buildActivityDiff } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
@@ -1595,6 +1596,11 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   // 어디서 멈추는지 *로그*(영속)로 남긴다. stream_event(토큰)는 flood 라 200개마다만, 그 외
   // 메시지·loop-exit·return 은 매번. hang 재현 시 로그 마지막 [claude-complete] 줄이 멈춘 지점.
   let diagStreamCount = 0;
+  // 요청별 벽시계 분해(`_request-timing.ts`, 세 어댑터 공용) — 응답 시작(message_start)·첫 진전(글자·도구 인자)·
+  //  끝(message_stop)·도구 결과(user) 시각만 넘긴다. 부모 대화의 요청만 센다.
+  const requestTimeline = createRequestTimeline(Date.now());
+  // SDK 가 결과에 싣는 소요 — 세션 누적인지 턴 값인지 문서로 확정되지 않아 **원값 그대로** 싣는다(해석은 실측 뒤).
+  let sdkDurations: { ms: number; apiMs: number } | undefined;
   /**
    * ★**우리 답변의 텍스트 델타** 수 (2026-08-09 적대 검토 C).
    *
@@ -1811,6 +1817,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       }
       {
         const event = msg.event;
+        if (typeof parentToolUseId !== "string") requestTimeline.mark(claudeStreamMark(event), Date.now());
         // ★호출 단위 usage 의 **최종값**은 여기 있다 (2026-08-05, SDK 0.3 업그레이드 부작용).
         //  0.1.77 에선 `assistant` 메시지 usage 가 완료 시점 값이었는데, 0.3 은 그 자리에
         //  **`message_start` 스냅샷**을 싣는다 — `output_tokens: 1`(플레이스홀더)이다.
@@ -1863,6 +1870,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         }
       }
     } else if (msg.type === "result") {
+      sdkDurations = { ms: msg.duration_ms, apiMs: msg.duration_api_ms };
       // 완료 데드락 수정(ADR 2026-07-16-midturn-steering §"완료 데드락 + 수정" 채택안 Part A) —
       // result 는 모델 turn 종료 신호. steering.stream(signal) 을 소비하는 제너레이터
       // (buildQuery) 는 이 채널이 close 되어야 return → SDK 가 stdin(endInput) close →
@@ -2207,6 +2215,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         }
       }
     } else if (msg.type === "user") {
+      // 도구 결과가 왔다 — 다음 요청의 준비 시각(부모 대화만).
+      if (typeof (msg as { parent_tool_use_id?: unknown }).parent_tool_use_id !== "string") requestTimeline.toolResult(Date.now());
       // Task 완료 감지 — 부모가 자기 Task tool_use 에 대응하는 tool_result 를 받는 user
       // 메시지(parent_tool_use_id===null). content 의 tool_result 블록 중 tool_use_id 가
       // 추적 중인 Task id 면 그 서브 완료 → markDone(agent 잡 종료 = 대시보드 카드 완료).
@@ -2328,7 +2338,12 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       }
     }
   }
-    console.log(`[claude-complete] ${input.threadKey} LOOP-EXIT (스트림 정상 종료) resultText=${resultText !== undefined} chunks=${assistantTextChunks.length} streamDeltas=${diagStreamCount}`);
+    console.log(
+      `[claude-complete] ${input.threadKey} LOOP-EXIT (스트림 정상 종료) resultText=${resultText !== undefined} chunks=${assistantTextChunks.length} streamDeltas=${diagStreamCount} ` +
+        // ★요청별 벽시계 분해 (2026-10-02) — codex `[codex-turn-end]` 와 같은 정의(`_request-timing.ts`).
+        `${requestTimeline.format()}` +
+        (sdkDurations !== undefined ? ` sdk=duration_ms ${sdkDurations.ms}·duration_api_ms ${sdkDurations.apiMs}` : ""),
+    );
     break; // 스트림 정상 소비 — 재시도 루프 종료.
   } catch (e) {
     // ★앱 도구를 캡처하고 **우리가** 끊은 abort — 에러가 아니라 정상 종료다(2026-08-09).

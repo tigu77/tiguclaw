@@ -142,6 +142,7 @@ import type {
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
 import { summarizeInputComposition } from "./_codex-input-composition.js";
+import { formatRequestSpans, formatTurnTiming, requestSpans, type RequestSpans } from "./_request-timing.js";
 import { codexSpeedBody } from "./_openai-speed.js";
 import { buildActivityDetail, buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
@@ -1452,7 +1453,12 @@ export const runOpenAiCodex = async (
   try {
     // ★창(window)으로 본다 — 이어갈 때 `iterationBase` 만 옮기고 `iteration` 은 계속 는다.
     //  (0 으로 되돌리면 iteration 0 전용 입력 상한 가드가 다시 켜져 부작용 중복을 부른다.)
+    // 요청별 벽시계 분해(`_request-timing.ts`) — 턴 끝 한 줄에 합계와 긴 요청 셋을 싣는다.
+    const turnSpans: RequestSpans[] = [];
+    let prevResponseEndAt: number | undefined;
+    let lastSpans: RequestSpans | undefined;
     while (withinWindow(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)) {
+      const readyAt = Date.now();
       // 2층 도구 루프 가드 (TT-I6, §4.4 #1) — iteration 진입(다음 LLM 호출) 직전 체크.
       // codex 는 수동 agentic 루프라 callTool 에 signal 이 안 들어간다(MCP 한계). 직전
       // iteration 의 도구 1개가 행이었어도 *그 도구가 반환하면* 여기서 다음 fetch 진입을
@@ -1698,6 +1704,12 @@ export const runOpenAiCodex = async (
       // 발화는 turn/매니저 예산(input.abortSignal)과 별개라 재개에 예산이 남는다. 모델 폴백 아님.
       let sseResult: CodexSseResult;
       let stallAttempt = 0;
+      // 이 요청의 시각 — 시도(무진전 재개)마다 전송·헤더·첫 이벤트·첫 진전을 새로 찍고, 첫 전송만 남긴다.
+      let firstSendAt: number | undefined;
+      let sendAt = 0;
+      let headersAt = 0;
+      let firstEventAt: number | undefined;
+      let firstOutputAt: number | undefined;
       for (;;) {
         const idleAc = new AbortController();
         // no-progress 타이머 — onProgress(진전)에만 beat. abort 시 linkAbort 가 fetch signal 로.
@@ -1723,6 +1735,10 @@ export const runOpenAiCodex = async (
         let iterChunks = 0;
         let iterLastChunkAt = 0;
         const iterStart = Date.now();
+        firstSendAt ??= iterStart;
+        sendAt = iterStart;
+        firstEventAt = undefined;
+        firstOutputAt = undefined;
         // 2층 합성 (TT-I2) — 1층 idle AC 와 핸들러 turn signal 을 OR 결합해 fetch signal 로.
         const effectiveAc = linkAbort(idleAc.signal, input.abortSignal);
         try {
@@ -1779,6 +1795,7 @@ export const runOpenAiCodex = async (
         if (res.body === null) {
           throw new Error("Codex backend response.body 가 null — SSE 스트림 부재.");
         }
+        headersAt = Date.now();
 
         // externalTools 스트리밍(2026-07-26) — index → "이 index 가 externalTools 이름과
         // 매치되는가" 판정 캐시. added 이벤트가 name 을 처음 알려주므로 거기서 채우고,
@@ -1795,12 +1812,16 @@ export const runOpenAiCodex = async (
             iterChunks += 1;
             turnChunks += 1;
             iterLastChunkAt = Date.now();
+            firstEventAt ??= iterLastChunkAt;
           },
           (delta) => {
             deltaStream.push(delta); // llm.delta fan-out (coalesce → publish, depth-0).
             tracePush(delta); // 매니저/서브에이전트 서술 로그 트레이스(deltaStream 꺼진 턴만).
           },
-          () => progressTimer.beat(), // onProgress — 실제 output/tool = 진전 → 타이머 reset.
+          () => {
+            firstOutputAt ??= Date.now();
+            progressTimer.beat(); // onProgress — 실제 output/tool = 진전 → 타이머 reset.
+          },
           externalToolNames.size === 0
             ? undefined
             : (info) => {
@@ -2079,6 +2100,22 @@ export const runOpenAiCodex = async (
       }
       }
       const { text, responseId, toolCalls, usage } = sseResult;
+      {
+        const endAt = Date.now();
+        lastSpans = requestSpans(
+          turnSpans.length + 1,
+          {
+            readyAt,
+            ...(firstSendAt !== undefined ? { firstSendAt, sendAt, headersAt } : {}),
+            ...(firstEventAt !== undefined ? { firstEventAt } : {}),
+            ...(firstOutputAt !== undefined ? { firstOutputAt } : {}),
+            endAt,
+          },
+          prevResponseEndAt,
+        );
+        turnSpans.push(lastSpans);
+        prevResponseEndAt = endAt;
+      }
       if (usage !== undefined) {
         finalUsage = usage;
         // 이 대화의 글자당 토큰 — 이력 상한(`historyCapChars`)이 창에 맞게 잡히는 재료. 보낸 요청 전체와 그 입력 토큰(같은 호출)의 비.
@@ -2104,6 +2141,10 @@ export const runOpenAiCodex = async (
               `적중=${Math.round(hitPct(usage))}% req=${lastReqBytes.total.toLocaleString()}자` +
               `(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
               `${lastToolsNote} ${lastInstrNote} ${lastFingerprintNote} ` +
+              // 요청별 벽시계 분해 — `attribution=` 이 줄 끝이라는 계약을 지키려고 앞에 둔다.
+              `${lastSpans !== undefined ? `${formatRequestSpans(lastSpans)} ` : ""}` +
+              // 출력 구간이 길 때 «길게 썼나 · 중간에 다시 생각했나» 를 가르는 재료.
+              `out=${usage.outputTokens.toLocaleString()}(추론 ${(usage.reasoningTokens ?? 0).toLocaleString()}) ` +
               // ★진단 전용 — 요청 body 엔 안 들어간다.
               `run=${run} origin=${origin} attachmentCallback=${String(attachmentCallback)} ` +
               `sendFileTool=${String(lastSendFileTool)}` +
@@ -2232,6 +2273,9 @@ export const runOpenAiCodex = async (
         const tail = finalText.replace(/\s+/g, " ").slice(-100);
         console.log(
           `[codex-turn-end] ${input.threadKey} model=${model} iter=${iteration} steered=${steeredTotal} ` +
+            // ★요청별 벽시계 분해 (2026-10-02) — «도구 밖 시간» 이 서버 대기·생각·조립·무진전 중 어디인지(`_request-timing.ts`).
+            //  줄 **앞쪽**에 둔다 — `/logs` 가 긴 줄을 400자에서 자르는데, 뒤에 두면 비서가 자가진단할 때 안 보인다(적대 검토).
+            `${formatTurnTiming(turnSpans)} ` +
             `closing=${closing ? "재요청" : "종료"} ` +
             `text=${text.length} finalText=${finalText.length} ` +
             `toolsSinceText=${toolCallsSinceText}${

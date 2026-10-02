@@ -129,7 +129,7 @@ const run = async (): Promise<Assertion[]> => {
       "utf8",
     );
     const wired =
-      /iterLastChunkAt = Date\.now\(\);[\s\S]{0,400}?\(delta\) => \{[\s\S]{0,400}?\},\s*\n\s*\(\) => progressTimer\.beat\(\),/.test(
+      /iterLastChunkAt = Date\.now\(\);[\s\S]{0,400}?\(delta\) => \{[\s\S]{0,400}?\},\s*\n\s*\(\) => (?:progressTimer\.beat\(\)|\{\s*firstOutputAt \?\?= Date\.now\(\);\s*progressTimer\.beat\(\);[^\n]*\n\s*\}),/.test(
         src,
       );
     out.push(

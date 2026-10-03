@@ -11,7 +11,7 @@
  *   install | uninstall | restart | stop | start | status | logs | print | update.
  *   - macOS  → launchd LaunchAgent (KeepAlive, 자동 respawn).
  *   - Linux  → systemd **user** 유닛 (Restart=always).
- *   - Windows→ 예약작업(로그온 + 1분 반복) + 숨김 VBS 감독자. 예약작업이 막힌 기계는 시작프로그램 폴더 폴백(자동시작만).
+ *   - Windows→ 예약작업(로그온 + 1분 반복) + 숨김 VBS 감독자. 예약작업이 막힌 기계는 시작프로그램 폴더 폴백(감독자는 있고, 감독자가 죽으면 다음 로그온까지).
  *
  * update = 터미널 직접 자가 갱신(채팅 /update 와 별개). dep-free 라 깨진
  *   node_modules/tsx/typescript 에서도 `npm ci` 로 스스로 복구한다. 순서:
@@ -45,7 +45,7 @@
  *   prod 기본 = home ~/.tiguclaw · runtime built.
  *
  * KeepAlive: macOS(launchd KeepAlive) · Linux(systemd Restart=always) · Windows(감독자 즉시 재기동 + 예약작업 1분
- *   반복이 감독자까지 되살림, 2026-08-22). 예약작업이 정책으로 막혀 시작프로그램 폴백이면 자동 재시작은 없다.
+ *   반복이 감독자까지 되살림, 2026-08-22). 정책으로 막혀 시작프로그램 폴백이면 데몬은 감독자가 되살리지만 감독자는 아무도 안 되살린다.
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
@@ -725,6 +725,25 @@ const winPort = (c) =>
   readHomeEnvValue(c.homeAbs, "HTTP_BRIDGE_PORT") ?? (process.env.HTTP_BRIDGE_PORT?.trim() || "7011");
 
 /**
+ * VBS 파일 내용(바이트) — **UTF-16LE + BOM** (2026-10-03 적대 검토 C, 집 윈도우 실측). WSH 는 BOM 없는 파일을
+ * 시스템 ANSI(한국어 윈도우 = CP949)로 읽는다. UTF-8 로 쓰면 `C:\Users\홍길동\…` 이 `C:\Users\?띻만??…` 로 깨져
+ * 감독자가 엉뚱한 홈으로 떴다(한글 계정명이면 기본 홈 경로가 한글이다). BOM 이 있으면 WSH 가 유니코드로 읽는다.
+ * @param {string} text
+ * @returns {Buffer}
+ */
+export const vbsBytes = (text) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
+
+/** VBS 를 쓰는 **유일한** 자리 — 두 VBS(런처·시작프로그램 폴백)가 이걸 지난다. @param {string} p @param {string} text */
+export const writeVbs = (p, text) => writeFileSync(p, vbsBytes(text));
+
+/**
+ * PowerShell 출력을 UTF-8 로 내게 하는 머리 한 줄 — 우리는 출력을 utf8 로 읽는다. 기본(콘솔 코드페이지 CP949)이면
+ * 한글 경로가 깨져 명령줄에서 이 홈의 감독자를 못 찾고(stop·restart·uninstall 이 못 죽인다), 오류 문구도 깨진다
+ * (2026-10-03 적대 검토 C, 집 윈도우 실측).
+ */
+export const PS_UTF8_OUTPUT = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; ";
+
+/**
  * 윈도우 명령줄 인자 하나를 따옴표로 감싼다 — 프로그램(node)이 읽는 규칙(CommandLineToArgvW)대로.
  * ★끝의 역슬래시는 **두 배로** 적는다 (2026-10-03 재검토 F-C). `"C:\x\"` 는 끝의 `\"` 가 «따옴표 문자» 로 읽혀
  *  인자가 닫히지 않고 뒤의 `--runtime built` 까지 홈 값에 붙는다 — 홈을 `C:\x\` 처럼 끝 구분자와 함께 적으면 감독자가 엉뚱한 홈으로 뜬다
@@ -765,7 +784,7 @@ export const winSuperviseArgv = (c) => [
  * @param {Ctx} c
  * @returns {string}
  */
-const buildWinVbs = (c) => {
+export const buildWinVbs = (c) => {
   const cmd = winSuperviseArgv(c)
     .map(winQuoteArg)
     .join(" ");
@@ -792,10 +811,19 @@ const winReg = (args) =>
 
 /**
  * KeepAlive 예약작업명 — 인스턴스 라벨에서 파생(한 기계의 여러 인스턴스가 안 겹친다).
- * @param {Ctx} c
+ * @param {Pick<Ctx, "label">} c
  * @returns {string}
  */
 const winTaskName = (c) => c.label;
+
+/**
+ * 예약작업을 **켜고 나서** 띄운다 — install·start·restart 가 같이 쓴다(세 벌이던 것을 하나로, 2026-10-03 재검토).
+ * Enable 이 먼저다: stop 이 비활성화해 두고, install 은 재등록이 실패하면 winEnsureTask 가 건 Disable 이 남는다.
+ * @param {Pick<Ctx, "label">} c
+ * @returns {string}
+ */
+export const winEnableStartScript = (c) =>
+  `Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'OK'`;
 
 /**
  * PowerShell 스크립트를 **인용 지옥 없이** 실행한다 — `-EncodedCommand`(UTF-16LE base64).
@@ -804,15 +832,23 @@ const winTaskName = (c) => c.label;
  * @param {string} script
  * @returns {{status: number | null, stdout: string, stderr: string}}
  */
+/**
+ * winPs 가 넘기는 인자 — 출력 인코딩 머리를 **반드시** 앞에 붙인다(회귀가 base64 를 풀어 확인한다).
+ * @param {string} script
+ * @returns {string[]}
+ */
+export const winPsArgs = (script) => [
+  "-NoProfile",
+  "-NonInteractive",
+  "-EncodedCommand",
+  Buffer.from(PS_UTF8_OUTPUT + script, "utf16le").toString("base64"),
+];
+
+/** @param {string} script */
 const winPs = (script) => {
   const r = spawnSync(
     "powershell",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ],
+    winPsArgs(script),
     // ★**타임아웃을 건다** (2026-08-22, OpenClaw 참고). 종전엔 무제한이라 `schtasks`/
     //  PowerShell 이 먹통이 되면 **설치가 영원히 매달린다**. OpenClaw 가 그걸 겪고 조기
     //  포기 + 폴백을 넣었다("if schtasks itself wedges … aborts that path quickly").
@@ -836,8 +872,8 @@ const winPs = (script) => {
  *
  * ★왜 필요한가 (2026-08-22, OpenClaw 참고): 회사 PC 처럼 예약작업 생성이 정책으로 막힌
  *  기계가 있다. 종전엔 거기서 install 이 실패하고 끝났다 — 자동시작이 **아예 없는** 상태.
- *  OpenClaw 는 같은 상황에서 시작프로그램 폴더로 폴백한다. KeepAlive(죽으면 부활)는
- *  포기하지만 **로그온 자동시작은 살아남는다** — 없는 것보다 훨씬 낫다.
+ *  OpenClaw 는 같은 상황에서 시작프로그램 폴더로 폴백한다. 런처가 감독자를 띄우므로 죽은 데몬은
+ *  되살아나지만, 감독자까지 죽으면 1분 반복이 없어 다음 로그온까지 안 뜬다 — 없는 것보다 훨씬 낫다.
  *
  * ★`.vbs` 를 둔다(`.cmd` 아님): 시작프로그램의 `.cmd` 는 콘솔 창을 띄운다. `.vbs` 는
  *  wscript 가 조용히 실행하고, 내용은 **정본 런처를 가리키기만** 한다(정의점 하나).
@@ -865,14 +901,13 @@ const winWriteStartupFallback = (c) => {
   try {
     mkdirSync(path.dirname(p), { recursive: true });
     // 정본 런처(win-launch.vbs)를 그대로 부른다 — 내용 복제 금지(두 벌은 반드시 갈린다).
-    writeFileSync(
+    writeVbs(
       p,
       [
         'Set sh = CreateObject("WScript.Shell")',
         `sh.Run "wscript.exe //B //Nologo ""${winVbsPath(c).replace(/"/g, '""')}""", 0, True`,
         "",
       ].join("\r\n"),
-      "utf8",
     );
     return p;
   } catch {
@@ -978,6 +1013,15 @@ const winListeningPids = (c) => {
   return [...pids];
 };
 
+/** 실행 중 node 프로세스 명령줄 조회 인자 — 출력 인코딩 머리가 앞에 붙는다(회귀가 확인한다). @returns {string[]} */
+export const winProcQueryArgs = () => [
+  "-NoProfile",
+  "-Command",
+  PS_UTF8_OUTPUT +
+    "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
+    "Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation",
+];
+
 /**
  * 명령줄로 이 인스턴스의 데몬 PID 를 찾는다 — **포트 탐지의 보완**.
  *
@@ -992,16 +1036,7 @@ const winListeningPids = (c) => {
  * @returns {string[]}
  */
 const winDaemonPids = (c) => {
-  const q = spawnSync(
-    "powershell",
-    [
-      "-NoProfile",
-      "-Command",
-      "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
-        "Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation",
-    ],
-    { encoding: "utf8" },
-  );
+  const q = spawnSync("powershell", winProcQueryArgs(), { encoding: "utf8" });
   /** @type {Set<string>} */
   const pids = new Set();
   const home = String(c.homeRaw ?? "").toLowerCase();
@@ -1077,7 +1112,7 @@ const winRemoveLegacyAutostart = (c) => {
  * 견고성: 재등록이 실패해도 **기존 등록이 있으면 진행**한다(경고만). 일시 실패로 이미 되던
  *  기동을 막지 않는다 — 견고함 > 단순함.
  * @param {Ctx} c
- * @returns {true | "fallback" | false} true=예약작업 정상 · "fallback"=시작프로그램(KeepAlive 없음) · false=둘 다 실패
+ * @returns {true | "fallback" | false} true=예약작업 정상 · "fallback"=시작프로그램(감독자만 — 1분 반복 없음) · false=둘 다 실패
  */
 const winEnsureTask = (c) => {
   winRemoveLegacyAutostart(c);
@@ -1085,7 +1120,7 @@ const winEnsureTask = (c) => {
   //  실행만 조용히 실패한다(2026-08-15 에 겪은 바로 그 형상: "런처가 없는데 성공 보고").
   //  매번 다시 써서 경로·런타임 변경에도 수렴시킨다.
   mkdirSync(c.homeAbs, { recursive: true });
-  writeFileSync(winVbsPath(c), buildWinVbs(c), "utf8");
+  writeVbs(winVbsPath(c), buildWinVbs(c));
   // ★**돌고 있으면 먼저 멈춘다** (2026-08-22, /update 실측으로 잡음). 작업이 실행 중이면
   //  `Register-ScheduledTask -Force` 가 실패해 수렴이 조용히 건너뛰어진다. 실제로 갱신
   //  도중 **1분 반복 트리거가 데몬을 되살려** 작업이 돌고 있었고, 그래서 등록이 옛
@@ -1121,14 +1156,14 @@ const winEnsureTask = (c) => {
   }
   console.error(`   예약작업 등록 실패 이유: ${why}`);
   // ★**폴백** — 예약작업이 막힌 환경(그룹정책)에서 자동시작까지 잃지 않는다.
-  //  KeepAlive 는 포기하지만 로그온 자동시작은 살아남는다. 그 대가를 **말한다** —
+  //  1분 반복(감독자 부활)은 포기하지만 로그온 자동시작과 감독자는 살아남는다. 그 대가를 **말한다** —
   //  조용히 열등한 모드로 돌면 사용자는 죽어도 모른다.
   const fb = winWriteStartupFallback(c);
   if (fb !== null) {
     console.warn(
       `   ↪ 시작프로그램 폴백으로 전환합니다 — ${fb}\n` +
-        `     로그온 시 자동 가동은 되지만 **죽어도 자동으로 되살아나지 않습니다**\n` +
-        `     (예약작업을 못 만들어 KeepAlive 를 걸 수 없습니다). 정책이 풀리면 install 을 다시 돌리세요.`,
+        `     로그온 시 자동 가동되고 데몬이 죽으면 감독자가 되살리지만, **감독자까지 죽으면 다음 로그온까지 안 뜹니다**\n` +
+        `     (예약작업의 1분 반복을 못 겁니다). 정책이 풀리면 install 을 다시 돌리세요.`,
     );
     return "fallback";
   }
@@ -1157,8 +1192,10 @@ const winInstall = (c) => {
     console.log(
       "   죽으면 감독자가 즉시 되살리고, 감독자까지 죽으면 1분 반복 트리거가 잡습니다(2중).",
     );
+    // Enable 이 먼저다 — 재등록이 실패해 기존 등록으로 진행하면 winEnsureTask 가 걸어 둔 Disable 이 남는다
+    //  (2026-10-03 적대 검토 G — winStart 는 이미 그렇게 한다).
     const run = winPs(
-      `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'STARTED'`,
+      winEnableStartScript(c),
     );
     if (run.status !== 0) {
       console.error(`   ⚠ 즉시 가동 실패 — ${run.stderr || run.stdout}`);
@@ -1222,8 +1259,7 @@ const winRestart = (c) => {
   }
   // Enable 이 먼저다 — winStopTask 가 비활성화했으므로 그대로 Start 하면 안 뜬다.
   const r = winPs(
-    `Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; ` +
-      `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'OK'`,
+    winEnableStartScript(c),
   );
   if (r.status !== 0) {
     console.error(
@@ -1282,8 +1318,7 @@ const winStart = (c) => {
   } else {
     // Enable 이 먼저다 — `stop` 이 비활성화해 뒀다(winStopTask 주석 참조).
     const r = winPs(
-      `Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; ` +
-        `Start-ScheduledTask -TaskName ${psq(winTaskName(c))}; 'OK'`,
+      winEnableStartScript(c),
     );
     if (r.status !== 0) {
       console.error(`daemon start: 예약작업 시작 실패 — ${r.stderr || r.stdout}`);

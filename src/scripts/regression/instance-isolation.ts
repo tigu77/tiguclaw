@@ -24,11 +24,18 @@ type Daemon = {
   parseDaemonFlags: (args: readonly string[]) => string | undefined;
   winSuperviseArgv: (c: { nodePath: string; repoRoot: string; homeRaw: string; runtime: string }) => string[];
   winQuoteArg: (s: string) => string;
+  buildWinVbs: (c: { nodePath: string; repoRoot: string; homeRaw: string; runtime: string }) => string;
+  writeVbs: (p: string, text: string) => void;
+  PS_UTF8_OUTPUT: string;
+  winPsArgs: (script: string) => string[];
+  winProcQueryArgs: () => string[];
+  winEnableStartScript: (c: { label: string }) => string;
 };
 
 /**
  * 윈도우 프로그램이 명령줄을 인자로 가르는 규칙(CommandLineToArgvW) — 감독자(node)가 실제로 받는 값을 재현한다.
- * 따옴표 앞 역슬래시 2n 개 = n 개 + 따옴표 열고닫기 · 2n+1 개 = n 개 + 따옴표 문자 · 그 밖의 역슬래시는 그대로.
+ * 따옴표 앞 역슬래시 2n 개 = n 개 + 따옴표 열고닫기 · 2n+1 개 = n 개 + 따옴표 문자 · 그 밖의 역슬래시는 그대로 ·
+ * 따옴표 안의 `""` = 따옴표 문자 하나(UCRT — 이걸 열고닫기 두 번으로 읽으면 `"""…"""` 변이가 초록이 된다, 재검토 B).
  */
 const winArgv = (line: string): string[] => {
   const out: string[] = [];
@@ -47,7 +54,10 @@ const winArgv = (line: string): string[] => {
       has = true;
       continue;
     }
-    if (ch === '"') { inQ = !inQ; has = true; i += 1; continue; }
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i += 2; has = true; continue; }
+      inQ = !inQ; has = true; i += 1; continue;
+    }
     if ((ch === " " || ch === "\t") && !inQ) { if (has) out.push(cur); cur = ""; has = false; i += 1; continue; }
     cur += ch; has = true; i += 1;
   }
@@ -179,24 +189,62 @@ export const check: RegressionCheck = {
     // 실제 명령 실행 자리가 거절하는가 — 모르는 인자면 비영으로 끝나고 아무 유닛도 안 찍는다.
     const rejected = spawnSync(process.execPath, [path.join(repo, "bin/daemon.mjs"), "print", "--home=", "x"], { cwd: repo, encoding: "utf8" });
 
+    const daemonSrc0 = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     // ★예약작업 명령줄 왕복 — 끝에 역슬래시가 붙은 홈도 감독자가 같은 값으로 받는가(재검토 F-C).
-    const roundTrip = ["C:\\Users\\M\\.tiguclaw-test\\", "C:\\Users\\John Doe\\.tiguclaw", "D:\\t\\\\"].map((home) => {
-      const argv = d.winSuperviseArgv({ nodePath: "C:\\Program Files\\nodejs\\node.exe", repoRoot: "C:\\r\\", homeRaw: home, runtime: "built" });
-      const parsed = winArgv(argv.map(d.winQuoteArg).join(" "));
+    //  ★**실제 런처 VBS 를 만들어** 그 `sh.Run` 줄을 꺼내 VBS 이스케이프(`""`)를 풀고 왕복한다(재검토 A — 종전엔
+    //   `.map(winQuoteArg)` 글자만 grep 해서 `join("")` 처럼 모든 설치를 깨는 변이가 초록이었다).
+    const roundTrip = ["C:\\Users\\M\\.tiguclaw-test\\", "C:\\Users\\John Doe\\.tiguclaw", "D:\\t\\\\", "C:\\Users\\홍길동\\.tiguclaw"].map((home) => {
+      const ctx = { nodePath: "C:\\Program Files\\nodejs\\node.exe", repoRoot: "C:\\r\\", homeRaw: home, runtime: "built" };
+      const argv = d.winSuperviseArgv(ctx);
+      const run = /^sh\.Run "(.*)", 0, True$/m.exec(d.buildWinVbs(ctx))?.[1];
+      const parsed = run === undefined ? [] : winArgv(run.replace(/""/g, '"'));
       return { home, same: JSON.stringify(parsed) === JSON.stringify(argv), parsed };
     });
+    // ★VBS 는 UTF-16LE + BOM 으로 쓴다(WSH 가 BOM 없으면 CP949 로 읽어 한글 경로가 깨진다 — 집 윈도우 실측) ·
+    //  PowerShell 출력은 UTF-8 로 받는다(같은 실측: 기본이면 명령줄의 «홍길동» 이 깨져 감독자를 못 찾는다).
+    const tmpV = fs.mkdtempSync(path.join(os.tmpdir(), "tc-vbs-"));
+    let written: Buffer;
+    try {
+      const p = path.join(tmpV, "x.vbs");
+      d.writeVbs(p, "C:\\Users\\홍길동");
+      written = fs.readFileSync(p);
+    } finally {
+      fs.rmSync(tmpV, { recursive: true, force: true });
+    }
+    // 주석 줄을 뺀 소스 — 주석 처리한 배선이 글자로 남아 초록이 되지 않게(재검토 M2·M6).
+    const code = daemonSrc0.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+    const body = (name: string): string => {
+      const i = code.indexOf(`const ${name} = `);
+      return i < 0 ? "" : code.slice(i, code.indexOf("\n};", i));
+    };
+    const psDecoded = Buffer.from(d.winPsArgs("X")[3] ?? "", "base64").toString("utf16le");
+    const enableStart = d.winEnableStartScript({ label: "L" });
+    const encoding = {
+      vbsBom: written[0] === 0xff && written[1] === 0xfe && written.subarray(2).toString("utf16le") === "C:\\Users\\홍길동",
+      // VBS 를 쓰는 자리는 writeVbs 하나뿐 — 두 VBS 가 그걸 지나고, 다른 writeFileSync 는 VBS 를 안 쓴다.
+      vbsOnlyViaHelper: (code.match(/writeVbs\(/g) ?? []).length === 2 &&
+        !/writeFileSync\([^)]*vbs/i.test(code.replace(/export const writeVbs = [^\n]*/, "")),
+      // 값을 **정확히** 본다 — `; ` 하나만 빠져도 모든 PowerShell 스크립트가 파싱 오류가 된다(재검토 M1·M10).
+      psExact: d.PS_UTF8_OUTPUT === "[Console]::OutputEncoding = [Text.Encoding]::UTF8; ",
+      psArgs: psDecoded === d.PS_UTF8_OUTPUT + "X" && (d.winProcQueryArgs()[2] ?? "").startsWith(d.PS_UTF8_OUTPUT),
+      psWired: /spawnSync\(\s*"powershell",\s*winPsArgs\(script\)/.test(body("winPs")) &&
+        /spawnSync\("powershell", winProcQueryArgs\(\)/.test(body("winDaemonPids")),
+      // install·start·restart 가 같은 «켜고 띄우기» 를 쓰고, Enable 이 Start 보다 앞이다(재검토 M3·M7).
+      enableFirst: enableStart.includes("Enable-ScheduledTask") &&
+        enableStart.indexOf("Enable-ScheduledTask") < enableStart.indexOf("Start-ScheduledTask"),
+      enableWired: ["winInstall", "winStart", "winRestart"].every((n) => body(n).includes("winEnableStartScript(c)")) &&
+        !/Start-ScheduledTask/.test(code.replace(/export const winEnableStartScript = [\s\S]*?;\n/, "")),
+    };
 
     // 실제 프로세스 선택 자리가 경계 판정을 쓰는가(이 기계엔 PowerShell 이 없어 실행으로는 못 잰다 — 배선만).
     const daemonSrc = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     const pidsFn = daemonSrc.slice(daemonSrc.indexOf("const winDaemonPids"), daemonSrc.indexOf("const winKillRunning"));
     const wired = /cmdlineHasHome\(l, home\)/.test(pidsFn) && !/\.includes\(home\)/.test(pidsFn);
-    const vbsFn = daemonSrc.slice(daemonSrc.indexOf("const buildWinVbs"), daemonSrc.indexOf("const WIN_PS_TIMEOUT_MS"));
-    const vbsWired = /winSuperviseArgv\(c\)\s*\.map\(winQuoteArg\)/.test(vbsFn);
     return [
       assert(
-        "★예약작업 명령줄: 끝에 역슬래시가 붙은 홈·공백 든 경로도 감독자가 같은 인자로 받는다 · 런처가 그 따옴표 규칙을 쓴다",
-        roundTrip.every((r) => r.same) && vbsWired,
-        { roundTrip: roundTrip.filter((r) => !r.same), vbsWired },
+        "★예약작업 명령줄: 실제 런처 VBS 를 왕복해도 끝 역슬래시·공백·한글 경로가 같은 인자로 간다 · VBS 는 UTF-16LE+BOM(쓰는 자리 하나) · PowerShell 출력은 UTF-8(두 호출 모두) · 작업은 켜고 나서 띄운다",
+        roundTrip.every((r) => r.same) && Object.values(encoding).every(Boolean),
+        { roundTrip: roundTrip.filter((r) => !r.same), encoding },
       ),
       assert(
         "★인자: 예약작업이 넘기는 꼴(공백·백슬래시 든 윈도우 홈)을 그대로 받고 · `--home=X`·오타·빈 값·값 자리에 다른 플래그·떠도는 인자는 거절 · 실제 실행도 비영 종료",

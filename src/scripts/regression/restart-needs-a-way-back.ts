@@ -155,7 +155,7 @@ const run = async (): Promise<Assertion[]> => {
       /const fb = winWriteStartupFallback\(c\);/,
       /if \(fb !== null\)/,
       /winRemoveStartupFallback\(c\)[\s\S]{0,300}?예약작업이 정상이라/,
-      /되살아나지 않습니다/,
+      /감독자까지 죽으면 다음 로그온까지 안 뜹니다/,
       // 타임아웃 — 먹통이면 매달리지 말고 포기한다(설치가 영원히 안 끝나는 것 차단).
       /timeout: WIN_PS_TIMEOUT_MS/,
     ]);
@@ -235,7 +235,7 @@ const run = async (): Promise<Assertion[]> => {
       /-LogonType Interactive/,
       /sh\.Run "\$\{cmd\.replace\(\/"\/g, '""'\)\}", 0, True/,
       // 런처를 **등록 전에** 쓴다 — 없으면 등록은 성공하고 실행만 조용히 실패한다.
-      /writeFileSync\(winVbsPath\(c\), buildWinVbs\(c\), "utf8"\);[\s\S]{0,400}?buildWinTaskScript\(c\)/,
+      /writeVbs\(winVbsPath\(c\), buildWinVbs\(c\)\);[\s\S]{0,400}?buildWinTaskScript\(c\)/,
     ]);
     out.push(
       assert(
@@ -309,8 +309,9 @@ const run = async (): Promise<Assertion[]> => {
   {
     const gate = await sourceHas("../../../bin/daemon.mjs", [
       /const winStopTask = \(c\) => \{[\s\S]{0,900}?Disable-ScheduledTask/,
-      /const winStart = \(c\) => \{[\s\S]{0,900}?Enable-ScheduledTask/,
-      /const winRestart = \(c\) => \{[\s\S]{0,900}?Enable-ScheduledTask/,
+      /const winStart = \(c\) => \{[\s\S]{0,900}?winEnableStartScript\(c\)/,
+      /const winRestart = \(c\) => \{[\s\S]{0,900}?winEnableStartScript\(c\)/,
+      /export const winEnableStartScript = [\s\S]{0,200}?Enable-ScheduledTask/,
     ]);
     out.push(
       assert(

@@ -145,8 +145,8 @@ npm run claude-auth      # 또는 tiguclaw claude-auth
 - `npm run daemon:install` 은 OS별로 상시 서비스를 등록합니다:
   - **macOS** → launchd (crash 자동 재시작·로그인 시 가동).
   - **Linux** → systemd **user** 서비스 (`Restart=always`). 로그인 없이 부팅 가동하려면: `loginctl enable-linger $USER`.
-  - **Windows** → 레지스트리 Run 키(HKCU — **관리자 권한 불요**; 로그온 시 숨김 가동). crash 자동재시작 없음; 완전한 KeepAlive 는 **WSL2** 권장.
-  - KeepAlive 강도는 솔직히 macOS > Linux > Windows 순. 위 관리 명령은 3 OS 모두 동일합니다.
+  - **Windows** → 예약작업(**관리자 권한 불요**; 로그온 시 숨김 가동). 데몬이 죽으면 감독자가 바로 되살리고, 감독자까지 죽으면 1분 안에 예약작업이 다시 띄웁니다. 회사 PC 처럼 예약작업 등록이 정책으로 막힌 기계에서는 시작프로그램 폴더로 대신 등록합니다 — 이때는 로그온 자동시작만 되고 죽었을 때 자동으로 다시 뜨지는 않습니다.
+  - 위 관리 명령은 3 OS 모두 동일합니다.
 - **의존성이 깨져도 관리 명령은 항상 됩니다** — install / uninstall / restart / stop / start / **update** 는 순수 Node 로만 돕니다(빌드·`tsx` 불필요). 그래서 `node_modules` 가 깨졌거나 없어도 서비스를 멈추거나, 제거하거나, **`tiguclaw update` 로 되살릴 수** 있습니다.
 - **뭔가 깨졌으면 `tiguclaw update` 한 줄입니다.** 데몬 정지 → `npm ci` → 재빌드 → 기동을 순서대로 하고, 실패하면 이전 상태로 롤백합니다. ★`npm ci` 를 직접 돌리지 마세요 — 데몬이 떠 있으면 네이티브 모듈 파일이 잠겨(`EPERM`) 설치가 깨집니다. 멀쩡히 돌던 설치가 그렇게 망가집니다. 정지를 먼저 해주는 게 `update` 가 있는 이유입니다.
 
@@ -220,7 +220,7 @@ $env:TIGUCLAW_HOME = "$HOME\.tiguclaw-test"; try { node bin/tiguclaw.mjs codex-a
 아래는 첫 인스턴스 기준입니다. [두 번째 인스턴스](#한-기계에-인스턴스-하나-더)만 지우려면 그 레포 폴더에서
 `node bin/daemon.mjs uninstall --home <그 홈>` 을 실행한 뒤 그 홈과 레포 폴더를 지우세요.
 
-1. **서비스 중지·제거** — `npm run daemon:uninstall` (macOS launchd / Linux systemd user / Windows 레지스트리 Run 공통).
+1. **서비스 중지·제거** — `npm run daemon:uninstall` (macOS launchd / Linux systemd user / Windows 예약작업 공통).
 2. **데이터 삭제** — ⚠️ 되돌릴 수 없음 (세션·메모리·DB·agents·skills): `rm -rf ~/.tiguclaw` (또는 `TIGUCLAW_HOME` 이 가리키는 경로).
 3. **전역 명령 제거** (`npm link` 했을 때만) — `npm rm -g tiguclaw`.
 4. **프로젝트 폴더 삭제** — `rm -rf tiguclaw`.

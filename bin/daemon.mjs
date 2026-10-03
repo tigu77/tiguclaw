@@ -11,7 +11,7 @@
  *   install | uninstall | restart | stop | start | status | logs | print | update.
  *   - macOS  → launchd LaunchAgent (KeepAlive, 자동 respawn).
  *   - Linux  → systemd **user** 유닛 (Restart=always).
- *   - Windows→ HKCU Run 키 + 숨김 VBS (ONLOGON; KeepAlive 강도는 약함 — 아래 주석 참조).
+ *   - Windows→ 예약작업(로그온 + 1분 반복) + 숨김 VBS 감독자. 예약작업이 막힌 기계는 시작프로그램 폴더 폴백(자동시작만).
  *
  * update = 터미널 직접 자가 갱신(채팅 /update 와 별개). dep-free 라 깨진
  *   node_modules/tsx/typescript 에서도 `npm ci` 로 스스로 복구한다. 순서:
@@ -44,8 +44,8 @@
  *   **dev 는 source 로 고정**된다(기본이 built 이므로 dev 는 반드시 source 명시). 미설정 시
  *   prod 기본 = home ~/.tiguclaw · runtime built.
  *
- * KeepAlive 강도(솔직히): macOS(launchd KeepAlive) > Linux(systemd Restart=always)
- *   > Windows(HKCU Run ONLOGON — crash 자동재시작 약함). 완전 parity 는 WSL2 권장.
+ * KeepAlive: macOS(launchd KeepAlive) · Linux(systemd Restart=always) · Windows(감독자 즉시 재기동 + 예약작업 1분
+ *   반복이 감독자까지 되살림, 2026-08-22). 예약작업이 정책으로 막혀 시작프로그램 폴백이면 자동 재시작은 없다.
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
@@ -573,11 +573,10 @@ const linuxPrint = (c) => {
   console.log(`# 부팅가동: loginctl enable-linger ${os.userInfo().username}`);
 };
 
-// ───────────────────────────── Windows (HKCU Run 키 + 숨김 VBS) ─────────────
-// schtasks /Create 는 환경(그룹정책·ONLOGON 권한)에 따라 Access denied 가 난다.
-// HKCU\...\Run 은 *사용자 자기 레지스트리* 라 관리자 권한 없이 항상 쓰기 가능 →
-// 로그온 시 자동 가동. 콘솔창이 뜨지 않도록 VBS 로 숨겨 실행. crash 자동재시작은
-// 없음(로그온 가동) — 완전한 KeepAlive 가 필요하면 NSSM(선택) 또는 WSL2 권장.
+// ───────────────────────────── Windows (예약작업 + 숨김 VBS 감독자) ──────────
+// 2026-08-22 부터 예약작업(로그온 + 1분 반복, 관리자 권한 불요)이 감독자를 띄운다 — 아래 winEnsureTask.
+// 예약작업 생성이 정책으로 막힌 기계는 시작프로그램 폴더 폴백(로그온 자동시작만). 옛 HKCU Run 키는
+// 이제 **걷어내는 대상**이다(winRemoveLegacyAutostart — 남아 있으면 로그온 때 두 개 뜬다).
 
 const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 /**
@@ -726,6 +725,17 @@ const winPort = (c) =>
   readHomeEnvValue(c.homeAbs, "HTTP_BRIDGE_PORT") ?? (process.env.HTTP_BRIDGE_PORT?.trim() || "7011");
 
 /**
+ * 윈도우 명령줄 인자 하나를 따옴표로 감싼다 — 프로그램(node)이 읽는 규칙(CommandLineToArgvW)대로.
+ * ★끝의 역슬래시는 **두 배로** 적는다 (2026-10-03 재검토 F-C). `"C:\x\"` 는 끝의 `\"` 가 «따옴표 문자» 로 읽혀
+ *  인자가 닫히지 않고 뒤의 `--runtime built` 까지 홈 값에 붙는다 — 홈을 `C:\x\` 처럼 끝 구분자와 함께 적으면 감독자가 엉뚱한 홈으로 뜬다
+ *  (코드로 추적한 결함, 회귀는 아래 규칙을 구현한 파서로 왕복한다).
+ *  경로엔 `"` 가 올 수 없으므로 다른 자리는 손대지 않는다.
+ * @param {string} s
+ * @returns {string}
+ */
+export const winQuoteArg = (s) => `"${s.replace(/(\\+)$/, "$1$1")}"`;
+
+/**
  * 예약작업이 실행할 감독자 명령줄 — `parseDaemonFlags` 가 그대로 받아야 한다(회귀가 왕복으로 고정한다).
  * @param {Pick<Ctx, "nodePath" | "repoRoot" | "homeRaw" | "runtime">} c
  * @returns {string[]}
@@ -757,7 +767,7 @@ export const winSuperviseArgv = (c) => [
  */
 const buildWinVbs = (c) => {
   const cmd = winSuperviseArgv(c)
-    .map((s) => `"${s}"`)
+    .map(winQuoteArg)
     .join(" ");
   return [
     'Set sh = CreateObject("WScript.Shell")',

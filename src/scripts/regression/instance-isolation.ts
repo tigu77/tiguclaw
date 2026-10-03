@@ -23,6 +23,36 @@ type Daemon = {
   readHomeEnvValue: (homeAbs: string, key: string) => string | undefined;
   parseDaemonFlags: (args: readonly string[]) => string | undefined;
   winSuperviseArgv: (c: { nodePath: string; repoRoot: string; homeRaw: string; runtime: string }) => string[];
+  winQuoteArg: (s: string) => string;
+};
+
+/**
+ * 윈도우 프로그램이 명령줄을 인자로 가르는 규칙(CommandLineToArgvW) — 감독자(node)가 실제로 받는 값을 재현한다.
+ * 따옴표 앞 역슬래시 2n 개 = n 개 + 따옴표 열고닫기 · 2n+1 개 = n 개 + 따옴표 문자 · 그 밖의 역슬래시는 그대로.
+ */
+const winArgv = (line: string): string[] => {
+  const out: string[] = [];
+  let cur = "";
+  let inQ = false;
+  let has = false;
+  for (let i = 0; i < line.length; ) {
+    const ch = line[i]!;
+    if (ch === "\\") {
+      let n = 0;
+      while (line[i] === "\\") { n += 1; i += 1; }
+      if (line[i] === '"') {
+        cur += "\\".repeat(Math.floor(n / 2));
+        if (n % 2 === 1) { cur += '"'; i += 1; }
+      } else cur += "\\".repeat(n);
+      has = true;
+      continue;
+    }
+    if (ch === '"') { inQ = !inQ; has = true; i += 1; continue; }
+    if ((ch === " " || ch === "\t") && !inQ) { if (has) out.push(cur); cur = ""; has = false; i += 1; continue; }
+    cur += ch; has = true; i += 1;
+  }
+  if (has) out.push(cur);
+  return out;
 };
 
 export const check: RegressionCheck = {
@@ -149,11 +179,25 @@ export const check: RegressionCheck = {
     // 실제 명령 실행 자리가 거절하는가 — 모르는 인자면 비영으로 끝나고 아무 유닛도 안 찍는다.
     const rejected = spawnSync(process.execPath, [path.join(repo, "bin/daemon.mjs"), "print", "--home=", "x"], { cwd: repo, encoding: "utf8" });
 
+    // ★예약작업 명령줄 왕복 — 끝에 역슬래시가 붙은 홈도 감독자가 같은 값으로 받는가(재검토 F-C).
+    const roundTrip = ["C:\\Users\\M\\.tiguclaw-test\\", "C:\\Users\\John Doe\\.tiguclaw", "D:\\t\\\\"].map((home) => {
+      const argv = d.winSuperviseArgv({ nodePath: "C:\\Program Files\\nodejs\\node.exe", repoRoot: "C:\\r\\", homeRaw: home, runtime: "built" });
+      const parsed = winArgv(argv.map(d.winQuoteArg).join(" "));
+      return { home, same: JSON.stringify(parsed) === JSON.stringify(argv), parsed };
+    });
+
     // 실제 프로세스 선택 자리가 경계 판정을 쓰는가(이 기계엔 PowerShell 이 없어 실행으로는 못 잰다 — 배선만).
     const daemonSrc = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     const pidsFn = daemonSrc.slice(daemonSrc.indexOf("const winDaemonPids"), daemonSrc.indexOf("const winKillRunning"));
     const wired = /cmdlineHasHome\(l, home\)/.test(pidsFn) && !/\.includes\(home\)/.test(pidsFn);
+    const vbsFn = daemonSrc.slice(daemonSrc.indexOf("const buildWinVbs"), daemonSrc.indexOf("const WIN_PS_TIMEOUT_MS"));
+    const vbsWired = /winSuperviseArgv\(c\)\s*\.map\(winQuoteArg\)/.test(vbsFn);
     return [
+      assert(
+        "★예약작업 명령줄: 끝에 역슬래시가 붙은 홈·공백 든 경로도 감독자가 같은 인자로 받는다 · 런처가 그 따옴표 규칙을 쓴다",
+        roundTrip.every((r) => r.same) && vbsWired,
+        { roundTrip: roundTrip.filter((r) => !r.same), vbsWired },
+      ),
       assert(
         "★인자: 예약작업이 넘기는 꼴(공백·백슬래시 든 윈도우 홈)을 그대로 받고 · `--home=X`·오타·빈 값·값 자리에 다른 플래그·떠도는 인자는 거절 · 실제 실행도 비영 종료",
         flags.winErr === undefined && flags.winHomeOk === true && flags.runtime === "built" &&

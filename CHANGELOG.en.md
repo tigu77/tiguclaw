@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed restarting or updating one instance also stopping another on the same Windows machine** when their home folder names started the same way.
 - **Fixed installing a second instance overwriting the first instance's service registration.** The service name now comes from that instance's home `.env`.
 - **Fixed restart requests looking accepted when nothing could restart the daemon.** It now says so right away.
+- **Fixed the Windows restart supervisor starting with the wrong home when the home path ended in `\`.**
 - **Fixed tasks using Codex web search stopping over a date mismatch when the local date and the UTC date differ.**
 
 ## [0.64.0] - 2026-10-02

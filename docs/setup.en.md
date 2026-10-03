@@ -149,8 +149,8 @@ A few notes:
 - `npm run daemon:install` registers the always-on service per OS:
   - **macOS** → launchd (auto-restart on crash, starts at login).
   - **Linux** → systemd **user** service (`Restart=always`). To run on boot without logging in: `loginctl enable-linger $USER`.
-  - **Windows** → registry Run key (HKCU — **no admin needed**; starts at logon, runs hidden). No crash-restart; for full KeepAlive run under **WSL2**.
-  - KeepAlive strength, honestly: macOS > Linux > Windows. The management commands above are the same on all three.
+  - **Windows** → a scheduled task (**no admin needed**; starts at logon, runs hidden). If the daemon dies, a supervisor brings it back right away, and if the supervisor dies too the task restarts it within a minute. On machines where policy blocks scheduled tasks (some work PCs), it registers in the Startup folder instead — that gives you start-at-logon only, with no automatic restart.
+  - The management commands above are the same on all three.
 - **Lifecycle always works, even if deps break** — install / uninstall / restart / stop / start / **update** run on plain Node (no build step, no `tsx`), so you can stop, remove, or **repair with `tiguclaw update`** even when `node_modules` is broken or missing.
 - **If something is broken, `tiguclaw update` is the one command.** It stops the daemon, runs `npm ci`, rebuilds, and starts again — rolling back if any step fails. ★Don't run `npm ci` yourself: while the daemon is running it holds the native module file (`EPERM`), so the install silently leaves you without it. That's how a working setup gets broken. Stopping first is exactly why `update` exists.
 
@@ -224,7 +224,7 @@ $env:TIGUCLAW_HOME = "$HOME\.tiguclaw-test"; try { node bin/tiguclaw.mjs codex-a
 The steps below are for the first instance. To remove only a [second instance](#running-a-second-instance-on-the-same-machine),
 run `node bin/daemon.mjs uninstall --home <its home>` from its repo folder, then delete that home and the repo folder.
 
-1. **Stop & remove the service** — `npm run daemon:uninstall` (works on macOS launchd / Linux systemd user / Windows registry Run).
+1. **Stop & remove the service** — `npm run daemon:uninstall` (works on macOS launchd / Linux systemd user / Windows scheduled task).
 2. **Delete your data** — ⚠️ irreversible (sessions, memory, DB, agents, skills): `rm -rf ~/.tiguclaw` (or whatever `TIGUCLAW_HOME` points to).
 3. **Remove the global command** (only if you ran `npm link`) — `npm rm -g tiguclaw`.
 4. **Delete the project folder** — `rm -rf tiguclaw`.

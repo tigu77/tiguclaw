@@ -219,7 +219,7 @@ export const formatSelfGrowthDirectives = (): string => {
 };
 
 // ─── 모델 프로파일 인지 — 에이전트/매니저 구성 시 프로파일 선택 (capability-index 패턴) ──
-// 비서가 spawn_agent(model)/run_worker(tier) 를 구성/위임할 때 settings.json 에 정의된
+// 비서가 spawn_agent(tier)/run_in_background(tier) 를 구성/위임할 때 settings.json 에 정의된
 // 명명 프로파일을 인지하도록, depth 0 turn 의 system-context 에 주입한다. 스킬·에이전트
 // 인덱스와 동일 패턴 — 어댑터 시스템 채널의 *안정* 스캐폴딩으로 실린다(2026-07-30
 // splitSystemContext. 그 전엔 user-prompt system-reminder). 어댑터가 depth 0 만 호출.

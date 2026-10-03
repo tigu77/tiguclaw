@@ -119,11 +119,14 @@ export const check: RegressionCheck = {
         .filter((f) => f.endsWith(".md"))
         .map((f) => f.replace(/\.md$/, "")),
     );
+    // ★전제를 «문장이 있다» 로 두지 않는다 (2026-10-03). 기본 범용 명세(deep·general·quick·explore)를 빼고 «명세 없이
+    //  tier 로 띄운다» 로 바꾸면서 그 안내 문장 자체가 **정당하게** 사라졌다. 이 검사가 지키는 것은 «안내하는 이름이
+    //  배포돼 있다» 이므로, 누가 빌트인 이름 안내를 다시 넣으면 아래 단언이 그 이름들을 대조한다.
     out.push(
       assert(
-        "빌트인 에이전트 안내 문장을 찾는다(검사 전제 — 없으면 공짜 통과)",
-        builtinLine !== undefined && shippedAgents.size > 0,
-        `문장 ${builtinLine === undefined ? "없음" : "있음"} · 배포 에이전트 ${shippedAgents.size}개`,
+        "배포 에이전트 목록을 읽었다(대조 재료)",
+        shippedAgents.size > 0,
+        `문장 ${builtinLine === undefined ? "없음(명세 없이 tier 로 띄운다)" : "있음"} · 배포 에이전트 ${shippedAgents.size}개`,
       ),
     );
     if (builtinLine !== undefined) {

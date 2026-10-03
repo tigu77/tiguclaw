@@ -98,31 +98,76 @@ export const formatRequestSpans = (s: RequestSpans): string =>
  *  준비된 뒤(조립 제외) 첫 글자·도구 인자가 나오기까지. 세분은 요청별 상세 줄(`formatRequestSpans`)에만 남긴다.
  */
 const TURN_COLS = [
-  { label: "도구·후처리", of: (s: RequestSpans) => s.between, has: () => true },
-  { label: "조립", of: (s: RequestSpans) => s.prep ?? 0, has: (s: RequestSpans) => s.prep !== undefined },
-  { label: "무진전", of: (s: RequestSpans) => s.stalled ?? 0, has: (s: RequestSpans) => (s.stalled ?? 0) > 0 },
-  { label: "첫출력까지", of: (s: RequestSpans) => (s.headers ?? 0) + s.wait + s.think, has: () => true },
-  { label: "출력", of: (s: RequestSpans) => s.output, has: () => true },
+  { key: "betweenMs", label: "도구·후처리", of: (s: RequestSpans) => s.between, has: () => true },
+  { key: "prepMs", label: "조립", of: (s: RequestSpans) => s.prep ?? 0, has: (s: RequestSpans) => s.prep !== undefined },
+  { key: "stalledMs", label: "무진전", of: (s: RequestSpans) => s.stalled ?? 0, has: (s: RequestSpans) => (s.stalled ?? 0) > 0 },
+  { key: "firstOutputMs", label: "첫출력까지", of: (s: RequestSpans) => (s.headers ?? 0) + s.wait + s.think, has: () => true },
+  { key: "outputMs", label: "출력", of: (s: RequestSpans) => s.output, has: () => true },
 ] as const;
 
 /**
- * 턴 한 줄 — 칸별 합계와 **가장 긴 요청 셋**(긴 공백이 무엇이었는지가 이 줄의 목적이다).
- * 합계만 보면 82회 중 한두 번의 5분이 평균에 묻힌다.
+ * 턴 바깥 시각 — 요청 루프 **밖**에서 쓴 시간을 칸으로 남기는 재료 (2026-10-03, 회사돌쇠 후속 보고).
+ *  - `turnStartAt` 어댑터 입구 · `setupDoneAt` 첫 요청이 준비된 시각(그 사이 = «턴 준비»: 이력 로딩·**압축 잠금 대기**·도구 준비)
+ *  - `endAt` 이 줄을 찍는 시각 — 분해 합계와의 차이가 «그 밖»(마지막 응답 뒤 처리 · 실패면 끝나지 않은 요청)
  */
-export const formatTurnTiming = (all: readonly RequestSpans[]): string => {
-  if (all.length === 0) return "시간=없음";
+export type TurnBounds = { turnStartAt: number; setupDoneAt?: number; endAt: number };
+
+/** 턴 요약 — 로그 줄과 `llm.turn_done` 저장이 **같은 값**을 쓴다(두 벌로 계산하지 않는다). 단위 ms. */
+export type TurnTimingSummary = {
+  requests: number;
+  setupMs?: number;
+  betweenMs: number;
+  prepMs?: number;
+  stalledMs?: number;
+  firstOutputMs: number;
+  outputMs: number;
+  residualMs?: number;
+  wallMs?: number;
+  slowest: { index: number; ms: number; part: string; partMs: number }[];
+};
+
+export const summarizeTurnTiming = (all: readonly RequestSpans[], bounds?: TurnBounds): TurnTimingSummary => {
   const cols = TURN_COLS.filter((c) => all.some((s) => c.has(s)));
-  const totals = cols.map((c) => `${c.label} ${sec(all.reduce((a, s) => a + c.of(s), 0))}`).join("·");
-  const slowest = [...all]
+  const sum = (c: (typeof TURN_COLS)[number]): number => all.reduce((a, s) => a + c.of(s), 0);
+  const out: TurnTimingSummary = { requests: all.length, betweenMs: 0, firstOutputMs: 0, outputMs: 0, slowest: [] };
+  for (const c of cols) (out as unknown as Record<string, number>)[c.key] = sum(c);
+  out.slowest = [...all]
     .sort((a, b) => spanTotal(b) - spanTotal(a))
     .slice(0, 3)
     .map((s) => {
-      // 그 요청에서 가장 큰 칸 하나를 이름으로 — «무엇이 길었나» 가 한눈에 보이게.
-      const top = cols.reduce((a, c) => (c.of(s) > a.of(s) ? c : a), cols[0]!);
-      return `#${s.index} ${sec(spanTotal(s))}(${top.label} ${sec(top.of(s))})`;
-    })
-    .join(" ");
-  return `시간=${totals} 요청=${all.length}회 긴순=${slowest}`;
+      // 그 요청에서 가장 큰 칸 하나 — «무엇이 길었나» 가 한눈에 보이게.
+      const top = cols.reduce((a, c) => (c.of(s) > a.of(s) ? c : a), cols[0] ?? TURN_COLS[0]);
+      return { index: s.index, ms: spanTotal(s), part: top.label, partMs: top.of(s) };
+    });
+  if (bounds !== undefined) {
+    const wall = nonNeg(bounds.endAt - bounds.turnStartAt);
+    const setup = bounds.setupDoneAt === undefined ? undefined : nonNeg(bounds.setupDoneAt - bounds.turnStartAt);
+    const spanned = all.reduce((a, s) => a + spanTotal(s), 0);
+    out.wallMs = wall;
+    if (setup !== undefined) out.setupMs = setup;
+    out.residualMs = nonNeg(wall - (setup ?? 0) - spanned);
+  }
+  return out;
+};
+
+/**
+ * 턴 한 줄 — 칸별 합계와 **가장 긴 요청 셋**(긴 공백이 무엇이었는지가 이 줄의 목적이다).
+ * 합계만 보면 82회 중 한두 번의 5분이 평균에 묻힌다. `bounds` 를 주면 앞에 «턴 준비», 뒤에 «그 밖» 이 붙는다.
+ */
+export const formatTurnTiming = (all: readonly RequestSpans[], bounds?: TurnBounds): string => {
+  const t = summarizeTurnTiming(all, bounds);
+  const cells: string[] = [];
+  if (t.setupMs !== undefined) cells.push(`턴 준비 ${sec(t.setupMs)}`);
+  if (all.length > 0) {
+    for (const c of TURN_COLS) {
+      const v = (t as unknown as Record<string, number | undefined>)[c.key];
+      if (v !== undefined && all.some((s) => c.has(s))) cells.push(`${c.label} ${sec(v)}`);
+    }
+  }
+  if (t.residualMs !== undefined) cells.push(`그 밖 ${sec(t.residualMs)}`);
+  if (cells.length === 0) return "시간=없음";
+  const slowest = t.slowest.map((x) => `#${x.index} ${sec(x.ms)}(${x.part} ${sec(x.partMs)})`).join(" ");
+  return `시간=${cells.join("·")} 요청=${t.requests}회${slowest === "" ? "" : ` 긴순=${slowest}`}`;
 };
 
 /**
@@ -132,9 +177,16 @@ export const formatTurnTiming = (all: readonly RequestSpans[]): string => {
 export const createRequestTimeline = (turnStartAt: number) => {
   const spans: RequestSpans[] = [];
   let readyAt = turnStartAt;
+  let setupDoneAt: number | undefined;
   let prevEndAt: number | undefined;
   let open: { readyAt: number; firstEventAt: number; firstOutputAt?: number } | undefined;
   return {
+    /** 턴 준비가 끝났다(첫 요청을 내보낼 참) — 이 앞은 «턴 준비», 첫 요청의 응답 대기는 여기서부터. */
+    setupDone(at: number): void {
+      if (setupDoneAt !== undefined) return;
+      setupDoneAt = at;
+      if (spans.length === 0 && open === undefined) readyAt = at;
+    },
     /** 도구 결과를 받았다 — 다음 요청은 이 뒤에 나간다(병렬 도구면 마지막 결과가 이긴다). */
     toolResult(at: number): void {
       if (open === undefined) readyAt = at;
@@ -158,7 +210,14 @@ export const createRequestTimeline = (turnStartAt: number) => {
       else if (kind === "output") this.output(at);
       else if (kind === "end") this.responseEnd(at);
     },
-    format: (): string => formatTurnTiming(spans),
+    format: (endAt: number = Date.now()): string => {
+      const bounds: TurnBounds = { turnStartAt, endAt, ...(setupDoneAt !== undefined ? { setupDoneAt } : {}) };
+      // 끝나지 않은 요청이 있으면(실패·취소) 어디서 멈췄는지 덧붙인다 — 응답이 열리기 전인가, 출력 중인가.
+      const pending = open === undefined ? "" : ` 미완=${sec(nonNeg(endAt - open.readyAt))}(${open.firstOutputAt === undefined ? "첫출력 대기" : "출력 중"})`;
+      return formatTurnTiming(spans, bounds) + pending;
+    },
+    summary: (endAt: number = Date.now()): TurnTimingSummary =>
+      summarizeTurnTiming(spans, { turnStartAt, endAt, ...(setupDoneAt !== undefined ? { setupDoneAt } : {}) }),
     spans: (): readonly RequestSpans[] => spans,
   };
 };

@@ -403,6 +403,8 @@ export const openAiTurnItemsField = (slice: readonly ResponseInputItem[], finalT
 export const runOpenAi = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  // 턴 시작 — 첫 요청 전(프롬프트 조립·도구 준비)을 «턴 준비» 로 재는 기준(`_request-timing.ts`).
+  const turnStartAt = Date.now();
   assertLiveModelAllowed();
   // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(context/transcripts)은 canonical
   // 저장 채널로 키잉. route() 가 정규화 시 sessionChannel 실어보냄, 미지정 → channel 폴백
@@ -1369,9 +1371,13 @@ export const runOpenAi = async (
   // bridge close (in-memory transport 정리) — codex finally 패턴 답습. run() 동안
   // mcpServers 가 listTools/callTool 을 lazy connect 하므로, 응답 후 일괄 close.
   // 실패해도 응답 흐름 영향 0(개별 try/catch).
+  // 마지막 시도의 분해 — 반환이 `timing` 으로 싣는다(도구 미지원 재시도면 그 앞 시도는 «턴 준비» 에 들어간다).
+  let lastTimeline: ReturnType<typeof createRequestTimeline> | undefined;
   const runOnce = async (agentToRun: Agent = agent, closeServers = true) => {
     // 요청별 벽시계 분해(`_request-timing.ts`, 세 어댑터 공용) — 응답 시작·첫 진전·끝·도구 결과 시각만 넘긴다.
-    const requestTimeline = createRequestTimeline(Date.now());
+    const requestTimeline = createRequestTimeline(turnStartAt);
+    requestTimeline.setupDone(Date.now());
+    lastTimeline = requestTimeline;
     try {
       const streamed = await run(agentToRun, runInput, {
         stream: true,
@@ -1549,6 +1555,12 @@ export const runOpenAi = async (
       console.log(`[openai-turn-end] ${input.threadKey} model=${input.model ?? "?"} ${requestTimeline.format()}`);
       return streamed;
     } catch (e) {
+      // ★실패·취소로 끝난 시도도 분해를 남긴다 (2026-10-03) — 끝나지 않은 요청이 있으면 어디서 멈췄는지까지.
+      try {
+        console.log(`[openai-turn-fail] ${input.threadKey} model=${input.model ?? "?"} ${requestTimeline.format()}`);
+      } catch {
+        /* 관측 실패가 실패 처리를 막지 않는다 */
+      }
       // abort 가 1층(유휴)·2층(턴) 타임아웃이면 해당 에러로 승격 (facade 일관 신호,
       // 둘 다 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
       const reason = effectiveAc.signal.reason;
@@ -1662,6 +1674,7 @@ export const runOpenAi = async (
       replyToTrigger,
       usage,
       externalToolCalls: externalToolCallsCollected,
+      ...(lastTimeline !== undefined ? { timing: lastTimeline.summary() } : {}),
     };
   }
 
@@ -1685,5 +1698,6 @@ export const runOpenAi = async (
     replyToTrigger,
     usage,
     ...openAiTurnItemsField(turnToolItems, text),
+    ...(lastTimeline !== undefined ? { timing: lastTimeline.summary() } : {}),
   };
 };

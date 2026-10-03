@@ -888,6 +888,7 @@ export const publishTurnDone = (
       ...(output.usage?.requestUsageEntries !== undefined
         ? { requestUsageEntries: output.usage.requestUsageEntries }
         : {}),
+      ...(output.timing !== undefined ? { timing: output.timing } : {}),
       ...(output.usage?.inputTokens !== undefined
         ? { inputTokens: output.usage.inputTokens }
         : {}),

@@ -112,11 +112,11 @@ export const check: RegressionCheck = {
     const src = (await readFile(new URL(SRC_PATH, import.meta.url), "utf8"))
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");
-    // 패스 상한은 `maxPasses` 로 한 번 거친다(턴 뒤 미리 접기는 3배, 요청 때는 그대로 — 2026-09-29). 상한의 뿌리가
+    // 패스 상한은 `maxPasses` 로 한 번 거친다(턴 뒤 미리 접기는 3배, 요청 때는 그대로 + 앞선 양보가 넘긴 몫 — 2026-09-29·10-03). 상한의 뿌리가
     //  여전히 CODEX_COMPACT_MAX_PASSES 인지까지 본다.
     const hasLoop =
       /while\s*\(\s*plan\.needed\s*&&\s*compactPass\s*<\s*maxPasses/.test(src) &&
-      /const maxPasses = args\.postTurn === true \? CODEX_COMPACT_MAX_PASSES \* 3 : CODEX_COMPACT_MAX_PASSES;/.test(src);
+      /const maxPasses = args\.postTurn === true \? CODEX_COMPACT_MAX_PASSES \* 3 : CODEX_COMPACT_MAX_PASSES(?: \+ inherited)?;/.test(src);
     // ★재판정이 실제로 **저수위**를 쓰는가 — 값을 실행해서 본다(이름 매칭 아님).
     const p0 = nextPassOpts(0, 40_000, LOW) as { triggerChars?: number };
     const p1 = nextPassOpts(1, 40_000, LOW) as { triggerChars?: number };

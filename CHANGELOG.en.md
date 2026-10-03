@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Run a scheduled task right now.** Ask the assistant and it runs the schedule once, exactly as it would at its set time.
+- **The setup guide now covers running two instances on one machine** — keep a test assistant next to your everyday one and update each on its own ([Setup & operations](docs/setup.en.md#running-a-second-instance-on-the-same-machine)).
+
+### Changed
+
+- **When a manager comes back with the job half done, the assistant finishes it.**
+- **A registered schedule no longer asks for confirmation every time it does its usual work.** It asks only about new actions the schedule doesn't describe.
+- **Subagents are now started with just a tier (`low` · `mid` · `high`), no spec needed.** The built-in `quick`, `general`, `deep` and `explore` specs are gone. Your own specs still work; if you give both, the tier overrides the spec's model.
+- **In long Codex and OpenAI conversations, summarizing after an answer no longer holds up your next message** — it pauses and answers first.
+- **Service commands (`tiguclaw restart` and friends) now reject arguments they don't recognize** instead of ignoring them, so a mistyped `--home` can't touch the wrong instance.
+- **Logs now show how long each model request took**, so a slow answer can be traced to server wait, thinking, or output.
+
+### Fixed
+
+- **Fixed restarting or updating one instance also stopping another on the same Windows machine** when their home folder names started the same way.
+- **Fixed installing a second instance overwriting the first instance's service registration.** The service name now comes from that instance's home `.env`.
+- **Fixed restart requests looking accepted when nothing could restart the daemon.** It now says so right away.
+- **Fixed tasks using Codex web search stopping over a date mismatch when the local date and the UTC date differ.**
+
 ## [0.64.0] - 2026-10-02
 
 ### Added

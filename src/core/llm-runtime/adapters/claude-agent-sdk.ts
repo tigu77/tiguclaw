@@ -508,6 +508,8 @@ export const withSteerBackstopMs = async <T>(ms: number, fn: () => Promise<T>): 
 export const runClaude = async (
   input: RegionASdkInput,
 ): Promise<RegionASdkOutput> => {
+  // 턴 시작 — 첫 요청 전(프롬프트 조립·메모리 검색·도구 준비)을 «턴 준비» 로 재는 기준(`_request-timing.ts`).
+  const turnStartAt = Date.now();
   // 가짜 SDK 가 꽂혀 있으면 실제 모델 호출이 없다 — 회귀의 «실모델 금지» 가드는 진짜 SDK 일 때만.
   //  ★**한 번만 읽는다** — 가드 판정과 실제 호출(buildQuery, 여러 await 뒤)이 같은 값을 써야 한다.
   const sdk = sdkQuery;
@@ -1589,6 +1591,9 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     }
   };
 
+  // 요청별 벽시계 분해(`_request-timing.ts`, 세 어댑터 공용) — 시도마다 새로 만들되 **루프 밖에서 보이게** 둔다
+  //  (반환·실패 줄이 마지막 시도의 분해를 싣는다). 재시도가 있었으면 그 앞 시도들은 «턴 준비» 에 들어간다.
+  let requestTimeline = createRequestTimeline(turnStartAt);
   try {
   for (;;) {
   try {
@@ -1596,9 +1601,10 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   // 어디서 멈추는지 *로그*(영속)로 남긴다. stream_event(토큰)는 flood 라 200개마다만, 그 외
   // 메시지·loop-exit·return 은 매번. hang 재현 시 로그 마지막 [claude-complete] 줄이 멈춘 지점.
   let diagStreamCount = 0;
-  // 요청별 벽시계 분해(`_request-timing.ts`, 세 어댑터 공용) — 응답 시작(message_start)·첫 진전(글자·도구 인자)·
-  //  끝(message_stop)·도구 결과(user) 시각만 넘긴다. 부모 대화의 요청만 센다.
-  const requestTimeline = createRequestTimeline(Date.now());
+  // 응답 시작(message_start)·첫 진전(글자·도구 인자)·끝(message_stop)·도구 결과(user) 시각만 넘긴다. 부모 대화의 요청만 센다.
+  //  ★첫 요청의 «첫출력까지» 엔 CLI 기동이 들어간다(codex 는 루프 전 준비가 «턴 준비» 에 간다 — 1번 요청은 어댑터마다 다르다).
+  requestTimeline = createRequestTimeline(turnStartAt);
+  requestTimeline.setupDone(Date.now());
   // SDK 가 결과에 싣는 소요 — 세션 누적인지 턴 값인지 문서로 확정되지 않아 **원값 그대로** 싣는다(해석은 실측 뒤).
   let sdkDurations: { ms: number; apiMs: number } | undefined;
   /**
@@ -2375,6 +2381,14 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         break;
       }
     }
+    // ★실패·취소로 끝난 시도도 분해를 남긴다 (2026-10-03) — 끝나지 않은 요청이 있으면 어디서 멈췄는지까지.
+    //  ★정상 종료로 흡수하는 두 갈래(앱 도구 캡처 뒤 우리가 끊은 abort · 답을 확정한 뒤의 실패) **다음**에 둔다 —
+    //   앞에 두면 성공한 턴에도 실패 줄이 찍혔다(적대 검토 P3, «가드가 다른 처리보다 앞에» 와 같은 순서 결함).
+    try {
+      console.log(`[claude-turn-fail] ${input.threadKey} ${requestTimeline.format()}`);
+    } catch {
+      /* 관측 실패가 실패 처리를 막지 않는다 */
+    }
     // resume 세션 부재/손상("process exited with code 1") → resume 제거 후 fresh
     // 세션으로 1회만 재시도. resumable(애초 resume 시도) + 미재시도 + 비-abort 한정.
     // ★★**부작용이 시작됐으면 fresh 로 다시 돌리지 않는다** (2026-09-14, 외부 검토 P1).
@@ -2579,6 +2593,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       replyToTrigger,
       externalToolCalls: pendingExternalToolCalls,
       ...(toolCallUsage !== undefined ? { usage: requestUsage.withUsage(toolCallUsage) } : {}),
+      timing: requestTimeline.summary(),
     };
   }
   const effectiveSuccess = succeeded || text.length > 0;
@@ -2597,8 +2612,9 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       jsonlPath: jsonl,
       replyToTrigger,
       usage: requestUsage.withUsage(lastUsage),
+      timing: requestTimeline.summary(),
     };
   }
 
-  return { text, replyToTrigger };
+  return { text, replyToTrigger, timing: requestTimeline.summary() };
 };

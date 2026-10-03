@@ -16,6 +16,7 @@ import type { Attachment, ChannelName, IncomingMessage, TurnOrigin } from "../..
 import type { WorkerNotifyDest } from "../worker-jobs.js";
 import type { SteeringChannel } from "../steering.js";
 import type { CodexTurnItem } from "../../store/memory.js";
+import type { TurnTimingSummary } from "./adapters/_request-timing.js";
 
 /**
  * «빠름» 의 **대가** — **어댑터**마다 모양이 다르다.
@@ -367,6 +368,11 @@ export interface RegionASdkOutput {
    *  모델이 안 붙였으면 미지정. 그건 실패가 아니라 "확신 없음"이다.
    */
   nextSuggestion?: string;
+  /**
+   * 요청별 벽시계 분해의 턴 요약 (2026-10-03) — `[*-turn-end]` 줄과 **같은 값**(`_request-timing.ts`).
+   * facade 가 `llm.turn_done` 에 그대로 싣는다 — 로그만이 아니라 DB 로도 남아 나중에 «어디서 시간을 썼나» 를 조회할 재료.
+   */
+  timing?: TurnTimingSummary;
   /**
    * 신규 (additive, /status 개편) — 이 turn 의 토큰 사용량. 세 어댑터 공통 형상.
    * 어댑터가 *이미 받는* result/SSE 에서 추출 (추가 호출 0). 미캡처 시 미지정.
@@ -767,6 +773,8 @@ export interface RequestUsageEntry {
 }
 
 export interface RegionATurnDonePayload {
+  /** 요청별 벽시계 분해의 턴 요약 — 어댑터 `timing` 그대로(`_request-timing.ts`). */
+  timing?: TurnTimingSummary;
   unreportedRequests?: number;
   /** 어댑터가 보고한 요청별 관측분. 실패 요청의 누락 여부는 별도 검증 대상이다. */
   requestUsageEntries?: RequestUsageEntry[];

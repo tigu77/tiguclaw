@@ -176,7 +176,53 @@ TIGUCLAW_RUNTIME=source npm run onboard
 
 The mode is pinned when you install, so it never changes on its own — updates keep whichever mode you chose (a built install recompiles automatically, a few extra seconds per update). To switch later, set `TIGUCLAW_RUNTIME` and re-run the install.
 
+### Running a second instance on the same machine
+
+You can keep a test assistant next to your everyday one. As long as each instance has its own **repo
+folder, home, ports, service name and bot**, restarting or updating (`/update`) one leaves the other
+running. Use `onboard` for the first install only and follow the steps below for the second —
+`onboard` and `npm run daemon:install` don't take a home, so they overwrite the first instance's service registration.
+
+1. **Clone and build a separate copy.** If two instances share a folder, updating one changes the other's code.
+   ```bash
+   git clone https://github.com/tigu77/tiguclaw.git tiguclaw-test
+   cd tiguclaw-test
+   npm ci
+   npm run build:prod
+   ```
+2. **Create a `.env` in the new home.** Any folder other than the existing home works (e.g. `~/.tiguclaw-test`).
+   ```bash
+   # ~/.tiguclaw-test/.env
+   HTTP_BRIDGE_PORT=7021   # default 7011 — pick another
+   DASHBOARD_PORT=7020     # default 7010 — pick another
+   TIGUCLAW_SERVICE_LABEL=com.tiguclaw.test
+   # plus your LLM keys, and a bot token if you use Telegram
+   ```
+   - Create a **separate** Telegram bot for each instance. If two instances share a token, one of them stops receiving messages.
+   - Sign in separately for each instance — from the new repo folder:
+     `TIGUCLAW_HOME=~/.tiguclaw-test node bin/tiguclaw.mjs codex-auth` (or `claude-auth`).
+     Don't copy the Codex tokens from the first home's `.env`: if two instances share one, a refresh on one side can sign the other out.
+3. **Register the service** — from the new repo folder:
+   ```bash
+   node bin/daemon.mjs install --home ~/.tiguclaw-test
+   ```
+
+Manage it from that folder, always with `--home`:
+```bash
+node bin/daemon.mjs restart --home ~/.tiguclaw-test     # same for status, stop, start, update, logs, uninstall
+```
+★Leave out `--home` and the command targets the first instance — so does `npm run daemon:*`. The global `tiguclaw`
+command belongs to the first instance (it runs the first repo's code).
+
+On Windows PowerShell, write the home as `"$HOME\.tiguclaw-test"`, and sign in like this:
+```powershell
+$env:TIGUCLAW_HOME = "$HOME\.tiguclaw-test"; try { node bin/tiguclaw.mjs codex-auth } finally { Remove-Item Env:TIGUCLAW_HOME }
+```
+
 ### Uninstall
+
+The steps below are for the first instance. To remove only a [second instance](#running-a-second-instance-on-the-same-machine),
+run `node bin/daemon.mjs uninstall --home <its home>` from its repo folder, then delete that home and the repo folder.
 
 1. **Stop & remove the service** — `npm run daemon:uninstall` (works on macOS launchd / Linux systemd user / Windows registry Run).
 2. **Delete your data** — ⚠️ irreversible (sessions, memory, DB, agents, skills): `rm -rf ~/.tiguclaw` (or whatever `TIGUCLAW_HOME` points to).

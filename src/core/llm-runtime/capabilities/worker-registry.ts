@@ -22,6 +22,7 @@
  * LLM-agnostic (W-I3): 발사 도구는 claude/codex/openai *동일 의미* 등록(어댑터 분기 0).
  *   spawn_agent 의 createSpawnAgentMcpServer 등록 지점과 동형.
  */
+import { tierDescription, unresolvableTierText } from "./tier-description.js";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -543,9 +544,7 @@ export const createWorkerMcpServer = (
       tier: z
         .string()
         .optional()
-        .describe(
-          "선택 — 매니저 모델 프로파일. settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고). 품질 중요(코드리뷰·설계)=high, 구현=mid, 단순·대량·요약=low. 미지정 시 기본 모델. 서브에이전트 model 과 동일 해석(resolveModelChain).",
-        ),
+        .describe(tierDescription("매니저")),
     },
     async (args) => {
       try {
@@ -560,6 +559,10 @@ export const createWorkerMcpServer = (
         // ★같은 창에 **같은 인자**로 또 왔으면 다시 안 띄운다 (2026-08-20 사용자 신고 —
         //  "매니저도 마찬가지"). 근거·범위는 spawn-dedupe.ts 참조. 병렬은 그대로 되고,
         //  막는 건 동일 (label·task·path) 뿐이다.
+        {
+          const bad = await unresolvableTierText(args.tier?.trim() || undefined, workerCwd);
+          if (bad !== undefined) return errText(bad);
+        }
         {
           const key = spawnKey({
             tool: "run_in_background", name: args.label, prompt: args.task, path: workerCwd,

@@ -261,8 +261,9 @@ export const formatModelProfiles = (
     lines.push(`- \`${name}\`${desc}${pool}`);
   }
   lines.push(
-    "에이전트·매니저를 구성/위임할 때 `model`(spawn_agent)·`tier`(run_worker) 에 위 프로파일 이름 중 **작업 성격에 어울리는 걸** 고르세요 — 고난도 설계·분석=high, 구현=mid, 요약·분류=low, 기본=default. 커스텀 프로파일이 있으면 그 description 에 맞춰. 지정한 이름의 풀+폴백으로 실행됩니다. `provider:model` 직접 지정도 가능합니다.",
-    "(claude 네이티브 Task 서브에이전트는 opus/sonnet/haiku 3등급으로 축약되고, 프로파일 풀·폴백 전체는 codex/openai 서브에이전트·매니저에서 적용됩니다.)",
+    // ★인자 이름은 `tier` 다 (2026-10-03 적대 검토 P-1). 종전엔 «`model`(spawn_agent)» 라고 시켜, 이름을 선택으로 바꾼 뒤엔
+    //  `model:"high"` 가 거절 없이 **조용히 기본 모델**로 돌았다. 낡은 «claude 네이티브 Task» 줄도 지웠다(그 도구는 차단돼 있다).
+    "서브에이전트·매니저를 위임할 때 `tier`(spawn_agent·run_in_background) 에 위 프로파일 이름 중 **작업 성격에 어울리는 걸** 고르세요 — 기준은 두 도구의 `tier` 설명에 있습니다. 커스텀 프로파일이 있으면 그 description 에 맞춰. 지정한 이름의 풀+폴백으로 실행되고, provider:model 직접 지정도 가능합니다.",
   );
   return lines.join("\n");
 };

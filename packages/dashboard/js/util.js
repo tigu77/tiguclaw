@@ -459,7 +459,13 @@
             showToast(i18n("daemon.restart.running"), "good");
           } else {
             const data = await r.json().catch(() => ({}));
-            showToast(i18n("daemon.restart.failed", { err: data.error || ("HTTP " + r.status) }), "bad");
+            // 재기동 수단(감독자)이 없어 서버가 거절한 경우 — 코드만 오고 문구는 카탈로그가 낸다.
+            showToast(
+              data.error === "no-supervisor"
+                ? i18n("daemon.restart.noSupervisor")
+                : i18n("daemon.restart.failed", { err: data.error || ("HTTP " + r.status) }),
+              "bad",
+            );
           }
         } catch (err) {
           // 데몬이 즉시 종료되면 응답 전에 연결이 끊길 수 있음 — 정상 흐름으로 안내.

@@ -60,12 +60,95 @@ import {
   writeSync,
 } from "node:fs";
 import os from "node:os";
+import * as nodeUtil from "node:util";
 import path from "node:path";
 import process from "node:process";
 
 // 기본 라벨. 한 머신에서 2개 이상 인스턴스(예: prod + 검증용)를 상시 가동하려면
 // TIGUCLAW_SERVICE_LABEL 로 고유 라벨을 지정한다 (홈·봇·포트도 함께 분리할 것).
-const LABEL = process.env.TIGUCLAW_SERVICE_LABEL?.trim() || "com.tiguclaw.daemon";
+const DEFAULT_LABEL = "com.tiguclaw.daemon";
+
+/**
+ * 홈 `.env` 의 한 키 — 없거나 비면 undefined. 포트·라벨이 같은 규칙(홈 `.env` 우선)을 쓰는 한 자리.
+ * @param {string} homeAbs
+ * @param {string} key
+ * @returns {string | undefined}
+ */
+export const readHomeEnvValue = (homeAbs, key) => {
+  let text;
+  try {
+    text = readFileSync(path.join(homeAbs, ".env"), "utf8");
+  } catch {
+    return undefined; // .env 없음
+  }
+  // ★데몬이 쓰는 **같은 파서**로 읽는다 (2026-10-03 적대 검토 P-1). 데몬은 `process.loadEnvFile`(= util.parseEnv)로 홈 .env 를
+  //  읽는데 여기만 정규식이었다 — `KEY = 값`·`export KEY=…`·같은 키 두 번·줄 끝 주석에서 둘이 다른 라벨을 봐, 설치가 운영의
+  //  예약작업을 덮어쓰는 원래 사고가 다시 났다. parseEnv 가 없는 Node(<20.12)는 데몬 자체가 못 뜨므로 옛 규칙으로만 버틴다.
+  const parse = /** @type {((s: string) => Record<string, string>) | undefined} */ (nodeUtil.parseEnv);
+  const v =
+    typeof parse === "function"
+      ? parse(text)[key] // 데몬과 같은 값 — 따옴표 안 공백까지 그대로(덧 trim 하면 갈린다, 재검토 6)
+      : text.match(new RegExp(`^${key}=(.*)$`, "m"))?.[1]?.trim().replace(/^["']|["']$/g, "");
+  return v === undefined || v === "" ? undefined : v;
+};
+
+/**
+ * 서비스 라벨 — **홈 `.env` → 환경변수 → 기본값** (2026-10-03). 포트(`winPort`)와 같은 순서다.
+ * ★종전엔 환경변수만 봤다. 그래서 `--home` 만 주고 두 번째 인스턴스를 설치·재시작하면 라벨이 기본값이 되어
+ *  **기존 인스턴스의 자동 시작(예약작업·plist·유닛)을 덮어쓰거나 겨눴다**. 개발 스크립트(`deploy-dev.sh`)는 홈 `.env`
+ *  에서 손으로 읽어 넘기며 이 빈틈을 피하고 있었다. 홈 `.env` 를 먼저 보는 이유: 셸에 다른 인스턴스의 라벨이 남아
+ *  있어도 그 홈 자신의 라벨이 이긴다(덮어쓰는 쪽 실패가 더 나쁘다).
+ * @param {string} homeAbs
+ * @returns {string}
+ */
+export const resolveLabel = (homeAbs) =>
+  readHomeEnvValue(homeAbs, "TIGUCLAW_SERVICE_LABEL") ?? (process.env.TIGUCLAW_SERVICE_LABEL?.trim() || DEFAULT_LABEL);
+
+/**
+ * 명령 뒤 인자를 env 로 올린다 — `--home X` · `--runtime X` 두 꼴만. 모르는 인자·빈 값이면 그 사유를 돌려준다
+ * (호출자가 거절한다 — 조용히 무시하면 기본 홈으로 떨어진다).
+ * ★`--home=X` 는 **받지 않는다** (2026-10-03 재검토 F-A). 셸이 `=` 뒤의 `~` 를 펼치지 않아, 받으면 `~/x` 가 그대로
+ *  유닛에 박혀 데몬은 엉뚱한 홈(기본 포트)으로 뜨고 관리 명령은 다른 홈을 본다. 띄어 쓰면 셸이 펼친다.
+ * @param {readonly string[]} args
+ * @returns {string | undefined}
+ */
+export const parseDaemonFlags = (args) => {
+  /** @type {Record<string, string>} */
+  const keys = { "--home": "TIGUCLAW_HOME", "--runtime": "TIGUCLAW_RUNTIME" };
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    const name = a.split("=")[0];
+    if (name !== a && Object.hasOwn(keys, name)) return `'${a}' 꼴은 받지 않습니다 — '${name} <값>' 으로 띄어 쓰세요`;
+    const env = Object.hasOwn(keys, a) ? keys[a] : undefined;
+    if (env === undefined) return `모르는 인자 '${a}'`;
+    const v = args[++i];
+    if (v === undefined || v.trim() === "" || v.startsWith("--")) return `${a} 에 값이 없습니다`;
+    process.env[env] = v;
+  }
+  return undefined;
+};
+
+/**
+ * 프로세스 명령줄이 **이 홈**을 가리키는가 — 경로 경계까지 본다 (2026-10-03).
+ * ★종전엔 `includes(home)` 였다. 홈 `C:\Users\A\.tiguclaw` 가 `C:\Users\A\.tiguclaw-inspection` 의 앞부분이라,
+ *  운영 인스턴스를 멈추거나 재시작·업데이트하면 **다른 인스턴스의 감독자·데몬까지 같이 죽였다**(회사 PC 구성 그대로).
+ *  앞은 줄 처음·따옴표·공백·`=`, 뒤는 줄 끝·따옴표·공백·경로 구분자여야 이 홈이다(그 홈 **아래**의 경로는 이 홈 것이다).
+ * @param {string} cmdline
+ * @param {string} home
+ * @returns {boolean}
+ */
+export const cmdlineHasHome = (cmdline, home) => {
+  const norm = (/** @type {string} */ s) => s.toLowerCase().replace(/\//g, "\\");
+  const h = norm(home).replace(/\\+$/, "");
+  if (h === "") return false;
+  const line = norm(cmdline);
+  for (let i = line.indexOf(h); i !== -1; i = line.indexOf(h, i + 1)) {
+    const before = i === 0 ? "" : line[i - 1];
+    const after = line[i + h.length] ?? "";
+    if ((before === "" || /["' =]/.test(before)) && (after === "" || /["' \\]/.test(after))) return true;
+  }
+  return false;
+};
 
 /**
  * @param {string} p
@@ -120,7 +203,7 @@ const buildCtx = () => {
     homeRaw,
     homeAbs,
     logsDir,
-    label: LABEL,
+    label: resolveLabel(homeAbs),
   };
 };
 
@@ -639,17 +722,23 @@ const listeningOnBridge = (c) => {
  * @param {Ctx} c
  * @returns {string}
  */
-const winPort = (c) => {
-  try {
-    const m = readFileSync(path.join(c.homeAbs, ".env"), "utf8").match(
-      /^HTTP_BRIDGE_PORT=(.*)$/m,
-    );
-    if (m !== null && m[1].trim() !== "") return m[1].trim();
-  } catch {
-    /* .env 없음 — 기본값 */
-  }
-  return process.env.HTTP_BRIDGE_PORT?.trim() || "7011";
-};
+const winPort = (c) =>
+  readHomeEnvValue(c.homeAbs, "HTTP_BRIDGE_PORT") ?? (process.env.HTTP_BRIDGE_PORT?.trim() || "7011");
+
+/**
+ * 예약작업이 실행할 감독자 명령줄 — `parseDaemonFlags` 가 그대로 받아야 한다(회귀가 왕복으로 고정한다).
+ * @param {Pick<Ctx, "nodePath" | "repoRoot" | "homeRaw" | "runtime">} c
+ * @returns {string[]}
+ */
+export const winSuperviseArgv = (c) => [
+  c.nodePath,
+  path.join(c.repoRoot, "bin", "daemon.mjs"),
+  "supervise",
+  "--home",
+  c.homeRaw,
+  "--runtime",
+  c.runtime,
+];
 
 /**
  * 숨김 런처 VBS — 예약작업이 이걸 실행하고, 이게 **감독자**를 창 없이 띄운다.
@@ -667,15 +756,7 @@ const winPort = (c) => {
  * @returns {string}
  */
 const buildWinVbs = (c) => {
-  const cmd = [
-    c.nodePath,
-    path.join(c.repoRoot, "bin", "daemon.mjs"),
-    "supervise",
-    "--home",
-    c.homeRaw,
-    "--runtime",
-    c.runtime,
-  ]
+  const cmd = winSuperviseArgv(c)
     .map((s) => `"${s}"`)
     .join(" ");
   return [
@@ -924,7 +1005,7 @@ const winDaemonPids = (c) => {
     if (!low.includes("index.js") && !low.includes("supervise")) continue;
     // 이 인스턴스인지 — 홈 경로가 명령줄에 있는지로 가른다(데몬은 supervise 가 넘긴 env,
     // 감독자는 `--home` 인자에 들어 있다).
-    if (home !== "" && !low.includes(home)) continue;
+    if (home !== "" && !cmdlineHasHome(l, home)) continue;
     const m = /^"?(\d+)"?,/.exec(l.trim());
     if (m) pids.add(m[1]);
   }
@@ -1931,10 +2012,12 @@ if (invokedDirectly) {
   //  실을 수 없다** — 종전 VBS 는 `cmd /c set VAR=... && ...` 체인으로 넣었는데, 그 체인
   //  모양이 Defender 오탐의 재료였다. 인자로 받아 여기서 env 로 올리면 buildCtx 아래는
   //  전부 종전과 같은 경로로 돈다(분기 0). 셸을 안 거치므로 인용 문제도 없다.
-  for (let i = 3; i < process.argv.length - 1; i += 1) {
-    const v = process.argv[i + 1];
-    if (process.argv[i] === "--home" && v) process.env.TIGUCLAW_HOME = v;
-    if (process.argv[i] === "--runtime" && v) process.env.TIGUCLAW_RUNTIME = v;
+  // ★모르는 인자는 **거절한다** (2026-10-03 적대 검토 F4). 종전엔 조용히 무시해서 `--home=X`·오타·값 빠뜨림이
+  //  전부 기본 홈·기본 라벨로 떨어졌다 — 두 번째 클론에서 그러면 첫 인스턴스를 설치·제거·재시작한다.
+  const flagError = parseDaemonFlags(process.argv.slice(3));
+  if (flagError !== undefined) {
+    console.error(`daemon: ${flagError} — 인자는 --home <홈> · --runtime <source|built> 만 받습니다.`);
+    process.exit(1);
   }
   if (!cmd) {
     console.error(

@@ -87,7 +87,7 @@ export const check: RegressionCheck = {
       // 마감은 앞 답 + 이 턴(실패면 안내).
       /: settleAnswer\(settledAnswer, currentText, steerTurnFailed\);/,
       // ★던진 실패(에러 result 뒤 CLI 종료 코드 1 → SDK throw)도 확정된 답을 버리지 않는다 — **resume 재시도보다 앞**에서.
-      /keepAnswerOnThrow\(\{\s*settled: settledAnswer !== undefined,\s*firstTurnDone: turnResultSeen && succeeded,\s*cancelled,\s*\}\)[\s\S]{0,600}break;\s*\}\s*\}\s*if \(\s*!resumeRetried &&/,
+      /keepAnswerOnThrow\(\{\s*settled: settledAnswer !== undefined,\s*firstTurnDone: turnResultSeen && succeeded,\s*cancelled,\s*\}\)[\s\S]{0,600}break;\s*\}\s*\}\s*(?:try \{\s*console\.log\(`\[claude-turn-fail\][^`]*`\);\s*\} catch \{\s*\}\s*)?if \(\s*!resumeRetried &&/,
       // 가운데 턴이 실패하면 그 턴 조각을 버리고 다음 이어 받기에서 그 자리에 안내.
       /steerTurnFailed = true;\s*\n\s*turnResultSeen = true;\s*\n\s*chunkBase = assistantTextChunks\.length;/,
       /settledAnswer = settleAnswer\([\s\S]{0,200}steerTurnFailed,[\s\S]{0,120}\);\s*\n\s*steerTurnFailed = false;/,

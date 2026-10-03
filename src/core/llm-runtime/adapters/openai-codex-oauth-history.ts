@@ -2161,6 +2161,13 @@ export interface CompactedThreadHistory {
 const lastCompactArgs = new Map<string, CompactArgs>();
 /** 턴 뒤 접기가 이미 줄 서 있거나 도는 스레드 — 같은 스레드에 두 번 걸지 않는다. */
 const postTurnQueued = new Set<string>();
+/**
+ * 답변 뒤 접기가 **양보하며 남긴 패스 몫** — 그 스레드의 다음 요청 때 접기가 이어받는다 (2026-10-03 적대 검토 P1).
+ * ★없으면 양보가 맥락을 잃는다: 요청 때 접기는 3패스뿐이라 못 따라잡은 몫을 창 안전망(`recentTurnsAfter`)이 오래된 것부터
+ *  잘랐다(실측: 워터마크 뒤 110턴 중 58턴이 요약에도 원문에도 없음). 몫을 넘기면 합계가 양보 전과 같다 — 양보는 «기다림을
+ *  줄이는 것» 이지 «덜 접는 것» 이 아니다. 요청 때 접기는 필요한 만큼만 돌고 멈추므로 실제 기다림은 대개 더 짧다.
+ */
+const yieldedPassBudget = new Map<string, number>();
 
 /**
  * ★스레드별 **요약 잠금** — 요약을 쓰는 세 경로(요청 때·답한 뒤 뒤에서·수동 `/compact`)가 모두 이 줄에 선다
@@ -2172,7 +2179,11 @@ const abortError = (signal: AbortSignal): unknown =>
   signal.reason ?? Object.assign(new Error("요약 대기 중 취소됨"), { name: "AbortError" });
 export const withThreadCompactionLock = async <T>(
   threadKey: string,
-  fn: () => Promise<T>,
+  /**
+   * `hasWaiter` — 지금 이 잠금 **뒤에 줄을 선 쪽이 있나**(줄 끝이 아직 내 것인가). 답변 뒤 접기가 패스 사이에서 양보할 때 쓴다.
+   *  대기 중 취소된 쪽도 줄에 남으므로 «있다» 로 읽힐 수 있다 — 양보는 선택적인 일만 멈추므로 그 오판은 무해하다.
+   */
+  fn: (hasWaiter: () => boolean) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> => {
   const prev = threadLocks.get(threadKey) ?? Promise.resolve();
@@ -2180,6 +2191,7 @@ export const withThreadCompactionLock = async <T>(
   const mine = new Promise<void>((r) => (release = r));
   const tail = prev.then(() => mine);
   threadLocks.set(threadKey, tail);
+  const hasWaiter = (): boolean => threadLocks.get(threadKey) !== tail;
   try {
     if (signal !== undefined) {
       if (signal.aborted) throw abortError(signal);
@@ -2198,7 +2210,7 @@ export const withThreadCompactionLock = async <T>(
     } else {
       await prev;
     }
-    return await fn();
+    return await fn(hasWaiter);
   } finally {
     release();
     // ★항목은 **줄 전체가 끝난 뒤에** 치운다(2026-09-29 재검토 P2). 종전엔 여기서 바로 지워, 대기 중 취소된 마지막 대기자가
@@ -2281,6 +2293,11 @@ const compactThreadHistoryUnlocked = async (args: {
   capFor?: () => number;
   /** 턴 뒤 미리 접기로 부르는 것인가(`compactHistoryAfterTurn`) — 설정을 다시 기억하지 않고, 패스를 더 돈다. */
   postTurn?: boolean;
+  /**
+   * 참이면 **다음 패스를 시작하지 않는다** — 뒤에 요청이 줄을 섰다(잠금이 넘긴다, 답변 뒤 접기에만). 이미 돈 패스의 결과는
+   *  유효하므로 그대로 저장한다. 남은 몫은 다음 요청의 요청 때 접기(최대 3패스)나 다음 답변 뒤 접기가 맡는다.
+   */
+  yieldTo?: () => boolean;
   /** 이 요청의 취소 — 앞선 요약을 **기다리는 동안**에도 듣는다(잠금 대기). */
   signal?: AbortSignal;
 }): Promise<CompactedThreadHistory> => {
@@ -2342,7 +2359,9 @@ const compactThreadHistoryUnlocked = async (args: {
   // 소요 시간 — 종전엔 턴 수·글자 수만 남기고 **얼마나 걸렸는지는 아무도 안 쟀다**.
   // "압축이 오래 걸리는데 뭘 하는지 모르겠다" 를 진단하려던 순간 그 숫자가 없었다.
   const compactStartedAt = Date.now();
-  if (plan.needed && plan.toFold.length > 0) {
+  // ★이미 뒤에 요청이 줄을 섰으면 시작 알림을 내지 않는다 — 곧바로 0패스에서 양보하면 끝 알림이 없어 «압축 중 ⏳» 이 남는다
+  //  («시작을 냈으면 끝도 낸다», 2026-09-15). 접는 일은 그 요청이 이어받아 자기 알림을 낸다.
+  if (plan.needed && plan.toFold.length > 0 && args.yieldTo?.() !== true) {
     try {
       getEventBus().publish({
         type: "llm.compacting",
@@ -2360,8 +2379,23 @@ const compactThreadHistoryUnlocked = async (args: {
 
   // ★패스 상한은 **사용자가 기다리는 시간**을 묶는 장치다 — 뒤에서 미리 접을 땐 기다리는 사람이 없으므로 따라잡을
   //  만큼 더 돈다(한 턴에 3패스 몫보다 많이 쌓이는 무거운 세션: 회사 세션 턴당 최대 190K). 요청 때는 종전 그대로.
-  const maxPasses = args.postTurn === true ? CODEX_COMPACT_MAX_PASSES * 3 : CODEX_COMPACT_MAX_PASSES;
+  //  ★«기다리는 사람이 없다» 는 **새 메시지가 오는 순간 거짓**이다 — 그래서 패스마다 뒤에 줄 선 요청을 보고 양보한다
+  //   (회사 9/30: 답변 뒤 9패스 + 재압축이 잠금을 쥔 동안 새 메시지가 수분 기다렸다).
+  // 앞선 답변 뒤 접기가 양보하며 남긴 몫은 이번 요청 때 접기가 이어받는다(한 번만).
+  const inherited = args.postTurn === true ? 0 : (yieldedPassBudget.get(args.threadKey) ?? 0);
+  if (inherited > 0) yieldedPassBudget.delete(args.threadKey);
+  const maxPasses = args.postTurn === true ? CODEX_COMPACT_MAX_PASSES * 3 : CODEX_COMPACT_MAX_PASSES + inherited;
+  let yielded = false;
   while (plan.needed && compactPass < maxPasses) {
+    if (args.yieldTo?.() === true) {
+      yielded = true;
+      yieldedPassBudget.set(args.threadKey, maxPasses - compactPass);
+      console.log(
+        `[${args.adapter} 6b] 턴 뒤 접기 양보 — 기다리는 요청이 있어 ${compactPass}/${maxPasses}패스에서 멈춤(남은 몫은 다음 접기가) ` +
+          `threadKey=${args.threadKey}`,
+      );
+      break;
+    }
     compactPass += 1;
     // 오래된 턴 + 기존 요약 → 요약 LLM 호출 1회 (isolated, 재귀 없음).
     const foldedText = foldPromptOf(plan.toFold);
@@ -2489,6 +2523,8 @@ const compactThreadHistoryUnlocked = async (args: {
   //  누적 요약은 매 턴 프롬프트에 실리고 `charSum` 시드로 들어가므로, 안 줄면 **최근 원문
   //  턴을 조용히 밀어낸다**(사용자 증상: "최근 대화를 못 따라온다", 로그엔 아무것도 없음).
   for (let rp = 0; rp < CODEX_SUMMARY_RECOMPACT_MAX_PASSES; rp++) {
+    // 양보했거나 지금 뒤에 줄이 섰으면 재압축(요약 호출)도 미룬다 — 요약이 좀 긴 것뿐, 손실은 0 이다(아래 주석).
+    if (yielded || args.yieldTo?.() === true) break;
     const rec = planSummaryRecompaction(summary, CODEX_SUMMARY_MAX_CHARS);
     if (!rec.needed) break;
     if ((cooldownPort?.remainingMs(args.provider) ?? 0) !== 0) break;
@@ -2566,7 +2602,12 @@ type CompactArgs = Parameters<typeof compactThreadHistoryUnlocked>[0];
  */
 export const compactThreadHistory = async (args: CompactArgs): Promise<CompactedThreadHistory> => {
   if (args.postTurn !== true) lastCompactArgs.set(args.threadKey, args);
-  return withThreadCompactionLock(args.threadKey, () => compactThreadHistoryUnlocked(args), args.signal);
+  // ★답변 뒤 접기는 **선택적인 일**이다 — 뒤에 요청이 줄을 서면 패스 사이에서 양보한다(2026-10-03, 회사돌쇠 압축 인계서 1단계).
+  return withThreadCompactionLock(
+    args.threadKey,
+    (hasWaiter) => compactThreadHistoryUnlocked(args.postTurn === true ? { ...args, yieldTo: hasWaiter } : args),
+    args.signal,
+  );
 };
 
 /**

@@ -161,6 +161,61 @@ export const check: RegressionCheck = {
         ),
       );
 
+      // ④' 뒤에서 접는 중에 요청이 줄을 서면 **패스 사이에서 양보**한다 (2026-10-03, 회사돌쇠 압축 인계서 1단계).
+      //  회사 9/30: 답변 뒤 9패스 + 재압축이 잠금을 쥔 동안 새 메시지가 수분 기다렸다 — «뒤에선 기다리는 사람이 없다» 가
+      //  새 메시지가 오는 순간 거짓이 된다. 대조군: 같은 양을 줄 선 요청 없이 접으면 여러 패스를 돈다(양보가 계획 탓이 아니다).
+      {
+        const yieldLines: string[] = [];
+        const realLog = console.log;
+        console.log = (...a: unknown[]): void => {
+          const t = a.map(String).join(" ");
+          if (t.includes("턴 뒤 접기 양보")) yieldLines.push(t);
+          else realLog(...a);
+        };
+        try {
+          const ctl = "dashboard:regr-compact-yield-control";
+          clearThreadSummary("http-bridge", ctl);
+          seed(ctl, "regr-cy-ctl", 60, per);
+          await request(ctl);
+          seed(ctl, "regr-cy-ctl", 240, per);
+          calls = 0;
+          await compactHistoryAfterTurn(ctl);
+          const controlCalls = calls;
+          // 대조군의 다음 요청이 조립하는 이력 — 양보한 쪽도 결국 **이만큼**을 실어야 한다(맥락 손실 0).
+          const controlAssembled = await request(ctl);
+
+          const Y = "dashboard:regr-compact-yield";
+          clearThreadSummary("http-bridge", Y);
+          seed(Y, "regr-cy", 60, per);
+          await request(Y);
+          seed(Y, "regr-cy", 240, per);
+          calls = 0;
+          maxInFlight = 0;
+          const gateY = hold();
+          const bgY = compactHistoryAfterTurn(Y);
+          // 첫 패스의 요약 호출이 날아가 붙잡혔다 — ★시한을 둔다: 패스가 아예 안 시작되면(양보를 너무 일찍 하면) 붙잡기가
+          //  영원히 안 풀려 검사가 실패 보고 없이 멈춘다(변이로 확인). 그 경우도 빨강으로 보이게.
+          const enteredY = await Promise.race([gateY.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 3_000))]);
+          if (!enteredY) holdNext = false;
+          const reqY = request(Y); // 그 사이 요청이 줄을 선다
+          await new Promise((r) => setTimeout(r, 5));
+          release();
+          await bgY;
+          const assembled = await reqY;
+          const ctlLen = Array.isArray(controlAssembled) ? controlAssembled.length : -1;
+          const yLen = Array.isArray(assembled) ? assembled.length : -2;
+          out.push(
+            assert(
+              "★뒤에서 접는 중 요청이 줄을 서면 지금 패스까지만 하고 양보한다(1패스) · 줄이 없으면 여러 패스를 돈다 · 요청은 정상 조립 · 요약 호출이 겹치지 않는다 · ★양보한 몫을 요청이 이어받아 **대조군과 같은 이력**을 싣는다(창 안전망이 중간을 자르지 않는다)",
+              enteredY && controlCalls > 1 && yLen === ctlLen && yieldLines.length === 1 && /\b1\/\d+패스에서 멈춤/.test(yieldLines[0] ?? "") && Array.isArray(assembled) && maxInFlight === 1,
+              { enteredY, controlCalls, yieldLines, assembled: yLen, controlAssembled: ctlLen, maxInFlight },
+            ),
+          );
+        } finally {
+          console.log = realLog;
+        }
+      }
+
       // ⑤ 수동 /compact 가 뒤에서 도는 요약을 **덮지 않는다** — 같은 잠금에 줄 서고, 워터마크는 뒤로 가지 않는다(아스트라 P4).
       const D = "dashboard:regr-compact-after-turn-d";
       clearThreadSummary("http-bridge", D);

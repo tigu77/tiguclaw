@@ -232,6 +232,7 @@
   "ctx.thisAction": "이 작업",
   "daemon.restart.confirm": "데몬을 재시작할까요? 진행 중인 작업이 중단되고 잠시 후 자동 복귀합니다.",
   "daemon.restart.failed": "재시작 실패: {err}",
+  "daemon.restart.noSupervisor": "재시작하지 않았습니다 — 이 설치에는 다시 띄워 줄 감독자가 없어서, 지금 끄면 다시 켜지지 않습니다. 데몬은 그대로 동작합니다.",
   "daemon.restart.requesting": "재시작 요청 중…",
   "daemon.restart.running": "재시작 중… 잠시 후 복귀합니다.",
   "daemon.restart.sent": "재시작 신호 전송됨 (응답 끊김) — 잠시 후 복귀합니다.",

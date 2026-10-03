@@ -172,7 +172,53 @@ TIGUCLAW_RUNTIME=source npm run onboard
 
 모드는 설치할 때 고정되어 저절로 바뀌지 않습니다 — 업데이트는 고른 모드를 유지합니다(built 설치는 자동 재컴파일, 업데이트마다 몇 초 추가). 나중에 바꾸려면 `TIGUCLAW_RUNTIME` 을 지정하고 install 을 다시 실행하세요.
 
+### 한 기계에 인스턴스 하나 더
+
+평소 쓰는 비서 옆에 시험용 비서를 하나 더 둘 수 있습니다. 두 인스턴스가 **레포 폴더·홈·포트·서비스
+이름·봇**을 각자 가지면, 한쪽을 재시작하거나 업데이트(`/update`)해도 다른 쪽은 영향을 받지 않습니다.
+첫 설치는 `onboard` 로 하고, 두 번째부터는 아래 순서를 따르세요. `onboard`·`npm run daemon:install` 은 홈을 지정하지 않아
+첫 인스턴스의 서비스 등록을 덮어씁니다.
+
+1. **레포를 따로 받아 빌드합니다.** 같은 폴더를 함께 쓰면 한쪽의 업데이트가 다른 쪽 코드까지 바꿉니다.
+   ```bash
+   git clone https://github.com/tigu77/tiguclaw.git tiguclaw-test
+   cd tiguclaw-test
+   npm ci
+   npm run build:prod
+   ```
+2. **새 홈에 `.env` 를 만듭니다.** 기존 홈과 다른 폴더면 됩니다(예: `~/.tiguclaw-test`).
+   ```bash
+   # ~/.tiguclaw-test/.env
+   HTTP_BRIDGE_PORT=7021   # 기본 7011 과 겹치지 않게
+   DASHBOARD_PORT=7020     # 기본 7010 과 겹치지 않게
+   TIGUCLAW_SERVICE_LABEL=com.tiguclaw.test
+   # 여기에 LLM 키, 텔레그램을 쓴다면 봇 토큰도
+   ```
+   - 텔레그램 봇은 인스턴스마다 **따로** 만드세요. 한 봇 토큰을 둘이 쓰면 한쪽이 메시지를 못 받습니다.
+   - 구독 로그인은 인스턴스마다 따로 받습니다 — 새 레포 폴더에서
+     `TIGUCLAW_HOME=~/.tiguclaw-test node bin/tiguclaw.mjs codex-auth`(또는 `claude-auth`).
+     첫 홈의 `.env` 에서 Codex 토큰을 복사하지 마세요. 토큰 하나를 둘이 쓰면 한쪽이 갱신할 때 다른 쪽이 로그아웃될 수 있습니다.
+3. **서비스를 등록합니다** — 새 레포 폴더에서:
+   ```bash
+   node bin/daemon.mjs install --home ~/.tiguclaw-test
+   ```
+
+이후 관리도 그 레포 폴더에서 `--home` 을 붙여 합니다:
+```bash
+node bin/daemon.mjs restart --home ~/.tiguclaw-test     # status·stop·start·update·logs·uninstall 도 같습니다
+```
+★`--home` 을 빠뜨리면 첫 인스턴스를 겨눕니다. `npm run daemon:*` 도 마찬가지이고, 전역 `tiguclaw` 명령은
+첫 인스턴스 전용입니다(첫 레포의 코드로 실행됩니다).
+
+Windows PowerShell 에서는 홈을 `"$HOME\.tiguclaw-test"` 처럼 적고, 구독 로그인은 이렇게 합니다:
+```powershell
+$env:TIGUCLAW_HOME = "$HOME\.tiguclaw-test"; try { node bin/tiguclaw.mjs codex-auth } finally { Remove-Item Env:TIGUCLAW_HOME }
+```
+
 ### 삭제 (Uninstall)
+
+아래는 첫 인스턴스 기준입니다. [두 번째 인스턴스](#한-기계에-인스턴스-하나-더)만 지우려면 그 레포 폴더에서
+`node bin/daemon.mjs uninstall --home <그 홈>` 을 실행한 뒤 그 홈과 레포 폴더를 지우세요.
 
 1. **서비스 중지·제거** — `npm run daemon:uninstall` (macOS launchd / Linux systemd user / Windows 레지스트리 Run 공통).
 2. **데이터 삭제** — ⚠️ 되돌릴 수 없음 (세션·메모리·DB·agents·skills): `rm -rf ~/.tiguclaw` (또는 `TIGUCLAW_HOME` 이 가리키는 경로).

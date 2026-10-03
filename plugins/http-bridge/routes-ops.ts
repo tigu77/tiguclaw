@@ -134,6 +134,18 @@ export const handleRestart = async (ctx: RouteCtx): Promise<void> => {
     writeJson(res, 503, { error: "control bus not started" });
     return;
   }
+  // ★재기동 수단이 없으면 **접수하지 않는다** (2026-10-03). 종전엔 이벤트를 던지자마자 202 를 돌려줬고, 정작 판단은
+  //  그 뒤 코어(`restartDaemon`)가 해서 감독자가 없으면 로그에만 «중단» 을 남겼다 — 호출한 쪽(비서·대시보드)은 성공으로
+  //  읽었다(회사 PC 점검용 인스턴스: 202 를 받았는데 PID·가동 시간이 그대로). 판정은 코어의 같은 함수다.
+  const { hasSupervisorRespawn, shouldExitForRestart } = await import("../../src/core/restart.js");
+  if (!shouldExitForRestart({ platform: process.platform, respawnArranged: hasSupervisorRespawn() })) {
+    // ★거절도 로그에 남긴다 — 원격 접속이 안 되는 기계에선 로그가 유일한 흔적이다(토스트는 몇 초 뒤 사라진다).
+    console.warn(
+      "daemon: 재시작 **거절** (http-bridge:dashboard) — 재기동 수단(감독자)을 찾지 못했다. 지금 종료하면 다시 뜨지 않는다. 데몬은 그대로 유지한다.",
+    );
+    writeJson(res, 409, { ok: false, restarting: false, error: "no-supervisor" });
+    return;
+  }
   ctx.bus.publish({
     type: "control.restart",
     ts: Date.now(),

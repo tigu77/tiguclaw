@@ -60,6 +60,48 @@ const isRecord = (f: string): boolean =>
   f.startsWith(".claude/memory/") ||
   (f.startsWith("_workspace/") && !f.startsWith("_workspace/public-overlay/"));
 
+/**
+ * 한 줄이 «{env} 의 기본 포트» 에 대해 틀린 숫자를 말하는가 — 틀린 숫자 목록(없으면 빈 배열).
+ * ★순수 함수로 뺀 이유: 예외 판정을 **실제 문서 상태와 무관하게** 픽스처로 고정하려고(재검토 F-E —
+ *  수정 자신을 되돌려도 그날 문서엔 걸릴 줄이 없어 초록이었다).
+ */
+export const wrongPortsInLine = (l: string, env: string, want: string, truth: ReadonlyMap<string, string>): string[] => {
+    // ★같은 줄에 env 이름이 없어도 **URL 형태의 포트**는 본다 — 실제로 놓쳤다:
+    //  `app-ai-wiring` 은 `HTTP_BRIDGE_PORT` 를 두 번 언급하는데, 예제 줄은
+    //  `OPENAI_BASE_URL=http://127.0.0.1:3000/v1` 이라 env 이름이 없어 스캔 밖이었다
+    //  (그래서 배포 스킬이 사용자에게 틀린 포트를 알려주고 있었다, 2026-08-02).
+    //  `127.0.0.1:<4자리>` 는 다른 뜻일 수 없으므로 오탐 위험이 낮다.
+    const urlPort = /(?:127\.0\.0\.1|localhost):(\d{4})\b/.exec(l);
+    if (!l.includes(env) && urlPort === null) return [];
+    // ★한 줄이 **두 포트를 같이** 말하는 경우가 있다(예: "DASHBOARD_PORT(기본 X)·
+    //  HTTP_BRIDGE_PORT 는 …"). 그 줄의 숫자를 한쪽에 귀속시킬 수 없으므로, 그때는
+    //  **아는 기본값 중 하나이기만** 하면 통과시킨다. 낡은 숫자(3000·3101·3002)는
+    //  어느 쪽도 아니라 그대로 걸린다 — 잡아야 할 것은 여전히 잡힌다.
+    const both = PORTS.filter((q) => l.includes(q.env)).length > 1;
+    //  ★env 이름이 없는 URL 줄은 **어느 포트인지 귀속할 수 없다**(브리지 URL 이
+    //   대시보드 문서에 나오는 건 정상). 그때는 "아는 기본값 중 하나이기만" 하면
+    //   통과 — 낡은 숫자(3000·3101·3002)는 어느 쪽도 아니라 그대로 걸린다.
+    //   첫 판에서 이걸 안 해 정상 문서 6건을 오탐했다.
+    const named = l.includes(env);
+    const nums = named ? (l.match(/\b\d{4}\b/g) ?? []) : urlPort !== null ? [urlPort[1]] : [];
+    // ★예시 대입의 값 **하나만** 면제한다 (2026-10-03) — 두 번째 인스턴스 안내의
+    //  `HTTP_BRIDGE_PORT=7021   # 기본 7011 과 겹치지 않게`. 조건 셋: 줄 머리에서 대입한다 · 같은 줄이
+    //  «기본 N»/«default N» 으로 **현재 기본값을 밝힌다** · 대입값이 **어느 포트의 기본값도 아니다**
+    //  (다른 포트의 기본값이면 첫 인스턴스와 부딪히는 예시다). 그 줄의 다른 숫자는 계속 대조한다.
+    //  ★첫 판은 줄 전체를 건너뛰었고(적대 검토 F1), 둘째 판은 «기본값 숫자가 어딘가 있으면» 이라
+    //   «3101 이 기본값입니다 (7010 은 옛 값)» 이 통과했다(재검토 F-D). 판정은 아래 픽스처가 고정한다.
+    const assigned = named && !both
+      ? new RegExp(`^\\s*(?:#\\s*)?(?:export\\s+)?${env}\\s*=\\s*(\\d{4})\\b`).exec(l)?.[1]
+      : undefined;
+    const statesDefault = new RegExp(`(?:기본|default)\\s*${want}\\b`, "i").test(l);
+    if (assigned !== undefined && statesDefault && ![...truth.values()].includes(assigned)) {
+      nums.splice(nums.indexOf(assigned), 1);
+    }
+    const allowed = named && !both ? [want] : [...truth.values()];
+    // 연도(2026 …)는 포트가 아니다 — 같은 줄에 날짜가 섞이면 오탐이 된다.
+    return nums.filter((n) => !/^(19|20)\d\d$/.test(n) && !allowed.includes(n));
+};
+
 export const check: RegressionCheck = {
   name: "default-port-truth",
   guards:
@@ -137,30 +179,7 @@ export const check: RegressionCheck = {
         read(f)
           .split("\n")
           .forEach((l, i) => {
-            // ★같은 줄에 env 이름이 없어도 **URL 형태의 포트**는 본다 — 실제로 놓쳤다:
-            //  `app-ai-wiring` 은 `HTTP_BRIDGE_PORT` 를 두 번 언급하는데, 예제 줄은
-            //  `OPENAI_BASE_URL=http://127.0.0.1:3000/v1` 이라 env 이름이 없어 스캔 밖이었다
-            //  (그래서 배포 스킬이 사용자에게 틀린 포트를 알려주고 있었다, 2026-08-02).
-            //  `127.0.0.1:<4자리>` 는 다른 뜻일 수 없으므로 오탐 위험이 낮다.
-            const urlPort = /(?:127\.0\.0\.1|localhost):(\d{4})\b/.exec(l);
-            if (!l.includes(p.env) && urlPort === null) return;
-            // ★한 줄이 **두 포트를 같이** 말하는 경우가 있다(예: "DASHBOARD_PORT(기본 X)·
-            //  HTTP_BRIDGE_PORT 는 …"). 그 줄의 숫자를 한쪽에 귀속시킬 수 없으므로, 그때는
-            //  **아는 기본값 중 하나이기만** 하면 통과시킨다. 낡은 숫자(3000·3101·3002)는
-            //  어느 쪽도 아니라 그대로 걸린다 — 잡아야 할 것은 여전히 잡힌다.
-            const both = PORTS.filter((q) => l.includes(q.env)).length > 1;
-            //  ★env 이름이 없는 URL 줄은 **어느 포트인지 귀속할 수 없다**(브리지 URL 이
-            //   대시보드 문서에 나오는 건 정상). 그때는 "아는 기본값 중 하나이기만" 하면
-            //   통과 — 낡은 숫자(3000·3101·3002)는 어느 쪽도 아니라 그대로 걸린다.
-            //   첫 판에서 이걸 안 해 정상 문서 6건을 오탐했다.
-            const named = l.includes(p.env);
-            const nums = named ? (l.match(/\b\d{4}\b/g) ?? []) : urlPort !== null ? [urlPort[1]] : [];
-            const allowed = named && !both ? [want] : [...truth.values()];
-            for (const n of nums) {
-              // 연도(2026 …)는 포트가 아니다 — 같은 줄에 날짜가 섞이면 오탐이 된다.
-              if (/^(19|20)\d\d$/.test(n)) continue;
-              if (!allowed.includes(n)) wrong.push(`${f}:${i + 1} ${n}`);
-            }
+            for (const n of wrongPortsInLine(l, p.env, want, truth)) wrong.push(`${f}:${i + 1} ${n}`);
           });
       }
       out.push(
@@ -224,6 +243,29 @@ export const check: RegressionCheck = {
         ),
       );
     }
+    // ★예시 대입 면제를 **문서와 무관하게** 고정한다(재검토 F-E). 정상 예시 둘은 통과, 낡은 줄은 전부 걸린다.
+    const fx = (l: string, env = "HTTP_BRIDGE_PORT"): string[] => wrongPortsInLine(l, env, truth.get(env) as string, truth);
+    const b = truth.get("HTTP_BRIDGE_PORT") as string;
+    const dsh = truth.get("DASHBOARD_PORT") as string;
+    const okLines = [`   HTTP_BRIDGE_PORT=7021   # 기본 ${b} 과 겹치지 않게`, `   DASHBOARD_PORT=7020     # default ${dsh} — pick another`];
+    const staleLines: [string, string?][] = [
+      [`HTTP_BRIDGE_PORT 는 기본 ${b}, 대시보드는 기본 3000 입니다.`],
+      [`HTTP_BRIDGE_PORT=7021  # 기본 ${b} · 열기 http://localhost:3000`],
+      [`HTTP_BRIDGE_PORT=3000   # 기본값 · 게이트웨이 http://127.0.0.1:${b}/v1`],
+      [`DASHBOARD_PORT=3101     # 이게 기본값입니다 (${dsh} 은 옛 값)`, "DASHBOARD_PORT"],
+      [`export HTTP_BRIDGE_PORT=3001 # 브리지 기본값, ${b} 로 두면 안 됨`],
+      [`DASHBOARD_PORT=${b}     # 기본 ${dsh} 과 겹치지 않게`, "DASHBOARD_PORT"],
+      [`HTTP_BRIDGE_PORT=3000`],
+    ];
+    const fxOk = okLines.map((l, k) => fx(l, k === 0 ? "HTTP_BRIDGE_PORT" : "DASHBOARD_PORT"));
+    const fxStale = staleLines.map(([l, env]) => ({ l, wrong: fx(l, env) }));
+    out.push(
+      assert(
+        "★예시 대입 면제: «기본 N» 을 밝힌 바꾼 값만 통과 · 같은 줄의 낡은 숫자·URL·다른 포트의 기본값·«기본값» 만 적은 줄은 걸린다",
+        fxOk.every((w) => w.length === 0) && fxStale.every((x) => x.wrong.length > 0),
+        { fxOk, fxStale: fxStale.filter((x) => x.wrong.length === 0).map((x) => x.l) },
+      ),
+    );
     return out;
   },
 };

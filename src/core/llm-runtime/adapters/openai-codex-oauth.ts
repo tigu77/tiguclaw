@@ -142,7 +142,7 @@ import type {
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.js";
 import { summarizeInputComposition } from "./_codex-input-composition.js";
-import { formatRequestSpans, formatTurnTiming, requestSpans, type RequestSpans } from "./_request-timing.js";
+import { formatRequestSpans, formatTurnTiming, requestSpans, summarizeTurnTiming, type RequestSpans, type TurnBounds } from "./_request-timing.js";
 import { codexSpeedBody } from "./_openai-speed.js";
 import { buildActivityDetail, buildActivityDetailFromJson } from "./_activity-detail.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
@@ -573,6 +573,8 @@ export const runOpenAiCodex = async (
   //  closing 에는 유지되고, 새 호출엔 새 값이다.
   //  ★전역 Map·카운터·`prompt_cache_key` 변경 없음. **요청 payload 엔 안 실린다.**
   const run = randomUUID();
+  // 턴 시작 — 요청 루프 **앞**(이력 로딩·압축 잠금 대기·도구 준비)을 «턴 준비» 로 재는 기준(`_request-timing.ts`).
+  const turnStartAt = Date.now();
   /**
    * ★**직렬화할 그 `body.tools` 에 `send_file` 이 있나** (0/1). 마지막 요청 기준 값을
    *  `[codex-turn-end]` 가 `lastSendFileTool` 로 싣는다 — 기존 `tools=` 노트는 **턴 첫
@@ -1450,15 +1452,36 @@ export const runOpenAiCodex = async (
   let turnCompacted = 0;
   let lastInstrNote = "instr=?";
 
+  // 요청별 벽시계 분해(`_request-timing.ts`) — 턴 끝 한 줄에 합계와 긴 요청 셋을 싣는다.
+  // ★루프 **밖**에 둔다: 턴이 실패·취소로 끝나도(바깥 catch) 지금까지의 분해와 «어디서 멈췄나» 를 남기려고.
+  const turnSpans: RequestSpans[] = [];
+  let prevResponseEndAt: number | undefined;
+  let lastSpans: RequestSpans | undefined;
+  let setupDoneAt: number | undefined;
+  let readyAt = 0;
+  let requestOpen = false;
+  // 이 요청의 시각 — 시도(무진전 재개)마다 전송·헤더·첫 이벤트·첫 진전을 새로 찍고, 첫 전송만 남긴다.
+  let firstSendAt: number | undefined;
+  let sendAt = 0;
+  let headersAt = 0;
+  let firstEventAt: number | undefined;
+  let firstOutputAt: number | undefined;
+  const turnBounds = (): TurnBounds => ({ turnStartAt, endAt: Date.now(), ...(setupDoneAt !== undefined ? { setupDoneAt } : {}) });
+
   try {
     // ★창(window)으로 본다 — 이어갈 때 `iterationBase` 만 옮기고 `iteration` 은 계속 는다.
     //  (0 으로 되돌리면 iteration 0 전용 입력 상한 가드가 다시 켜져 부작용 중복을 부른다.)
-    // 요청별 벽시계 분해(`_request-timing.ts`) — 턴 끝 한 줄에 합계와 긴 요청 셋을 싣는다.
-    const turnSpans: RequestSpans[] = [];
-    let prevResponseEndAt: number | undefined;
-    let lastSpans: RequestSpans | undefined;
     while (withinWindow(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)) {
-      const readyAt = Date.now();
+      readyAt = Date.now();
+      setupDoneAt ??= readyAt;
+      requestOpen = true;
+      // ★요청 시각은 **루프 맨 위**에서 비운다(2026-10-03 적대 검토 P2) — 전송 전 구간(취소 확인·입력 상한·steering 조립)에서
+      //  던지면 실패 줄이 직전 요청의 값으로 «출력 중» 이라고 오진했다(도구 실행 중 /stop 이 가장 흔한 경로).
+      firstSendAt = undefined;
+      sendAt = 0;
+      headersAt = 0;
+      firstEventAt = undefined;
+      firstOutputAt = undefined;
       // 2층 도구 루프 가드 (TT-I6, §4.4 #1) — iteration 진입(다음 LLM 호출) 직전 체크.
       // codex 는 수동 agentic 루프라 callTool 에 signal 이 안 들어간다(MCP 한계). 직전
       // iteration 의 도구 1개가 행이었어도 *그 도구가 반환하면* 여기서 다음 fetch 진입을
@@ -1704,12 +1727,6 @@ export const runOpenAiCodex = async (
       // 발화는 turn/매니저 예산(input.abortSignal)과 별개라 재개에 예산이 남는다. 모델 폴백 아님.
       let sseResult: CodexSseResult;
       let stallAttempt = 0;
-      // 이 요청의 시각 — 시도(무진전 재개)마다 전송·헤더·첫 이벤트·첫 진전을 새로 찍고, 첫 전송만 남긴다.
-      let firstSendAt: number | undefined;
-      let sendAt = 0;
-      let headersAt = 0;
-      let firstEventAt: number | undefined;
-      let firstOutputAt: number | undefined;
       for (;;) {
         const idleAc = new AbortController();
         // no-progress 타이머 — onProgress(진전)에만 beat. abort 시 linkAbort 가 fetch signal 로.
@@ -1737,6 +1754,7 @@ export const runOpenAiCodex = async (
         const iterStart = Date.now();
         firstSendAt ??= iterStart;
         sendAt = iterStart;
+        headersAt = 0; // 시도마다 — 무진전 재개 시도의 «헤더 대기» 를 앞 시도 값으로 보지 않게.
         firstEventAt = undefined;
         firstOutputAt = undefined;
         // 2층 합성 (TT-I2) — 1층 idle AC 와 핸들러 turn signal 을 OR 결합해 fetch signal 로.
@@ -2115,6 +2133,7 @@ export const runOpenAiCodex = async (
         );
         turnSpans.push(lastSpans);
         prevResponseEndAt = endAt;
+        requestOpen = false;
       }
       if (usage !== undefined) {
         finalUsage = usage;
@@ -2275,7 +2294,7 @@ export const runOpenAiCodex = async (
           `[codex-turn-end] ${input.threadKey} model=${model} iter=${iteration} steered=${steeredTotal} ` +
             // ★요청별 벽시계 분해 (2026-10-02) — «도구 밖 시간» 이 서버 대기·생각·조립·무진전 중 어디인지(`_request-timing.ts`).
             //  줄 **앞쪽**에 둔다 — `/logs` 가 긴 줄을 400자에서 자르는데, 뒤에 두면 비서가 자가진단할 때 안 보인다(적대 검토).
-            `${formatTurnTiming(turnSpans)} ` +
+            `${formatTurnTiming(turnSpans, turnBounds())} ` +
             `closing=${closing ? "재요청" : "종료"} ` +
             `text=${text.length} finalText=${finalText.length} ` +
             `toolsSinceText=${toolCallsSinceText}${
@@ -2780,6 +2799,17 @@ export const runOpenAiCodex = async (
       iteration += 1;
     }
   } catch (e) {
+    // ★실패·취소로 끝난 턴도 분해를 남긴다 (2026-10-03, 회사돌쇠 후속 보고) — 지금까지 끝난 요청 + 끝나지 않은 요청이
+    //  어디서 멈췄나(조립 · 헤더 대기 · 첫출력 대기 · 출력 중). 성공 턴만 찍으면 가장 궁금한 턴이 안 보인다.
+    try {
+      const stuck =
+        !requestOpen ? "" : ` 미완=${((Date.now() - readyAt) / 1000).toFixed(1)}s(${
+          firstSendAt === undefined ? "조립" : headersAt === 0 ? "헤더 대기" : firstOutputAt === undefined ? "첫출력 대기" : "출력 중"
+        })`;
+      console.log(`[codex-turn-fail] ${input.threadKey} model=${model} ${formatTurnTiming(turnSpans, turnBounds())}${stuck}`);
+    } catch {
+      /* 관측 실패가 실패 처리를 막지 않는다 */
+    }
     // 유휴 타임아웃 (§4.4) — 부작용 도구 상호작용. LLM 스트림이 idle abort 되어
     // IdleTimeoutError 가 올라온 경우, codex 의 부작용 모델 차이에 따른 native 처리:
     //  - sideEffectExecuted === true: throw 하면 풀 폴백이 턴을 처음부터 재실행 →
@@ -2934,6 +2964,7 @@ export const runOpenAiCodex = async (
       ...(turnReasoning !== undefined ? { reasoning: turnReasoning } : {}),
       replyToTrigger,
       usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
+      timing: summarizeTurnTiming(turnSpans, turnBounds()),
       externalToolCalls: pendingExternalToolCalls,
       turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),
       sentUserText: promptWithMemory,
@@ -3012,6 +3043,7 @@ export const runOpenAiCodex = async (
     ...(turnReasoning !== undefined ? { reasoning: turnReasoning } : {}),
     replyToTrigger,
     usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
+    timing: summarizeTurnTiming(turnSpans, turnBounds()),
     turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),
     sentUserText: promptWithMemory,
   };

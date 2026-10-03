@@ -25,6 +25,7 @@
  *    `discoverAgents(cwd)` 결과를 SDK `options.agents` 로 주입 → native Task tool
  *    이 발견·실행. 이전 "SDK 자동 발견 — 본 모듈 호출 0" 전제는 거짓이었다.
  */
+import { tierDescription, unresolvableTierText } from "./tier-description.js";
 import { getEventBus } from "../../eventbus.js";
 import { DAEMON_SUBAGENT_TOOL } from "../subagent-tools.js";
 import type { SteeringChannel } from "../../steering.js";
@@ -382,7 +383,7 @@ const buildAgentChildInput = (o: {
   const toolPolicy = deriveToolPolicy(o.agent.tools);
   const leanMemory = deriveLeanMemory(o.agent);
   return {
-    text: `${o.def}\n\n[Subagent Task]: ${o.prompt}`,
+    text: o.def.trim() === "" ? `[Subagent Task]: ${o.prompt}` : `${o.def}\n\n[Subagent Task]: ${o.prompt}`,
     threadKey: `agent:${o.jobId}`,
     turnOrigin: "subagent",
     channel: o.parentInput.channel,
@@ -625,7 +626,7 @@ export const createSpawnAgentMcpServer = (
     //  쓰고 있어 비대칭이었고, 실제로 «등록 이름만 바꾸고 상수는 낡은 채로» 두는 변이가
     //  어휘 검사를 통과했다(다른 검사 둘이 우연히 막았을 뿐).
     DAEMON_SUBAGENT_TOOL,
-    "정의된 서브에이전트를 **띄우고 즉시 jobId 를 돌려줍니다** — 기다리지 않습니다. 결과가 필요하면 `wait_for_worker([jobId, ...])` 로 합류하세요. ★**서로 독립인 일은 전부 띄운 뒤 한 번에 합류하세요** — 그러면 자식들이 동시에 돕니다. 하나 띄우고 바로 합류하기를 반복하면 줄을 서게 되니, 앞 결과가 있어야 다음을 정할 수 있을 때만 그렇게 하세요. 서브에이전트는 자기 정의의 `model` 로 실행됩니다 — `model` 에 settings.json 의 프로파일 이름(default/high/mid/low 또는 커스텀)을 쓰면 그 프로파일의 풀+폴백으로 실행되고, `provider:model` 직접 지정도 가능합니다(가용 프로파일은 작동 컨텍스트의 `## 모델 프로파일` 섹션 참고 — 작업 성격에 어울리는 걸 고르세요: 설계·분석=high, 구현=mid, 요약·분류=low). 사용 가능 서브에이전트 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. 합류하지 않고 턴을 끝내도 결과는 사라지지 않습니다 — 끝나면 당신에게 돌아옵니다(당신이 매니저면 진행 중인 턴에 이어지고, 메인 대화면 새 답변으로 옵니다). 규모가 크고 스스로 팬아웃까지 해야 하는 작업은 run_in_background(매니저) 가 더 맞습니다. **`label` 에 이 작업이 무엇인지 한 줄로 적어 주세요** — 백그라운드 작업 카드에서 여럿을 구분하는 데 씁니다(`name` 은 에이전트 이름이지 제목이 아닙니다).",
+    "정의된 서브에이전트를 **띄우고 즉시 jobId 를 돌려줍니다** — 기다리지 않습니다. 결과가 필요하면 `wait_for_worker([jobId, ...])` 로 합류하세요. ★**서로 독립인 일은 전부 띄운 뒤 한 번에 합류하세요** — 그러면 자식들이 동시에 돕니다. 하나 띄우고 바로 합류하기를 반복하면 줄을 서게 되니, 앞 결과가 있어야 다음을 정할 수 있을 때만 그렇게 하세요. 모델은 `tier` 로 정합니다 — 명세(`name`)를 쓰면 그 명세의 모델이 기본이고 `tier` 가 덮습니다, 명세 없이 `tier` 만 주면 그 등급의 즉석 서브에이전트입니다(기준은 `tier` 설명). 역할 명세 인덱스는 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 이미 실려 있습니다. 서브에이전트는 자체적으로 다시 spawn 할 수 없습니다 (depth 1 제한). **`path`(폴더 경로)를 주면 그 폴더 컨텍스트로 실행됩니다 — 그 폴더의 에이전트 명세로 생성되고, 그 폴더 전용 스킬/파일작업(상대경로)이 그 폴더 기준이 됩니다. 미지정 시 현재 컨텍스트 상속.** 그 폴더에 무슨 에이전트/스킬이 있는지는 project_capabilities 로 먼저 확인하세요. 합류하지 않고 턴을 끝내도 결과는 사라지지 않습니다 — 끝나면 당신에게 돌아옵니다(당신이 매니저면 진행 중인 턴에 이어지고, 메인 대화면 새 답변으로 옵니다). 규모가 크고 스스로 팬아웃까지 해야 하는 작업은 run_in_background(매니저) 가 더 맞습니다. **`label` 에 이 작업이 무엇인지 한 줄로 적어 주세요** — 백그라운드 작업 카드에서 여럿을 구분하는 데 씁니다(`name` 은 에이전트 이름이지 제목이 아닙니다).",
     {
       // ★`subagent_type` 은 SDK 빌트인 `Agent` 의 인자 이름이다 (2026-08-08).
       //  그 도구를 차단한 뒤에도 모델은 **습관으로** 그 이름을 부르고(그래서 toolAliases 로
@@ -643,9 +644,16 @@ export const createSpawnAgentMcpServer = (
         .min(1)
         .optional()
         .describe(
-          "실행할 서브에이전트 **이름**. 작동 컨텍스트의 `## 사용 가능 서브에이전트` 에 있는 이름 중 하나여야 합니다(예: deep·general·explore). ★작업 제목을 여기 쓰지 마세요 — 제목은 `label` 입니다.",
+          "선택 — **역할 명세**의 이름(작동 컨텍스트의 `## 사용 가능 서브에이전트` 에 있는 것만). 도구 제한·고정 역할이 필요할 때 쓰세요. 그냥 일을 맡길 땐 비우고 `tier` 로 등급만 정하면 됩니다. ★작업 제목을 여기 쓰지 마세요 — 제목은 `label` 입니다.",
         ),
       subagent_type: z.string().min(1).optional(),
+      // ★등급 = 모델, 이름 = 역할 (2026-10-03 정태님). 기본 범용 명세(deep·general·quick·explore)는 «모델 등급 + 일반론»
+      //  이라 모델 프로필과 같은 선택을 두 이름 체계로 했다 — 그래서 뺐고, 등급은 매니저처럼 여기서 직접 준다.
+      //  이름과 같이 주면 명세의 모델을 덮는다(Claude Code Agent 의 `model` 과 같은 규칙).
+      tier: z.string().min(1).optional().describe(tierDescription("서브에이전트")),
+      // `model` 은 Claude Code Agent 도구의 인자 이름이다 — 모델이 습관으로 그렇게 부르면 `tier` 로 받는다(`subagent_type` 과 같은 처리).
+      //  종전 안내문이 `model` 이라고 시켰던 것도 있다: 받지 않으면 모르는 키로 걸러져 **조용히 기본 모델**이 됐다(적대 검토 P-1).
+      model: z.string().min(1).optional(),
       prompt: z.string().min(1),
       // ★작업 제목 (2026-09-01) — 매니저의 `run_in_background({label})` 과 같은 자리.
       //  없으면 잡 카드가 전부 `deep`·`general` 로만 보여 여럿을 동시에 띄우면 구분이 안 된다.
@@ -664,18 +672,10 @@ export const createSpawnAgentMcpServer = (
     },
     async (rawArgs) => {
       const agentName = rawArgs.name ?? rawArgs.subagent_type;
-      if (agentName === undefined) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "name(서브에이전트 이름)이 필요합니다. 사용 가능 목록은 작동 컨텍스트의 `## 사용 가능 서브에이전트` 섹션에 있습니다.",
-            },
-          ],
-          isError: true,
-        };
-      }
-      const args = { ...rawArgs, name: agentName };
+      const tier = (rawArgs.tier ?? rawArgs.model)?.trim() || undefined;
+      // 잡 카드·중복 판정에 쓰는 이름 — 명세가 없으면 등급으로 보인다.
+      const shownName = agentName ?? `subagent(${tier ?? "default"})`;
+      const args = { ...rawArgs, name: shownName };
       // 관측 잡 (kind:'agent') — 서브에이전트를 매니저와 동일한 대시보드 잡으로 노출
       // (ADR 2026-07-03 subagent-worker-unify, Phase A). 실행 모델은 불변(블로킹 await).
       // markDone/markFailed 는 재주입을 안 타므로 U-I1(재주입=매니저만) 자동 충족.
@@ -701,38 +701,53 @@ export const createSpawnAgentMcpServer = (
             : parentCwd;
         // agent 정의 회수 (model 등급 포함). 우선순위 project > plugin > user.
         // targetCwd 로 발견 → project 지정 시 그 프로젝트의 에이전트 명세를 집는다.
-        const agents = await discoverAgents(targetCwd);
+        {
+          const bad = await unresolvableTierText(tier, targetCwd);
+          if (bad !== undefined) return errText(bad);
+        }
+        const agents = agentName === undefined ? [] : await discoverAgents(targetCwd);
         // ★대소문자를 구분하지 않는다 (2026-08-08). 모델이 SDK 어휘를 습관으로 쓰면
         //  `Explore`(대문자)로 오는데 우리 정의는 `explore` 다 — 한 글자 차이로 미발견이었다.
         //  이름은 파일명에서 오고 전부 소문자-하이픈이라(전수 확인) 폴딩 충돌이 없다.
         //  ★앞 라운드엔 이 수정을 `getAgentDefinition` 에 넣었는데 **그 함수는 호출자가
         //   0개**였다(레드팀 적발). 고치는 자리를 확인하지 않으면 고친 게 아니다.
-        const wanted = args.name.toLowerCase();
-        const cands = agents.filter((a) => a.name.toLowerCase() === wanted);
-        if (cands.length === 0) {
+        const wanted = agentName?.toLowerCase();
+        const cands = wanted === undefined ? [] : agents.filter((a) => a.name.toLowerCase() === wanted);
+        if (agentName !== undefined && cands.length === 0) {
           // ★후보를 **알려준다**. 종전엔 막다른 문자열이라 모델이 턴 하나를 더 태웠다 —
           //  같은 스코프에 목록이 있는데 안 쓰고 있었다.
+          // ★등급 이름(`deep`·`high` 등)을 **몰래 등급으로 바꾸지 않는다** — 이름이 곧 등급이던 겹침이 코드에서 되살아난다.
+          //  대신 고칠 길을 같이 준다(옛 기본 명세를 부르던 스킬·습관이 한 번에 고치게).
           const names = agents.map((a) => a.name).sort();
           const shown = names.slice(0, 20).join(", ");
           return errText(
-            `서브에이전트 '${args.name}' 미발견. 사용 가능: ${shown}` +
+            `'${agentName}' 라는 서브에이전트 명세가 없습니다. 그냥 일을 맡기려면 name 없이 tier(high·mid·low 또는 provider:model)만 주세요. ` +
+              `역할 명세는 이 이름들만 됩니다: ${shown || "(없음)"}` +
               (names.length > 20 ? ` 외 ${names.length - 20}개(find_agents 로 검색)` : ""),
           );
         }
-        const agent =
+        const found =
           cands.find((a) => a.source === "project") ??
           cands.find((a) => a.source === "plugin") ??
-          cands[0]!;
-        const def = await fs.readFile(agent.filePath, "utf8");
+          cands[0];
+        // 즉석 서브에이전트 — 본문 없이 맡긴 일만(공용 시스템 프롬프트·역할 헌법은 그대로 받는다).
+        const agent: Agent =
+          found === undefined
+            ? { name: shownName, description: "즉석 서브에이전트", filePath: "", source: "builtin", ...(tier !== undefined ? { model: tier } : {}) }
+            : tier !== undefined
+              ? { ...found, model: tier }
+              : found;
+        const def = found === undefined ? "" : await fs.readFile(found.filePath, "utf8");
 
         // ★같은 창에 **같은 인자**로 또 왔으면 다시 안 띄운다 (2026-08-20 사용자 신고).
         //  모델이 한 응답에 동일 `spawn_agent` 을 두 번 발행해 에이전트가 둘 떴다(토큰 2배).
         //  병렬 팬아웃은 이 기능의 목적이라 막지 않는다 — 막는 건 **동일 인자**뿐이다.
         //  조용히 삼키지 않고 로그를 남긴 뒤, 모델에겐 **이미 띄웠다는 사실**을 돌려준다.
+        // 키는 **한 번** 계산해 조회·기억이 같이 쓴다 — 두 곳에 따로 적으면 한쪽만 고쳐져 중복 방지가 통째로 죽는다(재검토 D1).
+        // 등급을 키에 넣는다 — 같은 명세를 다른 등급으로 동시에 띄우는 건 중복이 아니다(적대 검토 P-4).
+        const dedupeKey = spawnKey({ tool: "spawn_agent", name: `${args.name}@${tier ?? ""}`, prompt: args.prompt, path: targetCwd });
         {
-          const key = spawnKey({
-            tool: "spawn_agent", name: args.name, prompt: args.prompt, path: targetCwd,
-          });
+          const key = dedupeKey;
           const dup = findDuplicateSpawn(parentInput.threadKey, key, Date.now());
           if (dup !== undefined) {
             console.warn(
@@ -774,7 +789,7 @@ export const createSpawnAgentMcpServer = (
         });
         rememberSpawn(
           parentInput.threadKey,
-          spawnKey({ tool: "spawn_agent", name: args.name, prompt: args.prompt, path: targetCwd }),
+          dedupeKey,
           jobId,
           Date.now(),
         );

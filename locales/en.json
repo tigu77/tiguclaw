@@ -232,6 +232,7 @@
   "ctx.thisAction": "This action",
   "daemon.restart.confirm": "Restart the daemon? Running work will be interrupted and it will come back automatically in a moment.",
   "daemon.restart.failed": "Restart failed: {err}",
+  "daemon.restart.noSupervisor": "Not restarted — this install has no supervisor to bring it back, so stopping now would leave it off. The daemon keeps running.",
   "daemon.restart.requesting": "Requesting restart…",
   "daemon.restart.running": "Restarting… back in a moment.",
   "daemon.restart.sent": "Restart signal sent (connection dropped) — back in a moment.",

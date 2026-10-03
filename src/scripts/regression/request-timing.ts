@@ -14,6 +14,7 @@ import {
   formatTurnTiming,
   openAiStreamMark,
   requestSpans,
+  summarizeTurnTiming,
 } from "../../core/llm-runtime/adapters/_request-timing.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -52,9 +53,27 @@ export const check: RegressionCheck = {
     ];
     const line = formatTurnTiming(many);
 
+    // 턴 바깥 — 준비 끝(500) 뒤 첫 요청(응답 900·진전 1000·끝 1200), 1500 에 줄을 찍으면 턴 준비 0.5s · 그 밖 0.3s.
+    const tb = createRequestTimeline(0);
+    tb.setupDone(500);
+    tb.mark("start", 900);
+    tb.mark("output", 1000);
+    tb.mark("end", 1200);
+    const bounded = tb.summary(1500);
+    const boundedLine = tb.format(1500);
+    // 끝나지 않은 요청 — 응답이 열리고 첫 진전 전이면 «첫출력 대기», 진전 뒤면 «출력 중».
+    const tp = createRequestTimeline(0);
+    tp.mark("start", 100);
+    const waiting = tp.format(400);
+    tp.mark("output", 500);
+    const streaming = tp.format(700);
+    const noBounds = summarizeTurnTiming(tb.spans());
+
     const adapters = {
-      codex: /firstOutputAt \?\?= Date\.now\(\)/.test(src("openai-codex-oauth.ts")) && /formatTurnTiming\(turnSpans\)/.test(src("openai-codex-oauth.ts")),
-      claude: /requestTimeline\.mark\(claudeStreamMark\(event\)/.test(src("claude-agent-sdk.ts")) && /requestTimeline\.toolResult\(/.test(src("claude-agent-sdk.ts")) && /requestTimeline\.format\(\)/.test(src("claude-agent-sdk.ts")),
+      codex: /firstOutputAt \?\?= Date\.now\(\)/.test(src("openai-codex-oauth.ts")) && /formatTurnTiming\(turnSpans, turnBounds\(\)\)/.test(src("openai-codex-oauth.ts")),
+      claude: /requestTimeline\.mark\(claudeStreamMark\(event\)/.test(src("claude-agent-sdk.ts")) && /requestTimeline\.toolResult\(/.test(src("claude-agent-sdk.ts")) && /requestTimeline\.format\(\)/.test(src("claude-agent-sdk.ts")) &&
+        // ★실패 줄은 정상 종료로 흡수하는 갈래(앱 도구 캡처 abort · 답 확정 뒤 실패) **다음** — 앞이면 성공 턴에도 찍힌다(적대 검토 P3).
+        src("claude-agent-sdk.ts").indexOf("[claude-turn-fail]") > src("claude-agent-sdk.ts").indexOf("keepAnswerOnThrow({"),
       openai: /requestTimeline\.mark\(openAiStreamMark\(data\)/.test(src("openai-agents-sdk.ts")) && /requestTimeline\.toolResult\(/.test(src("openai-agents-sdk.ts")) && /\[openai-turn-end\][^\n]*requestTimeline\.format\(\)/.test(src("openai-agents-sdk.ts")),
     };
 
@@ -99,6 +118,13 @@ export const check: RegressionCheck = {
           openAiStreamMark({ type: "model", event: { type: "response.reasoning_summary_text.delta" } }) === undefined,
         [{ type: "response_started" }, { type: "response_done" }, { type: "output_text_delta" }, { type: "model", event: { type: "response.function_call_arguments.delta" } }, { type: "model", event: { type: "response.reasoning_summary_text.delta" } }].map((d) => openAiStreamMark(d) ?? "-"),
       ),
+      assert(
+        "★턴 준비 = 준비 끝 − 턴 시작 · 첫 요청의 대기는 준비 끝부터 · 그 밖 = 벽시계 − 준비 − 분해 합",
+        bounded.setupMs === 500 && tb.spans()[0]!.wait === 400 && bounded.residualMs === 300 && bounded.wallMs === 1500 &&
+          /시간=턴 준비 0\.5s·.*·그 밖 0\.3s 요청=1회/.test(boundedLine) && noBounds.setupMs === undefined && noBounds.residualMs === undefined,
+        { bounded, boundedLine, noBounds },
+      ),
+      assert("★끝나지 않은 요청은 어디서 멈췄는지 — 첫 진전 전 «첫출력 대기» · 뒤 «출력 중»", /미완=0\.4s\(첫출력 대기\)/.test(waiting) && /미완=0\.7s\(출력 중\)/.test(streaming), { waiting, streaming }),
       assert("세 어댑터가 시각을 넘기고 턴 끝 줄에 같은 표기를 싣는다", adapters.codex && adapters.claude && adapters.openai, adapters),
     ];
   },

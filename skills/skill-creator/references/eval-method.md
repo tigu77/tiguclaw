@@ -89,7 +89,7 @@ node <skill-creator>/scripts/aggregate.mjs results.json --baseline baseline --ca
 
 ## 7. 어댑터 비교 (LLM-agnostic, 옵션)
 
-같은 candidate 스킬을 어댑터별로: config=`claude`/`codex`/`openai`. spawn_agent 는 호출별 model 오버라이드가 없고 model 은 **에이전트 정의**에서 오므로, 어댑터별 **러너 변형 에이전트**를 둔다 — `<home>/agents/skill-eval-runner-<provider>.md` 에 `skill-eval-runner` 와 동일 본문 + `model: "<provider>:<model>"` 핀. 각 config 는 그 변형으로 `spawn_agent` 한다. 어댑터가 다른 경우 현재 집계기는 각 config 요약만 제공한다. 스킬 변경만의 효과와 모델·어댑터 차이를 분리할 수 없으므로 전후 Δ는 보류한다. skill-creator[CC] 가 못 하는 티구클로 고유 기능.
+같은 candidate 스킬을 어댑터별로: config=`claude`/`codex`/`openai`. 각 config 는 같은 러너 명세에 `tier` 로 모델을 지정해 띄운다 — `spawn_agent({ name: "skill-eval-runner", tier: "<provider>:<model>", prompt })`. `tier` 가 명세의 모델을 덮으므로 어댑터별 변형 명세는 필요 없다. 어댑터가 다른 경우 현재 집계기는 각 config 요약만 제공한다. 스킬 변경만의 효과와 모델·어댑터 차이를 분리할 수 없으므로 전후 Δ는 보류한다. skill-creator[CC] 가 못 하는 티구클로 고유 기능.
 
 ## 비교 입력 계약
 

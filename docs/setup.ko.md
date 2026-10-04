@@ -195,7 +195,7 @@ TIGUCLAW_RUNTIME=source npm run onboard
    # 여기에 LLM 키, 텔레그램을 쓴다면 봇 토큰도
    ```
    - 텔레그램 봇은 인스턴스마다 **따로** 만드세요. 한 봇 토큰을 둘이 쓰면 한쪽이 메시지를 못 받습니다.
-   - 구독 로그인은 인스턴스마다 따로 받습니다 — 새 레포 폴더에서
+   - 구독 로그인도 인스턴스마다 따로 합니다 — 새 레포 폴더에서
      `TIGUCLAW_HOME=~/.tiguclaw-test node bin/tiguclaw.mjs codex-auth`(또는 `claude-auth`).
      첫 홈의 `.env` 에서 Codex 토큰을 복사하지 마세요. 토큰 하나를 둘이 쓰면 한쪽이 갱신할 때 다른 쪽이 로그아웃될 수 있습니다.
 3. **서비스를 등록합니다** — 새 레포 폴더에서:
@@ -207,7 +207,7 @@ TIGUCLAW_RUNTIME=source npm run onboard
 ```bash
 node bin/daemon.mjs restart --home ~/.tiguclaw-test     # status·stop·start·update·logs·uninstall 도 같습니다
 ```
-★`--home` 을 빠뜨리면 첫 인스턴스를 겨눕니다. `npm run daemon:*` 도 마찬가지이고, 전역 `tiguclaw` 명령은
+★`--home` 을 빠뜨리면 첫 인스턴스에 적용됩니다. `npm run daemon:*` 도 마찬가지이고, 전역 `tiguclaw` 명령은
 첫 인스턴스 전용입니다(첫 레포의 코드로 실행됩니다).
 
 Windows PowerShell 에서는 홈을 `"$HOME\.tiguclaw-test"` 처럼 적고, 구독 로그인은 이렇게 합니다:

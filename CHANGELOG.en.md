@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-10-04
+
 ### Added
 
 - **Run a scheduled task right now.** Ask the assistant and it runs the schedule once, exactly as it would at its set time.
@@ -19,13 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A registered schedule no longer asks for confirmation every time it does its usual work.** It asks only about new actions the schedule doesn't describe.
 - **Subagents are now started with just a tier (`low` · `mid` · `high`), no spec needed.** The built-in `quick`, `general`, `deep` and `explore` specs are gone. Your own specs still work; if you give both, the tier overrides the spec's model.
 - **In long Codex and OpenAI conversations, summarizing after an answer no longer holds up your next message** — it pauses and answers first.
-- **Service commands (`tiguclaw restart` and friends) now reject arguments they don't recognize** instead of ignoring them, so a mistyped `--home` can't touch the wrong instance.
+- **Management commands such as `tiguclaw restart` now reject arguments they don't recognize** instead of ignoring them, so a mistyped `--home` can't touch the wrong instance.
 - **Logs now show how long each model request took**, so a slow answer can be traced to server wait, thinking, or output.
 
 ### Fixed
 
 - **Fixed restarting or updating one instance also stopping another on the same Windows machine** when their home folder names started the same way.
-- **Fixed installing a second instance overwriting the first instance's service registration.** The service name now comes from that instance's home `.env`.
+- **Fixed installing a second instance overwriting the first instance's service registration.** Each instance now uses its own service name.
 - **Fixed restart requests looking accepted when nothing could restart the daemon.** It now says so right away.
 - **Fixed the Windows restart supervisor starting with the wrong home — and restart/stop failing to find it — when the Windows user name is non-ASCII (e.g. Korean).**
 - **Fixed the Windows restart supervisor starting with the wrong home when the home path ended in `\`.**
@@ -841,7 +843,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...HEAD
+[0.65.0]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...v0.63.0
 [0.62.0]: https://github.com/tigu77/tiguclaw/compare/v0.61.0...v0.62.0

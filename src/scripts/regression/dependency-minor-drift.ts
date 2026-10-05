@@ -81,7 +81,17 @@ interface Deferral {
  *  ★다음에 여기 항목을 넣을 땐 기한을 **2주 이내**로 잡아라. 3주씩 주면 그 사이 새 마이너가
  *   나와 유예가 무효화되고, 그게 곧 "다음에" 가 무한히 밀리는 기제였다.
  */
-const DEFERRED: readonly Deferral[] = [];
+const DEFERRED: readonly Deferral[] = [
+  {
+    pkg: "@openai/agents",
+    latest: "0.19.0",
+    until: "2026-10-19",
+    why:
+      "0.19.0(2026-10-05 출시) 의 agents-core 가 **선택 의존성** `@modelcontextprotocol/client` 를 모듈 로드 때 곧바로 import 한다 — " +
+      "설치에서 빠지면(실측: 첫 `npm install` 이 실제로 빠뜨렸다) 이 패키지를 정적으로 부르는 openai 어댑터 때문에 데몬 부팅 전체가 깨질 수 있다. " +
+      "올리기 전에 ①빠져도 부팅이 되게(어댑터 지연 로드) 또는 설치 보증 ②e2e:openrouter 실제 왕복. 압축 수정 싱크와 섞지 않으려고 유예.",
+  },
+];
 /**
  * 유예가 이 버전에 적용되는가 — **마이너 라인**이 같으면 같은 판단이다.
  *

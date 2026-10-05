@@ -288,6 +288,9 @@ export const check: RegressionCheck = {
     const edge = H.planHistoryCompaction([{ id: 1, role: "assistant", content: "e".repeat(B * 4 - 2) }, { id: 2, role: "user", content: "u" }, { id: 3, role: "assistant", content: "a" }], 0, { triggerChars: 1, keepRecent: 2, maxFoldChars: B });
     const huge = H.planHistoryCompaction([{ id: 1, role: "assistant", content: "h".repeat(B * 9) + "ANSWER-END" }, { id: 2, role: "user", content: "u" }, { id: 3, role: "assistant", content: "a" }], 0, { triggerChars: 1, keepRecent: 2, maxFoldChars: B });
     // 질문 + 큰 답은 한 단위 — 질문만 따로 한 패스를 먹지 않는다.
+    // ★사용자 메시지는 **첫머리가 지시**다 — 잘라야 할 때 앞도 남긴다(2026-10-05 벤치: 일지 첫 줄의 규칙 변경이 잘려 18→11점).
+    const ask = H.planHistoryCompaction([{ id: 1, role: "user", content: "RULE-HEAD-7171 " + "from now on drop sev4 and keep earlier days. ".repeat(12) + "RULE-BODY-END-7373 " + "l".repeat(B * 9) + " LOG-END-7272" }, { id: 2, role: "assistant", content: "a" }, { id: 3, role: "user", content: "u" }, { id: 4, role: "assistant", content: "a" }], 0, { triggerChars: 1, keepRecent: 2, maxFoldChars: B });
+    const askBody = ask.toFold.map((t) => t.content).join("\n");
     const qa = H.planHistoryCompaction([{ id: 1, role: "user", content: "질문" }, { id: 2, role: "assistant", content: "q".repeat(B * 3) }, { id: 3, role: "user", content: "u" }, { id: 4, role: "assistant", content: "a" }], 0, { triggerChars: 1, keepRecent: 2, maxFoldChars: B });
     const edgeLen = H.foldPromptOf(edge.toFold).length, hugeLen = H.foldPromptOf(huge.toFold).length;
 
@@ -330,6 +333,8 @@ export const check: RegressionCheck = {
       assert("★O 짧은 턴이 많아도 한 패스의 최종 입력(머리말 포함)이 예산 안", shortLen <= 1_000 && shortPlan.toFold.length > 10, { shortLen, turns: shortPlan.toFold.length }),
       assert("★O 질문 + 큰 답은 한 단위로 접힌다 · 잘릴 땐 뒤쪽(결론)을 남긴다",
         qa.toFold.length === 2 && qa.toFold[0]?.content === "질문" && qa.chunkChars === B && huge.toFold.at(-1)?.content.endsWith("ANSWER-END") === true, { qa: qa.toFold.map((t) => t.content.length), hugeTail: huge.toFold.at(-1)?.content.slice(-12) }),
+      assert("★O 잘라야 하는 큰 사용자 메시지는 **앞(지시)과 끝을 둘 다** 남기고 가운데를 버린다",
+        askBody.includes("RULE-HEAD-7171") && askBody.includes("RULE-BODY-END-7373") && askBody.includes("LOG-END-7272") && /가운데 \d+자 생략/.test(askBody), { head: askBody.slice(0, 40), tail: askBody.slice(-20) }),
       assert("★O 머리말 때문에 경계를 넘는 턴·용량을 넘는 턴도 최종 입력이 4조각 용량 안이고 조각으로 부른다",
         edge.chunkChars === B && edgeLen <= B * 4 && huge.chunkChars === B && hugeLen <= B * 4, { edgeLen, hugeLen, cap: B * 4 }),
       assert("★P 중간 조각 실패: 워터마크가 큰 턴을 넘지 않는다(부분 성공 위장 없음)", P1.watermark < p0Id, { watermark: P1.watermark, p0Id }),

@@ -251,7 +251,7 @@ export const check: RegressionCheck = {
           mixedRef.ref === undefined && typeof mixedRef.total === "number",
         { ref: refInQuery.ref, ok: refInQuery.ok, mixedRef: { ref: mixedRef.ref, total: mixedRef.total } }),
       assert("재현 조건: 수동 압축이 도구 결과가 든 턴들을 접었다", manual.ok === true && manual2.ok === true && manual3.ok === true && manual4.ok === true && seen.length >= 1, { manual, manual2, manual3, manual4, calls: seen.length }),
-      assert("★짧은 결과가 아주 많은 턴(600쌍)도 턴 상한 안에서 참조가 전부 남는다(앞쪽이 잘려 참조가 빠지지 않는다)", shortRefs === 600 && !foldIn.includes("요약 입력 상한으로 앞쪽"), { shortRefs }),
+      assert("★짧은 결과가 아주 많은 턴(600쌍)도 턴 상한 안에서 참조가 전부 남는다(앞쪽이 잘려 참조가 빠지지 않는다)", shortRefs === 600 && !foldIn.includes("요약 입력 상한으로"), { shortRefs }),
       assert("★접기 쪽 같은 call_id: 인자가 긴 두 호출이 각자 자기 결과를 가리킨다(참조로 읽으면 그 호출의 인자·결과)",
         dupReads.length === 2 && dupReads.every((d) => d.r.ok && d.r.args.includes(`DUPARG-${d.which}`) && d.r.text.includes(`DUPOUT-${d.which}`)),
         dupReads.map((d) => ({ which: d.which, ok: d.r.ok }))),

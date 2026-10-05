@@ -1081,6 +1081,19 @@ async function summarizeViaCodex(
     finishUsage(result.lastEvent === "response.completed" && result.failure === undefined, result.usage === undefined ? undefined : {
       ...result.usage, requests: 1, requestUsageEntries: [result.usage],
     });
+    // ★스트림 안에서 실패를 알렸고 텍스트가 없으면 **던진다** (2026-10-05 레드팀 F1). codex 는 과부하·한도를 HTTP 200 스트림의
+    //  `error` 이벤트로 알리는데, 빈 텍스트만 돌려주면 호출부가 «요약이 쓸 수 없는 크기» 로 보고 예산을 무조건 줄였다 —
+    //  과부하에 예산을 유지하는 판정(`keepsFoldBudget`)이 실제 과부하 모양엔 닿지 않았다(벤치 사고 날 축소 22회 전부 이 경로).
+    //  던지면 catch 가 사유로 가른다(과부하·한도·인증 = 유지, 그 밖 = 축소). 사유가 로그에도 남는다.
+    //  텍스트가 있으면 종전대로 쓴다(출력 상한 `incomplete` 의 부분 요약 등 — 그 판단은 호출부 하한이 한다).
+    if (result.failure !== undefined && result.text.trim() === "") {
+      const f = result.failure;
+      throw new Error(
+        `Codex summary stream failed: ${f.source}${f.code !== undefined ? `/${f.code}` : ""}` +
+          `${f.message !== undefined ? `: ${f.message}` : ""}` +
+          `${f.code === undefined && f.message === undefined && f.raw !== undefined ? ` raw=${f.raw}` : ""}`,
+      );
+    }
     return result.text;
   } finally {
     finishUsage(false);
@@ -1713,28 +1726,37 @@ const loadHistoryTurns = (
  * 예산보다 큰 단위(큰 턴 하나, 또는 질문 + 큰 답) — 조각 요약(`summarizeInChunks`)이 삼킬 수 있으면 통째로, 그보다
  * 크면 잘라서라도 접어 진행을 보장한다. 판정은 **최종 요약 입력**(머리말 포함)으로 한다 — 실행이 나누는 것도 그것이다.
  */
+/** 잘라 접을 때 앞에서 남기는 최대 길이 — 사용자 메시지의 지시(머리말)가 들어갈 만큼. 나머지는 끝(결론)에 준다. */
+const FOLD_KEEP_HEAD_CHARS = 4_000;
+
 const foldOversizeUnit = (unit: CodexTurnWithId[], budget: number, itemCount: number, historyChars: number): HistoryCompactionPlan => {
   const capacity = budget * CODEX_FOLD_MAX_CHUNKS;
   const promptLen = foldPromptOf(unit).length;
   const last = unit[unit.length - 1] as CodexTurnWithId;
   if (promptLen <= capacity) return { needed: true, toFold: unit, nextWatermark: last.id, historyChars, chunkChars: budget };
   const body = last.content;
-  const marker = (omitted: number) => `…[요약 입력 상한으로 앞쪽 ${omitted}자 생략 — 이 부분은 요약에 없다]\n`;
-  // 머리말·표식까지 붙여 4조각 용량 안에 드는 만큼 **뒤쪽을** 남긴다 — 본문은 «도구 항목 → 답» 순이라 끝이 결론이다
-  //  (종전엔 앞을 남겨 답을 버렸다 — 재검토 E6). 표식 길이는 자릿수가 가장 긴 경우로 잰다.
-  const kept = Math.max(1, capacity - (promptLen - body.length) - marker(body.length).length);
-  let tail = body.slice(body.length - kept);
-  if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1); // 서로게이트 쌍을 쪼개지 않는다.
+  const marker = (omitted: number) => `\n…[요약 입력 상한으로 가운데 ${omitted}자 생략 — 이 부분은 요약에 없다]…\n`;
+  // 머리말·표식까지 붙여 4조각 용량 안에 드는 만큼 남기되 **양 끝을** 남기고 가운데를 버린다.
+  //  - 끝: 답은 «도구 항목 → 답» 순이라 끝이 결론이다(종전엔 앞을 남겨 답을 버렸다 — 재검토 E6).
+  //  - ★앞: 사용자 메시지는 **첫머리가 지시**다(2026-10-05 벤치). 뒤만 남기자 «Rule change, effective from day 5…» 로
+  //    시작하는 11.6만 자 일지에서 규칙이 잘려 요약에서 사라졌고, 6~10일차가 그 규칙 없이 처리됐다(18→11점).
+  //  표식 길이는 자릿수가 가장 긴 경우로 잰다.
+  const room = Math.max(2, capacity - (promptLen - body.length) - marker(body.length).length);
+  let head = body.slice(0, Math.min(FOLD_KEEP_HEAD_CHARS, Math.floor(room / 4)));
+  if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1); // 서로게이트 쌍을 쪼개지 않는다.
+  let tail = body.slice(body.length - (room - head.length));
+  if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
   // ★여기서 잘린 앞부분은 요약에 닿지 않고 워터마크는 넘어간다 — 진행 보장의 대가다. 원문(transcripts·turn_items)은
   //  남지만 다음 요청엔 없다. 되살릴 항목은 저수위(9만 자) 안이고 조각 요약이 예산 4배까지 삼키므로 평소엔 안 온다 —
   //  오면 예산이 실패로 줄었거나 답 텍스트 자체가 큰 것이다. 그래서 수치를 남긴다.
   console.warn(
     `[codex-history] 요약 입력 상한으로 한 턴을 잘라 접는다 — 턴 id=${last.id} 본문=${body.length}자 ` +
-      `예산=${budget}자×${CODEX_FOLD_MAX_CHUNKS}조각 남김(뒤쪽)=${tail.length}자 버림(앞쪽)=${body.length - tail.length}자 (도구 항목 ${itemCount}개)`,
+      `예산=${budget}자×${CODEX_FOLD_MAX_CHUNKS}조각 남김(앞)=${head.length}자 남김(뒤)=${tail.length}자 ` +
+      `버림(가운데)=${body.length - head.length - tail.length}자 (도구 항목 ${itemCount}개)`,
   );
   return {
     needed: true,
-    toFold: [...unit.slice(0, -1), { ...last, content: `${marker(body.length - tail.length)}${tail}` }],
+    toFold: [...unit.slice(0, -1), { ...last, content: `${head}${marker(body.length - head.length - tail.length)}${tail}` }],
     nextWatermark: last.id,
     historyChars,
     chunkChars: budget,
@@ -2522,7 +2544,7 @@ const compactThreadHistoryUnlocked = async (args: {
             //  같은 크기를 계속 재시도한다. 단 429/한도는 크기 문제가 아니므로 제외.
             // 한도·인증 거부는 크기 문제가 아니다 — 예산을 줄이면 복구 뒤 요약만 괜히 작아진다.
             (keepsFoldBudget(msg)
-              ? " (한도·인증 실패 — 예산 유지)"
+              ? " (한도·인증·과부하 실패 — 예산 유지)"
               : ` → 다음 시도 예산 ${shrinkFoldBudget(args.threadKey)}자로 축소`),
       );
       noteCompactionOutcome(args.threadKey, false, msg, prompt.length, args.adapter);

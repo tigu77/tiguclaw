@@ -43,10 +43,14 @@ export const isAuthRejected = (errStr: string): boolean =>
   /^\s*401\b|\bfailed:\s*401\b|호출 실패:\s*401\b|\bAPI Error:\s*401\b|\bHTTP(?:\/[\d.]+)?\s+401\b|\bstatus(?: code)?[:=]?\s*401\b|\b401 Unauthorized\b|invalid_api_key|authentication_error|Invalid API key|Please run \/login|OAuth token (?:has )?(?:expired|been revoked|revoked)/i.test(errStr);
 
 /**
- * 요약 실패가 **크기 탓이 아닌** 실패인가 — 그러면 다음 요약 예산을 줄이지 않는다(한도·인증).
+ * 요약 실패가 **크기 탓이 아닌** 실패인가 — 그러면 다음 요약 예산을 줄이지 않는다(한도·인증·백엔드 과부하).
  * ★함수로 둔다 — 호출부 삼항에 박아 두면 검사가 소스 글자만 보게 되고, 죽은 분기도 통과했다(레드팀 M5).
+ * ★과부하도 넣는다 (2026-10-05 벤치) — `server_is_overloaded` 가 이어진 날 요약 예산이 2만→1만→5천 자로 줄었고, 그
+ *  예산으로는 큰 턴(11.6만 자 일지)이 안 들어가 앞쪽이 잘려 «5일차부터 sev4 제외» 규칙이 요약에서 사라졌다(18→11점).
+ *  과부하는 백엔드 사정이지 입력 크기와 무관하다 — 줄이면 복구 뒤에도 요약만 작아진다.
  */
-export const keepsFoldBudget = (errStr: string): boolean => isRateLimited(errStr) || isAuthRejected(errStr);
+export const keepsFoldBudget = (errStr: string): boolean =>
+  isRateLimited(errStr) || isAuthRejected(errStr) || isModelOverloaded(errStr);
 
 /**
  * **자격 증명 부재** — 어댑터가 API 를 부르기 **전에** 던지는 사전 가드(키·토큰이 아예 없음).

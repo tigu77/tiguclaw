@@ -22,6 +22,7 @@ import {
 } from "../../core/llm-runtime/index.js";
 import { AUTH_COOLDOWN_MS, isAuthRejected, isRateLimited, keepsFoldBudget } from "../../core/llm-runtime/rate-limit.js";
 import { saveCooldown } from "../../store/cooldowns.js";
+import { IdleTimeoutError } from "../../core/llm-runtime/idle-timeout.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
@@ -84,7 +85,10 @@ export const check: RegressionCheck = {
     // 알림을 **실제로 보내는 자리**가 «알렸음» 을 남긴다 — 빠지면 4시간 탐침 실패마다 같은 알림(스팸).
     const idx = readFileSync(new URL("../../core/llm-runtime/index.ts", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, "");
     const notifySite = /if \(entered !== null && input\.internal !== true\) \{\s*\n\s*markCooldownAnnounced\(entered\.key, entered\.untilTs\);/.exec(idx)?.[0] ?? "";
-    const budget = { auth: keepsFoldBudget(AUTH), limit: keepsFoldBudget(LIMIT), size: keepsFoldBudget("요약 결과가 비었습니다(시한 초과)") };
+    // 과부하도 크기 탓이 아니다(2026-10-05 벤치: 과부하 날 예산이 5천 자까지 줄어 큰 턴의 규칙이 잘렸다).
+    const budget = { auth: keepsFoldBudget(AUTH), limit: keepsFoldBudget(LIMIT), overloaded: keepsFoldBudget("error/server_is_overloaded: Our servers are currently overloaded. Please try again later."), size: keepsFoldBudget(new IdleTimeoutError("idle", 90_000).message) };
+    // ★크기 실패 표본은 **실제로 던져지는 문구**로 잰다(레드팀 F2) — 지어낸 한국어 문구를 쓰면 «시간 초과면 예산 유지» 로
+    //  넓힌 변이가 통과했다(실제 요약 시간 초과는 IdleTimeoutError 의 영어 원문이다).
     const wired = /\(keepsFoldBudget\(msg\)\s*\?/.test(hist);
     return [
       assert("① 실제 인증 거부 문구는 전부 잡는다", posMiss.length === 0, posMiss.length === 0 ? `${positives.length}건 전부` : `★놓침: ${posMiss.join(" | ")}`),
@@ -105,7 +109,7 @@ export const check: RegressionCheck = {
       assert("요약 경로(포트)도 인증 거부를 약 12시간 쉰다", portRemain > AUTH_COOLDOWN_MS - 60_000, `남음=${Math.round(portRemain / 60000)}분`),
       assert("통지를 보내는 자리가 «알렸음» 을 남긴다(탐침 실패마다 재통지 방지)", notifySite !== "", notifySite.replace(/\s+/g, " ") || "★통지 자리에서 표시를 안 남김"),
       assert("★P4 요약 경로가 먼저 조용히 등록해도 본 턴이 통지를 받는다", afterSilent?.reason === "auth", JSON.stringify(afterSilent)),
-      assert("⑤ 요약 예산 — 한도·인증은 유지, 크기 실패는 줄인다(판정 함수 + 호출부 연결)", budget.auth && budget.limit && !budget.size && wired, JSON.stringify({ ...budget, wired })),
+      assert("⑤ 요약 예산 — 한도·인증·과부하는 유지, 크기 실패는 줄인다(판정 함수 + 호출부 연결)", budget.auth && budget.limit && budget.overloaded && !budget.size && wired, JSON.stringify({ ...budget, wired })),
     ];
   },
 };

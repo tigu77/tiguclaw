@@ -12,7 +12,7 @@ import {
   handleSessions,
   handleStatus,
 } from "./core/entry/slash-commands.js";
-import { formatResetAt, isRateLimited, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
+import { formatResetAt, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
 import { flushEnvLoadLog } from "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
 import { repairRipgrepAtBoot } from "./core/ripgrep.js";
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
@@ -163,12 +163,14 @@ import {
   STEERED_TURN_RESULT,
   cancelJobsForThread,
   threadHasQueuedTurn,
+  failureKind,
 } from "./core/worker-jobs.js";
 import {
   runSelfUpdate,
   setSelfUpdateRestart,
   UPDATE_COMPLETE_MARKER,
   UPDATE_FAILED_MARKER,
+  updateFailedText,
   type SelfUpdateNotifyDest,
   type SelfUpdateResult,
 } from "./core/self-update.js";
@@ -485,7 +487,7 @@ const STOPPED_NOTICE = "🛑 Stopped the task that was in progress.";
 // 영역 A 에러 → 사용자 친화 메시지. 사용 한도/레이트리밋(codex usage_limit_reached·429·quota 등)은
 // 원문 JSON 덤프 대신 *명확한 안내*(어느 백엔드·리셋까지 대략 N분·전환/다중풀 제안)로. provider 무관
 // (codex·claude·openai 등 어느 백엔드가 한도에 걸려도 동일). 그 외 에러는 원 detail 그대로 노출.
-const formatRegionAError = (detail: string): string => {
+const formatRegionAError = (detail: string, errorName?: string): string => {
   const d = detail || "";
   // 처리불가 이미지(400 invalid_request + image) — 원문 JSON 대신 명확한 안내. 스레드 자가치유는
   // 어댑터가 처리(resume 무효화)하므로 여기선 사용자 안내만. [[project_bad_image_poisons_claude_resume]]
@@ -499,7 +501,9 @@ const formatRegionAError = (detail: string): string => {
   //  문구를 고쳐서, 사용자에겐 여전히 "⚠️ 요청 처리 중 오류" + 원문 덤프가 나갔다(한도 안내·
   //  ETA 없음). 실측: `claude-agent-sdk error: You've hit your limit · resets 2:20am` 이
   //  이 정규식엔 false 였다. 주석은 "진실 통일"이라 적혀 있었는데 사실이 아니었다.
-  const isLimit = isRateLimited(d);
+  // 이름이 먼저(`failureKind`) — 우리 타입 오류의 문장엔 서드파티 이름이 섞인다(도구 이름에 `rate_limit` 이 있으면 도구 멈춤이
+  //  «사용량 한도» 안내로 나갔다, 2026-10-05 재검토). 이름이 없는 상류 오류는 종전처럼 문자열로 판정한다.
+  const isLimit = failureKind(d, errorName) === "limit";
   if (!isLimit) return `⚠️ Something went wrong while handling your request:\n${detail}`;
   const provMatch = d.match(/codex|anthropic|claude|openai|gemini|ollama/i);
   const prov = provMatch ? provMatch[0].toLowerCase() : "LLM";
@@ -1401,9 +1405,10 @@ const handler: MessageHandler = async (msg) => {
     // 에러 응답도 replyCommand 로 — 실패 턴에서도 대시보드 '작업 중'이 꺼지고(out 발행) 에러가
     // 대시보드 채팅에 보인다. (성공 경로는 923+929 에서 이미 발행하므로 중복 없음 — 상호배타.)
     // ★실패 표식 — 매니저 완료 턴이 이 오류 안내를 «결과 전달» 로 세지 않게(raw 안전망이 결과를 대신 보낸다).
-    await replyCommand(msg, formatRegionAError(detail), { turnFailed: true });
+    const errName = e instanceof Error && e.name !== "Error" ? e.name : undefined;
+    await replyCommand(msg, formatRegionAError(detail, errName), { turnFailed: true });
     // 성공 경로와 대칭 — 실패도 egress 로 나간다(유령 신호 방지, fanOutEgress 주석 참조).
-    await fanOutEgress(egressTargets, formatRegionAError(detail), bus, msg.threadKey);
+    await fanOutEgress(egressTargets, formatRegionAError(detail, errName), bus, msg.threadKey);
     // ★StopFailure 훅 — `Stop` 의 짝 (2026-09-08). `Stop` 은 위 `try` 안에 있어 **실패한
     //  턴에는 어떤 훅도 안 났다.** 그런데 훅으로 하려는 일 중 «턴이 실패했을 때 알려줘» 가
     //  가장 흔하다(실측 분모: 실패 130 / 1,594 턴 = 8.2%). 상류(Claude Code)에도 같은 이름의
@@ -2082,15 +2087,12 @@ const updateFailedNotified = await (async (): Promise<boolean> => {
   try {
     const data = JSON.parse(raw) as {
       stage?: string;
+      outcome?: string;
       detail?: string;
       logPath?: string | null;
       notify?: { channel?: string; target?: string | null };
     };
-    const stage = typeof data.stage === "string" ? data.stage : "unknown";
-    const detail = typeof data.detail === "string" && data.detail ? `\n${data.detail}` : "";
-    const logLine =
-      typeof data.logPath === "string" && data.logPath ? `\nLog: ${data.logPath}` : "";
-    const text = `❌ Update failed (stage: ${stage}) — rolled back to the previous version and restarted.${detail}${logLine}`;
+    const text = updateFailedText(data);
     await deliverOutbound({
       channel: data.notify?.channel ?? "cli",
       target: data.notify?.target ?? null,

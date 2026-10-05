@@ -79,7 +79,9 @@ const run = async (): Promise<Assertion[]> => {
     // 앵커는 **행 머리**로 잡는다 — 본문 부분일치로 잡으면 다른 턴이 그 이름을 언급만
     // 해도 오탐한다(실제로 그렇게 한 번 틀렸다).
     const leaked = rows.filter(
-      (r) => r.startsWith("user:/sessions new") || r.startsWith("assistant:새 세션"),
+      // ★응답 쪽은 문장이 아니라 **세션 이름**으로 잡는다 (2026-10-05 적대 검토) — 응답이 영어가 되자 옛 앵커
+      //  «assistant:새 세션» 이 영영 안 맞아 이 단언의 절반이 죽은 채 초록이었다. 이름은 응답 언어와 무관하게 실린다.
+      (r) => r.startsWith("user:/sessions new") || (r.startsWith("assistant:") && r.includes("휘발성회귀")),
     );
     out.push(
       assert(

@@ -46,7 +46,10 @@ const runRefresh = async (
   tabs: Tab[],
   serverKeys: string[],
   activeThreadKey = "dashboard:default",
-): Promise<{ tabs: Tab[]; active: string; names: Map<string, string> }> => {
+  opts: { serverNames?: Record<string, string>; defaultNamed?: boolean } = {},
+): Promise<{ tabs: Tab[]; active: string; names: Map<string, string>; commits: string[]; defaultNamed: boolean }> => {
+  const commits: string[] = [];
+  let defaultNamed = opts.defaultNamed === true;
   const src = readFileSync(path.join(REPO, "packages/dashboard/js/tabs.js"), "utf8");
   const m = /const refreshSessionPreviews = async \(\) => \{[\s\S]*?\n {6}\};/.exec(src);
   if (m === null) throw new Error("refreshSessionPreviews 를 못 찾음");
@@ -66,7 +69,11 @@ const runRefresh = async (
         ok: true,
         json: () =>
           Promise.resolve({
-            sessions: serverKeys.map((k) => ({ threadKey: k, displayName: `이름:${k}` })),
+            sessions: serverKeys.map((k) => ({
+              threadKey: k,
+              displayName: `이름:${k}`,
+              ...(opts.serverNames?.[k] !== undefined ? { name: opts.serverNames[k] } : {}),
+            })),
           }),
       }),
     loadClosedSet: () => new Set<string>(),
@@ -77,7 +84,16 @@ const runRefresh = async (
     // 이름 고정 판정은 session-name-single-rule 이 실행으로 지킨다 — 여기선 정리 로직만 본다.
     //  ★스텁이 없으면 ReferenceError 로 루프가 죽는다: 종전엔 pending 해제 **뒤**에 던져 안 보였고,
     //   기본 탭도 부르게 되자(2026-10-05) 첫 행에서 죽어 정리 셋이 한꺼번에 빨개졌다.
-    commitPendingName: () => false,
+    // ★판정 자체(이미 이름 있으면 안 남긴다)는 session-name-single-rule 이 실행으로 본다 — 여기선 **누구에게 몇 번 부르나**만 센다.
+    commitPendingName: (tk: string, serverName: unknown) => {
+      if (typeof serverName === "string" && serverName.trim() !== "") return false;
+      commits.push(tk);
+      return true;
+    },
+    defaultNameCommitted: () => defaultNamed,
+    markDefaultNameCommitted: () => {
+      defaultNamed = true;
+    },
     persistTabs: () => {},
     renderTabBar: () => {},
     clearReply: () => {},
@@ -96,6 +112,8 @@ const runRefresh = async (
     tabs: openTabs,
     active: (ctx.__active as () => string)(),
     names: ctx.sessionDisplayNames as Map<string, string>,
+    commits,
+    defaultNamed,
   };
 };
 
@@ -185,6 +203,31 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★⑦ 기본 세션 이름은 **한 번만** 남긴다 (2026-10-05). 기본 탭은 pending 이 된 적이 없어 갱신 루프가 따로 부른다.
+    //  — 안 부르면 기본 세션은 영영 이름이 없고, 매 폴 «비어 있으면» 으로 부르면 사용자가 일부러 비운 이름이 «세션1» 로 되덮인다.
+    //  ★다른 열린 탭(검색으로 연 것·자동 노출)은 부르지 않는다 — 부르면 첫 발화로 정해지던 이름이 모든 채널에서 «세션N» 으로 바뀐다.
+    {
+      const first = await runRefresh([{ threadKey: D }, { threadKey: "dashboard:opened" }], [D, "dashboard:opened"]);
+      const seen = await runRefresh([{ threadKey: D }], [D], D, { serverNames: { [D]: "세션1" } });
+      const cleared = await runRefresh([{ threadKey: D }], [D], D, { defaultNamed: true });
+      out.push(
+        assert(
+          "★기본 세션 이름이 비어 있으면 처음 한 번 남기고, 이름 없는 다른 열린 탭엔 손대지 않는다",
+          first.commits.length === 1 && first.commits[0] === D &&
+            // «남겼다» 는 요청 시점이 아니라 서버에 이름이 보인 뒤 — 요청이 실패하면 다음 폴이 다시 남겨야 한다(재검토 M9).
+            first.defaultNamed === false,
+          `부른 대상: ${JSON.stringify(first.commits)}`,
+        ),
+      );
+      out.push(
+        assert(
+          "★서버에 이름이 보이면 «남겼다» 로 기록하고, 그 뒤 이름이 비어도(사용자가 비움) 다시 덮지 않는다",
+          seen.commits.length === 0 && seen.defaultNamed && cleared.commits.length === 0,
+          `이름 보임→기록=${seen.defaultNamed}·부름 ${seen.commits.length} · 비운 뒤 부름 ${cleared.commits.length}`,
+        ),
+      );
+    }
+
     // ★⑤ 서버가 아는 탭은 활성이든 아니든 그대로 — 과잉 정리 0.
     const e = await runRefresh(
       [{ threadKey: D }, { threadKey: "dashboard:live" }],
@@ -198,6 +241,44 @@ export const check: RegressionCheck = {
         e.tabs.map((t) => t.threadKey).join(", "),
       ),
     );
+    // ★⑧ 탭 이름 편집 중엔 다시 그리지 않는다 (2026-10-05 적대 검토). 다시 그리면 포커스된 편집칸이 지워지는데 blur 가
+    //  안 와서 편집이 «열린 채» 잠긴다(새로고침 전까지 이름 변경 전부 불가). 부르는 쪽이 여럿(턴 변화·이름 저장·폴)이라
+    //  렌더 자신이 미룬다 — 그 성질을 실제 함수로 잰다.
+    {
+      const src = readFileSync(path.join(REPO, "packages/dashboard/js/tabs.js"), "utf8");
+      const m = /let tabBarDeferred = false;\s*const renderTabBar = \(\) => \{[\s\S]*?\n {6}\};/.exec(src);
+      if (m === null) {
+        out.push(assert("renderTabBar 를 떼어낸다(검사 전제)", false, `★tabs.js ${src.length}자에서 못 찾음`));
+      } else {
+        const strip = { innerHTML: "EDITING", appendChild: () => {}, querySelector: () => null, querySelectorAll: () => [], clientWidth: 0 };
+        const ctx: Record<string, unknown> = { sessionTabsEl: strip, editingTabKey: "dashboard:default", openTabs: [] };
+        vm.createContext(ctx);
+        vm.runInContext(`${m[0]}\nthis.__render = renderTabBar; this.__deferred = () => tabBarDeferred;`, ctx);
+        // 미루지 않으면 실제로 그리려다 DOM 이 없어 던진다 — 그것도 «편집 중에 그렸다» 는 뜻이라 단언으로 받는다.
+        let threw = "";
+        try {
+          (ctx.__render as () => void)();
+        } catch (e) {
+          threw = e instanceof Error ? e.message : String(e);
+        }
+        const deferred = threw === "" && (ctx.__deferred as () => boolean)();
+        out.push(
+          assert(
+            "★편집 중엔 탭 바를 다시 그리지 않고 «미뤘다» 고 남긴다(편집칸이 지워지면 편집이 잠긴다)",
+            strip.innerHTML === "EDITING" && deferred,
+            `innerHTML=${JSON.stringify(strip.innerHTML)} · 미룸=${deferred}${threw === "" ? "" : ` · ★그리려 했다(${threw})`}`,
+          ),
+        );
+        const finishSrc = /const finish = \(commit\) => \{[\s\S]*?\n {8}\};/.exec(src)?.[0] ?? "";
+        out.push(
+          assert(
+            "편집이 끝나면 미룬 렌더를 마저 한다",
+            /if \(tabBarDeferred\) renderTabBar\(\)/.test(finishSrc),
+            finishSrc === "" ? "★finish 못 찾음" : `finish ${finishSrc.length}자 · 미룬 렌더=${/if \(tabBarDeferred\) renderTabBar\(\)/.test(finishSrc)}`,
+          ),
+        );
+      }
+    }
     return out;
   },
 };

@@ -33,6 +33,26 @@ export const UPDATE_COMPLETE_MARKER = ".update-complete";
  *  부팅 시 1회 소비해 요청자에게 실패 단계+로그 경로를 통지한다. UPDATE_COMPLETE_MARKER 와 대칭. */
 export const UPDATE_FAILED_MARKER = ".update-failed";
 
+/**
+ * 실패 통지 문장 — 마커의 `outcome`(CLI 가 **실제로 한 일**)대로 말한다 (2026-10-05 적대 검토).
+ * 종전엔 늘 «이전 판으로 되돌리고 다시 띄웠다» 였는데, 손대기 전에 멈춘 경로·되돌리기를 건너뛴 경로에선 거짓이었다.
+ * `outcome` 이 없는 마커(옛 CLI)는 무엇을 했는지 모르므로 단정하지 않는다.
+ */
+export const updateFailedText = (m: { stage?: string; outcome?: string; detail?: string; logPath?: string | null }): string => {
+  const stage = typeof m.stage === "string" ? m.stage : "unknown";
+  const what =
+    m.outcome === "unchanged"
+      ? "nothing was changed; the assistant kept running the current version."
+      : m.outcome === "rolled-back"
+        ? "rolled back to the previous version and restarted."
+        : m.outcome === "needs-check"
+          ? "the previous version could not be fully restored — run `tiguclaw update` in a terminal and check the log."
+          : "see the log for what was restored.";
+  const detail = typeof m.detail === "string" && m.detail ? `\n${m.detail}` : "";
+  const logLine = typeof m.logPath === "string" && m.logPath ? `\nLog: ${m.logPath}` : "";
+  return `❌ Update failed (stage: ${stage}) — ${what}${detail}${logLine}`;
+};
+
 export type SelfUpdateStatus =
   | "up-to-date" // 변경 0 — 재시작 X
   | "updating" // 게이트 통과 → 통지 적재 + 분리 재시작 트리거됨
@@ -430,10 +450,38 @@ export const runSelfUpdate = async (
     }
 
     // ── 단계 3: git pull --ff-only (현재 브랜치 origin — install/dev 자동, 분기 0) ──
-    // 생성물도 사용자 편집일 수 있다. lock을 포함해 추적 변경이 있으면 보존하고 거절한다.
-    const dirty = await listDestructiveUncommitted(cwd);
+    // 선처리: package-lock.json 로컬 드리프트 폐기. 이 파일은 npm install 이 재생성하는
+    // *생성물*이라 플랫폼·npm 버전차로 로컬이 쉽게 더러워지고("local changes to
+    // package-lock.json would be overwritten by merge"), 그게 ff-only pull 을 막아 자가
+    // 업데이트가 영영 깨진다(Windows 실사고 `e7e8716a`). 생성물 한 파일만 origin 기준으로 되돌린다 —
+    // pull 후 (단계 5)npm install 이 필요시 다시 만든다. best-effort: 없거나 이미 clean 이면 무시.
+    // ★2026-10-05 에 한 번 «lock 도 사용자 편집일 수 있다» 며 지웠다가 되살렸다 — 위 단계 5 의 우리 `npm install` 이
+    //  다시 쓴 lock 을 사용자 편집으로 읽어 다음 업데이트부터 **영구히** 거절했다(적대 검토).
+    try {
+      await run("git", ["checkout", "--", "package-lock.json"], cwd);
+    } catch {
+      /* 파일 없음·이미 clean·git 미지원 — 아래 판정이 본다 */
+    }
+    // 다른 추적 파일의 미커밋 변경은 보존하고 거절한다(암묵 파괴 0). ★무엇이 막는지 이름을 댄다 — 이름이 없으면
+    //  사용자는 무엇을 정리해야 할지 모른다.
+    let dirty: string[];
+    try {
+      dirty = await listDestructiveUncommitted(cwd);
+    } catch (e) {
+      // 상태 확인 실패는 «깨끗함» 이 아니다 — 멈추고 사유를 돌려준다(이 함수는 던지지 않는다).
+      return {
+        status: "failed",
+        from: prevSha,
+        error: redactSecrets(`Couldn't check for uncommitted changes (${e instanceof Error ? e.message : String(e)}) — the update was stopped.`),
+      };
+    }
     if (dirty.length > 0) {
-      return { status: "failed", from: prevSha, error: "There are uncommitted changes — the update was stopped and your files were left untouched." };
+      const named = `${dirty.slice(0, 3).join(", ")}${dirty.length > 3 ? ` (+${dirty.length - 3} more)` : ""}`;
+      return {
+        status: "failed",
+        from: prevSha,
+        error: `There are uncommitted changes (${named}) — the update was stopped and your files were left untouched.`,
+      };
     }
     try {
       await run("git", ["pull", "--ff-only"], cwd);
@@ -554,6 +602,9 @@ export const runSelfUpdate = async (
         //  더티면 reset 대신 **되돌리지 않고 정직 보고**한다. 코드는 새 커밋 상태로 남지만
         //  그건 되돌릴 수 있고(사용자가 직접 reset), 지워진 작업은 못 되돌린다.
         //  선택 기준은 "확신" 이 아니라 **어느 쪽이 비가역인가** 다.
+        // 생성물(lock) 은 먼저 원래대로 — 위 단계 5 의 `npm install` 이 다시 썼을 수 있고, 그대로면 아래 판정이
+        //  사용자 편집으로 읽어 롤백을 건너뛴다(단계 3 과 같은 근거).
+        await run("git", ["checkout", "--", "package-lock.json"], cwd).catch(() => undefined);
         const lines = await listDestructiveUncommitted(cwd);
         if (lines.length > 0) {
           const files = lines.slice(0, 8).join(", ");

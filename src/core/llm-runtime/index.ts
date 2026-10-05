@@ -55,6 +55,7 @@ import type {
 import { builtinTierPool, builtinTierFor } from "./builtin-profiles.js";
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
+import { ToolHangError } from "./tool-watchdog.js";
 import {
   saveCooldown,
   deleteCooldown,
@@ -991,6 +992,7 @@ const publishTurnError = (
       ok: false,
       errorKind: classifyTurnError(e),
       hasFallback,
+      ...(e instanceof Error && e.name !== "Error" ? { errorName: e.name } : {}),
       message:
         detail.length > TURN_ERROR_MESSAGE_CAP
           ? `${detail.slice(0, TURN_ERROR_MESSAGE_CAP - 1)}…`
@@ -1286,6 +1288,9 @@ export const registerCooldownIfRateLimited = (
   spec: ModelSpec,
   e: unknown,
 ): { key: string; untilTs: number; reason: "limit" | "auth" } | null => {
+  // ★도구 하드 상한은 우리가 끊은 것이라 백엔드 한도·인증과 무관하다 — 그리고 문장에 **서드파티 도구 이름**이 들어간다
+  //  (`rate_limit_status` 같은 이름이면 아래 패턴이 «한도» 로 읽고 그 모델을 쉬게 한다). 분류 전에 뺀다.
+  if (e instanceof ToolHangError) return null;
   const detail = errorDetail(e);
   const limited = isRateLimited(detail);
   // ★인증 거부도 쉬게 한다 (2026-09-26) — 재로그인 전까지 매 턴 다시 해도 같은 401 이다.

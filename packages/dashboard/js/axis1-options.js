@@ -135,6 +135,10 @@
         const mode = composerAction({ mineActive: activeTurns.has(activeThreadKey), hasDraft });
         if (mode === "send") delete btn.dataset.stopping; // 턴이 끝났거나 칠 말이 생겼다 — 요청 상태 해제.
         btn.dataset.mode = mode;
+        // ★정지 모드에선 **제출 버튼이 아니다** (2026-10-05 적대 검토). 제출 버튼이면 폼의 기본 버튼이라,
+        //  같은 폼의 모델 선택·채널 체크박스에서 엔터를 쳐도 브라우저 암묵 제출이 이 버튼을 «눌러» `/stop` 이 나갔다
+        //  (submitter 로도 못 가른다 — 암묵 제출도 기본 버튼이 submitter 다). 정지는 버튼을 실제로 누를 때만이다.
+        btn.type = mode === "stop" ? "button" : "submit";
         btn.classList.toggle("stop", mode === "stop");
         // ★**정지는 언제나 아이콘 하나다** (2026-09-05 정태님: *"정지 버튼 사이즈도 기본으로
         //  작게 가자"*). 처음엔 «좁은 화면에서만 낱말을 접자» 였는데, 그러면 폭마다 다른

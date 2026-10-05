@@ -314,14 +314,8 @@ export const check: RegressionCheck = {
           /commitPendingName\(/.test(tabs) ? "호출 확인" : "★판정만 있고 호출이 없다",
         ),
       );
-      // 기본 탭은 처음부터 열려 있어 pending 이 된 적이 없다 — 그 경로가 없으면 위 판정이 옳아도 기본 세션은 영영 이름이 없다.
-      out.push(
-        assert(
-          "기본 탭은 pending 이 아니어도 같은 판정을 부른다(배선 — 소스 검사)",
-          /else if \(t\.threadKey === DEFAULT_DASH_THREAD\) \{[\s\S]{0,400}?commitPendingName\(t\.threadKey, s\.name\)/.test(tabs),
-          "기본 탭 분기",
-        ),
-      );
+      // 기본 탭 경로(pending 이 된 적 없는 탭)의 배선은 `tabs-reconcile-with-server` ⑦ 이 갱신 루프를 실제로 돌려 센다
+      //  (여기 있던 정규식 검사는 분기 안을 `if (false)` 로 막아도 통과했다 — 2026-10-05 적대 검토).
     }
 
     const dash = read("packages/dashboard/index.ts");

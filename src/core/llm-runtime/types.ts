@@ -882,6 +882,11 @@ export interface RegionATurnErrorPayload {
   /** 이 실패 뒤에 시도할 다음 모델이 있나 — 없으면 UI 가 "다른 모델로 이어서" 라고 하면 안 된다. */
   hasFallback?: boolean;
   /**
+   * 던져진 오류의 이름(우리 타입 오류면 그 이름). 분류는 **이름이 먼저**다 — `message` 에는 서드파티 문자열(도구 이름 등)이
+   * 섞이므로 문자열만 보면 `rate_limit_status` 도구가 멈춘 것을 «사용량 한도» 로 읽는다(2026-10-05 재검토).
+   */
+  errorName?: string;
+  /**
    * 사람이 읽는 짧은 에러 요약 (errorDetail 결과를 cap). self-growth 가 "이 작업에서
    * 자꾸 X 에러" 를 군집화하는 학습 입력. PII/대형 본문 방지 위해 길이 cap.
    */

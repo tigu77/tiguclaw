@@ -2465,7 +2465,9 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       effectiveAc.signal.aborted &&
       (reason instanceof IdleTimeoutError ||
         reason instanceof TurnTimeoutError ||
-        reason instanceof WorkerCancelledError)
+        reason instanceof WorkerCancelledError ||
+        // 도구 하드 상한(TOOL_HARD_TIMEOUT_MS) — 승격 안 하면 SDK 원문 «aborted by user» 가 원인으로 나가고 이름 분류가 안 닿는다.
+        reason instanceof ToolHangError)
     ) {
       throw reason;
     }
@@ -2536,7 +2538,9 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       effectiveAc.signal.aborted &&
       (reason instanceof IdleTimeoutError ||
         reason instanceof TurnTimeoutError ||
-        reason instanceof WorkerCancelledError)
+        reason instanceof WorkerCancelledError ||
+        // 도구 하드 상한(TOOL_HARD_TIMEOUT_MS) — 승격 안 하면 SDK 원문 «aborted by user» 가 원인으로 나가고 이름 분류가 안 닿는다.
+        reason instanceof ToolHangError)
     ) {
       throw reason;
     }

@@ -71,6 +71,9 @@
       //  ★기본 세션도 같은 규칙이다 (2026-10-05 정태님: «기본 세션이라는 표시가 꼭 필요한가» → 아니다). 종전엔 기본 세션만 이름을 안
       //   남기고 서버가 «기본 세션» 고정 문구를 붙였는데, 그 문구는 번역되지 않는 서버 글이라 화면 언어와 갈렸다. 이제 다른 세션처럼
       //   «세션1»(화면 언어)을 남긴다. 기본 세션의 기능적 특별함(묶이지 않은 대화방이 오는 곳·보관 불가)은 이름과 무관하다.
+      const DEFAULT_NAMED_LS = "dash.defaultNamed.v1"; // 기본 세션 이름을 서버에서 한 번이라도 봤나(이 브라우저).
+      const defaultNameCommitted = () => { try { return localStorage.getItem(DEFAULT_NAMED_LS) === "1"; } catch { return false; } };
+      const markDefaultNameCommitted = () => { try { localStorage.setItem(DEFAULT_NAMED_LS, "1"); } catch {} };
       const commitPendingName = (threadKey, serverName) => {
         if (typeof serverName === "string" && serverName.trim() !== "") return false; // 이미 이름 있음.
         void commitTabName(threadKey, deriveTabFallbackName(threadKey));
@@ -115,6 +118,7 @@
           el.classList.remove("editing");
           if (commit) void commitTabName(tk, el.textContent || "");
           else renderTabBar(); // 취소 — 원래(ellipsis 포함) 렌더로 복귀, 서버 호출 없음.
+          if (tabBarDeferred) renderTabBar(); // 편집 중 미룬 렌더(저장 대상 탭이 그새 닫혔으면 위에서 안 그려졌다).
         };
         el.addEventListener("keydown", onKeydown);
         el.addEventListener("blur", onBlur);
@@ -181,8 +185,14 @@
         );
       }
 
+      // ★편집 중엔 다시 그리지 않고 미룬다 (2026-10-05 적대 검토). 다시 그리면(`innerHTML=""`) 포커스된 편집칸이
+      //  지워지는데 blur 가 안 와서 `finish` 가 영영 안 불리고 — 쓰던 이름은 사라지고 `editingTabKey` 가 남아 **새로고침
+      //  전까지 이름 변경이 전부 막혔다**. 부르는 쪽(턴 변화·이름 저장·폴)마다 가드를 다는 대신 여기 한 곳에서 미룬다.
+      let tabBarDeferred = false;
       const renderTabBar = () => {
         if (!sessionTabsEl) return;
+        if (editingTabKey) { tabBarDeferred = true; return; }
+        tabBarDeferred = false;
         sessionTabsEl.innerHTML = "";
         for (const tab of openTabs) {
           const b = document.createElement("button");
@@ -496,9 +506,13 @@
               // ★이 순간이 **첫 전송으로 서버 행이 막 생긴 시점**이다(그 전엔 행이 없다 =
               //  "빈 탭 = 흔적 0" 성질은 그대로). 그 행엔 이름이 없으므로 여기서 고정한다.
               commitPendingName(t.threadKey, s.name);
-            } else if (t.threadKey === DEFAULT_DASH_THREAD) {
-              // 기본 탭은 처음부터 열려 있어 «pending» 이 된 적이 없다 — 이름이 비어 있으면 여기서 한 번 남긴다(남긴 뒤엔 서버 이름이 있어 no-op).
-              commitPendingName(t.threadKey, s.name);
+            } else if (t.threadKey === DEFAULT_DASH_THREAD && !defaultNameCommitted()) {
+              // 기본 탭은 처음부터 열려 있어 «pending» 이 된 적이 없다 — 이름이 비어 있으면 여기서 **한 번** 남긴다.
+              //  ★한 번만이다: "+" 세션의 pending 처럼. 매 폴마다 «비어 있으면» 으로 보면, 사용자가(또는 비서가 rename_session 으로)
+              //   이름을 일부러 비운 직후 30초 안에 «세션1» 로 되덮여 그 뜻을 뒤집는다.
+              //  «남겼다» 는 저장 요청이 아니라 **서버에 이름이 보인 것**으로 센다 — 요청이 실패하면 다음 폴이 다시 남긴다.
+              if (typeof s.name === "string" && s.name.trim() !== "") markDefaultNameCommitted();
+              else commitPendingName(t.threadKey, s.name);
             }
             if (s.preview && t.preview !== s.preview) { t.preview = s.preview; changed = true; }
             const ch = s.channel || s.lastChannel || channelFromThreadKey(s.threadKey);

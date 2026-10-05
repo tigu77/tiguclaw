@@ -120,18 +120,25 @@
       window.addEventListener("drop", clearDragOver);
       window.addEventListener("dragend", clearDragOver);
 
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        // ⏹ 정지 — 버튼이 정지 모드면 이 제출은 «진행 중 턴 중단» 이다. 사용자가 `/stop` 을
-        // 친 것과 **똑같은 경로**로 보낸다(새 API·새 판단 0). `/stop` 은 아웃오브밴드라
-        // 직렬 큐를 안 타고 그 스레드의 턴을 곧장 abort 한다. 실제 종료 반영은 SSE(turn_done)
-        // 가 하고, 그때 `paintComposerButton` 이 버튼을 전송으로 되돌린다.
-        if (sendBtn && sendBtn.dataset.mode === "stop") {
+      // ⏹ 정지 — 버튼이 정지 모드면 누르는 것은 «진행 중 턴 중단» 이다. 사용자가 `/stop` 을
+      // 친 것과 **똑같은 경로**로 보낸다(새 API·새 판단 0). `/stop` 은 아웃오브밴드라
+      // 직렬 큐를 안 타고 그 스레드의 턴을 곧장 abort 한다. 실제 종료 반영은 SSE(turn_done)
+      // 가 하고, 그때 `paintComposerButton` 이 버튼을 전송으로 되돌린다.
+      // ★제출(submit)이 아니라 **버튼 누름(click)** 에서만 한다 (2026-10-05) — 정지 모드의 버튼은 type="button" 이라
+      //  폼 제출이 이 버튼을 거치지 않는다. 그래서 폼 안 어디서 엔터를 쳐도(입력칸·모델 선택·채널 체크박스) 중지가 안 나간다.
+      //  키보드로 버튼에 포커스를 두고 Enter/Space 를 누르는 것은 click 이라 그대로 된다.
+      if (sendBtn) {
+        sendBtn.addEventListener("click", async (e) => {
+          if (sendBtn.dataset.mode !== "stop") return; // 전송 모드 = 제출 버튼의 기본 동작(아래 submit)
+          e.preventDefault();
           sendBtn.dataset.stopping = "1";
           repaintComposer();
           await sendChatMessage("/stop", [], undefined);
-          return;
-        }
+        });
+      }
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
         const text = input.value.trim();
         if (text.length === 0 && pendingAttachments.length === 0) return;
         // ★**보낸 방을 지금 떠 둔다** (2026-09-15, 레드팀 O4). 복원 분기가 `activeThreadKey`

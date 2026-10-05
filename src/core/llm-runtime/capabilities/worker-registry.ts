@@ -247,6 +247,9 @@ export const runWorkerJob = (
       const harvestTexts: string[] = [];
       /** 거두기 턴이 끝나지 못한 이유. 있으면 **실패는 실패로** 닫고 보고서를 함께 싣는다. */
       let harvestFailure: string | undefined;
+      // 거두기 실패의 오류 이름 — 원인 분류는 이름이 먼저다. 문자열만 넘기면 보고서 본문에 «rate limit» 한 마디만
+      //  있어도 시간 종료가 «사용량 한도» 로 읽힌다(outcome.error 에는 보고서 전문이 실린다).
+      let harvestFailureName: string | undefined;
 
       // ─── ★소환자는 **거두고** 끝난다 (ADR 2026-08-19, 사용자 확정 §b) ──────────────
       //  "소환해놓고 끝날 수는 없지. 당장은 안 기다리더라도 결과를 받고 마무리해야지."
@@ -406,6 +409,7 @@ export const runWorkerJob = (
             //  ([[feedback_scope_of_a_fix]] 조건반전→도달 입력 전수). 실패는 실패로 두고,
             //  **이미 완성된 본 보고서를 그 안에 실어** 잃지 않게만 한다.
             harvestFailure = e instanceof Error ? e.message : String(e);
+            if (e instanceof Error) harvestFailureName = e.name;
             break;
           }
           harvestTexts.push(out.text);
@@ -428,7 +432,10 @@ export const runWorkerJob = (
         outcome =
           harvestFailure === undefined
             ? { result: report }
-            : { error: `${harvestFailure}\n\n${harvestFailureNote(harvestFailure)}\n${report}` };
+            : {
+                error: `${harvestFailure}\n\n${harvestFailureNote(harvestFailure)}\n${report}`,
+                ...(harvestFailureName !== undefined ? { errorName: harvestFailureName } : {}),
+              };
       }
     } catch (e) {
       outcome = failureOutcome(e);

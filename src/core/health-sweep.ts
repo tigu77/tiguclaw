@@ -34,6 +34,7 @@ import { backupInfo } from "../store/backup.js";
 import { listMemoriesForIndex } from "../store/memory.js";
 // 실패 분류는 런타임과 **같은 판정**을 쓴다 — 여기서 정규식을 또 만들면 두 곳이 갈린다.
 import { isModelOverloaded, isRateLimited } from "./llm-runtime/rate-limit.js";
+import { failureKind } from "./worker-jobs.js";
 import { MEMORY_INDEX_CAP_BYTES } from "./prompt-assembly.js";
 import { listProjects } from "../store/projects.js";
 import { statSync } from "node:fs";
@@ -185,7 +186,9 @@ export const isSelfHandled = (rawPayload: string): boolean => {
   const p = parseTurnError(rawPayload);
   if (str(p.reason) === "daemon-restart") return true;
   const detail = `${str(p.message)} ${str(p.error)}`;
-  return isRateLimited(detail);
+  // 이름이 먼저 — 문장엔 서드파티 도구 이름이 섞인다(`rate_limit_status` 도구가 멈추면 «한도» 로 읽고 집계에서 빠졌다).
+  const name = str(p.errorName);
+  return failureKind(detail, name === "" ? undefined : name) === "limit";
 };
 
 /**

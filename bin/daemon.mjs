@@ -106,62 +106,92 @@ export const resolveLabel = (homeAbs) =>
   readHomeEnvValue(homeAbs, "TIGUCLAW_SERVICE_LABEL") ?? (process.env.TIGUCLAW_SERVICE_LABEL?.trim() || DEFAULT_LABEL);
 
 /**
- * Windows 예약작업은 호출자의 환경을 상속하지 않는다. 런처가 아니라 홈에 시작 계약을 보관한다.
- * 비밀값은 여기 저장하지 않는다 — 토큰은 기존 홈 .env가 소유하고 데몬이 로드한다.
- * 이 목록은 프로세스 위치·프로필·바인드만: 임의 env/모델/인증/테스트 이음매는 영속화하지 않는다.
+ * Windows 예약작업은 **설치를 부른 셸**의 환경을 다음 기동에 넘기지 않는다 — 셸에서만 준 인스턴스 설정(포트·프로필
+ * 폴더·라벨)이 업데이트·재등록 뒤에 사라졌다. 그 값만 홈에 붙잡아 둔다(`win-service-env.json`).
+ *
+ * ★세 질문으로 자리를 정했다 (2026-10-05 적대 검토 — 첫 판은 모든 값을 «처음 본 값» 으로 영구 고정했다):
+ *  - **OS 프로필 값(PATH·USERPROFILE·APPDATA·TEMP…)은 넣지 않는다.** 정하는 건 Windows 이고, 예약작업이 기동할
+ *    때마다 사용자 프로필에서 새로 받는다. 붙잡으면 PATH 가 설치 순간에 굳어 그 뒤 깐 git·python 을 영영 못 찾았다.
+ *  - **인스턴스 설정의 정본은 홈 `.env` 다.** `.env` 가 정한 키는 저장하지 않고, 기동 때마다 `.env` 가 이긴다
+ *    (저장본이 `.env` 를 가리면 `.env` 를 고쳐도 `/restart` 가 옛 값으로 떴다 · 지운 `0.0.0.0` 바인드가 남았다).
+ *  - 저장본은 **`.env` 에 없고 실행 환경에만 있던 값**뿐이다. 바꾸려면 `.env` 에 적으면 된다(그쪽이 이긴다).
+ * 비밀값은 여기 저장하지 않는다 — 토큰은 홈 `.env` 가 소유하고 데몬이 로드한다.
  */
 export const WIN_SERVICE_ENV_KEYS = [
-  "PATH", "USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
-  "TEMP", "TMP", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
+  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
   "npm_config_userconfig", "npm_config_globalconfig", "TIGUCLAW_SERVICE_LABEL",
   "HTTP_BRIDGE_HOST", "HTTP_BRIDGE_PORT", "DASHBOARD_HOST", "DASHBOARD_PORT", "TZ",
 ];
 
-/** @param {string} homeAbs @returns {Record<string, string>} */
+/**
+ * 붙잡아 둔 값 — 파일 그대로(허용 키·문자열만). `.env` 와 합치지 않는다(합치면 `.env` 값이 실행 환경으로 새어
+ * `.env` 를 고쳐도 안 바뀐다).
+ * ★손상됐으면 던진다 — 빈 값으로 넘어가면 라벨·포트가 기본값이 되어 **다른 인스턴스를 겨눈다.**
+ * @param {string} homeAbs @returns {Record<string, string>}
+ */
 export const readWinServiceEnv = (homeAbs) => {
   const file = path.join(homeAbs, "win-service-env.json");
-  // 존재하는데 손상됐다면 기본 인스턴스로 떨어지지 말고 실패한다.
   const saved = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   /** @type {Record<string, string>} */
   const result = {};
   for (const key of WIN_SERVICE_ENV_KEYS) {
-    const value = readHomeEnvValue(homeAbs, key) ?? saved[key];
+    const value = saved?.[key];
     if (typeof value === "string" && value !== "") result[key] = value;
   }
   return result;
 };
 
-/** @param {string} homeAbs @param {NodeJS.ProcessEnv} [env] */
-export const applyWinServiceEnv = (homeAbs, env = process.env) => {
-  Object.assign(env, readWinServiceEnv(homeAbs));
+/**
+ * 기동 환경 = 실행 환경 + 붙잡아 둔 값 중 **`.env` 가 안 정했고 실행 환경에도 없는 것**. 순수 함수 — 감독자는 데몬을
+ * 띄울 때마다 이걸 다시 계산한다(그래서 `.env` 를 고친 뒤 `/restart` 가 새 값으로 뜬다).
+ * @param {NodeJS.ProcessEnv} baseEnv @param {string} homeAbs @returns {NodeJS.ProcessEnv}
+ */
+export const winLaunchEnv = (baseEnv, homeAbs) => {
+  const env = { ...baseEnv };
+  for (const [key, value] of Object.entries(readWinServiceEnv(homeAbs))) {
+    if (readHomeEnvValue(homeAbs, key) !== undefined) continue; // .env 가 정본
+    if (env[key] !== undefined && env[key] !== "") continue; // 지금 실행 환경이 준 값이 이긴다
+    env[key] = value;
+  }
+  return env;
 };
 
-/** 환경에서만 받은 토큰은 재생성된 비밀 없는 런처에서 사라진다. 조용히 바꾸지 않는다.
+/** @param {string} homeAbs @param {NodeJS.ProcessEnv} [env] */
+export const applyWinServiceEnv = (homeAbs, env = process.env) => {
+  Object.assign(env, winLaunchEnv(env, homeAbs));
+};
+
+/** 실행 환경에만 있는 토큰은 재생성된 런처로 넘어가지 않는다 — **막지 않고 알린다.**
+ * ★종전엔 여기서 던져 업데이트를 거절했다. 그런데 위임 `/update` 에선 이미 pull 한 뒤라 HEAD 만 새것이 되어 고착됐고,
+ *  `setx` 로 사용자 환경에 둔 토큰은 예약작업이 기동마다 받으므로 **원래 잃지 않는다**(거절의 대부분이 오탐).
  * @param {Ctx} c
  */
-const assertWinServiceToken = (c) => {
+const warnWinServiceToken = (c) => {
   const token = process.env.HTTP_BRIDGE_TOKEN;
   const persisted = readHomeEnvValue(c.homeAbs, "HTTP_BRIDGE_TOKEN") ?? readHomeEnvValue(c.repoRoot, "HTTP_BRIDGE_TOKEN");
   if (token && token !== persisted) {
-    throw new Error("HTTP_BRIDGE_TOKEN is set only in the launch environment. Save the existing value to the home .env, then run this again (the value is not shown in logs).");
+    console.warn("note: HTTP_BRIDGE_TOKEN is not in the home .env. If it was set only in a custom launcher, save it to the home .env (the value is not shown in logs).");
   }
 };
 
-/** @param {Ctx} c @param {NodeJS.ProcessEnv} [env] */
+/**
+ * 실행 환경에만 있던 인스턴스 값을 붙잡는다. `.env` 가 정한 키는 저장하지 않는다.
+ * @param {Ctx} c @param {NodeJS.ProcessEnv} [env]
+ */
 export const saveWinServiceEnv = (c, env = process.env) => {
-  const configured = readWinServiceEnv(c.homeAbs);
   /** @type {Record<string, string>} */
   const saved = {};
   for (const key of WIN_SERVICE_ENV_KEYS) {
-    const value = configured[key] ?? env[key];
+    // 홈 `.env`·레포 `.env` 가 정한 키는 붙잡지 않는다 — 데몬이 그 파일을 직접 읽는다(붙잡으면 지워도 남는다).
+    if (readHomeEnvValue(c.homeAbs, key) !== undefined || readHomeEnvValue(c.repoRoot, key) !== undefined) continue;
+    const value = key === "TIGUCLAW_SERVICE_LABEL" ? c.label : env[key];
     if (value !== undefined && value !== "") saved[key] = value;
   }
-  saved.TIGUCLAW_SERVICE_LABEL = c.label;
-  mkdirSync(c.homeAbs, { recursive: true });
   const file = path.join(c.homeAbs, "win-service-env.json");
   const text = JSON.stringify(saved, null, 2) + "\n";
   // 같은 내용이면 쓰지 않는다. 임시 파일을 같은 홈에 쓴 뒤 교체해 잘린 JSON을 피한다.
   if (existsSync(file) && readFileSync(file, "utf8") === text) return;
+  mkdirSync(c.homeAbs, { recursive: true });
   const tmp = file + ".tmp";
   writeFileSync(tmp, text, { mode: 0o600 });
   renameSync(tmp, file);
@@ -259,6 +289,8 @@ const runtimeMode = () =>
  * @property {string} homeAbs
  * @property {string} logsDir
  * @property {string} label
+ * @property {NodeJS.ProcessEnv} [launchEnv] 붙잡은 Windows 값을 채우기 전의 실행 환경(감독자가 기동마다 다시 계산).
+ * @property {string} [winEnvError] Windows 저장본을 못 읽은 사유 — 있으면 라벨·포트가 틀릴 수 있다.
  */
 
 /** @returns {Ctx} */
@@ -271,12 +303,26 @@ const buildCtx = () => {
   const homeRaw =
     process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw");
   const homeAbs = path.resolve(repoRoot, expandHome(homeRaw));
+  /** @type {string | undefined} */
+  let winEnvError;
   if (process.platform === "win32") {
-    applyWinServiceEnv(homeAbs);
     process.env.PATH = path.dirname(nodePath) + path.delimiter + (process.env.PATH ?? "");
+  }
+  // 붙잡은 값을 채우기 **전**의 실행 환경 — 감독자는 데몬을 띄울 때마다 이것에서 다시 계산한다(`winLaunchEnv`).
+  const launchEnv = { ...process.env };
+  if (process.platform === "win32") {
+    // ★손상된 저장본은 여기서 던지지 않는다 — 종전엔 이 throw 가 업데이트 로그를 열기 **전**이라 위임 `/update` 가
+    //  로그도 마커도 없이 조용히 죽었다. 사유를 들고 가서 명령마다 판단한다(runDaemonCommand · runUpdate).
+    try {
+      applyWinServiceEnv(homeAbs);
+    } catch (error) {
+      winEnvError = `${path.join(homeAbs, "win-service-env.json")} is unreadable (${String(error)})`;
+    }
   }
   const logsDir = path.join(homeAbs, "logs");
   return {
+    launchEnv,
+    winEnvError,
     repoRoot,
     nodePath,
     tsxCli,
@@ -863,22 +909,19 @@ export const winSuperviseArgv = (c) => [
  *     wscript 가 감독자만큼 살아 중복 방지가 그대로 성립한다 — 감독자에 별도 중복 가드를
  *     만들지 않아도 되는 이유다(부품을 안 늘린다).
  *
- * 홈·런타임은 `supervise --home/--runtime` 인자로, 비밀 아닌 시작 계약은 홈 정본에서 읽는다.
- * 환경은 WScript API로 전달한다. cmd /c set 체인이나 토큰 리터럴은 생성하지 않는다.
+ * ★환경변수는 안 심는다 — `supervise --home/--runtime` **인자**로 넘기고, 셸에서만 준 인스턴스 값은 감독자가
+ *  홈의 `win-service-env.json` 에서 **기동마다** 다시 읽는다(`winLaunchEnv`). 종전 VBS 는 `cmd /c set …` 체인을
+ *  썼는데 그 모양이 Defender 오탐의 재료였다. ★2026-10-05 에 한 번 VBS 에 값을 심었다가 걷어냈다 — VBS 가 준 값은
+ *  «실행 환경» 이 되어 홈 `.env` 를 고쳐도 이겼다.
  * @param {Ctx} c
  * @returns {string}
  */
 export const buildWinVbs = (c) => {
-  // 이전 버전으로 롤백해도 기존 supervise가 읽는 env 계약은 유지한다.
-  const saved = c.homeAbs ? readWinServiceEnv(c.homeAbs) : {};
-  const environment = Object.entries(saved).map(([key, value]) =>
-    `sh.Environment("PROCESS")("${key}") = "${value.replace(/"/g, '""')}"`);
   const cmd = winSuperviseArgv(c)
     .map(winQuoteArg)
     .join(" ");
   return [
     'Set sh = CreateObject("WScript.Shell")',
-    ...environment,
     `sh.CurrentDirectory = "${c.repoRoot.replace(/"/g, '""')}"`,
     // ★node 가 사는 폴더를 PATH 앞에 세운다 — plist·systemd 와 **같은 판단**이다.
     `sh.Environment("PROCESS")("PATH") = "${path.dirname(c.nodePath).replace(/"/g, '""')};" & sh.ExpandEnvironmentStrings("%PATH%")`,
@@ -1201,16 +1244,23 @@ const winRemoveLegacyAutostart = (c) => {
  * 견고성: 재등록이 실패해도 **기존 등록이 있으면 진행**한다(경고만). 일시 실패로 이미 되던
  *  기동을 막지 않는다 — 견고함 > 단순함.
  * @param {Ctx} c
+ * @param {{ capture?: boolean }} [opts] capture = 셸에서만 준 인스턴스 값을 붙잡는다 — **`install` 만** 준다(아래 주석).
  * @returns {true | "fallback" | false} true=예약작업 정상 · "fallback"=시작프로그램(감독자만 — 1분 반복 없음) · false=둘 다 실패
  */
-const winEnsureTask = (c) => {
+const winEnsureTask = (c, opts = {}) => {
   winRemoveLegacyAutostart(c);
   // ★런처를 **먼저** 쓴다 — 작업 액션이 이 파일을 가리키므로, 없으면 등록은 성공하고
   //  실행만 조용히 실패한다(2026-08-15 에 겪은 바로 그 형상: "런처가 없는데 성공 보고").
   //  매번 다시 써서 경로·런타임 변경에도 수렴시킨다.
   mkdirSync(c.homeAbs, { recursive: true });
-  assertWinServiceToken(c);
-  saveWinServiceEnv(c);
+  // ★셸 값은 **사람이 셸에서 설치할 때만** 붙잡는다 (2026-10-05 재검토 P1). start·update 는 저장하지 않는다 — 위임
+  //  `/update`·재기동의 환경은 데몬이 부팅 때 `.env` 를 올려 둔 것이라, 그걸 저장하면 `.env` 에서 지운 값이 «셸에서
+  //  준 값» 으로 둔갑해 영구히 되살아났다(실측: 지운 DASHBOARD_HOST=0.0.0.0 이 업데이트마다 다시 박힘). 저장본은
+  //  이미 홈에 있고 감독자가 기동마다 읽으므로 다시 쓸 이유가 없다.
+  if (opts.capture === true) {
+    warnWinServiceToken(c);
+    saveWinServiceEnv(c);
+  }
   writeVbs(winVbsPath(c), buildWinVbs(c));
   // ★**돌고 있으면 먼저 멈춘다** (2026-08-22, /update 실측으로 잡음). 작업이 실행 중이면
   //  `Register-ScheduledTask -Force` 가 실패해 수렴이 조용히 건너뛰어진다. 실제로 갱신
@@ -1264,7 +1314,7 @@ const winEnsureTask = (c) => {
 /** @param {Ctx} c */
 const winInstall = (c) => {
   mkdirSync(c.logsDir, { recursive: true });
-  const mode = winEnsureTask(c);
+  const mode = winEnsureTask(c, { capture: true });
   if (mode === false) {
     console.error(`🔴 Autostart registration failed (${winTaskName(c)}).`);
     console.error(
@@ -1589,12 +1639,30 @@ const runSupervise = (c) => {
     process.stdout.write(line); // 포그라운드로 직접 돌릴 때를 위해.
   };
 
+  /**
+   * 데몬 기동 환경 — **기동마다 다시 계산**한다(윈도우). 감독자 자신의 환경을 그대로 물려주면 감독자가 뜬 순간의 값이
+   * 굳어, 홈 `.env` 를 고친 뒤 `/restart` 해도 옛 값으로 떴다. 붙잡은 값 중 무엇을 썼는지는 키 이름만 남긴다(원격 진단).
+   * @returns {NodeJS.ProcessEnv}
+   */
+  const childEnv = () => {
+    if (process.platform !== "win32" || c.launchEnv === undefined) return process.env;
+    try {
+      const env = winLaunchEnv(c.launchEnv, c.homeAbs);
+      const applied = WIN_SERVICE_ENV_KEYS.filter((k) => env[k] !== c.launchEnv?.[k]);
+      if (applied.length > 0) log(`start env from win-service-env.json: ${applied.join(", ")} (the home .env overrides these)`);
+      return env;
+    } catch (error) {
+      log(`★win-service-env.json unreadable — starting without it (${String(error)})`);
+      return c.launchEnv;
+    }
+  };
+
   const spawnOnce = () => {
     const startedAt = Date.now();
     child = spawn(exe, rest, {
       cwd: c.repoRoot,
       env: {
-        ...process.env,
+        ...childEnv(),
         TIGUCLAW_HOME: c.homeRaw,
         TIGUCLAW_RUNTIME: c.runtime,
       },
@@ -1773,6 +1841,11 @@ const runUpdate = (c) => {
       console.warn = tee(console.warn.bind(console), "warn");
     } catch (error) {
       console.error(`update: cannot open the diagnostic log, aborting — ${redactUpdateLog(String(error))}`);
+      // 위임이면 호출자가 이미 pull 했다 — 코드만 새것인 채로 두면 다음 `/update` 가 «이미 최신» 으로 끝난다.
+      const handoff = process.env.TIGUCLAW_UPDATE_PREV_SHA?.trim();
+      if (handoff !== undefined && /^[0-9a-f]{7,40}$/i.test(handoff)) {
+        spawnSync("git", ["reset", "--keep", handoff], { cwd: c.repoRoot, stdio: "ignore" });
+      }
       process.exitCode = 1;
       return;
     }
@@ -1781,8 +1854,11 @@ const runUpdate = (c) => {
   // 실패 마커 — 롤백 전에 써서, 재가동한 데몬이 부팅 시 소비해 요청자에게 "❌ 실패" 통지.
   //   notify env 없으면(터미널 직접) 안 씀(오탐 0). UPDATE_FAILED_MARKER=".update-failed" 리터럴
   //   (dep-free 라 import 불가 — self-update.ts 상수와 동기).
-  /** @type {(stage: string, detail: string) => void} */
-  const writeFailedMarker = (stage, detail) => {
+  // ★`outcome` = 실제로 일어난 일 (2026-10-05 적대 검토). 통지가 늘 «이전 판으로 되돌리고 다시 띄웠다» 라고 말했는데,
+  //  손대기 전에 멈춘 경로·롤백을 건너뛴 경로에선 거짓이었다. unchanged = 아무것도 안 바뀜(데몬은 그대로) ·
+  //  rolled-back = 이전 판으로 되돌리고 다시 띄움 · needs-check = 되돌리기를 못 했거나 일부만 했다.
+  /** @type {(stage: string, detail: string, outcome: "unchanged" | "rolled-back" | "needs-check") => void} */
+  const writeFailedMarker = (stage, detail, outcome) => {
     if (!delegated) return;
     try {
       writeFileSync(
@@ -1790,6 +1866,7 @@ const runUpdate = (c) => {
         `${JSON.stringify(
           {
             stage,
+            outcome,
             detail: redactUpdateLog(String(detail ?? "")).slice(0, 500),
             logPath: updateLogPath,
             from: prevSha?.slice(0, 7) ?? null,
@@ -1861,41 +1938,70 @@ const runUpdate = (c) => {
   //  있었다(실측: 로그가 `2af6ee0 → 2af6ee0 · 코드 변경 없음` 인데 HEAD 는 옮겨져 있었다).
   //  → 호출자가 pull *이전* SHA 를 넘기면 그걸 앵커로 쓴다. 없으면 종전대로 HEAD.
   const handoffSha = process.env.TIGUCLAW_UPDATE_PREV_SHA?.trim();
+  const headAtStart = prev.stdout.trim();
   const prevSha =
     handoffSha !== undefined && /^[0-9a-f]{7,40}$/i.test(handoffSha)
       ? handoffSha
-      : prev.stdout.trim();
+      : headAtStart;
+  // 위임이면 호출자(데몬)가 **이미 pull 했다** — HEAD 는 새것인데 돌고 있는 빌드는 옛것이다.
+  const pulledByCaller = !headAtStart.startsWith(prevSha) && !prevSha.startsWith(headAtStart);
+  const table = handlers[process.platform];
 
-  // lock도 사용자 편집일 수 있다. 폐기하지 않고 추적 파일 변경이 있으면 거절한다.
+  /**
+   * 데몬을 멈추기 **전**에 그만둘 때. ★위임이면 HEAD 를 되돌린다 (2026-10-05 적대 검토) — 안 그러면 코드만 새것이고
+   *  빌드는 옛것으로 굳고, 다음 `/update` 는 «이미 최신» 이라며 아무것도 안 해 **업데이트가 영영 안 됐다.**
+   *  그리고 위임이면 데몬을 다시 띄운다 — 실패 통지는 부팅 때 마커를 읽어 나가므로, 안 띄우면 «업데이트 중» 뒤 침묵이다.
+   * @param {string} stage @param {string} detail @param {{ restart?: boolean }} [opts]
+   */
+  const abortBeforeStop = (stage, detail, opts = {}) => {
+    /** @type {"unchanged" | "needs-check"} */
+    let outcome = "unchanged";
+    if (pulledByCaller) {
+      if (run("git", ["reset", "--keep", prevSha]) === 0) console.error(`update: returned the code to ${prevSha.slice(0, 7)} (the running build).`);
+      else {
+        outcome = "needs-check";
+        console.error(`update: could not return the code to ${prevSha.slice(0, 7)} — run \`tiguclaw update\` in a terminal.`);
+      }
+    }
+    writeFailedMarker(stage, detail, outcome);
+    if (delegated && opts.restart !== false && isDaemonRunning(c)) table?.restart?.(c);
+    process.exitCode = 1;
+  };
+
+  // 손상된 Windows 저장본 — 라벨·포트가 틀릴 수 있으니 **아무 인스턴스도 건드리지 않는다**(재가동도 안 한다).
+  if (isWin && c.winEnvError !== undefined) {
+    console.error(`update: ${c.winEnvError} — fix or delete it, then run this again.`);
+    abortBeforeStop("startup environment", c.winEnvError, { restart: false });
+    return;
+  }
+
+  // ── 단계 3: lock 드리프트 선폐기(생성물 한 파일만) ──────────────────────────
+  // package-lock.json 은 npm 이 재생성하는 *생성물*이라 플랫폼·npm 버전차로 로컬이 쉽게 더러워지고, 그게 ff-only
+  //   pull 을 막아 갱신이 영영 깨진다(Windows 실사고 `e7e8716a`, self-update.ts 동일 근거). ★2026-10-05 에 한 번
+  //   «lock 도 사용자 편집일 수 있다» 며 지웠다가 되살렸다 — 우리 `npm install` 이 다시 쓴 lock 을 사용자 편집으로
+  //   읽어 업데이트를 **영구히** 거절했다. 다른 추적 파일의 미커밋 변경은 아래에서 그대로 거절한다(암묵 파괴 0).
+  run("git", ["checkout", "--", "package-lock.json"]);
   const dirty = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], {
     cwd: c.repoRoot, encoding: "utf8",
   });
   if (dirty.status !== 0 || dirty.stdout.trim() !== "") {
-    console.error("update: uncommitted changes found, or the status check failed — leaving your files untouched and stopping.");
-    writeFailedMarker("git status", "uncommitted changes, or the status check failed");
-    process.exitCode = 1;
+    const files = (dirty.stdout ?? "").split("\n").map((l) => l.slice(3).trim()).filter(Boolean);
+    const named = files.length > 0 ? `: ${files.slice(0, 3).join(", ")}${files.length > 3 ? ` (+${files.length - 3} more)` : ""}` : "";
+    console.error(`update: uncommitted changes found${named}, or the status check failed — leaving your files untouched and stopping.`);
+    abortBeforeStop("git status", `uncommitted changes${named}, or the status check failed`);
     return;
   }
-  // stop 이전에 저장한다. 성공/실패 재기동과 다음 예약작업 모두 같은 홈 계약을 읽는다.
-  if (isWin) {
-    try { assertWinServiceToken(c); saveWinServiceEnv(c); }
-    catch (error) {
-      console.error(`update: startup environment check failed — ${redactUpdateLog(String(error))}`);
-      writeFailedMarker("startup environment", String(error));
-      process.exitCode = 1;
-      return;
-    }
-  }
+  // ★시작 환경은 여기서 저장하지 않는다 — 셸 값은 `install` 때만 붙잡는다(winEnsureTask 주석). 위임 업데이트의 환경은
+  //  데몬이 `.env` 를 올려 둔 것이라 저장하면 `.env` 에서 지운 값이 되살아난다.
 
   // ── 단계 4: git pull --ff-only ──────────────────────────────────────────────
   if (run("git", ["pull", "--ff-only"]) !== 0) {
     // 실패(로컬 미커밋 진짜 변경·충돌·detached) → 정직 실패. pull 은 원자적이라 작업트리를
-    //   보존(부분 적용 0) → 롤백 불요. 자동 stash/merge 는 파괴적·암묵이라 안 함(§1·O1).
+    //   보존(부분 적용 0). 자동 stash/merge 는 파괴적·암묵이라 안 함(§1·O1).
     console.error(
       "update: pull failed because of local uncommitted changes or a conflict — check manually (git status).",
     );
-    writeFailedMarker("git pull", "pull failed because of local uncommitted changes or a conflict");
-    process.exitCode = 1;
+    abortBeforeStop("git pull", "pull failed because of local uncommitted changes or a conflict");
     return;
   }
   const next = spawnSync("git", ["rev-parse", "HEAD"], {
@@ -1909,25 +2015,39 @@ const runUpdate = (c) => {
     console.log("   No code changes — refreshing dependencies and build only.");
   }
 
-  const table = handlers[process.platform];
   const wasRunning = isDaemonRunning(c);
 
-  // --keep도 실행 전 변경을 확인한다. 업데이트 중 생긴 작업을 지우지 않는다.
-  const rollback = () => {
+  /**
+   * 데몬을 멈춘 **뒤**의 실패 — 이전 판으로 되돌리고, 실제로 된 만큼을 마커에 적은 뒤 다시 띄운다.
+   * ★마커를 재가동 **전**에 쓴다 — 다시 뜬 데몬이 부팅 때 읽어 통지한다.
+   * ★되돌리기를 못 해도 데몬은 다시 띄운다 — 멈춘 채 두면 사용자에겐 «비서가 죽었다» 다(Windows 는 예약작업이
+   *  1분마다 어차피 다시 띄운다). --keep 은 실행 전 변경을 확인한다 — 업데이트 중 생긴 작업을 지우지 않는다.
+   * @param {string} stage @param {string} detail
+   */
+  const rollback = (stage, detail) => {
+    run("git", ["checkout", "--", "package-lock.json"]); // 생성물 — npm 이 다시 썼을 수 있다(위 단계 3과 같은 근거).
+    /** @type {"rolled-back" | "needs-check"} */
+    let outcome = "needs-check";
+    let startIt = wasRunning;
     const state = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], {
       cwd: c.repoRoot, encoding: "utf8",
     });
     if (state.status !== 0 || state.stdout.trim() !== "") {
       console.error("update: rollback skipped — new uncommitted changes, or the status check failed. Please check manually.");
-      return;
-    }
-    if (run("git", ["reset", "--keep", prevSha]) !== 0) {
+    } else if (run("git", ["reset", "--keep", prevSha]) !== 0) {
       console.error("update: rollback failed — your files were left as they are. Please check manually.");
-      return;
+    } else if (run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin }) !== 0) {
+      console.error("update: could not restore dependencies during rollback — not restarting the daemon.");
+      startIt = false; // 의존성이 깨진 채 띄우면 부팅마다 죽는다.
+    } else if (c.runtime === "built" && (run("npm", ["run", "build:prod"], { shell: isWin }) !== 0 || !existsSync(c.distEntry))) {
+      // ★빌드도 이전 판으로 다시 한다 (2026-10-05 재검토 P2). 실패한 빌드가 새 코드의 `.js` 를 이미 dist 에 써 두었을 수
+      //  있다(tsc 는 타입 오류에도 내보낸다) — 다시 안 만들면 «이전 판으로 되돌렸다» 가 거짓이고 옛 의존성과 새 dist 가 섞인다.
+      console.error("update: could not rebuild the previous version during rollback — check manually.");
+    } else {
+      outcome = "rolled-back";
     }
-    const installed = run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin }) === 0;
-    if (installed && wasRunning) table?.start?.(c);
-    if (!installed) console.error("update: could not restore dependencies during rollback — not restarting the daemon.");
+    writeFailedMarker(stage, detail, outcome);
+    if (startIt) table?.start?.(c);
   };
 
   // ── 단계 5: (돌고 있으면) 데몬 정지 — npm ci 전에 네이티브 모듈 락 해제(EPERM 방지) ──
@@ -1949,8 +2069,7 @@ const runUpdate = (c) => {
   //   update` 를 직접 부른 것이고, 이 제품은 네이티브 모듈 없이는 아예 못 뜬다.
   if (run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin }) !== 0) {
     console.error("update: npm ci failed — rolling back.");
-    writeFailedMarker("npm ci", "npm ci failed (dependency install)");
-    rollback();
+    rollback("npm ci", "npm ci failed (dependency install)");
     console.error("update: failed. See the log above for the rollback and restart results. exit 1.");
     process.exitCode = 1;
     return;
@@ -1975,8 +2094,7 @@ const runUpdate = (c) => {
           "   Linux: build-essential + python3, macOS: xcode-select --install",
         ].join("\n"),
       );
-      writeFailedMarker("native", "could not load the better-sqlite3 native module");
-      rollback();
+      rollback("native", "could not load the better-sqlite3 native module");
       console.error("update: failed. See the log above for the rollback and restart results. exit 1.");
       process.exitCode = 1;
       return;
@@ -1991,8 +2109,7 @@ const runUpdate = (c) => {
       !existsSync(c.distEntry)
     ) {
       console.error("update: build failed (no entry point produced) — rolling back.");
-      writeFailedMarker("build", "build:prod failed or did not produce the entry point (dist/src/index.js)");
-      rollback();
+      rollback("build", "build:prod failed or did not produce the entry point (dist/src/index.js)");
       console.error("update: failed. See the log above for the rollback and restart results. exit 1.");
       process.exitCode = 1;
       return;
@@ -2102,6 +2219,13 @@ export const runDaemonCommand = (cmd) => {
   //   OS handlers 테이블과 무관한 자체 루틴이다.
   if (cmd === "update") {
     runUpdate(c);
+    return;
+  }
+
+  // 손상된 Windows 저장본 — 라벨·포트가 기본값으로 떨어져 **다른 인스턴스**를 설치·재시작할 수 있다. 멈추고 알린다.
+  if (process.platform === "win32" && c.winEnvError !== undefined) {
+    console.error(`daemon: ${c.winEnvError} — fix or delete it, then run this again.`);
+    process.exitCode = 1;
     return;
   }
 

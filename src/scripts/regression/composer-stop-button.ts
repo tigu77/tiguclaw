@@ -18,6 +18,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -99,14 +100,73 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ── ⑥ 배선: 누르는 쪽은 **칠해진 모드**를 읽는다(보이는 것과 하는 것이 같다) ─
-    out.push(
-      assert(
-        "정지 분기가 버튼에 칠해진 모드(dataset.mode)를 근거로 갈린다 — 판정이 두 벌이 되지 않게",
-        /sendBtn\.dataset\.mode === "stop"/.test(send),
-        /sendBtn\.dataset\.mode === "stop"/.test(send) ? "dataset.mode 기준" : "★별도 조건으로 갈림",
-      ),
-    );
+    // ── ⑥ ★정지 모드의 버튼은 **제출 버튼이 아니다** (2026-10-05 적대 검토) ─────────────
+    //  제출 버튼이면 폼의 기본 버튼이라, 같은 폼의 모델 선택·채널 체크박스에서 엔터를 쳐도 브라우저 암묵 제출이
+    //  이 버튼을 «눌러» `/stop` 이 나갔다(헤드리스 실측). submitter 로는 못 가른다 — 암묵 제출도 기본 버튼이 submitter 다.
+    //  그래서 칠하는 함수를 **실제로 돌려** 모드마다 버튼 type 을 본다.
+    {
+      const paint = /const paintComposerButton = \(\) => \{[\s\S]*?\n {6}\};/.exec(axis)?.[0];
+      // ★같은 버튼으로 **정지 → 전송** 을 거친다 (재검토 M5) — 새 버튼을 매번 쓰면 «정지일 때만 type 을 바꾸고
+      //  되돌리지 않는» 변이가 통과했다(실측: 정지를 한 번 거친 뒤 전송 클릭·Enter 가 0건).
+      const shared: Record<string, unknown> = {
+        dataset: {} as Record<string, string>,
+        type: "submit",
+        classList: { toggle: () => {} },
+        appendChild: () => {},
+        setAttribute: () => {},
+        removeAttribute: () => {},
+      };
+      const paintAs = (mineActive: boolean, reuse = false): string => {
+        if (paint === undefined) return "★paintComposerButton 못 찾음";
+        const btn: Record<string, unknown> = reuse ? shared : {
+          dataset: {} as Record<string, string>,
+          type: "submit",
+          classList: { toggle: () => {} },
+          appendChild: () => {},
+          setAttribute: () => {},
+          removeAttribute: () => {},
+        };
+        const ctx: Record<string, unknown> = {
+          document: { getElementById: () => btn, createElement: () => ({}) },
+          window: { composerHasDraft: () => false },
+          activeTurns: new Set(mineActive ? ["t"] : []),
+          activeThreadKey: "t",
+          i18n: (k: string) => k,
+        };
+        vm.createContext(ctx);
+        try {
+          vm.runInContext(`${fn}\n${paint}\npaintComposerButton();`, ctx);
+        } catch (e) {
+          return `★던짐: ${e instanceof Error ? e.message : String(e)}`;
+        }
+        return `${String((btn.dataset as Record<string, string>).mode)}/${String(btn.type)}`;
+      };
+      const stopPaint = paintAs(true, true);
+      const sendPaint = paintAs(false, true);
+      out.push(
+        assert(
+          "★정지 모드의 버튼은 type=button(폼 어디서 엔터를 쳐도 중지가 안 나간다) · 전송 모드는 type=submit",
+          stopPaint === "stop/button" && sendPaint === "send/submit",
+          `정지=${stopPaint} · 전송=${sendPaint}`,
+        ),
+      );
+    }
+    //  그리고 `/stop` 은 **버튼 누름(click)** 에서만 나간다 — 제출 처리기에 남아 있으면 버튼 없는 암묵 제출이 다시 그리로 온다.
+    {
+      const clickAt = send.indexOf('sendBtn.addEventListener("click"');
+      const submitAt = send.indexOf('form.addEventListener("submit"');
+      const clickBody = clickAt < 0 ? "" : send.slice(clickAt, submitAt > clickAt ? submitAt : undefined);
+      const submitBody = submitAt < 0 ? "" : send.slice(submitAt, submitAt + 4000);
+      out.push(
+        assert(
+          "★`/stop` 은 버튼 click 처리기에서만 나가고, 그 판단은 칠해진 모드(dataset.mode)를 읽는다 — 제출 처리기엔 없다",
+          /sendChatMessage\(\s*"\/stop"/.test(clickBody) &&
+            /sendBtn\.dataset\.mode !== "stop"\) return/.test(clickBody) &&
+            !/"\/stop"/.test(submitBody),
+          `click=${/"\/stop"/.test(clickBody)} · 모드판단=${/dataset\.mode !== "stop"/.test(clickBody)} · submit 안=${/"\/stop"/.test(submitBody)}`,
+        ),
+      );
+    }
 
     // ── ⑦ 배선: 진행 상태가 바뀌면 버튼도 다시 칠해진다 ────────────────────────
     const refresh = axis.slice(axis.indexOf("const refreshWorking = ("));

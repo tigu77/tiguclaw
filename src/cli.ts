@@ -92,15 +92,15 @@ const globalTiguclawIsOurs = (): boolean => {
 
 /** 원샷 설정 — 설치 후 이 명령 하나로 끝낸다. */
 const onboard = (): number => {
-  console.log("\n=== tiguclaw onboard — 원샷 설정 ===\n");
+  console.log("\n=== tiguclaw onboard — one-shot setup ===\n");
 
-  console.log("[1/5] 설정 마법사 (.env 생성)…");
+  console.log("[1/5] Setup wizard (creates .env)…");
   if (runNpm("init") !== 0) {
-    console.error("→ init 실패/중단. onboard 중단.");
+    console.error("→ init failed or was cancelled. Stopping onboard.");
     return 1;
   }
   if (!existsSync(ENV_PATH)) {
-    console.error("\n→ .env 가 생성되지 않았습니다(마법사 중단). onboard 중단.");
+    console.error("\n→ .env was not created (the wizard was cancelled). Stopping onboard.");
     return 1;
   }
 
@@ -114,13 +114,13 @@ const onboard = (): number => {
       ? "claude-auth"
       : null;
   if (authScript !== null) {
-    console.log(`\n[2/5] 구독 OAuth 발급 (${authScript})…`);
+    console.log(`\n[2/5] Getting a subscription OAuth token (${authScript})…`);
     if (runNpm(authScript) !== 0) {
-      console.error(`→ ${authScript} 실패. onboard 중단.`);
+      console.error(`→ ${authScript} failed. Stopping onboard.`);
       return 1;
     }
   } else {
-    console.log("\n[2/5] 구독 provider 아님 — OAuth 단계 건너뜀.");
+    console.log("\n[2/5] Not a subscription provider — skipping the OAuth step.");
   }
 
   // 런타임 모드 (ADR 2026-07-14 D2/D4, Amendment 2026-07-14) — 명시 env 만 진실.
@@ -132,88 +132,92 @@ const onboard = (): number => {
     process.env.TIGUCLAW_RUNTIME?.trim() === "source" ? "source" : "built";
   if (runtime === "built") {
     console.log(
-      "\n[빌드] runtime=built (기본) — 프로덕션 산출물 빌드 (npm run build:prod)…",
+      "\n[build] runtime=built (default) — building production output (npm run build:prod)…",
     );
     if (runNpm("build:prod") !== 0) {
       console.error(
-        "→ build:prod 실패. onboard 중단 (built 유닛은 dist/src/index.js 가 필수).",
+        "→ build:prod failed. Stopping onboard (the built service needs dist/src/index.js).",
       );
       return 1;
     }
   } else {
-    console.log("\n[빌드] TIGUCLAW_RUNTIME=source — 빌드 건너뜀(tsx 로 .ts 직접 구동).");
+    console.log("\n[build] TIGUCLAW_RUNTIME=source — skipping the build (runs .ts directly with tsx).");
   }
 
-  console.log(`\n[3/5] 데몬 등록 (supervisor, runtime=${runtime})…`);
+  console.log(`\n[3/5] Registering the daemon (supervisor, runtime=${runtime})…`);
   if (runNpm("daemon:install") !== 0) {
-    console.error("→ daemon:install 실패. onboard 중단.");
+    console.error("→ daemon:install failed. Stopping onboard.");
     return 1;
   }
 
-  console.log("\n[4/5] 전역 명령 설치 (npm link → 어디서나 `tiguclaw`)…");
+  console.log("\n[4/5] Installing the global command (npm link → `tiguclaw` from anywhere)…");
   const existingTiguclaw = resolveCmd("tiguclaw");
   if (existingTiguclaw !== null && !globalTiguclawIsOurs()) {
     // 다른 tiguclaw 가 이미 전역에 있음 — 덮어쓰지 않고 보존(예: 레거시 설치본).
     console.warn(
-      `   ⚠ 이미 다른 'tiguclaw' 전역 명령이 있습니다 (${existingTiguclaw}) — 덮어쓰지 않고 건너뜁니다.`,
+      `   ⚠ Another global 'tiguclaw' command already exists (${existingTiguclaw}) — leaving it as is and skipping this step.`,
     );
     console.warn(
-      "     이 설치본을 전역 명령으로 쓰려면 직접 `npm link` 하세요(기존 것을 덮어씀).",
+      "     To use this install as the global command, run `npm link` yourself (this replaces the existing one).",
     );
   } else {
     const linked = spawnSync("npm", ["link"], { stdio: "inherit", shell: true });
     if ((linked.status ?? 1) === 0) {
       console.log(
-        "   ✓ 이제 어느 폴더에서나: tiguclaw status | restart | logs | doctor",
+        "   ✓ From any folder you can now run: tiguclaw status | restart | logs | doctor",
       );
     } else {
       console.warn(
-        "   ⚠ npm link 건너뜀(권한 등) — 수동으로 `npm link` 하면 전역 `tiguclaw` 명령이 생깁니다.",
+        "   ⚠ Skipped npm link (permissions or similar) — run `npm link` yourself to get the global `tiguclaw` command.",
       );
     }
   }
 
-  console.log("\n[5/5] 설정 검증…");
+  console.log("\n[5/5] Checking the setup…");
   runNpm("doctor"); // 진단용 — 실패해도 onboard 는 완료로 본다.
 
-  console.log("\n✅ onboard 완료!");
+  console.log("\n✅ Onboard complete!");
   console.log(
-    "   텔레그램에서 봇에게 메시지를 보내 응답을 확인하세요 (소유자 ID만 허용).",
+    "   Send your bot a message on Telegram to check that it replies (only the owner ID is allowed).",
   );
-  console.log("   관리: tiguclaw status / restart / logs / uninstall\n");
+  console.log("   Manage: tiguclaw status / restart / logs / uninstall\n");
   return 0;
 };
 
-const USAGE = `tiguclaw — 자가호스트 AI 비서 CLI
+const USAGE = `tiguclaw — self-hosted AI assistant CLI
 
-  tiguclaw onboard      원샷 설정 (init → 구독 OAuth → 데몬 등록 → doctor)
-  tiguclaw init         설정 마법사만 (.env 재생성)
-  tiguclaw codex-auth   ChatGPT 구독 OAuth 토큰 발급
-  tiguclaw claude-auth  Claude 구독 OAuth 토큰 발급
-  tiguclaw doctor       설정 검증
-  tiguclaw status       데몬 상태
-  tiguclaw restart      데몬 재시작 (코드 변경 적용)
-  tiguclaw update       dep-free 자가 갱신 (stop→git pull→npm ci→build→start, 롤백 안전)
-  tiguclaw stop         데몬 실행 중지 (등록 유지 — EPERM/락 복구용)
-  tiguclaw start        데몬 재실행 (등록 유지)
-  tiguclaw logs         데몬 로그 tail
-  tiguclaw install      데몬 supervisor 등록
-  tiguclaw uninstall    데몬 등록 해제
-  tiguclaw help         이 도움말
+  tiguclaw onboard      One-shot setup (init → subscription OAuth → register daemon → doctor)
+  tiguclaw init         Setup wizard only (regenerates .env)
+  tiguclaw codex-auth   Get a ChatGPT subscription OAuth token
+  tiguclaw claude-auth  Get a Claude subscription OAuth token
+  tiguclaw doctor       Check the setup
+  tiguclaw status       Daemon status
+  tiguclaw restart      Restart the daemon (applies code changes)
+  tiguclaw update       Dependency-free self-update (stop→git pull→npm ci→build→start, rolls back safely)
+  tiguclaw stop         Stop the daemon (stays registered — for EPERM/lock recovery)
+  tiguclaw start        Start the daemon again (stays registered)
+  tiguclaw logs         Tail the daemon logs
+  tiguclaw install      Register the daemon with the supervisor
+  tiguclaw uninstall    Unregister the daemon
+  tiguclaw help         Show this help
 
-  깨진 node_modules/tsx 복구(ADR 2026-07-15): 라이프사이클 명령(install/uninstall/
-    restart/stop/start/status/logs/print)은 dep-free 매니저(bin/daemon.mjs)로 직접
-    돌아 tsx·node_modules 없이도 항상 동작. better_sqlite3 EPERM(실행 중 데몬이 네이티브
-    모듈 락) 복구 순서: tiguclaw stop → npm ci → tiguclaw start(또는 install).
-    ★tiguclaw update 가 이 순서(stop→pull→npm ci→build→start)를 자동화한다 — 깨진
-    node_modules 도 npm ci 로 복구하고 실패 시 이전 커밋으로 롤백(데몬 원복 가동).
+  Recovering from a broken node_modules/tsx (ADR 2026-07-15): lifecycle commands (install/
+    uninstall/restart/stop/start/status/logs/print) go straight to the dependency-free manager
+    (bin/daemon.mjs), so they always work without tsx or node_modules. To recover from a
+    better_sqlite3 EPERM (the running daemon locks the native module): tiguclaw stop → npm ci →
+    tiguclaw start (or install).
+    ★tiguclaw update automates this order (stop→pull→npm ci→build→start) — it also repairs a
+    broken node_modules with npm ci, and on failure rolls back to the previous commit and
+    brings the daemon back up.
 
-  런타임 모드 (ADR 2026-07-14, Amendment 2026-07-14): 기본 built(설치=프로덕션 빌드 산출물,
-    node dist/src/index.js). onboard 가 build:prod 를 자동 선행하고, 설치 시 해석된 모드를
-    유닛 env(TIGUCLAW_RUNTIME=built)에 새긴다(mode-persistence). dev/디버그로 tsx .ts 를
-    직접 구동하려면 TIGUCLAW_RUNTIME=source 로 opt-out(빌드 skip, 유닛에 =source 새김).
-    기존 install 은 유닛에 고정된 모드를 유지 — 기본값 변경에 자동 전환되지 않는다(명시 재설치로만).
-    built 인스턴스의 self-update 는 재빌드 후 dist 를 원자 교체한다.
+  Runtime mode (ADR 2026-07-14, Amendment 2026-07-14): defaults to built (installs run the
+    production build, node dist/src/index.js). onboard runs build:prod first, and install
+    writes the resolved mode into the service env (TIGUCLAW_RUNTIME=built). To run the .ts
+    sources directly with tsx for dev/debugging, opt out with TIGUCLAW_RUNTIME=source (skips
+    the build and writes =source into the service).
+    An existing install keeps the mode fixed in its service — a change of default does not
+    switch it (only an explicit reinstall does).
+    A built instance's self-update rebuilds, then swaps dist atomically.
 `;
 
 const main = (): number => {
@@ -251,7 +255,7 @@ const main = (): number => {
       console.log(USAGE);
       return 0;
     default:
-      console.error(`알 수 없는 명령: ${cmd}\n`);
+      console.error(`Unknown command: ${cmd}\n`);
       console.log(USAGE);
       return 1;
   }

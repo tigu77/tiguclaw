@@ -35,6 +35,7 @@
  */
 import { formatResetAt, isRateLimited, parseCooldownMs } from "./llm-runtime/rate-limit.js";
 import { bumpRevision, stampFor, RUNNING_WORK } from "./resource-revision.js";
+import { DAEMON_RESTART_INTERRUPTED } from "./inflight-turns.js";
 import { randomUUID } from "node:crypto";
 import { extractTelegramChatId } from "./threadkey.js";
 import type { ChannelName, MessageHandler } from "../channels/types.js";
@@ -46,7 +47,7 @@ import {
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
 import type { TurnSpend } from "./llm-runtime/turn-spend.js";
-import { formatDurationKo } from "./format-duration.js";
+import { formatDurationEn, formatDurationKo } from "./format-duration.js";
 import { isSubagentTool } from "./llm-runtime/subagent-tools.js";
 import { createSteeringChannel } from "./steering.js";
 import type { SteeringChannel, SteeringInput } from "./steering.js";
@@ -86,7 +87,7 @@ const publishWorkerLifecycle = (
     cwd?: string;
     usage?: JobUsage;
   },
-  extra?: { error?: string; task?: string; result?: string },
+  extra?: { error?: string; errorName?: string; task?: string; result?: string },
 ): void => {
   try {
     // ★리비전 스탬프 (2026-08-27 Phase 1) — 이 이벤트가 스냅샷 대비 **몇 번째 변경인가**.
@@ -119,6 +120,8 @@ const publishWorkerLifecycle = (
         // task(무슨 작업이었나) + result(결과)도 실어 카드가 도구 스텝 없어도 내용을
         // 보여주게 한다. 길이 컷(이벤트/버퍼 바운드 — 전체 result 는 채널 재주입이 보유).
         ...(extra?.error !== undefined ? { error: extra.error.slice(0, 300) } : {}),
+        // 실패 원인의 타입 이름 — 소비자(self-growth)가 문장 대신 이걸로 가른다.
+        ...(extra?.errorName !== undefined ? { errorName: extra.errorName } : {}),
         // ★**잘렸으면 잘렸다고 말한다** (2026-09-04). 종전엔 조용히 잘라 보냈고, 화면은
         //  그 값을 «전문» 이라 부르며 펼침 영역에 그대로 뿌렸다 — 사용자가 보는 것이
         //  원문인지 잘린 것인지 **구분할 방법이 0** 이었다(실제로 같은 카드가 새로고침
@@ -258,6 +261,16 @@ export type WorkerJobStatus = "running" | "done" | "failed" | "cancelled";
  */
 export type WorkerJobKind = "worker" | "agent";
 
+/**
+ * 잡 하나의 끝 — 결과 또는 원인. `errorName` 은 원인이 타입 오류였을 때 그 이름이다
+ * (문장이 아니라 이름으로 분류하려고 — `failureKind`). 문자열 오류면 없다.
+ */
+export type WorkerOutcome = { result: string } | { error: string; errorName?: string };
+
+/** 던져진 것 → 실패 outcome. 두 레지스트리(매니저·서브에이전트)가 이 한 곳을 쓴다 — 이름을 빠뜨리는 자리가 안 생기게. */
+export const failureOutcome = (e: unknown): WorkerOutcome =>
+  e instanceof Error ? { error: e.message, errorName: e.name } : { error: String(e) };
+
 export interface WorkerJobRecord {
   jobId: string;
   /**
@@ -313,10 +326,20 @@ export interface WorkerJobRecord {
   lastActivityAt?: number;
   /** 정체 보고를 몇 번 했나 — 반복을 세서 "배경소음" 이 되지 않게(로그·문구에 싣는다). */
   stallReports?: number;
+  /**
+   * 이 잡에서 **무진전으로 같은 요청을 다시 보낸 횟수**(요청을 가로질러 누적, 2026-10-05). 어댑터의 «이번 요청 재시도 n/2» 는 요청마다
+   * 1부터 다시 세서, 같은 작업이 세 번 멈춰도 알림이 셋 다 «1/2» 였다(회사돌쇠 10-05). 런타임 전용 — 재시작하면 잡이 «중단» 으로
+   * 끝나는 기존 계약이라 이어 셀 실행이 없다(DB 스키마 무변경).
+   */
+  stallResumes?: number;
+  /** 이미 센 무진전 재시도 id — 같은 사건을 두 번 세지 않게(바운드). 런타임 전용. */
+  stallSeen?: string[];
   /** status==="done" 시 매니저 출력 (재주입 전 — 채널 직행 절대 X, W-I1). */
   result?: string;
   /** status==="failed" 시 redact 된 원인 문자열. */
   error?: string;
+  /** 실패 원인이 타입 오류였으면 그 `name` — 분류가 문장이 아니라 이걸 먼저 본다(`failureKind`). 런타임 전용. */
+  errorName?: string;
   /** 이 잡 좌표에서 끝난 턴들의 토큰 합계 — `recordJobTurnUsage` 가 채운다. 런타임 전용. */
   usage?: JobUsage;
 }
@@ -467,26 +490,69 @@ export const markDone = (jobId: string, result: string): void => {
 };
 
 /**
- * 실패 분류 — **통지와 로그가 같은 판정을 쓴다** (2026-08-12). 두 곳이 각자 정규식을
+ * 실패 종류 — **통지와 로그가 같은 판정을 쓴다** (2026-08-12). 두 곳이 각자 정규식을
  * 가지면 화면과 로그가 다른 말을 하고, 그러면 원격 진단이 다시 추론이 된다.
+ * ★종전엔 그 «두 곳» 이 실제로 정규식을 한 벌씩 들고 있었다(`classifyFailure`·`humanizeWorkerError`)
+ *  — 이제 둘 다 이 함수 하나를 읽는다.
+ *
+ * ★**이름 먼저, 문구는 폴백** (2026-10-05). 문구만 보던 시절엔 사용자에게 보이는 오류 문장을
+ *  영어로 바꾸는 순간 분류가 «기타» 로 무너졌다 — 문구 매칭이 언어 전환을 막는 뿌리였다.
+ *  우리가 던지는 타입 오류는 `name` 으로 가른다. 문구 매칭은 이름이 없는 것(감싸진 오류·
+ *  상류 문자열·이름을 못 실어 온 경로)용이고, **두 언어**를 다 알아본다(옛 한국어 원문).
  */
-export const classifyFailure = (raw: string): string =>
-  /wall-clock 상한|매니저 처리 시간 초과/i.test(raw)
-    ? "wall-clock상한"
-    : /도구 .*안 끝나|tool-hang/i.test(raw)
-      ? "도구상한"
-      : /유휴 타임아웃|idle timeout|first timeout/i.test(raw)
-        ? "유휴(무응답)"
-        : isRateLimited(raw)
-          ? "사용량한도"
-          : /server_is_overloaded|overloaded/i.test(raw)
-            ? "백엔드과부하"
-            : /취소|cancel/i.test(raw)
-              ? "취소"
-              : "기타";
+export type FailureKind =
+  | "limit"
+  | "wall"
+  | "tool"
+  | "idle"
+  | "overloaded"
+  | "timeout"
+  | "pool"
+  | "cancel"
+  | "other";
+
+/** 우리가 던지는 타입 오류 → 종류. 문장을 바꿔도 분류가 안 흔들린다. */
+const FAILURE_KIND_BY_NAME: Readonly<Record<string, FailureKind>> = {
+  WorkerTimeoutError: "wall",
+  ToolHangError: "tool",
+  IdleTimeoutError: "idle",
+  TurnTimeoutError: "timeout",
+  WorkerCancelledError: "cancel",
+};
+
+export const failureKind = (raw: string, errorName?: string): FailureKind => {
+  const byName = errorName === undefined ? undefined : FAILURE_KIND_BY_NAME[errorName];
+  if (byName !== undefined) return byName;
+  if (isRateLimited(raw)) return "limit";
+  // 영어(현행) · 한국어(2026-10-05 이전 원문 — 기록에 남아 있다).
+  if (/wall-clock time limit|wall-clock 상한|매니저 처리 시간 초과/i.test(raw)) return "wall";
+  if (/\bTool '.*' didn't respond within|tool-hang|도구 .*(안 끝나|응답하지 않아)/i.test(raw)) return "tool";
+  if (/idle timeout|first timeout|유휴 타임아웃/i.test(raw)) return "idle";
+  if (/server_is_overloaded|overloaded/i.test(raw)) return "overloaded";
+  if (/timeout|timed out|time limit|시간 초과/i.test(raw)) return "timeout";
+  if (/model pool (chain )?is empty|모든 어댑터 실패|모델 풀(?: 체인)?이 비어/i.test(raw)) return "pool";
+  if (/cancel|취소/i.test(raw)) return "cancel";
+  return "other";
+};
+
+/** 로그 줄의 분류 라벨(`[job-failed] … 분류=`). */
+const FAILURE_LOG_LABEL: Readonly<Record<FailureKind, string>> = {
+  wall: "wall-clock상한",
+  tool: "도구상한",
+  idle: "유휴(무응답)",
+  limit: "사용량한도",
+  overloaded: "백엔드과부하",
+  cancel: "취소",
+  timeout: "기타",
+  pool: "기타",
+  other: "기타",
+};
+
+export const classifyFailure = (raw: string, errorName?: string): string =>
+  FAILURE_LOG_LABEL[failureKind(raw, errorName)];
 
 /** 매니저 실패/타임아웃 — 원인 기록. */
-export const markFailed = (jobId: string, error: string): void => {
+export const markFailed = (jobId: string, error: string, errorName?: string): void => {
   const job = jobs.get(jobId);
   if (job === undefined) return;
   // 취소는 terminal·sticky (U-I4 개정 2026-07-17) — 늦게 도착한 실패가 사용자 취소를
@@ -495,6 +561,7 @@ export const markFailed = (jobId: string, error: string): void => {
   if (job.status === "cancelled") return;
   job.status = "failed";
   job.error = error;
+  if (errorName !== undefined) job.errorName = errorName;
   job.finishedAt = Date.now();
   // ★실패를 **로그만으로 진단할 수 있게** (2026-08-12, 사용자: "확실하게 로그를 심어보자").
   //  종전엔 실패가 이벤트·DB 로만 남아, 원격 기계(회사 PC 는 접속 불가)에서 신고가 오면
@@ -502,14 +569,14 @@ export const markFailed = (jobId: string, error: string): void => {
   console.error(
     `[job-failed] '${job.label}' (${job.kind}:${jobId}) — ${Math.round(
       (job.finishedAt - job.startedAt) / 1000,
-    )}s 실행 후 실패 · 분류=${classifyFailure(error)} · thread=${job.threadKey} · 원인=${error.slice(0, 300)}`,
+    )}s 실행 후 실패 · 분류=${classifyFailure(error, errorName)} · thread=${job.threadKey} · 원인=${error.slice(0, 300)}`,
   );
   persistSafe("markFailed", () =>
     updateWorkerJobStatus(jobId, "failed", job.finishedAt!),
   );
   dropCheckinEvidence(jobId);
   pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1).
-  publishWorkerLifecycle("worker.failed", job, { error, task: job.task });
+  publishWorkerLifecycle("worker.failed", job, { error, ...(errorName !== undefined ? { errorName } : {}), task: job.task });
   dispatchSubagentStopHook(job, "failed", error); // Phase 1.1 — agent kind 만(no-op for worker).
 };
 
@@ -1132,7 +1199,8 @@ const checkinTick = (): void => {
         (job.stallReports ?? 0) >= STALL_KILL_AFTER_CHECKINS &&
         job.status === "running"
       ) {
-        const quiet = formatDurationKo((job.stallReports ?? 0) * JOB_CHECKIN_INTERVAL_MS);
+        const quietMs = (job.stallReports ?? 0) * JOB_CHECKIN_INTERVAL_MS;
+        const quiet = formatDurationKo(quietMs);
         console.warn(
           `[job-checkin] '${job.label}' (${job.jobId}) — 완전 침묵 ${job.stallReports}주기(${quiet}) → **자동 종료**`,
         );
@@ -1141,11 +1209,12 @@ const checkinTick = (): void => {
         const hook = cancelHooks.get(job.jobId);
         if (hook !== undefined) hook();
         evidence.delete(job.jobId);
+        // 사용자에게 바로 가는 통지(LLM 무경유) — 서버 고정 문구라 영어(2026-10-05 결정).
         await notifyJobOwner(
           job,
-          `🛑 ${kindLabel} \`${name}\` 를 **중단했습니다** — ${quiet} 동안 아무 활동이 없었습니다.\n` +
-            `작업: ${job.task.slice(0, 200)}\n` +
-            `이어서 할지, 처음부터 다시 할지 알려주시면 그대로 하겠습니다.`,
+          `🛑 **Stopped** ${job.kind === "agent" ? "agent" : "manager"} \`${name}\` — there was no activity for ${formatDurationEn(quietMs)}.\n` +
+            `Task: ${job.task.slice(0, 200)}\n` +
+            `Let me know whether to pick it up where it left off or start over.`,
         );
       }
     })().catch((e: unknown) => {
@@ -1722,14 +1791,14 @@ export const WORKER_HARD_GRACE_MS = parseTimeoutEnv(
 /**
  * 매니저 상한 타임아웃 에러.
  *
- * TurnTimeoutError 와 동형 — message 에 "모델 거부 아님" 토큰을 박아 facade
+ * TurnTimeoutError 와 동형 — message 에 "not a provider rejection" 토큰을 박아 facade
  * `MODEL_REJECTED_PATTERNS` 비매칭 보장 (멀쩡한 모델이 깨진 것으로 오제거되는 것 방지).
  */
 export class WorkerTimeoutError extends Error {
   readonly timeoutMs: number;
   constructor(timeoutMs: number = WORKER_TIMEOUT_MS) {
     super(
-      `매니저 처리 시간 초과 (${timeoutMs}ms wall-clock 상한) — 모델 거부 아님`,
+      `Background task hit its wall-clock time limit (${timeoutMs}ms) — not a provider rejection`,
     );
     this.name = "WorkerTimeoutError";
     this.timeoutMs = timeoutMs;
@@ -1739,11 +1808,11 @@ export class WorkerTimeoutError extends Error {
 /**
  * 매니저 사용자 취소 에러 — 타임아웃과 *구분*(통지 문구 "취소됨" vs "시간 초과").
  * abort reason 으로 운반되거나 cancelJob 이 직접 마킹. WorkerTimeoutError 처럼
- * "모델 거부 아님" 토큰을 박아 facade MODEL_REJECTED_PATTERNS 오매칭을 막는다.
+ * "not a provider rejection" 토큰을 박아 facade MODEL_REJECTED_PATTERNS 오매칭을 막는다.
  */
 export class WorkerCancelledError extends Error {
   constructor() {
-    super("매니저가 사용자 요청으로 취소됨 — 모델 거부 아님");
+    super("Manager cancelled at the user's request — not a provider rejection");
     this.name = "WorkerCancelledError";
   }
 }
@@ -2401,6 +2470,33 @@ let mainHandler: MessageHandler | undefined;
 // 단일 통로 → 텔레그램+대시보드). threadKey=worker:<jobId> 만 대상(메인 턴은 제외 — 사용자가
 // 직접 대기 중이라 별도 통지 불요). 부팅 1회 구독.
 let stallNotifySubscribed = false;
+/** 마지막 신호가 이만큼 안이면 «서버 신호가 계속 온다» 고 말한다. 생존 신호는 수 초 간격이라 1분이면 넉넉하다. */
+const SIGNAL_RECENT_MS = 60_000;
+/** 잡마다 기억하는 무진전 재시도 id 수 — 중복 이벤트는 바로 뒤따라오므로 최근 몇 개면 된다. */
+const STALL_SEEN_KEEP = 16;
+/**
+ * 무진전 재시도 알림 문구 — **사실대로**, 그리고 **영어** (2026-10-05). 신호는 오는데 답·도구가 안 나오는 경우(spinning)를 «응답이
+ * 멎었다» 고 하지 않는다. 요청별 재시도와 작업 누적을 따로 보인다(앞엣것만 보이면 세 번 멈춰도 늘 «1/2»).
+ * ★서버가 고정 문구로 내보내는 말은 영어다(2026-10-05 정태님: 번역하지 않을 거면 영어로 통일 — 레포 기본 언어). 사용자 언어로
+ *  말해야 하는 것은 비서(모델)가 한다.
+ */
+export const stallNoticeText = (
+  label: string,
+  s: { attempt?: number; maxRetries?: number; total: number; kind?: string; noProgressMs?: number; lastChunkAgoMs?: number },
+): string => {
+  const mins = s.noProgressMs !== undefined ? Math.max(1, Math.round(s.noProgressMs / 60_000)) : undefined;
+  const span = mins !== undefined ? ` for ${mins} min` : "";
+  // ★«신호가 계속 온다» 는 **마지막 신호가 최근일 때만** (2026-10-05 적대 검토 F1) — 첫 이벤트 하나만 받고 끊긴 스트림도
+  //  `spinning` 으로 분류된다(청크 1개 이상). 그 경우는 «응답이 없다» 가 사실이다. 판정 재료는 이벤트의 `lastChunkAgoMs`.
+  const signalsRecent = s.lastChunkAgoMs !== undefined && s.lastChunkAgoMs >= 0 && s.lastChunkAgoMs < SIGNAL_RECENT_MS;
+  const why =
+    s.kind === "trickle"
+      ? "the response has been streaming for too long"
+      : s.kind === "spinning" && signalsRecent
+        ? `the server is still sending signals but no answer or tool call has come${span}`
+        : `no response has come${span}`;
+  return `⚠️ Background task '${label}': ${why}, so the same request is being retried — this request ${s.attempt ?? "?"}/${s.maxRetries ?? "?"} · ${s.total} retr${s.total === 1 ? "y" : "ies"} so far for this task.`;
+};
 const subscribeWorkerStallNotify = (): void => {
   if (stallNotifySubscribed) return;
   stallNotifySubscribed = true;
@@ -2411,13 +2507,32 @@ const subscribeWorkerStallNotify = (): void => {
     if (!tk.startsWith("worker:")) return;
     const job = getJob(tk.slice("worker:".length));
     if (job === undefined) return;
+    const p = event.payload as { attempt?: unknown; maxRetries?: unknown; stallId?: unknown; kind?: unknown; noProgressMs?: unknown; lastChunkAgoMs?: unknown; events?: unknown };
+    // ★같은 사건은 한 번만 센다 — id 가 없는 옛 발행은 그대로 센다(중복 판정 재료가 없다).
+    const id = typeof p.stallId === "string" ? p.stallId : undefined;
+    if (id !== undefined) {
+      if (job.stallSeen?.includes(id) === true) return;
+      job.stallSeen = [...(job.stallSeen ?? []), id].slice(-STALL_SEEN_KEEP);
+    }
+    job.stallResumes = (job.stallResumes ?? 0) + 1;
     const dest = destForJob(job);
-    const attempt = String(event.payload.attempt ?? "?");
-    const max = String(event.payload.maxRetries ?? "?");
+    const text = stallNoticeText(job.label, {
+      attempt: typeof p.attempt === "number" ? p.attempt : undefined,
+      maxRetries: typeof p.maxRetries === "number" ? p.maxRetries : undefined,
+      total: job.stallResumes,
+      kind: typeof p.kind === "string" ? p.kind : undefined,
+      noProgressMs: typeof p.noProgressMs === "number" ? p.noProgressMs : undefined,
+      lastChunkAgoMs: typeof p.lastChunkAgoMs === "number" ? p.lastChunkAgoMs : undefined,
+    });
+    // 알림과 **같은 숫자**를 로그에 — 원격 인스턴스는 로그가 1차 진단면이다.
+    console.warn(
+      `[job-stall] '${job.label}' (${job.jobId}) 무진전 재시도 — 이번 요청 ${String(p.attempt ?? "?")}/${String(p.maxRetries ?? "?")} · 작업 누적 ${job.stallResumes}회 · ${String(p.kind ?? "?")}` +
+        (p.events !== undefined ? ` · 이벤트=${JSON.stringify(p.events)}` : ""),
+    );
     void deliverOutbound({
       channel: dest.channel,
       target: dest.target ?? null,
-      text: `⚠️ 백그라운드 작업 '${job.label}' 의 응답이 잠시 멎어 이어서 재개 중이에요 (${attempt}/${max}).`,
+      text,
       label: "worker",
       notice: true, // 인프라 통지 — 비서 발화 아님(렌더 구분).
       observeThreadKey: notifySessionThreadKey(job.threadKey),
@@ -2468,7 +2583,7 @@ const subscribeWorkerToolSlowNotify = (): void => {
     const tk =
       typeof event.payload.threadKey === "string" ? event.payload.threadKey : "";
     const tool =
-      typeof event.payload.tool === "string" ? event.payload.tool : "도구";
+      typeof event.payload.tool === "string" ? event.payload.tool : "tool";
     // ★메인 턴도 알린다 (2026-08-06) — 종전엔 매니저만이라, 대화 중 도구가 멈추면 사용자에게
     //  **아무 신호도 안 갔다**(경고는 로그에만). 회사 PC 실측: 39분 동안 화면엔 "작업 중"
     //  만 돌고 있었고, 느린 건지 멈춘 건지 알 방법이 없었다. 대시보드는 SSE 로 이 이벤트를
@@ -2537,20 +2652,22 @@ export const registerWorkerHandler = (handler: MessageHandler): void => {
  *
  * 입력 error 는 onWorkerComplete 가 이미 redactSecrets 통과시킨 안전 문자열.
  */
-const humanizeWorkerError = (raw: string): string => {
+export const humanizeWorkerError = (raw: string, errorName?: string): string => {
+  // 판정은 `failureKind` 한 곳 — 로그(`classifyFailure`)와 같은 답을 낸다(이름 먼저, 문구는 두 언어 폴백).
+  const kind = failureKind(raw, errorName);
   // codex 사용량 한도(429 usage_limit) — resets_in_seconds 가 있으면 "~N분 후 리셋" 안내.
   // 사용자가 *언제 다시 시도하면 되는지* 알게(가장 actionable). 양 provider 무관 문자열만.
   // ★공용 판정·파서를 쓴다 (2026-07-30 검토 지적). 종전 정규식은 claude 의
   //  "You've hit your limit · resets 2:20am" 에 false → "모든 어댑터 실패" 분기로 떨어져
   //  **"잠시 후 다시 시켜주세요"** 를 출력했다. 실제론 수 시간 계정 한도라 적극적 오해였다
   //  (어젯밤 윈도우 인스턴스에서 실제로 그 문구가 나갔다).
-  if (isRateLimited(raw)) {
+  if (kind === "limit") {
     const ms = parseCooldownMs(raw);
     if (ms !== null) {
       // 문구는 `formatResetAt` 한 곳에서 — 여기서 다시 만들면 한쪽만 늙는다.
-      return `LLM 사용량 한도 도달(429) — ${formatResetAt(ms)}에 풀립니다. 그 뒤 다시 시켜주세요.`;
+      return `LLM usage limit reached (429) — it resets ${formatResetAt(ms)}. Try again after that.`;
     }
-    return "LLM 사용량 한도 도달(429) — 잠시 후 한도가 리셋되면 다시 시켜주세요.";
+    return "LLM usage limit reached (429) — try again once the limit resets.";
   }
   // ── 시간 관련 종료 — **원인을 뭉치지 않는다** (2026-08-12, 사용자: "무슨 에러가 난 건지
   //    정확하게 알려주는 게 중요하지"). 종전엔 아래 셋을 한 정규식으로 묶어 전부
@@ -2560,32 +2677,32 @@ const humanizeWorkerError = (raw: string): string => {
   //     · 유휴/첫토큰    = 진짜로 **아무것도 안 온** 것 — 이것만 "멈췄다" 가 맞다
   //    "멈췄다" 고 들으면 모델·백엔드를 의심하게 되는데, 앞의 둘은 그쪽이 아니다.
   //    ★1층 유휴는 현재 전 턴 면제(idleConfigExempt)라 사실상 안 온다 — 그래도 분류는 남긴다.
-  if (/wall-clock 상한|매니저 처리 시간 초과/i.test(raw)) {
+  if (kind === "wall") {
     const ms = /\((\d+)ms/.exec(raw);
     const hours = ms === null ? null : Math.round((Number(ms[1]) / 3_600_000) * 10) / 10;
     return (
-      `작업이 ${hours === null ? "설정된" : `${hours}시간`} wall-clock 상한에 도달해 중단됐습니다 — ` +
-      `**모델이 멈춘 게 아니라 진행 중이었을 수 있습니다.** 이어서 하거나 더 작은 단위로 나눠 시키면 상한에 안 걸립니다.`
+      `The task hit the ${hours === null ? "configured" : `${hours}-hour`} wall-clock limit and was stopped — ` +
+      `**the model hadn't stalled; it may still have been making progress.** Continue it, or split it into smaller pieces to stay under the limit.`
     );
   }
-  if (/도구 .*안 끝나|tool-hang/i.test(raw)) {
-    return `도구 실행이 상한을 넘겨 턴이 중단됐습니다(${raw.slice(0, 160)}). 모델 문제가 아니라 그 도구가 오래 걸린 것입니다.`;
+  if (kind === "tool") {
+    return `A tool ran past its time limit, so the turn was stopped (${raw.slice(0, 160)}). This isn't a model problem — that tool took too long.`;
   }
-  if (/유휴 타임아웃|idle timeout|first timeout/i.test(raw)) {
-    return "모델이 정해진 시간 동안 **아무 응답도 보내지 않아** 중단됐습니다(유휴 타임아웃). 백엔드 상태를 의심할 자리입니다.";
+  if (kind === "idle") {
+    return "The model **sent nothing at all** for the allowed time, so it was stopped (idle timeout). The backend is the place to look.";
   }
-  if (/timeout|시간 초과/i.test(raw)) {
+  if (kind === "timeout") {
     // 분류 못 한 타임아웃 — **원문을 그대로 실어 보낸다.** 뭉뚱그린 문구로 덮으면
     // 사용자가 엉뚱한 곳을 뒤진다(그게 이 수정의 이유다).
-    return `시간 관련 중단이 발생했습니다 — 원문: ${raw.slice(0, 200)}`;
+    return `The task was stopped for a time-related reason — original error: ${raw.slice(0, 200)}`;
   }
   // 풀 전체 소진 — 모든 어댑터가 동시에 실패(단일 provider 풀 흔들림 등). 원문 일부 보존.
-  if (/모든 어댑터 실패|모델 풀이 비어/i.test(raw)) {
-    return `사용 가능한 LLM 모델이 모두 일시적으로 응답하지 못했습니다. 잠시 후 다시 시켜주세요. (원인: ${raw.slice(0, 160)})`;
+  if (kind === "pool") {
+    return `None of the available LLM models could respond for now. Try again in a little while. (Cause: ${raw.slice(0, 160)})`;
   }
   // 미분류 — 원문을 길이 cap 해 그대로 노출(사용자=운영자, "에러 다 보이는 게 좋다"). 빈값 방어.
   const t = raw.trim();
-  return t === "" ? "알 수 없는 오류" : t.slice(0, 400);
+  return t === "" ? "unknown error" : t.slice(0, 400);
 };
 
 /**
@@ -2599,20 +2716,20 @@ const humanizeWorkerError = (raw: string): string => {
 const buildRawNotice = (job: WorkerJobRecord): string => {
   if (job.status === "done") {
     return (
-      `✅ 백그라운드 작업 '${job.label}'이(가) 완료됐어요.\n` +
-      `결과:\n${job.result ?? "(결과 없음)"}`
+      `✅ Background task '${job.label}' finished.\n` +
+      `Result:\n${job.result ?? "(no result)"}`
     );
   }
   if (job.status === "cancelled") {
-    return `🛑 백그라운드 작업 '${job.label}'을(를) 요청대로 취소했어요.`;
+    return `🛑 Cancelled background task '${job.label}' as requested.`;
   }
   // 부분 진행 힌트 — daemon 경계엔 정확한 처리 건수가 없다(매니저 thread 의 부수효과로만
   // 존재, region 도메인). 카운트를 *지어내지 않고* 일부 진행 가능성을 정직히 안내해
   // 사용자가 이어서/처음부터 중 결정하게 한다(임무 §3 — feasible 범위 한도).
   return (
-    `⚠️ 백그라운드 작업 '${job.label}'이(가) 실패했어요.\n` +
-    `원인: ${humanizeWorkerError(job.error ?? "알 수 없는 오류")}\n` +
-    `일부는 처리됐을 수 있어요 — 이어서 할지/처음부터 다시 할지 알려주시면 맞춰 진행할게요.`
+    `⚠️ Background task '${job.label}' failed.\n` +
+    `Cause: ${humanizeWorkerError(job.error ?? "unknown error", job.errorName)}\n` +
+    `Part of it may already be done — let me know whether to continue from there or start over.`
   );
 };
 
@@ -2620,9 +2737,9 @@ const buildRawNotice = (job: WorkerJobRecord): string => {
 export const lateNotice = (late: readonly string[], label: string): string =>
   late.length === 0
     ? ""
-    : `\n\n⚠️ 방금 보내신 지시는 '${label}' 작업이 **이미 끝난 뒤** 도착해서 반영되지 않았어요:\n` +
+    : `\n\n⚠️ Your latest instruction arrived **after** task '${label}' had already finished, so it wasn't applied:\n` +
       late.map((t) => `· ${t}`).join("\n") +
-      `\n필요하면 위 결과를 보고 다시 시켜주세요.`;
+      `\nIf it's still needed, check the result above and ask again.`;
 
 /** 완료 턴에 싣는 맡긴 임무 — 앞(목표)과 끝(후처리 단계)이 판정에 필요해 둘 다 남긴다. 원문은 이 대화의 위임 호출에 있다. */
 const TASK_HEAD = 3_000;
@@ -2811,7 +2928,7 @@ export const isJobRunning = (jobId: string): boolean => jobs.get(jobId)?.status 
  */
 const deliverCompletion = async (
   jobId: string,
-  outcome: { result: string } | { error: string },
+  outcome: WorkerOutcome,
   lateUserMessages: readonly string[],
 ): Promise<boolean> => {
   // 1) 레지스트리 마킹. 단 이미 cancelled 면(cancelJob 이 abort 전 마킹) 그 status 보존 —
@@ -2825,7 +2942,7 @@ const deliverCompletion = async (
   } else {
     // 시크릿 누수 0 — redactSecrets 통과 후 기록 (architect §7).
     const { redactSecrets } = await import("./outbound-sanitize.js");
-    markFailed(jobId, redactSecrets(outcome.error));
+    markFailed(jobId, redactSecrets(outcome.error), outcome.errorName);
   }
 
   const found = jobs.get(jobId);
@@ -3061,7 +3178,7 @@ const deliverCompletion = async (
  */
 export const onWorkerComplete = async (
   jobId: string,
-  outcome: { result: string } | { error: string },
+  outcome: WorkerOutcome,
   lateUserMessages: readonly string[] = [],
 ): Promise<void> => {
   const carried = await deliverCompletion(jobId, outcome, lateUserMessages);
@@ -3098,7 +3215,7 @@ const publishInterrupted = (
 ): void => {
   try {
     publishWorkerLifecycle("worker.interrupted", { ...job, status: "interrupted" }, {
-      error: "데몬 재시작으로 중단",
+      error: DAEMON_RESTART_INTERRUPTED,
       task: (job as { task?: string }).task,
     });
   } catch {
@@ -3158,8 +3275,8 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
       continue;
     }
     const text =
-      `⚠️ 이전에 맡긴 백그라운드 작업 '${job.label}'이 데몬 재시작으로 중단됐어요. ` +
-      `결과를 받지 못했으니, 필요하면 다시 시켜주세요.`;
+      `⚠️ Background task '${job.label}' that you started earlier was interrupted by a daemon restart. ` +
+      `No result came back — ask again if you still need it.`;
     try {
       // 영속된 notifyDest(store 가 미러)가 있으면 그걸로, 없으면 channel/threadKey 폴백 →
       // 재시작 후에도 스케줄 매니저 통지가 올바른 chatId 로 도달(정직 통지 강화). store 가
@@ -3287,7 +3404,7 @@ export const startWorkerJob = (input: StartWorkerJobInput): string => {
   }
   const jobId = registerJob(input);
   if (workerRunner === undefined) {
-    markFailed(jobId, "매니저 실행기 미등록(부팅 순서 이상)");
+    markFailed(jobId, "Manager runner isn't registered (boot order problem)");
     console.error("worker-jobs: startWorkerJob — workerRunner 미등록");
     return jobId;
   }

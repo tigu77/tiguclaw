@@ -59,12 +59,12 @@ export const check: RegressionCheck = {
     return [
       assert(
         "★★능력을 **아는 모델엔 보여준다** — 재놓고 안 보여주면 없는 것과 같다(사용자는 골라 보고 400 을 맞아야 알았다)",
-        /131K · 도구✅/.test(out) && /131K · 도구✖/.test(out),
-        out.split("\n").find((l) => l.includes("풀:"))?.slice(0, 110) ?? "(풀 줄 없음)",
+        /131K · tools✅/.test(out) && /131K · tools✖/.test(out),
+        out.split("\n").find((l) => l.includes("pool:"))?.slice(0, 110) ?? "(풀 줄 없음)",
       ),
       assert(
         "★★**모름은 «안 됨» 이 아니다** — 도구 선언이 없는 모델엔 도구 표식을 안 붙인다(뭉개면 화면이 거짓말한다)",
-        /whisper-large-v3`\s*\[448\]/.test(out) && !/whisper-large-v3`\s*\[448 · 도구/.test(out),
+        /whisper-large-v3`\s*\[448\]/.test(out) && !/whisper-large-v3`\s*\[448 · tools/.test(out),
         `whisper 꼬리표 = ${/\[448[^\]]*\]/.exec(out)?.[0] ?? "(없음)"}`,
       ),
       assert(
@@ -91,8 +91,8 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★조회를 **`undefined` 로 주면 종전 그대로** — 렌더러의 순수성 유지(인자 자체는 필수라 호출부가 빼면 컴파일이 깨진다)",
-        !bare.includes("[") || !/도구/.test(bare),
-        bare.split("\n").find((l) => l.includes("풀:"))?.slice(0, 80) ?? "(풀 줄 없음)",
+        !bare.includes("[") || !/tools[✅✖]/.test(bare),
+        bare.split("\n").find((l) => l.includes("pool:"))?.slice(0, 80) ?? "(풀 줄 없음)",
       ),
       assert(
         "★★조회가 **카탈로그에 실제로 꽂혀 있다** — 렌더러만 재면 배선이 사각이다(실측: 부팅 파일 안 인라인 클로저를 끊어도 초록이었다)",

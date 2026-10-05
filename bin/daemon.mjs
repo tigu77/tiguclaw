@@ -54,6 +54,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   watchFile,
   writeFileSync,
@@ -105,6 +106,84 @@ export const resolveLabel = (homeAbs) =>
   readHomeEnvValue(homeAbs, "TIGUCLAW_SERVICE_LABEL") ?? (process.env.TIGUCLAW_SERVICE_LABEL?.trim() || DEFAULT_LABEL);
 
 /**
+ * Windows 예약작업은 호출자의 환경을 상속하지 않는다. 런처가 아니라 홈에 시작 계약을 보관한다.
+ * 비밀값은 여기 저장하지 않는다 — 토큰은 기존 홈 .env가 소유하고 데몬이 로드한다.
+ * 이 목록은 프로세스 위치·프로필·바인드만: 임의 env/모델/인증/테스트 이음매는 영속화하지 않는다.
+ */
+export const WIN_SERVICE_ENV_KEYS = [
+  "PATH", "USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+  "TEMP", "TMP", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
+  "npm_config_userconfig", "npm_config_globalconfig", "TIGUCLAW_SERVICE_LABEL",
+  "HTTP_BRIDGE_HOST", "HTTP_BRIDGE_PORT", "DASHBOARD_HOST", "DASHBOARD_PORT", "TZ",
+];
+
+/** @param {string} homeAbs @returns {Record<string, string>} */
+export const readWinServiceEnv = (homeAbs) => {
+  const file = path.join(homeAbs, "win-service-env.json");
+  // 존재하는데 손상됐다면 기본 인스턴스로 떨어지지 말고 실패한다.
+  const saved = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  /** @type {Record<string, string>} */
+  const result = {};
+  for (const key of WIN_SERVICE_ENV_KEYS) {
+    const value = readHomeEnvValue(homeAbs, key) ?? saved[key];
+    if (typeof value === "string" && value !== "") result[key] = value;
+  }
+  return result;
+};
+
+/** @param {string} homeAbs @param {NodeJS.ProcessEnv} [env] */
+export const applyWinServiceEnv = (homeAbs, env = process.env) => {
+  Object.assign(env, readWinServiceEnv(homeAbs));
+};
+
+/** 환경에서만 받은 토큰은 재생성된 비밀 없는 런처에서 사라진다. 조용히 바꾸지 않는다.
+ * @param {Ctx} c
+ */
+const assertWinServiceToken = (c) => {
+  const token = process.env.HTTP_BRIDGE_TOKEN;
+  const persisted = readHomeEnvValue(c.homeAbs, "HTTP_BRIDGE_TOKEN") ?? readHomeEnvValue(c.repoRoot, "HTTP_BRIDGE_TOKEN");
+  if (token && token !== persisted) {
+    throw new Error("HTTP_BRIDGE_TOKEN is set only in the launch environment. Save the existing value to the home .env, then run this again (the value is not shown in logs).");
+  }
+};
+
+/** @param {Ctx} c @param {NodeJS.ProcessEnv} [env] */
+export const saveWinServiceEnv = (c, env = process.env) => {
+  const configured = readWinServiceEnv(c.homeAbs);
+  /** @type {Record<string, string>} */
+  const saved = {};
+  for (const key of WIN_SERVICE_ENV_KEYS) {
+    const value = configured[key] ?? env[key];
+    if (value !== undefined && value !== "") saved[key] = value;
+  }
+  saved.TIGUCLAW_SERVICE_LABEL = c.label;
+  mkdirSync(c.homeAbs, { recursive: true });
+  const file = path.join(c.homeAbs, "win-service-env.json");
+  const text = JSON.stringify(saved, null, 2) + "\n";
+  // 같은 내용이면 쓰지 않는다. 임시 파일을 같은 홈에 쓴 뒤 교체해 잘린 JSON을 피한다.
+  if (existsSync(file) && readFileSync(file, "utf8") === text) return;
+  const tmp = file + ".tmp";
+  writeFileSync(tmp, text, { mode: 0o600 });
+  renameSync(tmp, file);
+};
+
+/** 로그에는 환경의 비밀값·인증 헤더·URL 자격증명을 남기지 않는다.
+ * @param {string} text @param {NodeJS.ProcessEnv} [env] @returns {string}
+ */
+export const redactUpdateLog = (text, env = process.env) => {
+  let clean = text;
+  for (const [key, value] of Object.entries(env)) {
+    if (/(TOKEN|SECRET|PASSWORD|API_KEY|AUTHORIZATION)/i.test(key) && value && value.length >= 8) {
+      clean = clean.split(value).join("[REDACTED]");
+    }
+  }
+  return clean
+    .replace(/(Bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@")
+    .replace(/((?:token|password|secret|api[_-]?key)\s*[=:]\s*)[^\s"']+/gi, "$1[REDACTED]");
+};
+
+/**
  * 명령 뒤 인자를 env 로 올린다 — `--home X` · `--runtime X` 두 꼴만. 모르는 인자·빈 값이면 그 사유를 돌려준다
  * (호출자가 거절한다 — 조용히 무시하면 기본 홈으로 떨어진다).
  * ★`--home=X` 는 **받지 않는다** (2026-10-03 재검토 F-A). 셸이 `=` 뒤의 `~` 를 펼치지 않아, 받으면 `~/x` 가 그대로
@@ -118,11 +197,11 @@ export const parseDaemonFlags = (args) => {
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
     const name = a.split("=")[0];
-    if (name !== a && Object.hasOwn(keys, name)) return `'${a}' 꼴은 받지 않습니다 — '${name} <값>' 으로 띄어 쓰세요`;
+    if (name !== a && Object.hasOwn(keys, name)) return `'${a}' is not accepted (use a space: '${name} <value>')`;
     const env = Object.hasOwn(keys, a) ? keys[a] : undefined;
-    if (env === undefined) return `모르는 인자 '${a}'`;
+    if (env === undefined) return `unknown argument '${a}'`;
     const v = args[++i];
-    if (v === undefined || v.trim() === "" || v.startsWith("--")) return `${a} 에 값이 없습니다`;
+    if (v === undefined || v.trim() === "" || v.startsWith("--")) return `${a} needs a value`;
     process.env[env] = v;
   }
   return undefined;
@@ -192,6 +271,10 @@ const buildCtx = () => {
   const homeRaw =
     process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw");
   const homeAbs = path.resolve(repoRoot, expandHome(homeRaw));
+  if (process.platform === "win32") {
+    applyWinServiceEnv(homeAbs);
+    process.env.PATH = path.dirname(nodePath) + path.delimiter + (process.env.PATH ?? "");
+  }
   const logsDir = path.join(homeAbs, "logs");
   return {
     repoRoot,
@@ -284,7 +367,7 @@ const darwinInstall = (c) => {
   const plistPath = launchdPlistPath(c);
   mkdirSync(path.dirname(plistPath), { recursive: true });
   writeFileSync(plistPath, plist, "utf8");
-  console.log(`생성: ${plistPath}`);
+  console.log(`Created: ${plistPath}`);
 
   const domain = launchdDomain();
   // 이미 등록돼 있으면 bootout(실패 무시) 후 재등록.
@@ -310,7 +393,7 @@ const darwinInstall = (c) => {
       if (still.status !== 0) break; // 정리 완료.
       if (Date.now() >= until) {
         console.warn(
-          `# ⚠ bootout 이 10초 안에 안 끝났습니다 (${domain}/${c.label}) — 그대로 bootstrap 을 시도합니다.`,
+          `# ⚠ bootout did not finish within 10 seconds (${domain}/${c.label}) — trying bootstrap anyway.`,
         );
         break;
       }
@@ -325,7 +408,7 @@ const darwinInstall = (c) => {
     // 일부 macOS/세션에서 bootstrap 실패 시 레거시 load 폴백.
     execFileSync("launchctl", ["load", "-w", plistPath], { stdio: "inherit" });
   }
-  console.log(`launchd 등록 (KeepAlive). TIGUCLAW_HOME=${c.homeRaw}`);
+  console.log(`Registered with launchd (KeepAlive). TIGUCLAW_HOME=${c.homeRaw}`);
   // ★install 도 **확인 후** 말한다 (2026-08-22). 종전엔 등록만 하고 `✅ 등록 완료` 를
   //  찍어, 데몬이 안 떠도 설치가 성공으로 보였다 — start/restart 에서 93분 먹통을 만든
   //  바로 그 거짓 성공이 install 에는 그대로 남아 있었다(세 플랫폼 전부).
@@ -333,8 +416,8 @@ const darwinInstall = (c) => {
     c,
     waitForListening(c, listeningOnBridge),
     "installed",
-    `  확인: launchctl print ${domain}/${c.label}\n` +
-      `  로그: ${path.join(c.logsDir, "daemon-<날짜>.log")}`,
+    `  Check: launchctl print ${domain}/${c.label}\n` +
+      `  Logs: ${path.join(c.logsDir, "daemon-<date>.log")}`,
   );
 };
 
@@ -350,7 +433,7 @@ const darwinUninstall = (c) => {
   }
   const plistPath = launchdPlistPath(c);
   rmSync(plistPath, { force: true });
-  console.log(`✅ launchd 등록 해제 + plist 제거 (${c.label}).`);
+  console.log(`✅ Unregistered from launchd and removed the plist (${c.label}).`);
 };
 
 /** @param {Ctx} c */
@@ -363,7 +446,7 @@ const darwinRestart = (c) => {
     c,
     waitForListening(c, listeningOnBridge, 20000, 1500),
     "restarted",
-    `  확인: launchctl print ${domain}/${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
+    `  Check: launchctl print ${domain}/${c.label}\n  Logs: ${path.join(c.homeAbs, "logs")}`,
   );
 };
 
@@ -378,7 +461,7 @@ const darwinStop = (c) => {
   } catch {
     /* 미로드 — 이미 정지 상태로 간주 */
   }
-  console.log(`✅ stopped (등록 유지 — 재개: npm run daemon:start). ${c.label}`);
+  console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
 };
 
 // start = plist 재작성 없이 재적재(재실행). 등록 파일은 이미 디스크에 있어야 한다.
@@ -388,7 +471,7 @@ const darwinStart = (c) => {
   const plistPath = launchdPlistPath(c);
   if (!existsSync(plistPath)) {
     console.error(
-      `daemon start: 등록 plist 가 없습니다 (${plistPath}). 먼저 install 하세요.`,
+      `daemon start: no registered plist found (${plistPath}). Run install first.`,
     );
     process.exitCode = 1;
     return;
@@ -405,7 +488,7 @@ const darwinStart = (c) => {
     c,
     waitForListening(c, listeningOnBridge),
     "started",
-    `  확인: launchctl print ${launchdDomain()}/${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
+    `  Check: launchctl print ${launchdDomain()}/${c.label}\n  Logs: ${path.join(c.homeAbs, "logs")}`,
   );
 };
 
@@ -430,8 +513,8 @@ const darwinStatus = (c) => {
 const darwinPrint = (c) => {
   console.log(`# launchd LaunchAgent → ${launchdPlistPath(c)}`);
   console.log(buildLaunchdPlist(c));
-  console.log(`# 등록:   launchctl bootstrap ${launchdDomain()} <plist>`);
-  console.log(`# 재시작: launchctl kickstart -k ${launchdDomain()}/${c.label}`);
+  console.log(`# Register: launchctl bootstrap ${launchdDomain()} <plist>`);
+  console.log(`# Restart:  launchctl kickstart -k ${launchdDomain()}/${c.label}`);
 };
 
 // ───────────────────────────── Linux (systemd user) ────────────────────────
@@ -483,22 +566,22 @@ const linuxInstall = (c) => {
   const unitPath = systemdUnitPath(c);
   mkdirSync(path.dirname(unitPath), { recursive: true });
   writeFileSync(unitPath, buildSystemdUnit(c), "utf8");
-  console.log(`생성: ${unitPath}`);
+  console.log(`Created: ${unitPath}`);
 
   systemctlUser(["daemon-reload"]);
   systemctlUser(["enable", "--now", c.label]);
-  console.log(`systemd user 서비스 등록 (Restart=always). TIGUCLAW_HOME=${c.homeRaw}`);
+  console.log(`Registered the systemd user service (Restart=always). TIGUCLAW_HOME=${c.homeRaw}`);
   const user = os.userInfo().username;
   console.log(
-    `   로그인 없이 부팅 가동하려면: loginctl enable-linger ${user}`,
+    `   To start at boot without logging in: loginctl enable-linger ${user}`,
   );
   // ★install 도 확인 후 말한다 (2026-08-22) — darwinInstall 주석 참조.
   reportLaunch(
     c,
     waitForListening(c, listeningOnBridge),
     "installed",
-    `  확인: systemctl --user status ${c.label}\n` +
-      `  로그: npm run daemon:logs (journalctl --user -u ${c.label} -f)`,
+    `  Check: systemctl --user status ${c.label}\n` +
+      `  Logs: npm run daemon:logs (journalctl --user -u ${c.label} -f)`,
   );
 };
 
@@ -515,7 +598,7 @@ const linuxUninstall = (c) => {
   } catch {
     /* 무시 */
   }
-  console.log(`✅ systemd user 서비스 해제 + 유닛 제거 (${c.label}).`);
+  console.log(`✅ Unregistered the systemd user service and removed the unit (${c.label}).`);
 };
 
 /** @param {Ctx} c */
@@ -525,7 +608,7 @@ const linuxRestart = (c) => {
     c,
     waitForListening(c, listeningOnBridge, 20000, 1500),
     "restarted",
-    `  확인: systemctl --user status ${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
+    `  Check: systemctl --user status ${c.label}\n  Logs: ${path.join(c.homeAbs, "logs")}`,
   );
 };
 
@@ -533,7 +616,7 @@ const linuxRestart = (c) => {
 /** @param {Ctx} c */
 const linuxStop = (c) => {
   systemctlUser(["stop", c.label]);
-  console.log(`✅ stopped (등록 유지 — 재개: npm run daemon:start). ${c.label}`);
+  console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
 };
 
 // start = 재실행. 유닛은 이미 디스크에 있어야 한다.
@@ -544,7 +627,7 @@ const linuxStart = (c) => {
     c,
     waitForListening(c, listeningOnBridge),
     "started",
-    `  확인: systemctl --user status ${c.label}\n  로그: ${path.join(c.homeAbs, "logs")}`,
+    `  Check: systemctl --user status ${c.label}\n  Logs: ${path.join(c.homeAbs, "logs")}`,
   );
 };
 
@@ -568,9 +651,9 @@ const linuxStatus = (c) => {
 const linuxPrint = (c) => {
   console.log(`# systemd user unit → ${systemdUnitPath(c)}`);
   console.log(buildSystemdUnit(c));
-  console.log("# 등록:   systemctl --user daemon-reload && systemctl --user enable --now " + c.label);
-  console.log(`# 재시작: systemctl --user restart ${c.label}`);
-  console.log(`# 부팅가동: loginctl enable-linger ${os.userInfo().username}`);
+  console.log("# Register: systemctl --user daemon-reload && systemctl --user enable --now " + c.label);
+  console.log(`# Restart:  systemctl --user restart ${c.label}`);
+  console.log(`# Start at boot: loginctl enable-linger ${os.userInfo().username}`);
 };
 
 // ───────────────────────────── Windows (예약작업 + 숨김 VBS 감독자) ──────────
@@ -670,8 +753,9 @@ const reportLaunch = (c, pids, verb, hint) => {
     return;
   }
   console.error(
-    `🔴 ${verb} 실패 — 기동 명령은 보냈지만 브리지 포트가 안 열렸습니다. ` +
-      `데몬이 안 떴거나 뜨자마자 죽었습니다.\n${hint}`,
+    // ★«Not installed» 라고 하지 않는다 — install 이면 등록은 됐고 데몬만 안 뜬 것이다(동사를 명사로: installed→install).
+    `🔴 Daemon not running after ${verb.replace(/ed$/, "")} — the start command was sent, but the bridge port never opened. ` +
+      `The daemon either didn't start or exited right away.\n${hint}`,
   );
   process.exitCode = 1;
 };
@@ -779,17 +863,22 @@ export const winSuperviseArgv = (c) => [
  *     wscript 가 감독자만큼 살아 중복 방지가 그대로 성립한다 — 감독자에 별도 중복 가드를
  *     만들지 않아도 되는 이유다(부품을 안 늘린다).
  *
- * ★환경변수는 안 심는다 — `supervise --home/--runtime` **인자**로 넘긴다. 종전 VBS 는
- *  `cmd /c set VAR=... && ...` 체인을 썼는데, 그 체인 모양이 Defender 오탐의 재료였다.
+ * 홈·런타임은 `supervise --home/--runtime` 인자로, 비밀 아닌 시작 계약은 홈 정본에서 읽는다.
+ * 환경은 WScript API로 전달한다. cmd /c set 체인이나 토큰 리터럴은 생성하지 않는다.
  * @param {Ctx} c
  * @returns {string}
  */
 export const buildWinVbs = (c) => {
+  // 이전 버전으로 롤백해도 기존 supervise가 읽는 env 계약은 유지한다.
+  const saved = c.homeAbs ? readWinServiceEnv(c.homeAbs) : {};
+  const environment = Object.entries(saved).map(([key, value]) =>
+    `sh.Environment("PROCESS")("${key}") = "${value.replace(/"/g, '""')}"`);
   const cmd = winSuperviseArgv(c)
     .map(winQuoteArg)
     .join(" ");
   return [
     'Set sh = CreateObject("WScript.Shell")',
+    ...environment,
     `sh.CurrentDirectory = "${c.repoRoot.replace(/"/g, '""')}"`,
     // ★node 가 사는 폴더를 PATH 앞에 세운다 — plist·systemd 와 **같은 판단**이다.
     `sh.Environment("PROCESS")("PATH") = "${path.dirname(c.nodePath).replace(/"/g, '""')};" & sh.ExpandEnvironmentStrings("%PATH%")`,
@@ -862,7 +951,7 @@ const winPs = (script) => {
     status: r.status,
     stdout: (r.stdout ?? "").trim(),
     stderr: timedOut
-      ? `PowerShell 응답 없음 — ${WIN_PS_TIMEOUT_MS / 1000}초 후 포기`
+      ? `PowerShell did not respond — gave up after ${WIN_PS_TIMEOUT_MS / 1000}s`
       : (r.stderr ?? "").trim() || (r.error === undefined ? "" : r.error.message),
   };
 };
@@ -1088,7 +1177,7 @@ const winRemoveLegacyAutostart = (c) => {
   const q = winReg(["query", RUN_KEY, "/v", c.label]);
   if (q.status === 0) {
     winReg(["delete", RUN_KEY, "/v", c.label, "/f"]);
-    console.log(`   옛 자동시작 제거 — HKCU Run\\${c.label} (예약작업으로 대체)`);
+    console.log(`   Removed the old autostart — HKCU Run\\${c.label} (replaced by a scheduled task)`);
   }
   // ★VBS 는 **지우지 않는다** — 예약작업의 액션이 이걸 실행한다(창 숨김). 한때 지웠는데
   //  (액션을 node 직접 실행으로 바꿨을 때) 그 구성은 콘솔 창이 떠서 철회했다. 내용은
@@ -1120,6 +1209,8 @@ const winEnsureTask = (c) => {
   //  실행만 조용히 실패한다(2026-08-15 에 겪은 바로 그 형상: "런처가 없는데 성공 보고").
   //  매번 다시 써서 경로·런타임 변경에도 수렴시킨다.
   mkdirSync(c.homeAbs, { recursive: true });
+  assertWinServiceToken(c);
+  saveWinServiceEnv(c);
   writeVbs(winVbsPath(c), buildWinVbs(c));
   // ★**돌고 있으면 먼저 멈춘다** (2026-08-22, /update 실측으로 잡음). 작업이 실행 중이면
   //  `Register-ScheduledTask -Force` 가 실패해 수렴이 조용히 건너뛰어진다. 실제로 갱신
@@ -1135,7 +1226,7 @@ const winEnsureTask = (c) => {
     // ★예약작업이 살아났으면 폴백은 **반드시 걷는다** — 둘 다 있으면 로그온 때 두 개 뜬다
     //  (HKCU Run 잔재와 같은 부류의 사고). 정상 경로가 복구되면 안전망은 치운다.
     if (winRemoveStartupFallback(c)) {
-      console.log(`   시작프로그램 폴백 제거 — 예약작업이 정상이라 더는 필요 없습니다.`);
+      console.log(`   Removed the Startup-folder fallback — the scheduled task works, so it is no longer needed.`);
     }
     return true;
   }
@@ -1149,21 +1240,21 @@ const winEnsureTask = (c) => {
   //  (실측: 제한 토큰 install 이 그렇게 실패했고 이유를 못 봤다). 실패를 말하면서 원인을
   //  안 주는 로그는 진단면이 아니다. stdout 우선 — 스크립트가 `TASK_ERR: …` 평문을 낸다
   //  (stderr 는 powershell 이 CLIXML 로 감싼다).
-  const why = r.stdout || r.stderr || "출력 없음";
+  const why = r.stdout || r.stderr || "no output";
   if (exists) {
-    console.warn(`   ⚠ 예약작업 재등록 실패 — 기존 등록으로 진행합니다 (${why}).`);
+    console.warn(`   ⚠ Could not re-register the scheduled task — continuing with the existing registration (${why}).`);
     return true;
   }
-  console.error(`   예약작업 등록 실패 이유: ${why}`);
+  console.error(`   Scheduled task registration failed: ${why}`);
   // ★**폴백** — 예약작업이 막힌 환경(그룹정책)에서 자동시작까지 잃지 않는다.
   //  1분 반복(감독자 부활)은 포기하지만 로그온 자동시작과 감독자는 살아남는다. 그 대가를 **말한다** —
   //  조용히 열등한 모드로 돌면 사용자는 죽어도 모른다.
   const fb = winWriteStartupFallback(c);
   if (fb !== null) {
     console.warn(
-      `   ↪ 시작프로그램 폴백으로 전환합니다 — ${fb}\n` +
-        `     로그온 시 자동 가동되고 데몬이 죽으면 감독자가 되살리지만, **감독자까지 죽으면 다음 로그온까지 안 뜹니다**\n` +
-        `     (예약작업의 1분 반복을 못 겁니다). 정책이 풀리면 install 을 다시 돌리세요.`,
+      `   ↪ Falling back to the Startup folder — ${fb}\n` +
+        `     It starts at logon, and the supervisor restarts the daemon if it dies — **but if the supervisor itself dies, nothing comes back until the next logon**\n` +
+        `     (the scheduled task's 1-minute repeat can't be set up). Once the policy is lifted, run install again.`,
     );
     return "fallback";
   }
@@ -1175,22 +1266,22 @@ const winInstall = (c) => {
   mkdirSync(c.logsDir, { recursive: true });
   const mode = winEnsureTask(c);
   if (mode === false) {
-    console.error(`🔴 자동시작 등록 실패 (${winTaskName(c)}).`);
+    console.error(`🔴 Autostart registration failed (${winTaskName(c)}).`);
     console.error(
-      "   예약작업도 시작프로그램 폴더도 쓸 수 없습니다 — 관리자에게 확인하거나 WSL2 를 쓰세요.",
+      "   Neither a scheduled task nor the Startup folder can be used — check with your administrator, or use WSL2.",
     );
     process.exitCode = 1;
     return;
   }
   if (mode === "fallback") {
-    console.log(`시작프로그램 자동시작 등록 (폴백). TIGUCLAW_HOME=${c.homeRaw}`);
+    console.log(`Registered autostart in the Startup folder (fallback). TIGUCLAW_HOME=${c.homeRaw}`);
     winLaunchVbs(c); // 예약작업이 없으니 런처를 직접 띄운다.
   } else {
     console.log(
-      `예약작업 KeepAlive 등록 (관리자 권한 불요). TIGUCLAW_HOME=${c.homeRaw}`,
+      `Registered the KeepAlive scheduled task (no admin rights needed). TIGUCLAW_HOME=${c.homeRaw}`,
     );
     console.log(
-      "   죽으면 감독자가 즉시 되살리고, 감독자까지 죽으면 1분 반복 트리거가 잡습니다(2중).",
+      "   If the daemon dies, the supervisor restarts it immediately; if the supervisor dies too, the 1-minute repeat trigger brings it back (two layers).",
     );
     // Enable 이 먼저다 — 재등록이 실패해 기존 등록으로 진행하면 winEnsureTask 가 걸어 둔 Disable 이 남는다
     //  (2026-10-03 적대 검토 G — winStart 는 이미 그렇게 한다).
@@ -1198,15 +1289,15 @@ const winInstall = (c) => {
       winEnableStartScript(c),
     );
     if (run.status !== 0) {
-      console.error(`   ⚠ 즉시 가동 실패 — ${run.stderr || run.stdout}`);
+      console.error(`   ⚠ Could not start it right away — ${run.stderr || run.stdout}`);
     }
   }
   reportLaunch(
     c,
     waitForListening(c, listeningOnBridge),
     "installed",
-    `  작업 확인: schtasks /query /tn "${winTaskName(c)}"\n` +
-      `  로그: ${path.join(c.homeAbs, "logs")}`,
+    `  Check task: schtasks /query /tn "${winTaskName(c)}"\n` +
+      `  Logs: ${path.join(c.homeAbs, "logs")}`,
   );
 };
 
@@ -1219,9 +1310,9 @@ const winUninstall = (c) => {
   winKillRunning(c);
   winRemoveLegacyAutostart(c);
   // 폴백도 함께 걷는다 — 안 지우면 uninstall 후에도 로그온마다 되살아난다.
-  if (winRemoveStartupFallback(c)) console.log(`   시작프로그램 폴백 제거.`);
+  if (winRemoveStartupFallback(c)) console.log(`   Removed the Startup-folder fallback.`);
   rmSync(winVbsPath(c), { force: true });
-  console.log(`✅ 등록 해제 (예약작업·런처 제거, ${c.label}).`);
+  console.log(`✅ Unregistered (removed the scheduled task and launcher, ${c.label}).`);
 };
 
 /**
@@ -1251,8 +1342,8 @@ const winRestart = (c) => {
   const survived = winStopTask(c);
   if (survived.length > 0) {
     console.error(
-      `🔴 restart 실패 — 기존 데몬이 안 죽었습니다 (PID ${survived.join(", ")}). ` +
-        `새로 띄우지 않습니다(중복 기동 방지). 작업 관리자에서 그 PID 를 종료하거나 재부팅 후 다시 시도하세요.`,
+      `🔴 restart failed — the running daemon did not stop (PID ${survived.join(", ")}). ` +
+        `Not starting a new one (to avoid running two). End that PID in Task Manager, or reboot, then try again.`,
     );
     process.exitCode = 1;
     return;
@@ -1263,8 +1354,8 @@ const winRestart = (c) => {
   );
   if (r.status !== 0) {
     console.error(
-      `🔴 restart 실패 — 예약작업 시작 실패: ${r.stderr || r.stdout}. ` +
-        `등록이 살아 있는지 확인: schtasks /query /tn "${winTaskName(c)}"`,
+      `🔴 restart failed — could not start the scheduled task: ${r.stderr || r.stdout}. ` +
+        `Check that it is still registered: schtasks /query /tn "${winTaskName(c)}"`,
     );
     process.exitCode = 1;
     return;
@@ -1273,8 +1364,8 @@ const winRestart = (c) => {
     c,
     waitForListening(c, listeningOnBridge, 20000, 1500),
     "restarted",
-    `  작업 확인: schtasks /query /tn "${winTaskName(c)}"\n` +
-      `  로그: ${path.join(c.homeAbs, "logs")}`,
+    `  Check task: schtasks /query /tn "${winTaskName(c)}"\n` +
+      `  Logs: ${path.join(c.homeAbs, "logs")}`,
   );
 };
 
@@ -1285,13 +1376,13 @@ const winStop = (c) => {
   const survived = winStopTask(c);
   if (survived.length > 0) {
     console.error(
-      `🔴 stop 실패 — 아직 살아 있습니다 (PID ${survived.join(", ")}). ` +
-        `이 상태로 npm ci·업데이트를 돌리면 파일 잠금(EPERM)으로 실패합니다.`,
+      `🔴 stop failed — still running (PID ${survived.join(", ")}). ` +
+        `Running npm ci or an update now will fail on file locks (EPERM).`,
     );
     process.exitCode = 1;
     return;
   }
-  console.log(`✅ stopped (등록 유지 — 재개: npm run daemon:start). ${c.label}`);
+  console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
 };
 
 // start = 재실행(숨김 VBS). Run 키·VBS 는 이미 있어야 한다.
@@ -1308,7 +1399,7 @@ const winStart = (c) => {
   const mode = winEnsureTask(c);
   if (mode === false) {
     console.error(
-      `daemon start: 자동시작 등록 실패 (${winTaskName(c)}) — \`tiguclaw install\` 로 복구하세요.`,
+      `daemon start: autostart registration failed (${winTaskName(c)}) — run \`tiguclaw install\` to repair it.`,
     );
     process.exitCode = 1;
     return;
@@ -1321,7 +1412,7 @@ const winStart = (c) => {
       winEnableStartScript(c),
     );
     if (r.status !== 0) {
-      console.error(`daemon start: 예약작업 시작 실패 — ${r.stderr || r.stdout}`);
+      console.error(`daemon start: could not start the scheduled task — ${r.stderr || r.stdout}`);
       process.exitCode = 1;
       return;
     }
@@ -1330,8 +1421,8 @@ const winStart = (c) => {
     c,
     waitForListening(c, listeningOnBridge),
     "started",
-    `  작업 확인: schtasks /query /tn "${winTaskName(c)}"\n` +
-      `  로그: ${path.join(c.homeAbs, "logs")}`,
+    `  Check task: schtasks /query /tn "${winTaskName(c)}"\n` +
+      `  Logs: ${path.join(c.homeAbs, "logs")}`,
   );
 };
 
@@ -1341,11 +1432,11 @@ const winStatus = (c) => {
     `$t = Get-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue; ` +
       `if ($t) { 'task=' + $t.State } else { 'task=none' }`,
   );
-  console.log(`registered (예약작업 ${winTaskName(c)}): ${t.stdout || "unknown"}`);
+  console.log(`registered (scheduled task ${winTaskName(c)}): ${t.stdout || "unknown"}`);
   // 마이그레이션 잔재가 남아 있으면 **중복 기동 위험**이라 눈에 띄게 알린다.
   if (winReg(["query", RUN_KEY, "/v", c.label]).status === 0) {
     console.log(
-      `⚠ 옛 HKCU Run 등록이 남아 있습니다 — 로그온 시 데몬이 두 개 뜹니다. 'install' 을 다시 돌리면 정리됩니다.`,
+      `⚠ An old HKCU Run entry is still present — two daemons will start at logon. Run 'install' again to clean it up.`,
     );
   }
   const pids = winListeningPids(c);
@@ -1353,7 +1444,7 @@ const winStatus = (c) => {
     console.log(`running: yes (pid ${pids.join(", ")}, port ${winPort(c)})`);
   } else {
     console.log(
-      `running: 불명 (port ${winPort(c)} 미LISTEN — 작업관리자에서 node 확인)`,
+      `running: unknown (port ${winPort(c)} not listening — look for node in Task Manager)`,
     );
   }
 };
@@ -1361,16 +1452,16 @@ const winStatus = (c) => {
 /** @param {Ctx} c */
 const winPrint = (c) => {
   console.log(
-    "# Windows: 예약작업 KeepAlive (관리자 권한 불요) — 로그온 트리거 + 1분 반복(바닥 그물)",
+    "# Windows: KeepAlive scheduled task (no admin rights needed) — logon trigger + 1-minute repeat (safety net)",
   );
-  console.log(`# 작업명: ${winTaskName(c)}`);
-  console.log(`#   액션 = wscript.exe //B //Nologo "${winVbsPath(c)}"`);
-  console.log(`#   런처(VBS)가 감독자를 **창 없이** 띄우고 기다립니다 — 기다려야 작업`);
-  console.log(`#   인스턴스가 유지돼 IgnoreNew(중복 방지)가 성립합니다.`);
-  console.log(`#   감독자는 데몬을 띄우고 죽으면 되살립니다(launchd KeepAlive 동형).`);
-  console.log("# --- 런처 VBS ---");
+  console.log(`# Task name: ${winTaskName(c)}`);
+  console.log(`#   Action = wscript.exe //B //Nologo "${winVbsPath(c)}"`);
+  console.log(`#   The launcher (VBS) starts the supervisor **without a window** and waits on it — waiting keeps`);
+  console.log(`#   the task instance alive, which is what makes IgnoreNew (no duplicates) work.`);
+  console.log(`#   The supervisor starts the daemon and restarts it when it dies (same as launchd KeepAlive).`);
+  console.log("# --- Launcher VBS ---");
   console.log(buildWinVbs(c));
-  console.log("# --- 등록 스크립트 ---");
+  console.log("# --- Registration script ---");
   console.log(buildWinTaskScript(c));
 };
 
@@ -1389,10 +1480,10 @@ const today = () => {
 const tailLogs = (c) => {
   const file = path.join(c.logsDir, `daemon-${today()}.log`);
   if (!existsSync(file)) {
-    console.log(`로그 파일이 아직 없습니다: ${file}`);
+    console.log(`No log file yet: ${file}`);
     console.log(
-      "데몬이 한 번도 가동되지 않았거나 날짜가 바뀌었을 수 있어요. " +
-        "npm run daemon:status 로 가동 여부를 확인하세요.",
+      "The daemon may never have run, or the date may have rolled over. " +
+        "Check whether it is running with npm run daemon:status.",
     );
     return;
   }
@@ -1426,7 +1517,7 @@ const tailLogs = (c) => {
     offset = 0;
   }
 
-  console.log(`\n── follow: ${file} (Ctrl-C 종료) ──`);
+  console.log(`\n── follow: ${file} (Ctrl-C to quit) ──`);
   // fs.watchFile 폴링 — 새 바이트만 append 출력.
   watchFile(file, { interval: 500 }, () => {
     offset = readFrom(offset);
@@ -1510,12 +1601,12 @@ const runSupervise = (c) => {
       stdio: "inherit",
       windowsHide: true,
     });
-    log(`데몬 기동 pid=${child.pid} runtime=${c.runtime} home=${c.homeRaw}`);
+    log(`daemon started pid=${child.pid} runtime=${c.runtime} home=${c.homeRaw}`);
     child.on("exit", (code, signal) => {
       const uptimeMs = Date.now() - startedAt;
       child = null;
       if (stopping) {
-        log(`감독자 종료 요청 — 재기동하지 않습니다 (code=${code} signal=${signal})`);
+        log(`supervisor stop requested — not restarting (code=${code} signal=${signal})`);
         process.exit(0);
       }
       // ★수치를 싣는다 — 로그가 1차 진단면이라 "얼마나 살았나" 가 크래시루프 판정의
@@ -1523,21 +1614,21 @@ const runSupervise = (c) => {
       if (uptimeMs < MIN_UPTIME_MS) {
         consecutiveCrashes += 1;
         log(
-          `데몬이 ${Math.round(uptimeMs / 1000)}초 만에 종료 (code=${code} signal=${signal}) — ` +
-            `연속 ${consecutiveCrashes}회 · ${THROTTLE_MS / 1000}초 후 재기동(스로틀)`,
+          `daemon exited after ${Math.round(uptimeMs / 1000)}s (code=${code} signal=${signal}) — ` +
+            `${consecutiveCrashes} in a row · restarting in ${THROTTLE_MS / 1000}s (throttled)`,
         );
         setTimeout(spawnOnce, THROTTLE_MS);
         return;
       }
       consecutiveCrashes = 0;
       log(
-        `데몬 종료 (code=${code} signal=${signal}, ${Math.round(uptimeMs / 1000)}초 가동) — 즉시 재기동`,
+        `daemon exited (code=${code} signal=${signal}, up ${Math.round(uptimeMs / 1000)}s) — restarting now`,
       );
       spawnOnce();
     });
   };
 
-  log(`감독 시작 — label=${c.label}`);
+  log(`supervisor started — label=${c.label}`);
   spawnOnce();
 };
 
@@ -1648,16 +1739,16 @@ const isRegistered = (c) => {
 const runUpdate = (c) => {
   const isWin = process.platform === "win32";
 
-  // ── A(관측): 위임 실행(telegram /update)은 detached·stdio "ignore" 라 실패 원인이 어디에도
-  //   안 남았다(윈도우 "빌드 실패"를 로그로 못 봄). delegated(=notify env 존재)면 이 CLI 의
-  //   콘솔 + 모든 하위프로세스(git/npm/tsc) 출력을 <home>/logs/update-<stamp>.log 로 캡처한다.
-  //   터미널 직접 실행(env 없음)은 종전대로 stdio 상속(라이브 출력)이라 회귀 0.
+  // notify 없는 dashboard 위임도 stdio가 버려진다. 모든 실행에 진단 로그를 남긴다.
+  // 자식 출력은 최대 32MB를 받아 비밀을 지운 뒤 저장한다. 터미널에는 단계 종료 때도 출력한다.
+  // 로그를 열 수 없으면 변경 전에 실패한다. notify는 통지 마커만 결정한다.
   const delegated = !!process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL;
+  // 대시보드는 notify 없이 위임한다. 로그 수명은 알림 목적지와 무관하다.
   /** @type {number | null} */
   let logFd = null;
   /** @type {string | null} */
   let updateLogPath = null;
-  if (delegated) {
+  {
     try {
       const logsDir = path.join(c.homeAbs, "logs");
       mkdirSync(logsDir, { recursive: true });
@@ -1667,7 +1758,7 @@ const runUpdate = (c) => {
       /** @type {(orig: (...args: unknown[]) => void, level: string) => (...a: unknown[]) => void} */
       const tee = (orig, level) => (...a) => {
         try {
-          writeSync(logFd ?? 2, `[${new Date().toISOString()}] [${level}] ${a.join(" ")}\n`);
+          writeSync(logFd ?? 2, `[${new Date().toISOString()}] [${level}] ${redactUpdateLog(a.join(" "))}\n`);
         } catch {
           /* 파일 기록 실패해도 콘솔은 낸다 */
         }
@@ -1680,8 +1771,10 @@ const runUpdate = (c) => {
       //  재등록 실패 — 기존 등록으로 진행합니다" 가 어디에도 안 남아, 등록이 왜 안 바뀌는지
       //  로그만으로는 알 수 없었다. 진단면에 구멍이 있으면 그 경로는 없는 것과 같다.
       console.warn = tee(console.warn.bind(console), "warn");
-    } catch {
-      logFd = null; /* 로그 셋업 실패해도 업데이트는 계속 */
+    } catch (error) {
+      console.error(`update: cannot open the diagnostic log, aborting — ${redactUpdateLog(String(error))}`);
+      process.exitCode = 1;
+      return;
     }
   }
 
@@ -1697,7 +1790,7 @@ const runUpdate = (c) => {
         `${JSON.stringify(
           {
             stage,
-            detail: String(detail ?? "").slice(0, 500),
+            detail: redactUpdateLog(String(detail ?? "")).slice(0, 500),
             logPath: updateLogPath,
             from: prevSha?.slice(0, 7) ?? null,
             ts: Date.now(),
@@ -1715,8 +1808,8 @@ const runUpdate = (c) => {
     }
   };
 
-  // spawnSync 래퍼 — 터미널 직접 실행은 stdio 상속(라이브 출력), 위임 실행은 logFd 로 리다이렉트
-  //   (하위프로세스 출력까지 로그 파일에). cwd=repoRoot. npm 은 Windows 에서 npm.cmd(배치)라
+  // spawnSync 래퍼 — 자식 stdout/stderr를 비밀 제거 후 진단 로그에 보관한다.
+  //   cwd=repoRoot. npm 은 Windows 에서 npm.cmd(배치)라
   //   shell 경유 필요; 인자는 전부 고정 상수라 인젝션 0(동적값은 rollback 의 git reset prevSha
   //   뿐 — git 은 git.exe 라 무shell). exit≠0 = 실패로 판정(self-update.ts:138-143 과 동일 근거).
   /**
@@ -1728,9 +1821,17 @@ const runUpdate = (c) => {
   const run = (cmd, args, opts = {}) => {
     const r = spawnSync(cmd, args, {
       cwd: c.repoRoot,
-      stdio: logFd !== null ? ["ignore", logFd, logFd] : "inherit",
+      stdio: logFd !== null ? "pipe" : "inherit",
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
       shell: opts.shell ?? false,
     });
+    if (logFd !== null) {
+      const output = redactUpdateLog([r.stdout, r.stderr, r.error?.message].filter(Boolean).join("\n"));
+      writeSync(logFd, output + "\n");
+      if (!delegated && output) process.stdout.write(output + "\n");
+    }
+    console.log(`   step: ${cmd} ${args.join(" ")} → exit ${r.status ?? 1}`);
     return r.status ?? 1;
   };
 
@@ -1738,9 +1839,9 @@ const runUpdate = (c) => {
   console.log("── tiguclaw update (dep-free) ──");
   console.log(`   runtime=${c.runtime} · home=${c.homeRaw} · label=${c.label}`);
   console.log(
-    "   힌트: 설치 때와 같은 env(TIGUCLAW_HOME/TIGUCLAW_RUNTIME/TIGUCLAW_SERVICE_LABEL)로",
+    "   Hint: run with the same env as at install time (TIGUCLAW_HOME/TIGUCLAW_RUNTIME/TIGUCLAW_SERVICE_LABEL)",
   );
-  console.log("         실행해야 올바른 인스턴스를 갱신합니다.");
+  console.log("         so the right instance gets updated.");
 
   // ── 단계 2: prevSha capture (롤백 앵커) ──────────────────────────────────────
   const prev = spawnSync("git", ["rev-parse", "HEAD"], {
@@ -1748,7 +1849,7 @@ const runUpdate = (c) => {
     encoding: "utf8",
   });
   if (prev.status !== 0 || !(prev.stdout ?? "").trim()) {
-    console.error("update: git 저장소가 아니거나 git 이 없습니다 — 갱신 불가.");
+    console.error("update: not a git repository, or git is not installed — cannot update.");
     process.exitCode = 1;
     return;
   }
@@ -1765,23 +1866,35 @@ const runUpdate = (c) => {
       ? handoffSha
       : prev.stdout.trim();
 
-  // ── 단계 3: lock 드리프트 선폐기(생성물 한 파일만) ──────────────────────────
-  // package-lock.json 은 npm 이 재생성하는 *생성물*이라 플랫폼·npm 버전차로 로컬이 쉽게
-  //   더러워지고("local changes to package-lock.json would be overwritten by merge") 그게
-  //   ff-only pull 을 막아 갱신이 영영 깨진다(Windows 실사고, self-update.ts:346-358 동일 근거).
-  //   생성물 한 파일만 origin 기준으로 되돌리는 건 안전 — 사용자 의미 편집이 아니다.
-  //   ★자동 폐기는 이 파일 하나뿐. 다른 트래킹 파일의 미커밋 변경은 절대 건드리지 않으므로
-  //   여전히 ff-only 가 정직 실패한다(암묵 파괴 0 — §1·O1). best-effort: 없거나 clean 이면 무시.
-  run("git", ["checkout", "--", "package-lock.json"]);
+  // lock도 사용자 편집일 수 있다. 폐기하지 않고 추적 파일 변경이 있으면 거절한다.
+  const dirty = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+    cwd: c.repoRoot, encoding: "utf8",
+  });
+  if (dirty.status !== 0 || dirty.stdout.trim() !== "") {
+    console.error("update: uncommitted changes found, or the status check failed — leaving your files untouched and stopping.");
+    writeFailedMarker("git status", "uncommitted changes, or the status check failed");
+    process.exitCode = 1;
+    return;
+  }
+  // stop 이전에 저장한다. 성공/실패 재기동과 다음 예약작업 모두 같은 홈 계약을 읽는다.
+  if (isWin) {
+    try { assertWinServiceToken(c); saveWinServiceEnv(c); }
+    catch (error) {
+      console.error(`update: startup environment check failed — ${redactUpdateLog(String(error))}`);
+      writeFailedMarker("startup environment", String(error));
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   // ── 단계 4: git pull --ff-only ──────────────────────────────────────────────
   if (run("git", ["pull", "--ff-only"]) !== 0) {
     // 실패(로컬 미커밋 진짜 변경·충돌·detached) → 정직 실패. pull 은 원자적이라 작업트리를
     //   보존(부분 적용 0) → 롤백 불요. 자동 stash/merge 는 파괴적·암묵이라 안 함(§1·O1).
     console.error(
-      "update: 로컬 미커밋 변경/충돌로 pull 실패 — 수동 확인 필요 (git status).",
+      "update: pull failed because of local uncommitted changes or a conflict — check manually (git status).",
     );
-    writeFailedMarker("git pull", "로컬 미커밋 변경/충돌로 pull 실패");
+    writeFailedMarker("git pull", "pull failed because of local uncommitted changes or a conflict");
     process.exitCode = 1;
     return;
   }
@@ -1793,31 +1906,33 @@ const runUpdate = (c) => {
   if (newSha === prevSha) {
     // ★early-exit 안 함 — update 의 흔한 목적이 깨진 node_modules 복구라 코드가 안 바뀌어도
     //   npm ci·build 는 돌려야 한다.
-    console.log("   코드 변경 없음 — 의존성·빌드만 갱신합니다.");
+    console.log("   No code changes — refreshing dependencies and build only.");
   }
 
   const table = handlers[process.platform];
   const wasRunning = isDaemonRunning(c);
 
-  // rollback 헬퍼(self-update.ts:401-424 미러) — reset --hard prevSha → npm ci(best-effort)
-  //   → (돌고 있었으면) start. 데몬은 반드시 원복 가동. 예외는 삼켜 데몬 생존.
-  // ★§1 파괴 0 논증: 이 reset --hard 는 pull 성공(HEAD 이동) *이후*에만 도는데, pull 이
-  //   성공했다는 건 그 시점 작업트리에 사용자 미커밋 변경이 없었다는 뜻이다(있었으면 위
-  //   ff-only 가 실패했다 → 여기 도달 못 함). 따라서 prevSha 로 되돌려도 지울 사용자 편집이
-  //   애초에 없다 = 파괴 0.
+  // --keep도 실행 전 변경을 확인한다. 업데이트 중 생긴 작업을 지우지 않는다.
   const rollback = () => {
-    try {
-      run("git", ["reset", "--hard", prevSha]);
-      run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin });
-      if (wasRunning) table?.start?.(c);
-    } catch {
-      /* 롤백 자체 실패도 삼켜 데몬 생존(best-effort) */
+    const state = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+      cwd: c.repoRoot, encoding: "utf8",
+    });
+    if (state.status !== 0 || state.stdout.trim() !== "") {
+      console.error("update: rollback skipped — new uncommitted changes, or the status check failed. Please check manually.");
+      return;
     }
+    if (run("git", ["reset", "--keep", prevSha]) !== 0) {
+      console.error("update: rollback failed — your files were left as they are. Please check manually.");
+      return;
+    }
+    const installed = run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin }) === 0;
+    if (installed && wasRunning) table?.start?.(c);
+    if (!installed) console.error("update: could not restore dependencies during rollback — not restarting the daemon.");
   };
 
   // ── 단계 5: (돌고 있으면) 데몬 정지 — npm ci 전에 네이티브 모듈 락 해제(EPERM 방지) ──
   if (wasRunning) {
-    console.log("   npm ci 를 위해 데몬을 정지합니다 (짧은 다운타임).");
+    console.log("   Stopping the daemon for npm ci (brief downtime).");
     table?.stop?.(c);
   }
 
@@ -1833,10 +1948,10 @@ const runUpdate = (c) => {
   //  ★전역 정책은 안 건드린다 — 이 한 번의 호출에만 붙는 플래그다. 사용자가 `tiguclaw
   //   update` 를 직접 부른 것이고, 이 제품은 네이티브 모듈 없이는 아예 못 뜬다.
   if (run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin }) !== 0) {
-    console.error("update: npm ci 실패 — 롤백합니다.");
-    writeFailedMarker("npm ci", "npm ci 실패(의존성 설치)");
+    console.error("update: npm ci failed — rolling back.");
+    writeFailedMarker("npm ci", "npm ci failed (dependency install)");
     rollback();
-    console.error("update: 롤백 완료, 데몬 원복. exit 1.");
+    console.error("update: failed. See the log above for the rollback and restart results. exit 1.");
     process.exitCode = 1;
     return;
   }
@@ -1849,24 +1964,24 @@ const runUpdate = (c) => {
   const nativeOk = () =>
     run(process.execPath, ["-e", "require('better-sqlite3')"]) === 0;
   if (!nativeOk()) {
-    console.log("   네이티브 모듈이 안 열립니다 — 다시 빌드합니다(npm rebuild).");
+    console.log("   The native module won't load — rebuilding it (npm rebuild).");
     run("npm", ["rebuild", "better-sqlite3", "--ignore-scripts=false"], { shell: isWin });
     if (!nativeOk()) {
       console.error(
         [
-          "update: SQLite 네이티브 모듈을 열 수 없어 롤백합니다.",
-          "   이 상태로 두면 데몬이 부팅마다 죽습니다.",
-          "   빌드 도구가 필요할 수 있습니다 — 윈도우: Visual Studio Build Tools(C++ 워크로드),",
-          "   리눅스: build-essential + python3, macOS: xcode-select --install",
+          "update: cannot load the SQLite native module — rolling back.",
+          "   Left like this, the daemon would crash on every boot.",
+          "   You may need build tools — Windows: Visual Studio Build Tools (C++ workload),",
+          "   Linux: build-essential + python3, macOS: xcode-select --install",
         ].join("\n"),
       );
-      writeFailedMarker("native", "better-sqlite3 네이티브 모듈 적재 실패");
+      writeFailedMarker("native", "could not load the better-sqlite3 native module");
       rollback();
-      console.error("update: 롤백 완료, 데몬 원복. exit 1.");
+      console.error("update: failed. See the log above for the rollback and restart results. exit 1.");
       process.exitCode = 1;
       return;
     }
-    console.log("   네이티브 모듈 복구 완료.");
+    console.log("   Native module repaired.");
   }
 
   // ── 단계 7: 빌드(built 런타임만) ───────────────────────────────────────────
@@ -1875,16 +1990,16 @@ const runUpdate = (c) => {
       run("npm", ["run", "build:prod"], { shell: isWin }) !== 0 ||
       !existsSync(c.distEntry)
     ) {
-      console.error("update: 빌드 실패(진입점 미생성) — 롤백합니다.");
-      writeFailedMarker("build", "build:prod 비정상 종료 또는 진입점(dist/src/index.js) 미생성");
+      console.error("update: build failed (no entry point produced) — rolling back.");
+      writeFailedMarker("build", "build:prod failed or did not produce the entry point (dist/src/index.js)");
       rollback();
-      console.error("update: 롤백 완료, 데몬 원복. exit 1.");
+      console.error("update: failed. See the log above for the rollback and restart results. exit 1.");
       process.exitCode = 1;
       return;
     }
   } else {
     // source 런타임은 tsx 로 src 를 직접 구동 — dist 불요(daemon.mjs 철학 정합).
-    console.log("   source 런타임 — 빌드 건너뜀 (tsx 로 src 직접 구동).");
+    console.log("   source runtime — skipping the build (src runs directly under tsx).");
   }
 
   // ── 단계 7b: 완료 통지 마커 (위임 경로) ─────────────────────────────────────
@@ -1922,9 +2037,9 @@ const runUpdate = (c) => {
   if (wasRunning) {
     table?.start?.(c); // 5에서 stop 했으니 start(restart 아님).
   } else if (!isRegistered(c)) {
-    console.log("   데몬 미등록 — 'tiguclaw install' 후 가동하세요.");
+    console.log("   The daemon is not registered — run 'tiguclaw install' to start it.");
   } else {
-    console.log("   데몬이 실행 중이 아니었습니다 — 'tiguclaw start' 로 가동하세요.");
+    console.log("   The daemon was not running — start it with 'tiguclaw start'.");
   }
 
   // ── 단계 9: 결과 요약 ───────────────────────────────────────────────────────
@@ -1935,15 +2050,15 @@ const runUpdate = (c) => {
   //  코드는 적용됐어도 **재가동은 실패**라고 말한다.
   if (process.exitCode === 1) {
     console.error(
-      `🔴 update 는 적용됐지만 **재가동에 실패**했습니다: ` +
+      `🔴 The update was applied, but **the daemon failed to restart**: ` +
         `${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} (runtime=${c.runtime}).\n` +
-        `   위 실패 원인을 보고 수동으로 기동하세요 — 자동으로 다시 뜨지 않습니다.`,
+        `   Check the error above and start it manually — it will not come back on its own.`,
     );
     return;
   }
   console.log(
-    `✅ update 완료: ${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} ` +
-      `(runtime=${c.runtime}). 가동 재개.`,
+    `✅ update complete: ${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} ` +
+      `(runtime=${c.runtime}). Daemon resumed.`,
   );
 };
 
@@ -1953,10 +2068,10 @@ const runUpdate = (c) => {
  */
 const unsupported = (c, cmd) => {
   console.log(
-    `daemon: 현재 OS(${process.platform})는 자동 ${cmd} 미지원 (darwin/linux/win32 지원).`,
+    `daemon: automatic ${cmd} is not supported on this OS (${process.platform}) — supported: darwin/linux/win32.`,
   );
   console.log(
-    "프로세스 매니저(pm2/systemd/nohup) 아래에서 다음을 상시 실행하세요:",
+    "Keep the following running under a process manager (pm2/systemd/nohup):",
   );
   console.log(
     `  TIGUCLAW_HOME=${c.homeRaw} ${execStrings(c).join(" ")}`,
@@ -2002,8 +2117,8 @@ export const runDaemonCommand = (cmd) => {
   ];
   if (!known.includes(/** @type {Cmd} */ (cmd))) {
     console.error(
-      `daemon: 알 수 없는 서브커맨드 '${cmd}'. ` +
-        "사용: install | uninstall | restart | stop | start | status | logs | print | update",
+      `daemon: unknown subcommand '${cmd}'. ` +
+        "Usage: install | uninstall | restart | stop | start | status | logs | print | update",
     );
     process.exitCode = 1;
     return;
@@ -2012,13 +2127,13 @@ export const runDaemonCommand = (cmd) => {
   // 어떤 런타임 모드로 유닛을 생성/미리보기하는지 명시(D2 — 추론 아님, env 진실).
   if (cmd === "install" || cmd === "print") {
     console.log(
-      `# TIGUCLAW_RUNTIME=${c.runtime} — 실행: ${execStrings(c)
+      `# TIGUCLAW_RUNTIME=${c.runtime} — runs: ${execStrings(c)
         .slice(1)
         .join(" ")} (WorkingDirectory=${c.repoRoot})`,
     );
     if (c.runtime === "built" && !existsSync(c.distEntry)) {
       console.warn(
-        `# ⚠ built 모드인데 ${c.distEntry} 가 없습니다 — 먼저 'npm run build:prod' 로 dist 를 만드세요.`,
+        `# ⚠ Runtime is built, but ${c.distEntry} is missing — run 'npm run build:prod' first to create dist.`,
       );
     }
   }
@@ -2027,10 +2142,10 @@ export const runDaemonCommand = (cmd) => {
   //   락돼 `npm ci` 가 EPERM 날 수 있다. 자동 stop/npm 은 안 함 — 순서만 안내(소프트 강제).
   if (cmd === "install" && isDaemonRunning(c)) {
     console.warn(
-      "# ⚠ 데몬이 실행 중입니다. 의존성 재설치(npm ci)가 필요하다면 EPERM(파일 락)을 피하기 위해",
+      "# ⚠ The daemon is running. If you need to reinstall dependencies (npm ci), avoid EPERM (file locks)",
     );
     console.warn(
-      "#   먼저 `tiguclaw stop` (또는 npm run daemon:stop) → `npm ci` → `tiguclaw start`/install 순서를 권장합니다.",
+      "#   by going in this order: `tiguclaw stop` (or npm run daemon:stop) → `npm ci` → `tiguclaw start`/install.",
     );
   }
 
@@ -2043,7 +2158,7 @@ export const runDaemonCommand = (cmd) => {
   try {
     fn(c);
   } catch (err) {
-    console.error(`daemon ${cmd}: 실패 — ${/** @type {Error} */ (err).message}`);
+    console.error(`daemon ${cmd}: failed — ${/** @type {Error} */ (err).message}`);
     process.exitCode = 1;
   }
 };
@@ -2061,12 +2176,12 @@ if (invokedDirectly) {
   //  전부 기본 홈·기본 라벨로 떨어졌다 — 두 번째 클론에서 그러면 첫 인스턴스를 설치·제거·재시작한다.
   const flagError = parseDaemonFlags(process.argv.slice(3));
   if (flagError !== undefined) {
-    console.error(`daemon: ${flagError} — 인자는 --home <홈> · --runtime <source|built> 만 받습니다.`);
+    console.error(`daemon: ${flagError} — only --home <home> and --runtime <source|built> are accepted.`);
     process.exit(1);
   }
   if (!cmd) {
     console.error(
-      "사용: node bin/daemon.mjs <install|uninstall|restart|stop|start|status|logs|print|update|supervise>",
+      "Usage: node bin/daemon.mjs <install|uninstall|restart|stop|start|status|logs|print|update|supervise>",
     );
     process.exitCode = 1;
   } else {

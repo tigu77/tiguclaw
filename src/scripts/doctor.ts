@@ -138,15 +138,15 @@ const main = async (): Promise<void> => {
       () => ({ describeNativeLoadFailure: () => null }) as never,
     );
     const hint = describeNativeLoadFailure(native.message) as string | null;
-    console.log(line("better-sqlite3", "❌ 열 수 없음"));
+    console.log(line("better-sqlite3", "❌ cannot load"));
     console.log(
       hint ??
-        "  SQLite 네이티브 모듈을 열 수 없습니다 — 조치: `tiguclaw update`\n  원문: " +
+        "  Cannot load the SQLite native module — fix: `tiguclaw update`\n  Original error: " +
           native.message,
     );
     fatal += 1;
     issues.push(
-      "네이티브 모듈(better-sqlite3)이 안 열립니다 — 이 상태로는 데몬이 부팅마다 죽습니다. 조치: `tiguclaw update`",
+      "The native module (better-sqlite3) won't load — in this state the daemon crashes on every boot. Fix: `tiguclaw update`",
     );
   }
 
@@ -158,10 +158,10 @@ const main = async (): Promise<void> => {
     installRoot,
     resolveLinkedInstall(),
   );
-  console.log(line("tiguclaw 명령", cmd.kind === "ok" ? `${cmd.detail} ✅` : `⚠️  ${cmd.detail}`));
+  console.log(line("tiguclaw command", cmd.kind === "ok" ? `${cmd.detail} ✅` : `⚠️  ${cmd.detail}`));
   if (cmd.kind !== "ok") {
     console.log(`  ${cmd.fix}`);
-    warnings.push(`전역 \`tiguclaw\` 명령: ${cmd.detail}`);
+    warnings.push(`Global \`tiguclaw\` command: ${cmd.detail}`);
   }
   console.log("");
 
@@ -169,7 +169,7 @@ const main = async (): Promise<void> => {
   //  뿐이고, 진짜 원인이 그 소음에 묻힌다(로그가 1차 진단면이라는 원칙).
   if (!native.ok) {
     console.log("══════════════════════════════════════════");
-    console.log("🔴 네이티브 모듈부터 고쳐야 합니다 — 나머지 진단은 그 뒤에 의미가 있습니다.");
+    console.log("🔴 Fix the native module first — the remaining checks only mean something after that.");
     console.log("   " + issues[0]);
     console.log("══════════════════════════════════════════");
     process.exitCode = 1;
@@ -189,7 +189,7 @@ const main = async (): Promise<void> => {
   if (anthropicKey.length > 0) {
     console.log(line("ANTHROPIC_API_KEY", "set ✅"));
   } else if (oauthToken.length > 0) {
-    console.log(line("ANTHROPIC_API_KEY", "not set ⚠️  (anthropic 어댑터 비활성)"));
+    console.log(line("ANTHROPIC_API_KEY", "not set ⚠️  (anthropic adapter disabled)"));
   } else {
     console.log(line("ANTHROPIC_API_KEY", "not set ❌"));
   }
@@ -203,8 +203,8 @@ const main = async (): Promise<void> => {
     const claudeSub = subscriptionAuthAvailable("claude-subscription");
     issues.push(
       claudeSub
-        ? "LLM 인증 없음 — .env 에 ANTHROPIC_API_KEY 또는 CLAUDE_CODE_OAUTH_TOKEN(또는 다른 provider 키) 채우기 / npm run init"
-        : "LLM 인증 없음 — .env 에 ANTHROPIC_API_KEY(또는 다른 provider 키) 채우기 / npm run init",
+        ? "No LLM credentials — set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (or another provider key) in .env / npm run init"
+        : "No LLM credentials — set ANTHROPIC_API_KEY (or another provider key) in .env / npm run init",
     );
   }
 
@@ -212,7 +212,7 @@ const main = async (): Promise<void> => {
   if (telegramToken.length > 0) {
     console.log(line("TELEGRAM_BOT_TOKEN", "set ✅"));
   } else {
-    console.log(line("TELEGRAM_BOT_TOKEN", "not set ⚠️  (Telegram 비활성)"));
+    console.log(line("TELEGRAM_BOT_TOKEN", "not set ⚠️  (Telegram disabled)"));
   }
 
   // ★기본 모델 풀은 **런타임과 같은 해석**으로 본다 (2026-09-29) — 종전엔 옛 `.env` 의 `REGION_A_MODELS` 를 읽어,
@@ -222,15 +222,15 @@ const main = async (): Promise<void> => {
   // 출처 판정은 `/model` 과 같은 함수(`describeBasePool`) — 두 곳이 따로 판정하면 다르게 말한다.
   const base = describeBasePool();
   const regionAPool = base.specs.map(specLabel);
-  const poolName = base.source === "profile" ? `기본 모델 풀(프로파일 '${base.profile}')` : "기본 모델 풀(빌트인 — 자동)";
+  const poolName = base.source === "profile" ? `Default model pool (profile '${base.profile}')` : "Default model pool (built-in — auto)";
   if (base.profileUnresolved !== undefined) {
     // 기본 프로파일이 있는데 풀리지 않는다 — 런타임은 빌트인으로 돈다. 치명은 아니지만 사용자가 적은 게 안 먹는 상태다.
-    console.log(line(poolName, `${regionAPool.join(", ") || "(없음)"} ⚠️  (기본 프로파일 '${base.profileUnresolved}' 이 풀리지 않음)`));
-    issues.push(`기본 프로파일 '${base.profileUnresolved}' 의 풀이 풀리지 않아 빌트인으로 돕니다 — settings.json 의 models.profiles 를 확인하세요`);
+    console.log(line(poolName, `${regionAPool.join(", ") || "(none)"} ⚠️  (default profile '${base.profileUnresolved}' does not resolve)`));
+    issues.push(`The pool of default profile '${base.profileUnresolved}' does not resolve, so the built-in pool is used — check models.profiles in settings.json`);
   } else if (regionAPool.length >= 1) {
     console.log(line(poolName, `${regionAPool.join(", ")} ✅`));
   } else {
-    console.log(line(poolName, "데몬이 인증된 provider 의 최신 모델로 구성합니다"));
+    console.log(line(poolName, "the daemon builds it from the latest models of signed-in providers"));
   }
 
   // codex OAuth 토큰 진단 (region A 인증 직후) — V5 관측 공백 메우기.
@@ -258,7 +258,7 @@ const main = async (): Promise<void> => {
       console.log(
         line(
           "codex OAuth",
-          "토큰 없음 ⚠️  (기본 모델 풀에 codex 있음 — npm run codex-auth 로 발급)",
+          "no token ⚠️  (codex is in the default model pool — get one with npm run codex-auth)",
         ),
       );
     } else {
@@ -272,33 +272,33 @@ const main = async (): Promise<void> => {
       const now = Date.now();
       let needsReauth = false;
       if (codexAccess.length === 0) {
-        console.log(line("codex access 상태", "access 토큰 없음 ❌"));
+        console.log(line("codex access status", "no access token ❌"));
         needsReauth = true;
       } else if (expiry === undefined) {
         console.log(
-          line("codex access 상태", `${expiresKey} 파싱 불가 ⚠️  (만료 시각 미상)`),
+          line("codex access status", `${expiresKey} unreadable ⚠️  (expiry time unknown)`),
         );
       } else {
         const remainingMs = expiry - now;
         if (remainingMs <= 0) {
           const agoSec = Math.round(-remainingMs / 1000);
           console.log(
-            line("codex access 상태", `만료됨 ❌ (${agoSec}s 전)`),
+            line("codex access status", `expired ❌ (${agoSec}s ago)`),
           );
           needsReauth = true;
         } else if (remainingMs <= EXPIRY_SOON_MS) {
           const remSec = Math.round(remainingMs / 1000);
           console.log(
             line(
-              "codex access 상태",
-              `만료 임박 ⚠️  (~${remSec}s 남음, ≤7d)`,
+              "codex access status",
+              `expires soon ⚠️  (~${remSec}s left, ≤7d)`,
             ),
           );
           needsReauth = true;
         } else {
           const remSec = Math.round(remainingMs / 1000);
           console.log(
-            line("codex access 상태", `유효 ✅ (~${remSec}s 남음)`),
+            line("codex access status", `valid ✅ (~${remSec}s left)`),
           );
         }
       }
@@ -309,20 +309,20 @@ const main = async (): Promise<void> => {
         console.log(
           line(
             "codex refresh",
-            "존재 ✅  (형식상 자동 갱신 가능 — 실제 유효성은 런타임에만 확인)",
+            "present ✅  (auto-refresh should work — whether it is actually valid only shows at runtime)",
           ),
         );
       } else {
         console.log(
-          line("codex refresh", "없음 ⚠️  (access 만료 시 자동 갱신 불가)"),
+          line("codex refresh", "missing ⚠️  (cannot auto-refresh when access expires)"),
         );
         if (codexAccess.length > 0) needsReauth = true;
       }
 
       if (needsReauth) {
-        console.log(line("codex 다음 단계", "npm run codex-auth 로 재발급"));
+        console.log(line("codex next step", "get a new token with npm run codex-auth"));
         warnings.push(
-          "codex 토큰 만료(임박) — npm run codex-auth 로 재발급(안 하면 codex 폴백만 동작)",
+          "codex token expired (or about to) — get a new one with npm run codex-auth (until then only the codex fallback works)",
         );
       }
     }
@@ -345,14 +345,14 @@ const main = async (): Promise<void> => {
       continue;
     }
     if (envName === undefined) {
-      console.log(line(`provider:${provider}`, "키 없는 서버(settings.json) ✅"));
+      console.log(line(`provider:${provider}`, "keyless server (settings.json) ✅"));
       continue;
     }
     const value = process.env[envName] ?? "";
     if (value.length > 0) {
       console.log(line(envName, "set ✅"));
     } else {
-      console.log(line(envName, `not set ⚠️  (${provider} 풀에 등장)`));
+      console.log(line(envName, `not set ⚠️  (${provider} is in the pool)`));
     }
   }
 
@@ -367,10 +367,10 @@ const main = async (): Promise<void> => {
     ([n, p]) => resolveProviderConn(n) !== null && (p.baseURL ?? "").trim().replace(/\/+$/, "").replace(/\/v1$/, "") === legacyOllama,
   );
   if (legacyOllama !== "" && !ollamaMigrated) {
-    console.log(line("OLLAMA_BASE_URL", "더 이상 읽지 않음 ⚠️"));
+    console.log(line("OLLAMA_BASE_URL", "no longer read ⚠️"));
     warnings.push(
-      "`OLLAMA_BASE_URL` 은 더 이상 읽지 않습니다 — ollama 를 쓰려면 settings.json 에 " +
-        '`"models": { "providers": { "ollama": { "adapter": "openai", "baseURL": "<주소>/v1", "apiKeyEnv": null } } }` 를 추가하세요.',
+      "`OLLAMA_BASE_URL` is no longer read — to use ollama, add " +
+        '`"models": { "providers": { "ollama": { "adapter": "openai", "baseURL": "<address>/v1", "apiKeyEnv": null } } }` to settings.json.',
     );
   }
 
@@ -394,7 +394,7 @@ const main = async (): Promise<void> => {
     const msg = err instanceof Error ? err.message : String(err);
     console.log(line(dbPath, `❌ open failed: ${msg}`));
     fatal += 1;
-    issues.push(`DB 열기 실패 — ${dbPath} 권한/경로 확인`);
+    issues.push(`Failed to open the DB — check permissions/path for ${dbPath}`);
   }
   if (storeOk) {
     console.log(line(dbPath, `✅ open, threads=${threadsCount}`));
@@ -408,7 +408,7 @@ const main = async (): Promise<void> => {
   if (telegramToken.length > 0) {
     console.log(line("telegram", "active ✅"));
   } else {
-    console.log(line("telegram", "disabled ❌ (TELEGRAM_BOT_TOKEN 부재)"));
+    console.log(line("telegram", "disabled ❌ (no TELEGRAM_BOT_TOKEN)"));
   }
 
   console.log("");
@@ -416,15 +416,15 @@ const main = async (): Promise<void> => {
   // [telegram] — 봇 토큰 유효성 + allowlist 잠금 상태 (read-only getMe)
   console.log("[telegram]");
   if (telegramToken.length === 0) {
-    console.log(line("telegram", "비활성 (TELEGRAM_BOT_TOKEN 부재)"));
+    console.log(line("telegram", "disabled (no TELEGRAM_BOT_TOKEN)"));
   } else {
     const me = await telegramGetMe(telegramToken);
     if (me.ok && me.username !== undefined) {
-      console.log(line("봇 토큰", `유효 ✅ (@${me.username})`));
+      console.log(line("bot token", `valid ✅ (@${me.username})`));
     } else {
-      console.log(line("봇 토큰", "무효/도달 실패 ❌"));
+      console.log(line("bot token", "invalid or unreachable ❌"));
       issues.push(
-        "텔레그램 봇 토큰 무효/도달 실패 — .env TELEGRAM_BOT_TOKEN 확인 / npm run init",
+        "Telegram bot token is invalid or unreachable — check TELEGRAM_BOT_TOKEN in .env / npm run init",
       );
       fatal += 1;
     }
@@ -432,13 +432,13 @@ const main = async (): Promise<void> => {
     const allowlist = splitPool(process.env.TELEGRAM_ALLOWED_USER_IDS);
     if (allowlist.length === 0) {
       console.log(
-        line("allowlist", "비어있음 ❌ (봇 잠김 — 아무도 사용 불가)"),
+        line("allowlist", "empty ❌ (bot locked — nobody can use it)"),
       );
       issues.push(
-        "TELEGRAM_ALLOWED_USER_IDS 비어 봇 잠김 — .env 에 소유자 user id 추가 / npm run init 자동감지",
+        "TELEGRAM_ALLOWED_USER_IDS is empty, so the bot is locked — add the owner's user id to .env / npm run init detects it automatically",
       );
     } else {
-      console.log(line("allowlist", `${allowlist.length}명 허용 ✅`));
+      console.log(line("allowlist", `${allowlist.length} allowed ✅`));
     }
   }
 
@@ -447,9 +447,9 @@ const main = async (): Promise<void> => {
   // [runtime]
   console.log("[runtime]");
   if (hasRegionAAuth) {
-    console.log(line("LLM 런타임", "ready ✅"));
+    console.log(line("LLM runtime", "ready ✅"));
   } else {
-    console.log(line("LLM 런타임", "not ready ❌"));
+    console.log(line("LLM runtime", "not ready ❌"));
   }
 
   console.log("");
@@ -461,18 +461,18 @@ const main = async (): Promise<void> => {
   const health = await daemonHealth(bridgePort);
   if (health.up) {
     console.log(
-      line("데몬", `가동 중 ✅ (health ok, port ${bridgePort})`),
+      line("daemon", `running ✅ (health ok, port ${bridgePort})`),
     );
     if (health.channelHandler === false) {
-      console.log(line("채널 핸들러", "미연결 ⚠️"));
+      console.log(line("channel handler", "not connected ⚠️"));
       issues.push(
-        "데몬은 떴으나 채널 핸들러 미연결 — npm run daemon:restart",
+        "The daemon is up but the channel handler is not connected — npm run daemon:restart",
       );
     }
   } else {
-    console.log(line("데몬", `미응답 ❌ (port ${bridgePort})`));
+    console.log(line("daemon", `not responding ❌ (port ${bridgePort})`));
     issues.push(
-      `데몬이 응답하지 않음 (port ${bridgePort}) — 안 떠있거나 포트 불일치. 'npm run daemon:status' 확인, 없으면 'npm run daemon:install' 또는 'npm run dev'`,
+      `The daemon is not responding (port ${bridgePort}) — it is not running or the port doesn't match. Check 'npm run daemon:status'; if it isn't there, run 'npm run daemon:install' or 'npm run dev'`,
     );
   }
 
@@ -481,12 +481,12 @@ const main = async (): Promise<void> => {
   // [permissions]
   console.log("[permissions]");
   if (DISALLOWED_TOOLS.length === 0) {
-    console.log(line("DISALLOWED_TOOLS", "[] (V1 인프라만) ✅"));
+    console.log(line("DISALLOWED_TOOLS", "[] (V1 infrastructure only) ✅"));
   } else {
     console.log(
       line(
         "DISALLOWED_TOOLS",
-        `[${DISALLOWED_TOOLS.join(", ")}] (${DISALLOWED_TOOLS.length}개) ✅`,
+        `[${DISALLOWED_TOOLS.join(", ")}] (${DISALLOWED_TOOLS.length}) ✅`,
       ),
     );
   }
@@ -523,13 +523,13 @@ const main = async (): Promise<void> => {
       console.log(line("bridge_tokens", `❌ query failed: ${msg}`));
     }
   } else {
-    console.log(line("bridge_tokens", "⚠️  DB 미오픈으로 진단 불가"));
+    console.log(line("bridge_tokens", "⚠️  cannot check — DB not open"));
   }
   if (tokensOk) {
     if (activeCount === 0) {
       const envFallback = (process.env.HTTP_BRIDGE_TOKEN ?? "").length > 0;
       const fallbackNote = envFallback
-        ? " (HTTP_BRIDGE_TOKEN env 폴백 활성, V1 모드)"
+        ? " (HTTP_BRIDGE_TOKEN env fallback active, V1 mode)"
         : "";
       console.log(line("active tokens", `0 ⚠️${fallbackNote}`));
     } else {
@@ -573,11 +573,11 @@ const main = async (): Promise<void> => {
       console.log(line("schedules", `❌ query failed: ${msg}`));
     }
   } else {
-    console.log(line("schedules", "⚠️  DB 미오픈으로 진단 불가"));
+    console.log(line("schedules", "⚠️  cannot check — DB not open"));
   }
   if (schedulesOk) {
     if (schedulesTotal === 0) {
-      console.log(line("active schedules", "0 ⚠️  (등록된 트리거 없음)"));
+      console.log(line("active schedules", "0 ⚠️  (no triggers registered)"));
     } else {
       console.log(
         line(
@@ -588,7 +588,7 @@ const main = async (): Promise<void> => {
     }
     if (schedulesErrors > 0) {
       console.log(
-        line("last_error count", `${schedulesErrors} ⚠️  (직전 발화 실패)`),
+        line("last_error count", `${schedulesErrors} ⚠️  (last run failed)`),
       );
     }
   }
@@ -621,7 +621,7 @@ const main = async (): Promise<void> => {
         line(
           "active watches",
           watchesTotal === 0
-            ? "0 ⚠️  (등록된 watcher 없음)"
+            ? "0 ⚠️  (no watchers registered)"
             : `${watchesEnabled}/${watchesTotal} ✅  (last_fired=${lastFiredStr})`,
         ),
       );
@@ -630,7 +630,7 @@ const main = async (): Promise<void> => {
       console.log(line("watches", `❌ query failed: ${msg}`));
     }
   } else {
-    console.log(line("watches", "⚠️  DB 미오픈으로 진단 불가"));
+    console.log(line("watches", "⚠️  cannot check — DB not open"));
   }
 
   console.log("");
@@ -639,14 +639,14 @@ const main = async (): Promise<void> => {
   console.log("");
   console.log("══════════════════════════════════════════");
   if (issues.length === 0 && warnings.length === 0) {
-    console.log("✅ 전부 정상 — tiguclaw 작동 준비됨.");
+    console.log("✅ All good — tiguclaw is ready.");
   } else {
     if (issues.length > 0) {
-      console.log(`🔴 문제 ${issues.length}개 (작동 안 할 수 있음):`);
+      console.log(`🔴 ${issues.length} problem(s) (tiguclaw may not work):`);
       for (const it of issues) console.log(`   • ${it}`);
     }
     if (warnings.length > 0) {
-      console.log(`🟡 주의 ${warnings.length}개:`);
+      console.log(`🟡 ${warnings.length} warning(s):`);
       for (const w of warnings) console.log(`   • ${w}`);
     }
   }
@@ -655,12 +655,12 @@ const main = async (): Promise<void> => {
   // ─── 검색 도구(ripgrep) ────────────────────────────────────────────────
   // ★Grep/Glob 이 이것 위에 선다. 없으면 **codex 계열이 검색을 통째로 잃는다**(claude 는 SDK
   //  내장이라 혼자 멀쩡해서, 같은 질문에 어댑터마다 다른 답이 나온다). 없으면 여기서 받는다.
-  console.log("── 검색(ripgrep)");
+  console.log("── Search (ripgrep)");
   const rg = await ensureRipgrep(getPaths().home);
   console.log(
-    `${"ripgrep".padEnd(PAD)}${rg.ok ? (rg.installed ? "설치함" : "OK") : "★없음"}  ${rg.detail}`,
+    `${"ripgrep".padEnd(PAD)}${rg.ok ? (rg.installed ? "installed" : "OK") : "★missing"}  ${rg.detail}`,
   );
-  if (!rg.ok) issues.push("ripgrep 없음 — Grep/Glob 실패(codex 계열 검색 불가)");
+  if (!rg.ok) issues.push("ripgrep missing — Grep/Glob fail (codex-family adapters cannot search)");
   console.log("");
 
   // ─── Claude 실행기 ────────────────────────────────────────────────────
@@ -669,14 +669,14 @@ const main = async (): Promise<void> => {
   //  보통은 `npm ci` 가 의존성으로 같이 깐다(플랫폼별 optional). 없을 수 있는 경우는
   //  `--omit=optional` 설치와 미지원 플랫폼뿐이고, 둘 다 조치가 다르므로 그대로 말한다.
   //  ★rg 와 달리 **받아오지 않는다** — 전역 설치는 같은 259MB 를 두 벌로 만들고 버전이 갈린다.
-  console.log("── Claude 실행기");
+  console.log("── Claude executable");
   const claudeBin = findBundledClaude();
   console.log(
-    `${"claude".padEnd(PAD)}${claudeBin !== null ? "OK" : "★없음"}  ${claudeBin ?? bundledClaudeMissingHint()}`,
+    `${"claude".padEnd(PAD)}${claudeBin !== null ? "OK" : "★missing"}  ${claudeBin ?? bundledClaudeMissingHint()}`,
   );
   if (claudeBin === null) {
     issues.push(
-      "Claude 실행기 없음 — anthropic·claude 구독 provider 가 동작하지 않습니다(`npm ci` 재실행)",
+      "Claude executable missing — the anthropic and Claude subscription providers will not work (rerun `npm ci`)",
     );
   }
   console.log("");
@@ -686,11 +686,11 @@ const main = async (): Promise<void> => {
   if (!hasRegionAAuth) {
     nextStep =
       (subscriptionAuthAvailable("claude-subscription")
-        ? "다음 단계: .env 에 ANTHROPIC_API_KEY (https://console.anthropic.com/) 또는 CLAUDE_CODE_OAUTH_TOKEN (claude setup-token 명령으로 발급) 를 채우세요."
-        : "다음 단계: .env 에 ANTHROPIC_API_KEY (https://console.anthropic.com/) 를 채우세요.");
+        ? "Next step: set ANTHROPIC_API_KEY (https://console.anthropic.com/) or CLAUDE_CODE_OAUTH_TOKEN (get one with `claude setup-token`) in .env."
+        : "Next step: set ANTHROPIC_API_KEY (https://console.anthropic.com/) in .env.");
   } else if (base.profileUnresolved !== undefined) {
     nextStep =
-      `다음 단계: settings.json 의 models.profiles 에서 기본 프로파일 '${base.profileUnresolved}' 의 풀을 고치세요.`;
+      `Next step: fix the pool of default profile '${base.profileUnresolved}' under models.profiles in settings.json.`;
   } else {
     let missingProviderEnv: string | null = null;
     for (const provider of providers) {
@@ -709,28 +709,28 @@ const main = async (): Promise<void> => {
     const codexLoginNeeded = codexAuthInstalled && regionAUsesCodex && codexAccess.length === 0 &&
       (process.env[refreshKey] ?? "").length === 0;
     if (missingProviderEnv !== null) {
-      nextStep = `다음 단계: .env 에 ${missingProviderEnv} 을 채우세요.`;
+      nextStep = `Next step: set ${missingProviderEnv} in .env.`;
     } else if (codexLoginNeeded) {
-      nextStep = "다음 단계: `npm run codex-auth` 로 ChatGPT 로그인을 하세요(풀에 codex 가 있는데 토큰이 없습니다).";
+      nextStep = "Next step: sign in to ChatGPT with `npm run codex-auth` (codex is in the pool but there is no token).";
     } else if (!storeOk) {
       nextStep =
-        "다음 단계: DATA_DIR 권한/경로를 확인하세요 (미설정 시 기본 <TIGUCLAW_HOME>/data).";
+        "Next step: check the DATA_DIR permissions/path (defaults to <TIGUCLAW_HOME>/data when unset).";
     } else if (telegramToken.length === 0) {
       nextStep =
-        "다음 단계: Telegram 을 쓰려면 .env 에 TELEGRAM_BOT_TOKEN 을 채우세요 (선택).";
+        "Next step (optional): to use Telegram, set TELEGRAM_BOT_TOKEN in .env.";
     } else if (
       tokensOk &&
       activeCount === 0 &&
       (process.env.HTTP_BRIDGE_TOKEN ?? "").length === 0
     ) {
       nextStep =
-        "다음 단계: 외부 dashboard 를 쓰려면 npm run bridge:grant -- --label <name> --role <read|write|admin> --expires 30d 으로 토큰을 발급하세요 (선택).";
+        "Next step (optional): to use an external dashboard, issue a token with npm run bridge:grant -- --label <name> --role <read|write|admin> --expires 30d.";
     } else if (schedulesOk && schedulesErrors > 0) {
       nextStep =
-        "다음 단계: 실패한 트리거를 확인하려면 비서에게 자연어로 \"스케줄 목록 보여줘\" 또는 /schedule list 를 사용하세요.";
+        "Next step: to see the failed triggers, ask the assistant \"show my schedules\" or use /schedule list.";
     } else {
       nextStep =
-        "다음 단계: npm run dev → stdin 에 한 줄 입력하거나 Telegram 봇에 메시지를 보내세요.";
+        "Next step: run npm run dev and type a line on stdin, or send your Telegram bot a message.";
     }
   }
   console.log(nextStep);
@@ -744,7 +744,7 @@ const main = async (): Promise<void> => {
   //  (`fatal` 은 아래 참고용으로만 남긴다 — 안 맞으면 그 자체가 신호다.)
   if (fatal > 0 && issues.length === 0) {
     console.log(
-      `⚠️ 내부 불일치: fatal=${fatal} 인데 문제 목록이 비어 있습니다 — 판정 누락일 수 있습니다.`,
+      `⚠️ Internal mismatch: fatal=${fatal} but the problem list is empty — a check may be missing its report.`,
     );
   }
   process.exit(issues.length > 0 || fatal > 0 ? 1 : 0);

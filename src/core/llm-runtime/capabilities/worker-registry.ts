@@ -65,6 +65,8 @@ import {
   publishSteerAttempt,
   takeUndeliveredChildResults,
   spawnNotifyDest,
+  failureOutcome,
+  type WorkerOutcome,
 }
 from "../../worker-jobs.js";
 import { getLastWorkerActivity, getLastToolSlow } from "../../../store/events.js";
@@ -169,7 +171,7 @@ export const runWorkerJob = (
     // 훅·하드 타이머)을 *재주입 통지 전에* 해제한다. 통지(onWorkerComplete)는 done 의 경우
     // 메인 재주입 LLM 턴까지 await 하므로(통지 보장), 그 동안 매니저 타임아웃이 남아있지 않게
     // 본체 settle 즉시 해제 — 늦은 매니저-timeout abort 의 무의미 발화·자원 누수 0.
-    let outcome: { result: string } | { error: string };
+    let outcome: WorkerOutcome;
     /** 매니저가 끝나는 순간 도착해 반영 못 한 지시(원문). 완료 통지 뒤 소유 세션에 알린다. */
     let pendingSteerNotice: string[] = [];
     try {
@@ -429,7 +431,7 @@ export const runWorkerJob = (
             : { error: `${harvestFailure}\n\n${harvestFailureNote(harvestFailure)}\n${report}` };
       }
     } catch (e) {
-      outcome = { error: e instanceof Error ? e.message : String(e) };
+      outcome = failureOutcome(e);
     } finally {
       // 매니저 전용 자원 해제 — 본체 settle 즉시(통지 전). 정상/실패 무관 항상(누수·오발화 0, 멱등).
       if (hardTimer !== undefined) clearTimeout(hardTimer);

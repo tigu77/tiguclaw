@@ -94,11 +94,11 @@ export const check: RegressionCheck = {
       //  «안 읽음» 이 되어 이 검사가 자기 전제를 잃는다.
       (sp) => (sp.startsWith("codex:") ? "codex-oauth" : undefined),
     );
-    const line = body.split("\n").find((l) => l.includes("풀:"))?.trim() ?? "(풀 줄 없음)";
+    const line = body.split("\n").find((l) => l.includes("pool:"))?.trim() ?? "(풀 줄 없음)";
     out.push(
       assert(
         "★★켜진 항목이 화면에 **배수와 함께** 표시된다 — 「한도 더 씀」처럼 뭉뚱그리면 경고가 아니라 장식이다(실제로는 크레딧 2.5배)",
-        /codex:x`?\(빠름·크레딧 2\.5배\)/.test(body) && !/codex:y`?\(빠름/.test(body),
+        /codex:x`?\(fast·2\.5× credits\)/.test(body) && !/codex:y`?\(fast/.test(body),
         line,
       ),
     );

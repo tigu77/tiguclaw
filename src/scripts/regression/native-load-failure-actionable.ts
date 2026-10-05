@@ -62,7 +62,7 @@ const run = async (): Promise<Assertion[]> => {
     const msg = describeNativeLoadFailure(real, "linux") ?? "";
     out.push({
       name: "★조치가 `tiguclaw update` 한 줄이다(있는 도구를 가리킨다)",
-      ok: msg.includes("tiguclaw update") && msg.includes("조치:"),
+      ok: msg.includes("tiguclaw update") && msg.includes("Fix:"),
       got: msg.includes("tiguclaw update")
         ? "update 안내 포함"
         : `🔴 조치 없음 — ${msg.slice(0, 70)}`,
@@ -88,7 +88,7 @@ const run = async (): Promise<Assertion[]> => {
       const m = describeNativeLoadFailure(real, p) ?? "";
       out.push({
         name: `${p}: npm ci 를 직접 돌리지 말라고 말린다`,
-        ok: m.includes("npm ci") && /직접 돌리지 마세요|말립/.test(m),
+        ok: m.includes("npm ci") && /Don't run `npm ci` yourself/.test(m),
         got: m.includes("npm ci") ? "경고 포함" : `🔴 누락 — ${m.slice(0, 60)}`,
       });
     }
@@ -104,7 +104,7 @@ const run = async (): Promise<Assertion[]> => {
       name: "★DB 열기 실패에 안내가 실제로 붙는다(원문도 보존)",
       ok:
         wrapped.message.includes("tiguclaw update") &&
-        wrapped.message.includes("원문:") &&
+        wrapped.message.includes("Original error:") &&
         wrapped.message.includes("Could not locate the bindings file"),
       got: `메시지 앞머리=${JSON.stringify(wrapped.message.slice(0, 60))}`,
     });
@@ -118,14 +118,14 @@ const run = async (): Promise<Assertion[]> => {
     out.push({
       name: "★안내가 stack 에도 먼저 온다(크래시 로그가 찍는 건 message 가 아니라 stack)",
       ok:
-        String(wrapped.stack).startsWith("SQLite 네이티브 모듈") &&
+        String(wrapped.stack).startsWith("Cannot load the SQLite native module") &&
         !String(wrapped.stack).startsWith("Error: Could not locate"),
       got: `stack 앞머리=${JSON.stringify(String(wrapped.stack).slice(0, 40))}`,
     });
     out.push({
       name: "그러면서 원본 스택을 잃지 않는다(진단 정보 보존)",
-      ok: String(wrapped.stack).includes("--- 원본 스택 ---"),
-      got: String(wrapped.stack).includes("--- 원본 스택 ---") ? "원본 첨부됨" : "🔴 원본 스택 소실",
+      ok: String(wrapped.stack).includes("--- original stack ---"),
+      got: String(wrapped.stack).includes("--- original stack ---") ? "원본 첨부됨" : "🔴 원본 스택 소실",
     });
 
     const untouched = new Error("SQLITE_CANTOPEN: unable to open database file");

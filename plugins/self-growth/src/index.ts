@@ -433,10 +433,10 @@ class SelfGrowthPlugin {
           channel: "telegram",
           target: null,
           text:
-            `🧠 반복된 실패를 학습해 **행동 지침**을 자동 반영했습니다.\n\n` +
+            `🧠 Learned from a repeated failure and added a **behavior rule** automatically.\n\n` +
             `• ${result.memoryName}\n\n` +
-            `SELF_GROWTH.md 에 적재됐고 다음 턴부터 적용됩니다. ` +
-            `잘못된 판단이면 "그 지침 지워" 라고 말씀해 주세요(확정 안 하면 자동 만료).`,
+            `It's saved in SELF_GROWTH.md and applies from the next turn. ` +
+            `If it's wrong, just say "delete that rule" (unless confirmed, it expires on its own).`,
           label: "self-growth:directive",
           notice: true, // 인프라 통지(자동 학습 반영 알림) — 비서 발화 아님.
         }).catch(() => {
@@ -472,7 +472,8 @@ class SelfGrowthPlugin {
       // ── 원인 라벨 도출 (LLM-agnostic 문자열 휴리스틱 — 분기 키 아님, 집계 라벨) ──
       // worker.failed error 문자열에서 errorKind/adapter 를 근사(handleTurnError 는 코어가
       // 실어주지만 worker.failed payload 엔 없음). 어댑터명은 프롬프트에 *사실* 로만 들어감.
-      const errorKind = deriveWorkerErrorKind(error);
+      const errorName = typeof payload.errorName === "string" ? payload.errorName : undefined;
+      const errorKind = deriveWorkerErrorKind(error, errorName);
       const adapter = deriveWorkerAdapter(error);
 
       // ── 게이트 B (반복성) — 작업 근사 키 count ≥ threshold 만 reflect ───────────

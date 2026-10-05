@@ -37,13 +37,16 @@ export const check: RegressionCheck = {
     // 실측 문자열(돌쇠 9/26 08:00) — 본 호출·요약 호출 모두 이 모양.
     const AUTH = 'Codex backend 호출 실패: 401 {\n  "code": "invalid_api_key",\n  "message": "Invalid token"\n}';
     const LIMIT = 'HTTP 429 {"error":{"type":"usage_limit_reached","resets_in_seconds":600}}';
-    const positives = [AUTH, "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}",
+    const positives = [AUTH, AUTH.replace("호출 실패", "request failed"), "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}",
       "Invalid API key · Please run /login", "OAuth token has expired", "OAuth token revoked", "HTTP 401 Unauthorized",
       // openai SDK 는 상태를 맨 앞에 둔다 · Codex 토큰 갱신 실패(재검토 F1 — 첫 좁힘이 놓쳤다)
       "401 Incorrect API key provided: sk-****", "401 User not found.", "401 status code (no body)",
       'OAuth token refresh failed: 401 {"error":{"code":"refresh_token_reused"}}'];
     // ★인증이 아닌데 첫 판이 잡던 것(싱크 레드팀 P3) — 멀쩡한 provider 를 12시간 막고 «다시 로그인» 을 거짓 안내.
     const negatives = ["codex: 조립된 입력 612,401자가 상한을 넘습니다", "최종 응답 텍스트 비어있음 (요청이 712,401자로 매우 큽니다)",
+      // 2026-10-05 영어 원문 — 같은 숫자 모양이 영어 문장에서도 인증으로 안 읽혀야 한다.
+      "codex: the assembled input (612,401 chars) is over the 600,000-char limit, so it wasn't sent",
+      "codex: the final response text was empty (no side-effecting tool ran) — falling back to the next model (the request is very large at 712,401 chars",
       "400 Invalid 'input[401].content': string too long", "File content (12,401 tokens) exceeds maximum",
       "MCP server 'github' failed: Unauthorized", "fetch failed: ECONNRESET", LIMIT];
     const posMiss = positives.filter((x) => !isAuthRejected(x));

@@ -126,7 +126,7 @@ export const check: RegressionCheck = {
         assert("★모르는 adapter 로 적은 provider 는 그 사실(쓸 수 있는 adapter)을 말한다 — «위 경고를 보세요» 로 없는 경고를 가리키지 않는다 · override 경고도 같은 사유",
           diagAdapter.some((m) => m.includes("adapter 'anthropic'") && m.includes("openai")) && overrideAdapter.includes("adapter 'anthropic'"), { diagAdapter, overrideAdapter }),
         assert("★적혀 있는데 버려진 provider 는 «설정이 잘못됨» 으로, 아예 없는 provider 는 «정의하세요» 로 가른다",
-          diagTypo.some((m) => m.includes("'typo'") && m.includes("잘못돼")) && diagTypo.some((m) => m.includes("'ghost'") && m.includes("정의하세요")), diagTypo),
+          diagTypo.some((m) => m.includes("'typo'") && m.includes("misconfigured")) && diagTypo.some((m) => m.includes("'ghost'") && m.includes("define it under")), diagTypo),
         assert("반대 방향: 키가 필요한 provider(openai)는 빈 키면 «없음», 키가 있으면 «있음» — 판정을 넓히지 않았다", openaiEmpty.available === false && openaiEmpty.apiKey === undefined && openaiSet === true, { openaiEmpty, openaiSet }),
         assert("envValue: 공백뿐이면 없음 · 값은 다듬어 돌려준다", ev[0] === undefined && ev[1] === "v", ev),
         assert("카드: 키 없는 서버는 «인증됨» · openai 는 키 변수를 안내", localCard?.key === "modules.summary.adapterAuthed" && openaiCard?.params?.env === "OPENAI_API_KEY", { localCard, openaiCard }),

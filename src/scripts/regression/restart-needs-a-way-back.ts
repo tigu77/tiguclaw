@@ -154,8 +154,8 @@ const run = async (): Promise<Assertion[]> => {
       // ★정의만 보면 안 된다 — **호출부**가 없으면 죽은 코드다(오늘 반복된 부류).
       /const fb = winWriteStartupFallback\(c\);/,
       /if \(fb !== null\)/,
-      /winRemoveStartupFallback\(c\)[\s\S]{0,300}?예약작업이 정상이라/,
-      /감독자까지 죽으면 다음 로그온까지 안 뜹니다/,
+      /winRemoveStartupFallback\(c\)[\s\S]{0,300}?the scheduled task works/,
+      /if the supervisor itself dies, nothing comes back until the next logon/,
       // 타임아웃 — 먹통이면 매달리지 말고 포기한다(설치가 영원히 안 끝나는 것 차단).
       /timeout: WIN_PS_TIMEOUT_MS/,
     ]);
@@ -347,7 +347,8 @@ const run = async (): Promise<Assertion[]> => {
   {
     const su = await sourceHas("../../core/self-update.ts", [
       /if \(restart\(\) === false\)/,
-      /재시작을 못 했습니다/,
+      /the restart didn't happen/,
+      /The \*\*old code\*\* is still running/,
     ]);
     out.push(
       assert(

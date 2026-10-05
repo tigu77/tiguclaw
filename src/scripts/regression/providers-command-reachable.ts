@@ -78,16 +78,16 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★«인증 없음» 과 «목록 못 받음» 을 **구분**한다 — 뭉개면 사용자가 엉뚱한 데를 고친다",
-        list.includes("인증 없음") && list.includes("조회 실패"),
-        `인증없음=${list.includes("인증 없음")} · 조회실패=${list.includes("조회 실패")}`,
+        list.includes("not signed in") && list.includes("lookup failed"),
+        `인증없음=${list.includes("not signed in")} · 조회실패=${list.includes("lookup failed")}`,
       ),
       // ★큰 provider 는 **모델이 아니라 색인**을 준다 (2026-09-02 정태님:
       //  *"굳이 다보여줄 필요는 없을거같긴한데.. 특히 오픈라우터"*). 420개 중 아무 30개는
       //  고르는 데 도움이 안 된다 — id 에 이미 있는 네임스페이스로 묶는다.
       assert(
         "★★네임스페이스가 있는 큰 provider 는 **모델을 나열하지 않는다**(아무 30개는 아무것도 아니다)",
-        bodyLines(one) === 0 && one.includes("벤더"),
-        `모델줄 ${bodyLines(one)}개(0이어야) · 색인=${one.includes("벤더")}`,
+        bodyLines(one) === 0 && one.includes("vendors"),
+        `모델줄 ${bodyLines(one)}개(0이어야) · 색인=${one.includes("vendors")}`,
       ),
       assert(
         "★★색인은 **자르지 않는다** — 색인을 자르면 그게 다시 벽이라 묶은 의미가 없다",
@@ -104,8 +104,8 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★★색인에서 **다음 단계로 가는 길**을 준다 — 벤더든 이름 일부든",
-        one.includes("/providers openrouter <벤더>") && one.includes("이름 일부"),
-        `벤더안내=${one.includes("<벤더>")} · 이름검색안내=${one.includes("이름 일부")}`,
+        one.includes("/providers openrouter <vendor>") && one.includes("part of a name"),
+        `벤더안내=${one.includes("<vendor>")} · 이름검색안내=${one.includes("part of a name")}`,
       ),
       assert(
         "★★색인이 가리키는 벤더로 **실제로 좁혀진다**(안내만 있고 안 되면 더 나쁘다)",
@@ -119,8 +119,8 @@ export const check: RegressionCheck = {
         const reach = renderProviders(VIEWS, "mixed plain-4", CAPS);
         return assert(
           "★★네임스페이스가 **섞이면** 묶지 않는다 — 묶으면 `/` 없는 모델이 색인에도 목록에도 없어 닿을 길이 사라진다",
-          !mixed.includes("벤더") && bodyLines(mixed) === 30 && reach.includes("plain-4"),
-          `색인화=${mixed.includes("벤더")} · 모델줄 ${bodyLines(mixed)} · 비네임스페이스 도달=${reach.includes("plain-4")}`,
+          !mixed.includes("vendors") && bodyLines(mixed) === 30 && reach.includes("plain-4"),
+          `색인화=${mixed.includes("vendors")} · 모델줄 ${bodyLines(mixed)} · 비네임스페이스 도달=${reach.includes("plain-4")}`,
         );
       })(),
       assert(
@@ -145,7 +145,7 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★능력은 **아는 것만** 붙인다 — 모르면 아무 표시도 안 한다(삼상태 유지)",
-        withCaps.includes("[200K · 도구✅]") &&
+        withCaps.includes("[200K · tools✅]") &&
           !renderProviders(VIEWS, "openrouter", undefined).includes("["),
         withCaps.includes("200K") ? "아는 것 표기·모르는 것 무표기" : "★꼬리표 없음",
       ),
@@ -166,8 +166,8 @@ export const check: RegressionCheck = {
         );
         return assert(
           "★★캡과 **같은 수**면 색인이 아니라 목록이다 — 자를 게 없는데 색인으로 보내면 한 단계를 공짜로 더 밟게 한다(한 칸 넘으면 그때 색인)",
-          bodyLines(atCap) === 30 && !atCap.includes("벤더 2종") && overCap.includes("벤더 2종"),
-          `캡동일: 모델줄 ${bodyLines(atCap)}개·색인=${atCap.includes("벤더 2종")} / 캡초과: 색인=${overCap.includes("벤더 2종")}`,
+          bodyLines(atCap) === 30 && !atCap.includes("2 vendors") && overCap.includes("2 vendors"),
+          `캡동일: 모델줄 ${bodyLines(atCap)}개·색인=${atCap.includes("2 vendors")} / 캡초과: 색인=${overCap.includes("2 vendors")}`,
         );
       })(),
       // 배선 — provider 이름을 코드에 적으면 새 provider 가 안 나타난다(원칙 2).

@@ -49,8 +49,11 @@ export const createToolRecallMcpServer = (input: TurnConversation): McpSdkServer
           offset: z.number().int().min(0).optional(),
         },
         async (args) => {
-          if (args.ref !== undefined) {
-            const r = readThreadToolResult(conv.channel, conv.threadKey, args.ref, args.offset ?? 0);
+          // ★참조 번호를 query 칸에 넣는 실수는 참조로 읽는다 (2026-10-05) — 압축 강제 벤치에서 모델이 `query: "38#13"` 으로 불러 0건을 받고
+          //  «되찾을 수 없다» 며 포기했다(다음 턴엔 ref 로 바르게 써서 성공). 참조 모양은 도구 이름·인자·본문 검색어로 쓸 일이 거의 없다.
+          const ref = args.ref ?? (args.query !== undefined && /^\s*\d+#\d+\s*$/.test(args.query) ? args.query.trim() : undefined);
+          if (ref !== undefined) {
+            const r = readThreadToolResult(conv.channel, conv.threadKey, ref, args.offset ?? 0);
             if (!r.ok) return okJson({ ok: false, unavailable: r.reason, ref: r.ref, note: REASON_TEXT[r.reason] });
             return okJson({
               ok: true,

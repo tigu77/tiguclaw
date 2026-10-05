@@ -84,4 +84,4 @@ export const canReplay = (guard: ReplayGuard | undefined): boolean =>
 
 /** 폴백을 멈춘 이유를 사람이 읽는 한 줄로. */
 export const replayBlockedReason = (guard: ReplayGuard): string =>
-  `이미 '${guard.firstTool ?? "도구"}' 실행에 들어가 다시 돌릴 수 없습니다 — 같은 요청을 재실행하면 그 도구가 두 번 실행됩니다.`;
+  `'${guard.firstTool ?? "a tool"}' had already started running, so this request can't be re-run — running it again would execute that tool twice.`;

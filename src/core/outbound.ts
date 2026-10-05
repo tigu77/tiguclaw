@@ -204,8 +204,8 @@ export const deliverOutbound = async (
     //  실경로: TELEGRAM_BOT_TOKEN 부재 → 채널이 outbound 미등록 → 여기로 온다.
     const known = listOutboundChannels();
     const reason =
-      `발송 채널 "${channel}" 이 등록돼 있지 않습니다` +
-      `${known.length > 0 ? ` (사용 가능: ${known.join(", ")})` : " (등록된 채널 없음)"}`;
+      `Delivery channel "${channel}" isn't registered` +
+      `${known.length > 0 ? ` (available: ${known.join(", ")})` : " (no channels are registered)"}`;
     console.warn(
       `deliverOutbound: ${reason} (target=${target ?? "—"}) — 미배달 ${text.length}자${
         label !== undefined ? ` [${label}]` : ""

@@ -39,7 +39,7 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★알려진 상류 한계에 **해설이 붙는다** — 상류 원문만 보면 사용자가 자기 설정을 의심한다(진단하던 나 자신이 두 번 오판했다)",
-        note.includes("도구 호출이 안 됩니다"),
+        note.includes("can't make tool calls"),
         note === "" ? "★해설 0" : `${note.slice(0, 40)}…`,
       ),
     );

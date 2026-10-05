@@ -60,7 +60,7 @@ export interface SlashCtx {
 export const handleMemo = async (ctx: SlashCtx): Promise<void> => {
   const { msg, args, trimmed, sidChannel } = ctx;
     if (args === "") {
-      await replyCommand(msg,"`/memo <기억할 내용>` 형태로 입력하세요.");
+      await replyCommand(msg,"Usage: `/memo <what to remember>`");
       return;
     }
     // 자동 type='user' 고정 (V1 daemon 슬래시는 사용자 직접 입력 → 대부분 사용자 자신 정보).
@@ -74,10 +74,10 @@ export const handleMemo = async (ctx: SlashCtx): Promise<void> => {
         description: firstLine,
         body: args,
       });
-      await replyCommand(msg,`메모리 추가됨: ${m.name} — ${m.description}`);
+      await replyCommand(msg,`Memory added: ${m.name} — ${m.description}`);
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      await replyCommand(msg,`메모리 추가 실패: ${err}`);
+      await replyCommand(msg,`Couldn't add the memory: ${err}`);
     }
     return;
 };
@@ -85,7 +85,7 @@ export const handleMemo = async (ctx: SlashCtx): Promise<void> => {
 export const handleForget = async (ctx: SlashCtx): Promise<void> => {
   const { msg, args, trimmed, sidChannel } = ctx;
     if (args === "") {
-      await replyCommand(msg,"`/forget <name>` 형태로 입력하세요.");
+      await replyCommand(msg,"Usage: `/forget <name>`");
       return;
     }
     // 단일 토큰 가정 (공백 없는 name, V1 단순). 다중 토큰은 첫 토큰만 사용.
@@ -93,11 +93,11 @@ export const handleForget = async (ctx: SlashCtx): Promise<void> => {
     try {
       const ok = deleteMemory(name);
       await replyCommand(msg,
-        ok ? `메모리 삭제됨: ${name}` : `그런 메모리가 없습니다: ${name}`,
+        ok ? `Memory deleted: ${name}` : `No such memory: ${name}`,
       );
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      await replyCommand(msg,`메모리 삭제 실패: ${err}`);
+      await replyCommand(msg,`Couldn't delete the memory: ${err}`);
     }
     return;
 };
@@ -115,7 +115,7 @@ export const handleMemos = async (ctx: SlashCtx): Promise<void> => {
     try {
       const list = listMemories({ limit, orderBy: "updated" });
       if (list.length === 0) {
-        await replyCommand(msg,"저장된 메모리 없음.");
+        await replyCommand(msg,"No saved memories.");
       } else {
         const lines = list.map(
           (m) => `[${m.type}] ${m.name} — ${m.description}`,
@@ -124,7 +124,7 @@ export const handleMemos = async (ctx: SlashCtx): Promise<void> => {
       }
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
-      await replyCommand(msg,`메모리 목록 조회 실패: ${err}`);
+      await replyCommand(msg,`Couldn't list memories: ${err}`);
     }
     return;
 };
@@ -142,7 +142,7 @@ export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
       try {
         const items = listSchedules();
         if (items.length === 0) {
-          await replyCommand(msg,"등록된 스케줄 없음.");
+          await replyCommand(msg,"No schedules registered.");
         } else {
           const lines = items.map((s) => {
             const status =
@@ -166,14 +166,14 @@ export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
         }
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
-        await replyCommand(msg,`스케줄 목록 조회 실패: ${err}`);
+        await replyCommand(msg,`Couldn't list schedules: ${err}`);
       }
       return;
     }
 
     if (sub === "add") {
       await replyCommand(msg,
-        "`/schedule add` 는 V1 슬래시에서 미지원. 비서에게 자연어로 부탁하세요 (예: \"매일 8시에 뉴스 정리해서 텔레그램으로\"). 비서가 add_schedule MCP 도구로 등록합니다.",
+        "`/schedule add` isn't available as a command. Just ask the assistant in plain words (e.g. \"summarize the news every day at 8 and send it to Telegram\") and it will set up the schedule.",
       );
       return;
     }
@@ -182,7 +182,7 @@ export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
     const id = parseInt(subArgs, 10);
     if (Number.isNaN(id)) {
       await replyCommand(msg,
-        "`/schedule <list|delete|enable|disable> <id>` 형태로 입력하세요.",
+        "Usage: `/schedule <list|delete|enable|disable> <id>`",
       );
       return;
     }
@@ -202,13 +202,13 @@ export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
           } catch {
             /* bus throw — ignore */
           }
-          await replyCommand(msg,`스케줄 삭제됨: #${id}`);
+          await replyCommand(msg,`Schedule deleted: #${id}`);
         } else {
-          await replyCommand(msg,`그런 스케줄이 없습니다: #${id}`);
+          await replyCommand(msg,`No such schedule: #${id}`);
         }
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
-        await replyCommand(msg,`스케줄 삭제 실패: ${err}`);
+        await replyCommand(msg,`Couldn't delete the schedule: ${err}`);
       }
       return;
     }
@@ -218,7 +218,7 @@ export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
       try {
         const updated = updateSchedule(id, { enabled: enable });
         if (updated === undefined) {
-          await replyCommand(msg,`그런 스케줄이 없습니다: #${id}`);
+          await replyCommand(msg,`No such schedule: #${id}`);
         } else {
           try {
             getEventBus().publish({
@@ -230,18 +230,18 @@ export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
             /* bus throw — ignore */
           }
           await replyCommand(msg,
-            `스케줄 #${id} ${enable ? "활성화" : "비활성화"}됨.`,
+            `Schedule #${id} ${enable ? "enabled" : "disabled"}.`,
           );
         }
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
-        await replyCommand(msg,`스케줄 토글 실패: ${err}`);
+        await replyCommand(msg,`Couldn't ${enable ? "enable" : "disable"} the schedule: ${err}`);
       }
       return;
     }
 
     await replyCommand(msg,
-      "`/schedule <list|delete|enable|disable> [id]` — 알 수 없는 subcommand.",
+      "Unknown subcommand — usage: `/schedule <list|delete|enable|disable> [id]`",
     );
     return;
 };
@@ -286,7 +286,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
       const id = rest.trim();
       if (id !== "") {
         if (!restoring && id === DEFAULT_SESSION_ID) {
-          await replyCommand(msg, "기본 세션은 보관할 수 없습니다(항상 존재하는 세션입니다).",
+          await replyCommand(msg, "The default session can't be archived (it always exists).",
             { ephemeral },
           );
           return;
@@ -298,20 +298,20 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
         //  `setSessionArchived` 하나를 부른다.
         const { changed, unboundRooms } = setSessionArchived(id, !restoring);
         if (changed === 0) {
-          await replyCommand(msg, `그런 세션이 없습니다: ${id}`,
+          await replyCommand(msg, `No such session: ${id}`,
             { ephemeral },
           );
           return;
         }
         const note =
           unboundRooms > 0
-            ? `\n그 세션에 묶여 있던 대화방 ${unboundRooms}곳을 **기본 세션**으로 되돌렸습니다.`
+            ? `\n${unboundRooms} chat${unboundRooms === 1 ? " that was" : "s that were"} bound to it ${unboundRooms === 1 ? "was" : "were"} moved back to the **default session**.`
             : "";
         await replyCommand(
           msg,
           restoring
-            ? `복원했습니다 — 목록에 다시 나옵니다.`
-            : `보관했습니다 — 목록에서 숨깁니다. **대화 기록은 그대로 남아 있고** \`/sessions unarchive\` 로 되돌릴 수 있습니다.${note}`,
+            ? `Restored — it shows up in the list again.`
+            : `Archived — it's hidden from the list. **The conversation history is kept**, and \`/sessions unarchive\` brings it back.${note}`,
           { ephemeral },
         );
         return;
@@ -322,7 +322,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
             (t: { threadKey: string }) => t.threadKey !== DEFAULT_SESSION_ID,
           );
       if (pool.length === 0) {
-        await replyCommand(msg, restoring ? "보관된 세션이 없습니다." : "보관할 세션이 없습니다.",
+        await replyCommand(msg, restoring ? "There are no archived sessions." : "There are no sessions to archive.",
           { ephemeral },
         );
         return;
@@ -331,7 +331,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
         label: nameOf(t.threadKey),
         value: `/sessions ${sub} ${t.threadKey}`,
       }));
-      const q = restoring ? "어떤 세션을 복원할까요?" : "어떤 세션을 보관할까요?";
+      const q = restoring ? "Which session should I restore?" : "Which session should I archive?";
       {
         const r = await presentAndClose(
           msg,
@@ -339,8 +339,8 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
           opts2,
           {
             note: restoring
-              ? "복원하면 목록에 다시 나옵니다."
-              : "보관 = 목록에서 숨김. 대화 기록은 지우지 않습니다(되돌리기 가능).",
+              ? "Restoring puts it back in the list."
+              : "Archiving hides it from the list. The conversation history isn't deleted (you can undo this).",
           },
           { ephemeral },
         );
@@ -373,7 +373,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
     if (hasSelector) {
       await replyCommand(
         msg,
-        "이 채널은 이미 세션 셀렉터가 있습니다 — 대시보드 상단 탭에서 세션을 고르세요. `/sessions` 는 셀렉터가 없는 채널(텔레그램·CLI)용입니다.",
+        "This channel already has a session selector — pick a session from the tabs at the top of the dashboard. `/sessions` is for channels without one (Telegram, CLI).",
         { ephemeral },
       );
       return;
@@ -381,7 +381,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
     if (addr === "") {
       await replyCommand(
         msg,
-        "이 채널은 대화방 주소가 없어 세션을 묶을 수 없습니다.",
+        "This channel has no chat address, so a session can't be bound to it.",
         { ephemeral },
       );
       return;
@@ -391,7 +391,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
       const target = rest.trim();
       if (target === DEFAULT_SESSION_ID || target === "default") {
         clearChannelSessionBinding(msg.channel, addr);
-        await replyCommand(msg, "이 대화방을 **기본 세션**으로 되돌렸습니다.",
+        await replyCommand(msg, "This chat is back on the **default session**.",
           { ephemeral },
         );
         return;
@@ -407,7 +407,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
       if (!exists) {
         await replyCommand(
           msg,
-          `그런 세션이 없습니다: ${target}\n\`/sessions\` 로 목록을 확인하세요.`,
+          `No such session: ${target}\nCheck the list with \`/sessions\`.`,
           { ephemeral },
         );
         return;
@@ -416,7 +416,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
       // 이 방의 설정 확인 — 휘발성(그 채널에 한 번 보이고 안 남는다).
       await replyCommand(
         msg,
-        `이 대화방을 **${nameOf(target)}** 세션에 묶었습니다. 앞으로 이 방의 대화는 그 세션에 쌓입니다(재시작해도 유지).`,
+        `This chat is now bound to the **${nameOf(target)}** session. From now on, conversations here go into that session (this survives restarts).`,
         { ephemeral },
       );
       return;
@@ -433,7 +433,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
       //  placeholder 를 만들어서, 무명 new 는 threads 행이 아예 없었다 → 목록에도 안 뜨고
       //  보관도 "그런 세션이 없습니다". 만든 즉시 다룰 수 있어야 만든 것이다.
       //  이름 없으면 번호식 기본명을 준다(대시보드 "세션N" 관례와 같은 의도).
-      const finalName = wanted !== "" ? wanted : `세션 ${new Date().toLocaleDateString("ko-KR")}`;
+      const finalName = wanted !== "" ? wanted : `Session ${new Date().toLocaleDateString("en-US")}`;
       {
         try {
           setThreadName(sid, finalName); // 행이 없으면 placeholder 를 만들어 이름 보존.
@@ -446,7 +446,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
       // 같은 부류 — 바인딩 확인이지 대화가 아니다. 휘발성.
       await replyCommand(
         msg,
-        `새 세션 **${finalName}** 을 만들고 이 대화방을 묶었습니다.`,
+        `Created the new session **${finalName}** and bound this chat to it.`,
         { ephemeral },
       );
       return;
@@ -493,7 +493,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
           value: `/sessions use ${t.threadKey}`,
         })),
     ];
-    const header = `현재 세션: **${nameOf(current)}**`;
+    const header = `Current session: **${nameOf(current)}**`;
     // ★잘린 것을 **말한다** — 조용히 접히면 사용자는 세션이 사라진 줄 안다. 되찾는 법도
     //  같이 준다(이름을 붙이면 목록에 올라온다 = 대시보드 탭 규칙과 동일).
     //  ★안내는 **실재하는 수단만** 적는다. `/sessions` 하위명령은 `use|new|archive|
@@ -501,7 +501,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
     //   말하기)로 한다. 없는 명령을 적으면 사용자가 그걸 치고 막힌다.
     const hiddenNote =
       hiddenCount > 0
-        ? `\n이름 없는 세션 ${hiddenCount}개는 숨겼어요 — 이름을 붙이면 나옵니다("이 세션 이름 …로 해줘").`
+        ? `\n${hiddenCount} unnamed session${hiddenCount === 1 ? " is" : "s are"} hidden — give ${hiddenCount === 1 ? "it" : "them"} a name to show ${hiddenCount === 1 ? "it" : "them"} here ("name this session …").`
         : "";
     if (msg.presentOptions !== undefined && options.length > 1) {
       // ★정리 수단을 **여기서** 알려준다 (2026-08-22 사용자 신고). 종전엔 `new` 만 적혀
@@ -511,11 +511,11 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
       //  목록을 보는 그 순간이 정리하고 싶어지는 순간이므로, 안내도 그 자리에 둔다.
       const r = await presentAndClose(
         msg,
-        "이 대화방을 어느 세션에 묶을까요?",
+        "Which session should this chat use?",
         options,
         {
           note:
-            `${header}\n새로 만들기 \`/sessions new [이름]\` · 목록에서 숨기기 \`/sessions archive\`` +
+            `${header}\nCreate a new one: \`/sessions new [name]\` · Hide from the list: \`/sessions archive\`` +
             hiddenNote,
         },
         { ephemeral },
@@ -527,8 +527,8 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
     const lines = options.map((o) => `· ${o.label} — \`${o.value}\``);
     await replyCommand(
       msg,
-      `${header}\n\n${lines.join("\n")}\n\n새로 만들기: \`/sessions new [이름]\`` +
-        ` · 목록에서 숨기기: \`/sessions archive\`${hiddenNote}`,
+      `${header}\n\n${lines.join("\n")}\n\nCreate a new one: \`/sessions new [name]\`` +
+        ` · Hide from the list: \`/sessions archive\`${hiddenNote}`,
       { ephemeral },
     );
     return;
@@ -566,17 +566,17 @@ export const handleCompact = async (ctx: SlashCtx): Promise<void> => {
       await replyCommand(
         msg,
         r.ok
-          ? `🗜 압축했습니다 — 이전 ${r.foldedTurns}턴(${r.foldedChars.toLocaleString()}자)을 ` +
-            `요약 ${r.summaryChars.toLocaleString()}자로 접었습니다.\n` +
-            `최근 대화는 원문 그대로 유지됩니다.`
-          : `압축하지 않았습니다 — ${r.reason}`,
+          ? `🗜 Compacted — folded the earlier ${r.foldedTurns} turn${r.foldedTurns === 1 ? "" : "s"} (${r.foldedChars.toLocaleString("en-US")} chars) ` +
+            `into a ${r.summaryChars.toLocaleString("en-US")}-char summary.\n` +
+            `Recent messages are kept word for word.`
+          : `Not compacted — ${r.reason}`,
       );
     } catch (e) {
       // `/stop` 으로 멈춘 것 — 안내는 `/stop` 이 이미 했다(«압축 실패» 를 덧붙이지 않는다).
       if (signal?.aborted === true) return;
       await replyCommand(
         msg,
-        `압축 실패: ${e instanceof Error ? e.message : String(e)}`,
+        `Compaction failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
     return;
@@ -592,26 +592,26 @@ export const handleCooldown = async (ctx: SlashCtx): Promise<void> => {
         msg,
         cleared.length === 0
           ? target === ""
-            ? "해제할 쿨다운이 없습니다."
-            : `'${target}' 로 시작하는 쿨다운이 없습니다.`
-          : `쿨다운 해제: ${cleared.join(", ")}\n다음 턴부터 그 백엔드를 다시 시도합니다.`,
+            ? "There are no cooldowns to clear."
+            : `No cooldown starts with '${target}'.`
+          : `Cooldown cleared: ${cleared.join(", ")}\nThe next turn will try ${cleared.length === 1 ? "that backend" : "those backends"} again.`,
       );
       return;
     }
     const live = listActiveCooldowns();
     if (live.length === 0) {
-      await replyCommand(msg, "쿨다운 중인 백엔드가 없습니다.");
+      await replyCommand(msg, "No backend is on cooldown.");
       return;
     }
     const lines = live.map((c) => {
       const mins = Math.round(c.remainingMs / 60000);
-      const when = new Date(Date.now() + c.remainingMs).toLocaleString("ko-KR");
-      return `· ${c.key} — ${mins >= 120 ? `${Math.round(mins / 60)}시간` : `${mins}분`} 남음 (해제 ${when})`;
+      const when = new Date(Date.now() + c.remainingMs).toLocaleString("en-US");
+      return `· ${c.key} — ${mins >= 120 ? `${Math.round(mins / 60)} h` : `${mins} min`} left (lifts ${when})`;
     });
     await replyCommand(
       msg,
-      `쿨다운 중인 백엔드:\n${lines.join("\n")}\n\n` +
-        "재인증했거나 한도가 풀렸으면 `/cooldown clear` 로 즉시 해제하세요(대상 지정: `/cooldown clear codex`).",
+      `Backends on cooldown:\n${lines.join("\n")}\n\n` +
+        "If you've signed in again or the limit has reset, clear it now with `/cooldown clear` (or one backend: `/cooldown clear codex`).",
     );
     return;
 };
@@ -626,7 +626,7 @@ export const handlePlugins = async (ctx: SlashCtx): Promise<void> => {
     } catch (e) {
       console.error("plugins inventory failed:", e);
       const err = e instanceof Error ? e.message : String(e);
-      await replyCommand(msg,`인벤토리 조회 실패: ${err}`);
+      await replyCommand(msg,`Couldn't list plugins: ${err}`);
     }
     return;
 };
@@ -637,14 +637,14 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
     try {
       const specs = resolveModelSpecs();
       const regionA = specs
-        .map((s) => `${s.adapter}:${s.model || "(SDK 디폴트)"}`)
+        .map((s) => `${s.adapter}:${s.model || "(SDK default)"}`)
         .join(" → ");
       const sched = listSchedules();
       const enabled = sched.filter((s) => s.enabled).length;
       const up = Math.floor(process.uptime());
       const h = Math.floor(up / 3600);
       const m = Math.floor((up % 3600) / 60);
-      const uptime = h > 0 ? `${h}시간 ${m}분` : `${m}분`;
+      const uptime = h > 0 ? `${h} h ${m} min` : `${m} min`;
 
       // 토큰 포맷 헬퍼: <1000 그대로, 86000→"86k", 1200000→"1.2M".
       const fmtTok = (n: number): string => {
@@ -657,9 +657,9 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
       const session = getSession(sidChannel, msg.threadKey);
       let convo: string;
       if (session === undefined || session.model === null) {
-        convo = "측정 전(아직 응답 없음)";
+        convo = "not measured yet (no reply so far)";
       } else if (session.lastInputTokens === null) {
-        convo = `${session.model} · 컨텍스트 측정 전`;
+        convo = `${session.model} · context not measured yet`;
       } else {
         const inTok = session.lastInputTokens;
         const win = lookupContextWindow(session.model);
@@ -667,14 +667,14 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
           const pct = Math.round((inTok / win) * 100);
           // 컨텍스트 압박 경고 — 판정은 `context-windows.ts` 가 소유한다(회귀 대상).
           const warn = contextPressureLabel(pct);
-          convo = `${session.model} · 컨텍스트 ~${pct}%${warn} (입력 ${fmtTok(inTok)} / ${fmtTok(win)})`;
+          convo = `${session.model} · context ~${pct}%${warn} (input ${fmtTok(inTok)} / ${fmtTok(win)})`;
         } else {
-          convo = `${session.model} · 컨텍스트 입력 ${fmtTok(inTok)} (윈도우 미상)`;
+          convo = `${session.model} · context input ${fmtTok(inTok)} (window size unknown)`;
         }
       }
 
       const lines = [
-        "🐂 tiguclaw 상태",
+        "🐂 tiguclaw status",
         // 빌드 식별자 — "업데이트를 받았나" 를 한 줄로 가르는 유일한 수단(버전은 마일스톤
         // 에서만 오르므로 같은 v0.15.0 이 30커밋 차이일 수 있다).
         // ★낡은 빌드 경고는 뺐다 (2026-08-02 사용자 판단) — **독자가 행동할 수 없는 말**이라서다.
@@ -683,9 +683,9 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
         //  ("업데이트가 조용히 반영 안 됨")는 `/update` 쪽에 그물이 있다 — typecheck 게이트 →
         //  자동 롤백 → 실패 통지(위임 실행은 마커파일로 재가동 후 통지, selfupdate-rollback-safety).
         //  해시는 남긴다: 평소엔 조용하고 **사고 때** "어느 코드가 도는가" 에 답하는 유일한 값이다.
-        `─ 버전: v${appVersion()}${appBuildId() !== "" ? ` · 빌드 ${appBuildId()}` : ""}`,
-        `─ 업타임: ${uptime}`,
-        `─ 이번 대화: ${convo}`,
+        `─ Version: v${appVersion()}${appBuildId() !== "" ? ` · build ${appBuildId()}` : ""}`,
+        `─ Uptime: ${uptime}`,
+        `─ This conversation: ${convo}`,
       ];
 
       // 세션 override (`/model` 로 설정) — 있을 때만 표시. 풀보다 우선이므로
@@ -696,7 +696,7 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
       );
       if (statusOverride !== null) {
         lines.push(
-          `─ 세션 모델 override: \`${statusOverride}\` (다음 turn 부터 — 풀 무시, \`/model reset\` 해제)`,
+          `─ Session model override: \`${statusOverride}\` (from the next turn — overrides the pool; \`/model reset\` clears it)`,
         );
       }
 
@@ -705,11 +705,11 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
       //  부팅 로그와 함께 여기에도 든다(사용자가 조치할 수 있는 사실이다).
       if (Buffer.byteLength(readSystem(), "utf8") === 0) {
         lines.push(
-          `─ ⚠️ 작동 헌법을 읽지 못했습니다 (${getPaths().systemMd}) — 판단 규칙 없이 도는 중입니다`,
+          `─ ⚠️ Couldn't read the operating constitution (${getPaths().systemMd}) — running without its rules`,
         );
       }
 
-      lines.push(`─ 모델 풀: ${regionA}`);
+      lines.push(`─ Model pool: ${regionA}`);
 
       // ★쿨다운 표시 (2026-07-27) — 풀에 있어도 *지금은 안 쓰이는* 모델을 알린다.
       //  실사고: ChatGPT Plus 주간 한도 소진으로 codex 가 6일 쿨다운에 들어갔는데
@@ -721,14 +721,14 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
         const mins = Math.round(c.remainingMs / 60000);
         const when =
           mins >= 1440
-            ? `${(mins / 1440).toFixed(1)}일`
+            ? `${(mins / 1440).toFixed(1)} days`
             : mins >= 60
-              ? `${Math.floor(mins / 60)}시간 ${mins % 60}분`
-              : `${mins}분`;
+              ? `${Math.floor(mins / 60)} h ${mins % 60} min`
+              : `${mins} min`;
         const at = new Date(Date.now() + c.remainingMs);
-        const stamp = `${at.getMonth() + 1}/${at.getDate()} ${String(at.getHours()).padStart(2, "0")}시`;
+        const stamp = `${at.getMonth() + 1}/${at.getDate()} ${String(at.getHours()).padStart(2, "0")}:00`;
         lines.push(
-          `─ ⏸ \`${c.key}\` 사용 불가 — ${when} 뒤 복구(${stamp}경). 그동안 풀의 다음 모델로 대체됩니다.`,
+          `─ ⏸ \`${c.key}\` unavailable — back in ${when} (around ${stamp}). Until then, the next model in the pool fills in.`,
         );
       }
 
@@ -739,24 +739,24 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
         const d = new Date(expiry);
         const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         const warn = days < 2 ? "⚠️ " : "";
-        lines.push(`─ ${warn}codex 토큰: ${days}일 후 만료 (${ymd})`);
+        lines.push(`─ ${warn}codex token: expires in ${days} day${days === 1 ? "" : "s"} (${ymd})`);
       }
 
-      lines.push(`─ 메모리: ${countMemories()}개`);
+      lines.push(`─ Memories: ${countMemories()}`);
       // ★내려둔 것(아카이브)은 매 턴 안 실린다 — 그래서 «쌓였나» 는 여기서 한 번 말한다.
       //  미열람이 0이면 줄 자체를 만들지 않는다(할 말이 없으면 안 하는 게 낫다).
       {
         const arch = countArchivedMemories();
         if (arch.unread > 0) {
           lines.push(
-            `─ 내려둔 메모리: ${arch.total}건 (미열람 ${arch.unread} — 자가성장 제안 포함, \`search_memory\` 로 봅니다)`,
+            `─ Archived memories: ${arch.total} (${arch.unread} unread — including self-growth suggestions; the assistant reads them with \`search_memory\`)`,
           );
         }
       }
       lines.push(
-        `─ 채널: ${getChannelPresence().map((c) => c.name).join(", ")} (${getChannelPresence().length})`,
+        `─ Channels: ${getChannelPresence().map((c) => c.name).join(", ")} (${getChannelPresence().length})`,
       );
-      lines.push(`─ 스케줄: ${sched.length}개 (활성 ${enabled})`);
+      lines.push(`─ Schedules: ${sched.length} (${enabled} enabled)`);
 
       // ★백업은 **밀지 않고 여기서 보여준다** (2026-08-11 사용자 결정) — 매일 성공
       //  알림은 배경 소음이 되고 그러면 진짜 신호가 묻힌다. 알림은 놓치면 끝이지만
@@ -764,13 +764,13 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
       try {
         const b = backupInfo();
         if (b.latestAt === null) {
-          lines.push("─ ⚠️ 백업: 아직 없음");
+          lines.push("─ ⚠️ Backup: none yet");
         } else {
           const mins = Math.floor((Date.now() - b.latestAt) / 60_000);
-          const ago = mins < 60 ? `${mins}분 전` : `${Math.floor(mins / 60)}시간 전`;
+          const ago = mins < 60 ? `${mins} min ago` : `${Math.floor(mins / 60)} h ago`;
           const mb = (b.totalBytes / 1_048_576).toFixed(0);
           const stale = mins > 48 * 60 ? "⚠️ " : "";
-          lines.push(`─ ${stale}백업: ${ago} · ${b.count}벌 (${mb}MB)`);
+          lines.push(`─ ${stale}Backup: ${ago} · ${b.count} cop${b.count === 1 ? "y" : "ies"} (${mb}MB)`);
         }
       } catch {
         /* 이 줄만 생략 — 상태 조회 전체를 무르지 않는다 */
@@ -780,7 +780,7 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
     } catch (e) {
       console.error("status failed:", e);
       const err = e instanceof Error ? e.message : String(e);
-      await replyCommand(msg,`상태 조회 실패: ${err}`);
+      await replyCommand(msg,`Couldn't get the status: ${err}`);
     }
     return;
 };

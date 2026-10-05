@@ -29,17 +29,17 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "★긴 한도는 **날짜·시각**으로 말한다(8118분 같은 숫자 금지)",
-      !/\d{3,}분/.test(long) && /월 \d+일/.test(long) && /일 후/.test(long),
+      !/\d{3,} min/.test(long) && /^[A-Z][a-z]{2} \d+ around/.test(long) && /days\)$/.test(long),
       long,
     ),
   );
 
   // ── ② 짧은 건 분이 맞다 — 과잉 교정 금지 ────────────────────────────────────
-  out.push(assert("한 시간 안쪽은 분으로", formatResetAt(3 * 60_000, NOW) === "약 3분 후", formatResetAt(3 * 60_000, NOW)));
+  out.push(assert("한 시간 안쪽은 분으로", formatResetAt(3 * 60_000, NOW) === "in about 3 min", formatResetAt(3 * 60_000, NOW)));
   out.push(
     assert(
       "하루 안쪽이면 시각 + 상대시간",
-      /\d+시 \d{2}분쯤 \(약 \d+시간 후\)/.test(formatResetAt(4 * 3600_000, NOW)),
+      /\d+:\d{2} [AP]M \(in about \d+ hours?\)/.test(formatResetAt(4 * 3600_000, NOW)),
       formatResetAt(4 * 3600_000, NOW),
     ),
   );
@@ -65,9 +65,9 @@ const run = async (): Promise<Assertion[]> => {
     );
     out.push(
       assert(
-        "오전/오후 표기가 한국어로 박혀 있다",
-        raw.includes('"오전"') && raw.includes('"오후"'),
-        "한국어 표기 확인",
+        "AM/PM 표기가 직접 박혀 있다(서버 고정 문구 = 영어, 2026-10-05)",
+        raw.includes('"AM"') && raw.includes('"PM"'),
+        "직접 표기 확인",
       ),
     );
   }
@@ -77,7 +77,9 @@ const run = async (): Promise<Assertion[]> => {
   {
     const idx = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
     const wj = await readFile(new URL("../../core/worker-jobs.ts", import.meta.url), "utf8");
-    const bothUse = idx.includes("formatResetAt(") && wj.includes("formatResetAt(");
+    // ★세 번째 소비처 — 쿨다운 통지(2026-10-05 영어 통일 때 같은 함수로 합쳤다). 검사 대상에 없으면 합친 게 다시 갈려도 모른다.
+    const rt = await readFile(new URL("../../core/llm-runtime/index.ts", import.meta.url), "utf8");
+    const bothUse = idx.includes("formatResetAt(") && wj.includes("formatResetAt(") && rt.includes("formatResetAt(");
     // ★**주석은 빼고** 본다 (2026-08-22). 이 규칙을 *설명하는 글* 안에 든 코드 예시를
     //  코드로 세서 상시 FAIL 했다 — `verify-dashboard-split` 이 주석 속 `<style>` 을 태그로
     //  세던 것과 같은 부류다([[feedback_gate_must_actually_run]]: 검사 대상은 코드이지 그걸
@@ -85,14 +87,19 @@ const run = async (): Promise<Assertion[]> => {
     //  게이트에만 있던 판정이 죽는다.
     const stripComments = (s: string): string =>
       s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
-    const ownMathRe = /Math\.round\([^)]*\/\s*60_?000\)[^;]*분/;
+    // ★언어와 무관하게 — 문구가 영어가 되자(2026-10-05) «분» 을 요구하던 이 정규식은 영원히 아무것도 못 찾았다(적대 검토 G1:
+    //  쿨다운 통지에서 «in 8118 min» 을 다시 만들어도 초록). 사용자에게 보이는 영어 단위(min·minutes)는 세 소비처 모두에서,
+    //  한국어 «분» 은 종전 대상에서만 본다 — `llm-runtime/index.ts` 의 «분» 은 데몬 로그 줄이다.
+    const ownMathKo = /Math\.(?:round|ceil|floor)\([^)]*\/\s*60_?000\)[^;]*분/;
+    const ownMathEn = /Math\.(?:round|ceil|floor)\([^)]*\/\s*60_?000\)[^;]*\bmin(?:ute)?s?\b/;
     const ownMath =
-      ownMathRe.test(stripComments(idx)) || ownMathRe.test(stripComments(wj));
+      ownMathKo.test(stripComments(idx)) || ownMathKo.test(stripComments(wj)) ||
+      [idx, wj, rt].some((f) => ownMathEn.test(stripComments(f)));
     out.push(
       assert(
         "★채널 응답·매니저 통지가 같은 문구 함수를 쓴다(자체 계산 금지)",
         bothUse && !ownMath,
-        `index=${idx.includes("formatResetAt(")} worker=${wj.includes("formatResetAt(")} 자체계산=${ownMath}`,
+        `index=${idx.includes("formatResetAt(")} worker=${wj.includes("formatResetAt(")} runtime=${rt.includes("formatResetAt(")} 자체계산=${ownMath}`,
       ),
     );
   }

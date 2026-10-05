@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { homeEnvPath } from "../../load-env.js";
 import type { AuthProvider } from "../auth-registry.js";
+import { ProviderUnavailableError } from "../rate-limit.js";
 
 // OAuth 상수 — fork (numman-ali/opencode-openai-codex-auth) 의 lib/auth/auth.ts 답습.
 // codex_cli_rs originator + chatgpt.com/backend-api = Codex 비공식 endpoint 활성화.
@@ -255,8 +256,8 @@ export const ensureFreshAccessToken = async (): Promise<string> => {
   }
 
   if (!codexAuthAvailable()) {
-    throw new Error(
-      "OpenAI Codex OAuth 토큰 없음. `npm run codex-auth` 로 발급 필요.",
+    throw new ProviderUnavailableError(
+      "OpenAI Codex OAuth token missing — run `npm run codex-auth` to get one.",
     );
   }
   const refresh = process.env.OPENAI_CODEX_OAUTH_REFRESH;

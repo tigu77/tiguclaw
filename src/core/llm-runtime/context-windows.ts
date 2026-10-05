@@ -124,9 +124,9 @@ export const contextWindowContradiction = (
 
 export const contextPressureLabel = (pct: number): string =>
   pct > 100
-    ? " ⚠️ 한도 초과로 계산됨 — 이 모델의 윈도우 값이 틀렸을 수 있습니다(`/clear` 불필요)"
+    ? " ⚠️ computed as over the limit — this model's window size may be wrong (no need to `/clear`)"
     : pct >= 85
-      ? " ⚠️ 거의 참 — `/clear` 고려"
+      ? " ⚠️ nearly full — consider `/clear`"
       : pct >= 70
-        ? " ⚠️ 여유 줄어듦"
+        ? " ⚠️ getting full"
         : "";

@@ -128,7 +128,7 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "취소 raw 통지는 '요청대로 취소' 로 말한다(실패로 읽히지 않는다)",
-      /🛑/.test(silent.raws[0] ?? "") && /요청대로 취소했어요/.test(silent.raws[0] ?? ""),
+      /🛑/.test(silent.raws[0] ?? "") && /Cancelled background task '.*' as requested/.test(silent.raws[0] ?? ""),
       (silent.raws[0] ?? "(없음)").slice(0, 80),
     ),
   );

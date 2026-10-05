@@ -606,7 +606,7 @@ export const check: RegressionCheck = {
     out.push(assert(
       "★두 러너(매니저·서브)가 늦게 온 지시를 onWorkerComplete 에 넘기고, 따로 통지하지 않는다(판정 한 곳)",
       /onWorkerComplete\(job\.jobId, outcome, pendingSteerNotice\)/.test(code) && /onWorkerComplete\(o\.jobId, outcome, pendingSteerNotice\)/.test(agentCode) &&
-        !/lateNotice|이미 끝난 뒤/.test(code) && !/lateNotice|이미 끝난 뒤/.test(agentCode),
+        !/lateNotice|이미 끝난 뒤|had already finished/.test(code) && !/lateNotice|이미 끝난 뒤|had already finished/.test(agentCode),
       { worker: passes(code), agent: passes(agentCode) },
     ));
 

@@ -48,7 +48,7 @@ export default class CliChannel implements Channel {
         if (opts?.note !== undefined && opts.note.trim() !== "") {
           lines.push(`  (${opts.note})`);
         }
-        lines.push("번호를 입력하거나 직접 답하세요.");
+        lines.push("Enter a number, or type your own answer.");
         process.stdout.write(`${lines.join("\n")}\n`);
         rl.prompt();
         pendingOptions = options;

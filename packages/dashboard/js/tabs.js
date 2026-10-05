@@ -68,8 +68,10 @@
       //   같은 일을 하는 두 입구가 다르게 동작하던 것을 맞춘다.
       //  ★판정을 함수로 뽑아 둔다 — 갱신 루프 안에 두면 검사가 문자열 grep 밖에 못 하고,
       //   그러면 `if (false)` 한 줄로 조용히 죽는다(이 파일의 markClosed 가 같은 이유로 뽑혀 있다).
+      //  ★기본 세션도 같은 규칙이다 (2026-10-05 정태님: «기본 세션이라는 표시가 꼭 필요한가» → 아니다). 종전엔 기본 세션만 이름을 안
+      //   남기고 서버가 «기본 세션» 고정 문구를 붙였는데, 그 문구는 번역되지 않는 서버 글이라 화면 언어와 갈렸다. 이제 다른 세션처럼
+      //   «세션1»(화면 언어)을 남긴다. 기본 세션의 기능적 특별함(묶이지 않은 대화방이 오는 곳·보관 불가)은 이름과 무관하다.
       const commitPendingName = (threadKey, serverName) => {
-        if (threadKey === DEFAULT_DASH_THREAD) return false;   // 기본 세션은 고정 라벨.
         if (typeof serverName === "string" && serverName.trim() !== "") return false; // 이미 이름 있음.
         void commitTabName(threadKey, deriveTabFallbackName(threadKey));
         return true;
@@ -493,6 +495,9 @@
               changed = true;
               // ★이 순간이 **첫 전송으로 서버 행이 막 생긴 시점**이다(그 전엔 행이 없다 =
               //  "빈 탭 = 흔적 0" 성질은 그대로). 그 행엔 이름이 없으므로 여기서 고정한다.
+              commitPendingName(t.threadKey, s.name);
+            } else if (t.threadKey === DEFAULT_DASH_THREAD) {
+              // 기본 탭은 처음부터 열려 있어 «pending» 이 된 적이 없다 — 이름이 비어 있으면 여기서 한 번 남긴다(남긴 뒤엔 서버 이름이 있어 no-op).
               commitPendingName(t.threadKey, s.name);
             }
             if (s.preview && t.preview !== s.preview) { t.preview = s.preview; changed = true; }

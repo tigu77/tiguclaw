@@ -132,8 +132,9 @@ export const idleConfigExempt = (
  *
  * 핵심 불변식 (I-3): 이 에러의 message 는 facade `MODEL_REJECTED_PATTERNS`
  * (index.ts:60-80) 어느 정규식과도 매칭되면 안 된다 — 타임아웃은 *모델 거부 아님*
- * (일시적 행). 매칭 시 멀쩡한 override 모델이 깨진 것으로 제거됨. 메시지에 "모델 거부
- * 아님" 토큰을 박아 진단 가독성↑ + 비매칭 (§4.2 교차검증: not_found/404/"model:" 0개).
+ * (일시적 행). 매칭 시 멀쩡한 override 모델이 깨진 것으로 제거됨. 메시지에 "not a provider
+ * rejection" 토큰을 박아 진단 가독성↑ + 비매칭 (§4.2 교차검증: not_found/404/"model:" 0개 —
+ * 문장에 `model` 을 쓰지 마라, 시한 숫자의 `404` 와 엮인다).
  */
 export class IdleTimeoutError extends Error {
   /** "idle" (이벤트 흐르다 끊김) 또는 "first" (첫 이벤트 무수신). */
@@ -144,7 +145,7 @@ export class IdleTimeoutError extends Error {
   constructor(reason: "idle" | "first", timeoutMs: number) {
     // ⚠ 이 메시지 문자열은 isModelRejected 비매칭 보장의 일부 — 변경 시 G2 테스트 동반.
     super(
-      `LLM 응답 유휴 타임아웃 (${reason}, ${timeoutMs}ms 무수신) — 모델 거부 아님`,
+      `LLM response idle timeout (${reason}, nothing received for ${timeoutMs}ms) — not a provider rejection`,
     );
     this.name = "IdleTimeoutError";
     this.reason = reason;

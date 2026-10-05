@@ -75,7 +75,7 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★기본 세션은 대화 내용으로 이름이 바뀌지 않는다(파생 금지)",
-        sessionDisplayName(DEFAULT_SESSION_ID, null, "돌쇠 재시작 완료! ✅") === "기본 세션",
+        sessionDisplayName(DEFAULT_SESSION_ID, null, "돌쇠 재시작 완료! ✅") === "Default session",
         "고정 라벨 확인",
       ),
     );
@@ -88,7 +88,7 @@ export const check: RegressionCheck = {
       assert(
         "★그러나 사용자가 붙인 이름은 기본 세션에서도 이긴다(저장만 되고 안 보이던 것)",
         sessionDisplayName(DEFAULT_SESSION_ID, "내가 붙인 이름", "") === "내가 붙인 이름" &&
-          sessionDisplayName(DEFAULT_SESSION_ID, "  ", "") === "기본 세션",
+          sessionDisplayName(DEFAULT_SESSION_ID, "  ", "") === "Default session",
         `지정=${sessionDisplayName(DEFAULT_SESSION_ID, "내가 붙인 이름", "")} · 공백=${sessionDisplayName(DEFAULT_SESSION_ID, "  ", "")}`,
       ),
     );
@@ -294,9 +294,11 @@ export const check: RegressionCheck = {
         const def = fn(DEFAULT_SESSION_ID, null);
         out.push(
           assert(
-            "★기본 세션엔 이름을 붙이지 않는다(고정 라벨 — ②와 같은 규칙)",
-            def === false && named.length === beforeDef,
-            String(def),
+            // ★2026-10-05 뒤집음 — 종전엔 «기본 세션엔 이름을 붙이지 않는다(고정 라벨)» 였다. 그 고정 라벨은 서버 글이라
+            //  화면 언어와 갈렸고(서버 고정 문구 = 영어), 기본 세션의 특별함(보관 불가·묶이지 않은 대화방의 행선지)은 이름과 무관하다.
+            "★기본 세션도 다른 세션처럼 이름을 남긴다(서버 고정 라벨은 최후 폴백)",
+            def === true && named.length === beforeDef + 1 && named[named.length - 1]!.tk === DEFAULT_SESSION_ID,
+            `${String(def)} · 저장 ${named.length - beforeDef}건`,
           ),
         );
       }
@@ -310,6 +312,14 @@ export const check: RegressionCheck = {
           "그 판정이 pending 해제 지점에서 호출된다(배선 — 소스 검사)",
           /if \(t\.pending\) \{[\s\S]{0,600}?commitPendingName\(t\.threadKey, s\.name\)/.test(tabs),
           /commitPendingName\(/.test(tabs) ? "호출 확인" : "★판정만 있고 호출이 없다",
+        ),
+      );
+      // 기본 탭은 처음부터 열려 있어 pending 이 된 적이 없다 — 그 경로가 없으면 위 판정이 옳아도 기본 세션은 영영 이름이 없다.
+      out.push(
+        assert(
+          "기본 탭은 pending 이 아니어도 같은 판정을 부른다(배선 — 소스 검사)",
+          /else if \(t\.threadKey === DEFAULT_DASH_THREAD\) \{[\s\S]{0,400}?commitPendingName\(t\.threadKey, s\.name\)/.test(tabs),
+          "기본 탭 분기",
         ),
       );
     }

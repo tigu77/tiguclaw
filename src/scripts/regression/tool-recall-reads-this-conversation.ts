@@ -156,6 +156,10 @@ export const check: RegressionCheck = {
     const refWins = await call$({ ref: newRef, query: "MANY-" });
     const toolSearch = await call$({ query: "NEW-7788" });
     const zero = await call$({ query: "ZERO-HIT-0000" });
+    // 참조 번호를 query 칸에 넣는 실수(벤치 실측) — 참조로 읽는다. 참조 모양이 아닌 글은 종전대로 검색.
+    const refInQuery = await call$({ query: ` ${newRef} ` });
+    // 반대 방향 — 참조 모양이 **섞인** 검색어는 검색이다(통째로 참조일 때만 참조로 읽는다).
+    const mixedRef = await call$({ query: `NEW-7788 ${newRef}` });
 
     // ④ 참조 접기의 이음매 — **실제 압축 드라이버**가 요약기에 넘긴 입력에서 참조를 꺼내, 그 참조로 원문 전체를 되찾는다.
     const H = await import("../../core/llm-runtime/adapters/openai-codex-oauth-history.js");
@@ -242,6 +246,10 @@ export const check: RegressionCheck = {
         viaTool.ok === true && viaTool.offset === TOOL_RECALL_READ_CHARS && viaTool.truncated === true && viaTool.nextOffset === TOOL_RECALL_READ_CHARS * 2 &&
           refWins.ref === newRef && typeof refWins.text === "string" && toolSearch.total === 1,
         { viaTool: { offset: viaTool.offset, truncated: viaTool.truncated, next: viaTool.nextOffset }, refWins: refWins.ref, toolSearch: toolSearch.total }),
+      assert("★참조 번호를 query 칸에 넣어도 그 결과를 읽는다(검색 0건으로 포기하지 않게)",
+        refInQuery.ok === true && refInQuery.ref === newRef && typeof refInQuery.text === "string" && refInQuery.text === refWins.text &&
+          mixedRef.ref === undefined && typeof mixedRef.total === "number",
+        { ref: refInQuery.ref, ok: refInQuery.ok, mixedRef: { ref: mixedRef.ref, total: mixedRef.total } }),
       assert("재현 조건: 수동 압축이 도구 결과가 든 턴들을 접었다", manual.ok === true && manual2.ok === true && manual3.ok === true && manual4.ok === true && seen.length >= 1, { manual, manual2, manual3, manual4, calls: seen.length }),
       assert("★짧은 결과가 아주 많은 턴(600쌍)도 턴 상한 안에서 참조가 전부 남는다(앞쪽이 잘려 참조가 빠지지 않는다)", shortRefs === 600 && !foldIn.includes("요약 입력 상한으로 앞쪽"), { shortRefs }),
       assert("★접기 쪽 같은 call_id: 인자가 긴 두 호출이 각자 자기 결과를 가리킨다(참조로 읽으면 그 호출의 인자·결과)",

@@ -67,6 +67,6 @@ export const findBundledClaude = (fromDir?: string): string | null => {
  *  도는지" 를 아무도 모르게 된다. 진짜 원인 둘을 그대로 말한다.
  */
 export const bundledClaudeMissingHint = (): string =>
-  "Claude Code 실행기를 못 찾았습니다 — 보통 `npm ci` 가 의존성으로 같이 깝니다. " +
-  "`--omit=optional` 로 설치했다면 그 옵션 없이 다시 설치하세요. " +
-  "지원 안 하는 플랫폼이면 `npm i -g @anthropic-ai/claude-code` 로 따로 설치할 수 있습니다.";
+  "Cannot find the Claude Code executable — `npm ci` normally installs it as a dependency. " +
+  "If you installed with `--omit=optional`, reinstall without that option. " +
+  "On an unsupported platform, you can install it separately with `npm i -g @anthropic-ai/claude-code`.";

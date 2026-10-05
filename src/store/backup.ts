@@ -113,9 +113,9 @@ export type BackupResult =
  */
 export const backupNotice = (r: BackupResult): string | null => {
   if (!r.ran) return null; // 아직 때가 아님 — 아무 일도 안 했다.
-  if ("error" in r) return `데이터 백업에 실패했습니다 — ${r.error.slice(0, 120)}`;
+  if ("error" in r) return `Data backup failed — ${r.error.slice(0, 120)}`;
   if (r.first) {
-    return "오늘부터 데이터를 매일 한 벌씩 백업합니다(최근 7벌 보관, `<home>/data/backup/`). 앞으로는 조용히 돌고, 실패할 때만 알려드립니다.";
+    return "From today, your data is backed up once a day (the latest 7 copies are kept in `<home>/data/backup/`). It runs quietly from now on — you'll only hear about it if it fails.";
   }
   return null; // ★성공 = 침묵.
 };
@@ -168,7 +168,7 @@ export const runBackupIfDue = (
       getDb()
         .prepare(`VACUUM INTO ?`)
         .run(partial);
-      if (!isCompleteSqliteFile(partial)) throw new Error("백업 파일이 끝까지 쓰이지 않았습니다");
+      if (!isCompleteSqliteFile(partial)) throw new Error("The backup file wasn't written completely");
       fs.renameSync(partial, target);
     } catch (e) {
       fs.rmSync(partial, { force: true, recursive: true });

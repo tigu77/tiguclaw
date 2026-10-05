@@ -193,6 +193,53 @@ export const searchThreadToolResults = (
   return { total, totalCapped, hits };
 };
 
+/**
+ * **요약에 접힌 긴 도구 결과의 목록** — 이 대화·경계 뒤, 요약 워터마크(`throughTid`) 이하에서 결과가 `minChars` 보다 긴 것, 최근 `limit` 건.
+ * 돌려줄 때는 **오래된 순**(같은 입력이면 같은 출력 — 프롬프트 프리픽스가 흔들리지 않게).
+ * ★왜(2026-10-05): 접을 때 긴 결과는 «참조 + 앞부분» 만 요약기에 들어가고, 참조를 요약에 남기는 건 **요약 모델의 재량**이었다.
+ *  압축을 자주 겪은 벤치 런에서 요약이 참조를 0개 남기자 모델이 이 도구를 떠올리지 못했고(접힌 채 실린 도구다), 1턴에 읽은 회의록 값을
+ *  «확인할 수 없다» 로 답했다(v0.65.0·현재 두 버전 동일 7/14). 목록은 요약과 따로 **기록에서** 만든다 — 요약이 무엇을 빠뜨려도 남는다.
+ */
+export const listFoldedToolResults = (
+  channel: ChannelName,
+  threadKey: string,
+  throughTid: number,
+  minChars: number,
+  limit: number,
+): { ref: string; tool: string; args: string; chars: number }[] => {
+  const { sids, boundary } = scopeOf(channel, threadKey);
+  if (sids.length === 0 || throughTid <= 0 || limit <= 0) return [];
+  // ★최근 턴부터 거꾸로 읽고 `limit` 을 채우면 멈춘다 (2026-10-05 적대 검토 F2). 첫 판은 대화의 워터마크 이하 항목을 **전부** 읽고
+  //  정렬했다(실측 10만 행 ≈250ms, 요청마다 동기 — 그동안 모든 채널이 멈춘다). 지금은 캐시가 빗나갈 때(접을 때·재시작 뒤)만 여기 온다.
+  // ★창은 **도구 기록이 있는 턴**으로 센다 (재검토 A). assistant 행으로 세면 Claude 턴(턴당 행 여러 개·도구 기록 없음)이 창을 먹어,
+  //  Claude 턴 수십 개가 섞이면 앞서 읽은 긴 결과가 목록에서 조용히 빠졌다 — 목록이 비면 회수 안내까지 사라진다. 기록 없는 행은
+  //  PK 조회 한 번으로 지나간다. ★턴 id 정렬은 대화 행 전체를 한 번 정렬한다(10만 행 ≈27ms, 재검토 B) — 바운드가 아니라 선형이다.
+  const tids = getDb()
+    .prepare(
+      `SELECT id FROM transcripts WHERE claude_session_id IN (${sids.map(() => "?").join(", ")}) AND id <= ? AND ts > ? AND role = 'assistant'
+        ORDER BY id DESC`,
+    )
+    .iterate(...sids, throughTid, boundary) as IterableIterator<{ id: number }>;
+  const hasItems = getDb().prepare(`SELECT 1 FROM turn_items WHERE transcript_id = ? LIMIT 1`);
+  const out: { ref: string; tool: string; args: string; chars: number }[] = [];
+  let scanned = 0;
+  for (const { id } of tids) {
+    if (hasItems.get(id) === undefined) continue;
+    if (++scanned > FOLDED_SCAN_TURNS) break;
+    const tools = turnTools(id);
+    for (const seq of [...tools.outputs.keys()].sort((x, y) => y - x)) {
+      const pair = tools.outputs.get(seq)!;
+      // 회수 도구 자신의 결과는 원본의 사본이다 — 목록 칸을 차지해 원본을 밀어내지 않게 뺀다.
+      if (pair.out.output.length <= minChars || pair.call?.name === TOOL_RECALL_NAME) continue;
+      out.push({ ref: toolResultRef(id, seq), tool: pair.call?.name ?? "", args: pair.call?.arguments ?? "", chars: pair.out.output.length });
+      if (out.length >= limit) return out.reverse();
+    }
+  }
+  return out.reverse();
+};
+/** 접힌 결과 목록을 찾으며 거꾸로 훑을 **도구 기록이 있는** 최대 턴 수 — 긴 결과가 드문 대화에서도 파싱량이 묶인다. */
+export const FOLDED_SCAN_TURNS = 400;
+
 /** 참조로 결과 전문을 읽는다 — 이 대화·경계 뒤의 도구 결과만. 인자도 **전문**을 돌려준다(접기가 인자도 참조로 줄인다). */
 export const readThreadToolResult = (
   channel: ChannelName,

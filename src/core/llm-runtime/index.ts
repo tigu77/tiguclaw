@@ -73,6 +73,7 @@ import {
   parseCooldownMs,
   AUTH_COOLDOWN_MS,
   isAuthRejected,
+  formatResetAt,
 } from "./rate-limit.js";
 import { applyInlineSuggestion, readSuggestionSettings, withInlineSuggestion } from "../next-message-suggestion.js";
 import { stripCitationMarkers } from "../citation-markers.js";
@@ -113,9 +114,9 @@ const KNOWN_UPSTREAM_LIMITS: ReadonlyArray<{ match: RegExp; note: string }> = [
   {
     match: /thought_signature/,
     note:
-      "이 provider 는 지금 **도구 호출이 안 됩니다** — 모델이 함수 호출에 붙여 준 값을 " +
-      "우리가 쓰는 SDK 가 스트리밍 경로에서 떨어뜨립니다(업스트림 이슈, 설정으로 못 고칩니다). " +
-      "도구 없는 대화는 정상입니다.",
+      "This provider **can't make tool calls** right now — the SDK we use drops a value the model " +
+      "attaches to function calls on the streaming path (an upstream issue; no setting fixes it). " +
+      "Conversations without tools work normally.",
   },
 ];
 
@@ -174,7 +175,7 @@ export const errorDetail = (e: unknown): string => {
 //     "message":"model: claude-sonnet-4-7"},"request_id":"..."}`
 //    (주의: SDK 가 거부를 throw 가 아니라 subtype "success"+is_error=true+result 본문
 //     으로 표면화 → 어댑터가 is_error 를 throw 로 승격. 이전 추정 패턴이 빗나간 원인.)
-//  - codex : `Codex backend 호출 실패: 404 <body>` (openai-codex-oauth.ts)
+//  - codex : `Codex backend request failed: 404 <body>` (openai-codex-oauth.ts · 옛 판 `호출 실패`)
 //  - openai: `@openai/agents` 가 던지는 model_not_found 류
 const MODEL_REJECTED_PATTERNS: RegExp[] = [
   // 세 어댑터 공통 — Anthropic/OpenAI API 의 모델 부재 에러 코드.
@@ -185,15 +186,16 @@ const MODEL_REJECTED_PATTERNS: RegExp[] = [
   // 일반형 — "model:" 토큰 + 인근 부재/무효 키워드 (오탐 축소).
   /model:[^"]{0,60}(not found|does not exist|invalid|unknown)/i,
   /unknown model/i,
-  // 404 + 모델/에러 문맥 — claude `API Error: 404 {...}` / codex `호출 실패: 404` 공통.
-  /(api error|호출 실패)[\s\S]{0,40}404/i,
+  // 404 + 모델/에러 문맥 — claude `API Error: 404 {...}` / codex `request failed: 404` 공통.
+  //  ★`호출 실패` 는 2026-10-05 영어 전환 이전 codex 문구 — 옛 기록용으로 남긴다.
+  /(api error|request failed|호출 실패)[\s\S]{0,40}404/i,
   /404[\s\S]{0,120}(not_found_error|model)/i,
   // codex narrowing 보강 (QA 2차 P3) — OpenAI Responses backend 가 무효 모델 param 을
   // 404 가 아닌 400/422 로 거부하고 code 가 model_not_found 가 아닐 때(예 invalid_value/
   // null) 본문 시그니처. `호출 실패`(codex 어댑터 throw prefix) 가 동반될 때만 적용해
   // 일반 4xx/네트워크 에러 오탐 차단. 콤마 깨진 모델명 거부가 비-404 일 가능성 커버.
   //  (a) OpenAI 구조화 param 지목 — `"param":"model"` (code 무관 모델 거부 신호).
-  /호출 실패[\s\S]{0,200}"param"\s*:\s*"model"/i,
+  /(request failed|호출 실패)[\s\S]{0,200}"param"\s*:\s*"model"/i,
   //  (b) OpenAI 모델 부재 정형 문구 — code 없이도 메시지 본문에 항상 등장.
   /does not exist or you do not have access/i,
   // claude 실측 (2026-09-23) — 번들 CLI 가 새 모델보다 낡으면 API 가 400 으로 거절한다:
@@ -211,13 +213,24 @@ export const isModelRejected = (errStr: string): boolean =>
 // 애초에 쓸 수 없음"(자격증명 부재)만 좁게 잡는다 — 그래야 override/tier 를 사용자 기본 풀로
 // 폴백해도 어댑터 결함을 가리지 않는다(feedback_no_cross_adapter_fallback: claude 폴백 =
 // 최후 안전망 only, 결함 마스킹 금지). 세 어댑터의 실측 사전-가드 문구(API 호출 前 throw):
-//  - claude : "Claude 인증 없음. ANTHROPIC_API_KEY 또는 CLAUDE_CODE_OAUTH_TOKEN..." (claude-agent-sdk.ts:298)
-//  - openai : "'<provider>' 인증 없음. <ENV> 가 필요합니다." (openai-agents-sdk.ts:97)
-//  - codex  : "OpenAI Codex OAuth 토큰 없음. `npm run codex-auth`..." (openai-codex-oauth.ts:365)
-const PROVIDER_UNAVAILABLE_PATTERNS: RegExp[] = [/인증 없음/, /토큰 없음/];
+//  - claude : "Claude credentials missing — set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN." (claude-agent-sdk.ts)
+//  - openai : "'<provider>' credentials missing — <ENV> is required." (openai-agents-sdk.ts)
+//  - codex  : "OpenAI Codex OAuth token missing — …" (openai-codex-oauth-auth.ts)
+// ★1차 판정은 **이름**(`ProviderUnavailableError`, 아래 `providerUnavailable`) — 문구는 감싸진 오류용 폴백이다.
+//  옛 한국어 문구(`인증 없음`·`토큰 없음`)도 계속 알아본다(2026-10-05 영어 전환 이전 판).
+const PROVIDER_UNAVAILABLE_PATTERNS: RegExp[] = [
+  /\bcredentials missing\b/i,
+  /\bOAuth token missing\b/i,
+  /인증 없음/,
+  /토큰 없음/,
+];
 
 export const isProviderUnavailable = (errStr: string): boolean =>
   PROVIDER_UNAVAILABLE_PATTERNS.some((re) => re.test(errStr));
+
+/** 자격 증명 부재인가 — 이름 먼저, 문구는 폴백. */
+export const providerUnavailable = (e: unknown): boolean =>
+  (e instanceof Error && e.name === "ProviderUnavailableError") || isProviderUnavailable(errorDetail(e));
 
 export type RegionAAdapter = "claude" | "openai" | "codex-oauth";
 
@@ -377,7 +390,7 @@ export const poolToSpecs = (
 export const unresolvedOverrideNote = (override: string, cwd?: string): string =>
   parseModelSpecList(override, cwd).length > 0
     ? ""
-    : `⚠️ 이 대화의 모델 override \`${override}\` 는 쓸 수 없어 세션 프로파일·기본 모델로 갑니다 — \`/model reset\` 으로 해제하세요.\n` +
+    : `⚠️ This conversation's model override \`${override}\` can't be used, so the session profile or default model is used instead — clear it with \`/model reset\`.\n` +
       splitSpecs(override).map((t) => specIssue("override", t, cwd)).filter((x): x is string => x !== undefined).join("\n");
 
 /**
@@ -390,15 +403,15 @@ const specIssue = (where: string, spec: string, cwd?: string): string | undefine
   if (parseModelSpec(spec, cwd) !== null) return undefined;
   const idx = spec.indexOf(":");
   const provider = idx === -1 ? "" : spec.slice(0, idx).trim();
-  if (idx === -1 || provider === "" || spec.slice(idx + 1).trim() === "") return `${where} 의 '${spec}' 는 \`provider:모델\` 형식이 아니라 건너뜁니다.`;
+  if (idx === -1 || provider === "" || spec.slice(idx + 1).trim() === "") return `'${spec}' in ${where} isn't in \`provider:model\` form, so it's skipped.`;
   if (!writtenProviderNames(cwd).has(provider)) {
-    return `${where} 의 '${spec}' 는 provider '${provider}' 가 없어 건너뜁니다 — settings.json \`models.providers.${provider}\` 에 정의하세요.`;
+    return `'${spec}' in ${where} is skipped because there's no provider '${provider}' — define it under \`models.providers.${provider}\` in settings.json.`;
   }
   const cfg = loadModelProviders(cwd)[provider];
   if (cfg !== undefined && !isKnownAdapter(cfg.adapter)) {
-    return `${where} 의 '${spec}' 는 provider '${provider}' 의 adapter '${cfg.adapter}' 를 몰라 건너뜁니다 — adapter 는 ${Object.keys(KNOWN_ADAPTERS).join(" · ")} 중 하나여야 합니다.`;
+    return `'${spec}' in ${where} is skipped because provider '${provider}' uses an unknown adapter '${cfg.adapter}' — the adapter must be one of ${Object.keys(KNOWN_ADAPTERS).join(" · ")}.`;
   }
-  return `${where} 의 '${spec}' 는 provider '${provider}' 설정이 잘못돼 무시돼서 건너뜁니다 — 위 \`[settings] models.providers.${provider}\` 경고를 보세요.`;
+  return `'${spec}' in ${where} is skipped because provider '${provider}' is misconfigured and was ignored — see the \`[settings] models.providers.${provider}\` warning above.`;
 };
 
 const splitSpecs = (raw: string | undefined): string[] =>
@@ -417,7 +430,7 @@ export const unresolvedModelSpecs = (cwd?: string): string[] => {
   const issues: string[] = [];
   const add = (where: string, spec: string) => { const i = specIssue(where, spec, cwd); if (i !== undefined) issues.push(i); };
   const profiles = loadModelProfiles(cwd);
-  for (const [name, prof] of Object.entries(profiles)) for (const e of prof.pool) add(`프로파일 '${name}'`, e.spec);
+  for (const [name, prof] of Object.entries(profiles)) for (const e of prof.pool) add(`profile '${name}'`, e.spec);
   // 옛 `.env` 모델 풀(REGION_A_MODELS·MODEL_TIER_*)은 더 읽지 않으므로 진단하지 않는다(부팅이 프로파일로 옮긴다).
   const gw = loadGatewayConfig(cwd)?.models;
   if (gw !== undefined && gw.length > 0) for (const t of gw) add("settings.json gateway.models", t);
@@ -1641,19 +1654,8 @@ const runPool = async (
       //  LLM 무경유 raw 통지 — 한도가 걸린 상황에서 알리려고 모델을 또 태울 수는 없다.
       if (entered !== null && input.internal !== true) {
         markCooldownAnnounced(entered.key, entered.untilTs);
-        const mins = Math.round((entered.untilTs - Date.now()) / 60000);
-        const when = new Date(entered.untilTs).toLocaleString("ko-KR", {
-          month: "numeric",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-        const dur =
-          mins >= 1440
-            ? `약 ${Math.round(mins / 1440)}일 뒤`
-            : mins >= 60
-              ? `약 ${Math.round(mins / 60)}시간 뒤`
-              : `${mins}분 뒤`;
+        // 리셋 시점 문구는 `formatResetAt` 한 곳에서(채널 오류 응답·매니저 통지와 같은 문장 — 2026-10-05 영어 통일 때 합침).
+        const when = formatResetAt(Math.max(0, entered.untilTs - Date.now()));
         // ★통지 좌표는 **`notifyDest` 가 있으면 그것**이다 (2026-08-06, 로그 실측 유실).
         //  스케줄 턴은 `channel="scheduler"` 로 돈다 — 그건 발송 채널이 아니라 *트리거
         //  이름*이라, 이 알림이 `deliverOutbound: 발송 채널 "scheduler" 이 등록돼 있지
@@ -1681,13 +1683,13 @@ const runPool = async (
           // 인증 거부는 «언제 풀린다» 가 아니라 «다시 로그인해야 한다» 가 사실이다.
           text:
             (entered.reason === "auth"
-              ? `⚠️ ${adapterLabel(spec.adapter)} 인증이 거부됐습니다 — 다시 로그인하거나 키를 확인해 주세요(고친 뒤 \`/cooldown clear\` 로 바로 되돌릴 수 있습니다).\n`
-              : `⚠️ ${adapterLabel(spec.adapter)} 사용량 한도 — ${when} 해제 예정(${dur}).\n`) +
+              ? `⚠️ ${adapterLabel(spec.adapter)} rejected the credentials — log in again or check the key (once fixed, \`/cooldown clear\` brings it back right away).\n`
+              : `⚠️ ${adapterLabel(spec.adapter)} hit its usage limit — it resets ${when}.\n`) +
             (replayBlocked
-              ? `이 요청은 도구가 이미 실행돼 여기서 멈춥니다(다시 돌리면 그 도구가 두 번 실행됩니다).`
+              ? `This request stops here because a tool already ran (running it again would run that tool twice).`
               : entered.reason === "auth"
-                ? `그동안 다른 모델로 자동 전환합니다(대화는 그대로 이어집니다).`
-                : `그때까지 다른 모델로 자동 전환합니다(대화는 그대로 이어집니다).`),
+                ? `Meanwhile, switching to another model automatically (the conversation carries on).`
+                : `Until then, switching to another model automatically (the conversation carries on).`),
           label: "cooldown",
         }).catch(() => undefined); // 통지 실패가 턴을 무르지 않는다.
       }
@@ -1744,7 +1746,7 @@ const runPool = async (
         `(thread=${input.threadKey} 시도=${attemptChain.join(" → ")} ${Date.now() - poolStartedAt}ms)`,
     );
   }
-  throw lastError ?? new Error("llm-runtime: 모델 풀이 비어있음.");
+  throw lastError ?? new Error("llm-runtime: the model pool is empty.");
 };
 
 // Internal helpers may select a profile before entering runRegionA.
@@ -1855,9 +1857,9 @@ export const runRegionA = async (
       //  이제 해설을 따로 뽑아 **앞에** 두고, 자르는 건 상류 원문뿐이다.
       const reason = fallbackReason(lastError === undefined ? "" : errorDetail(lastError));
       const notice =
-        `\n\n⚠️ 지정 모델 \`${requestedLabel}\` 을(를) 쓸 수 없어 기본 모델로 답했습니다.` +
-        (reason === "" ? "" : `\n사유: ${reason}`) +
-        `\n다시 지정하려면 \`/model <provider:model>\`.`;
+        `\n\n⚠️ The selected model \`${requestedLabel}\` couldn't be used, so the default model answered.` +
+        (reason === "" ? "" : `\nReason: ${reason}`) +
+        `\nTo choose a model again: \`/model <provider:model>\`.`;
       return {
         ...output,
         text: output.text === "" ? output.text : `${output.text}${notice}`,
@@ -1895,8 +1897,7 @@ export const runRegionA = async (
       // isProviderUnavailable)만 트리거. 런타임 스톨/hang/타임아웃은 비트리거 — 그대로 throw.
       // 요청 풀(hadOverride)이면서 구조적 실패이고 다음 풀이 남아있을 때만 전진.
       const detail = errorDetail(e);
-      const structural =
-        isModelRejected(detail) || isProviderUnavailable(detail);
+      const structural = isModelRejected(detail) || providerUnavailable(e);
       if (isLast || !hadOverride || !structural) throw e;
       lastError = e;
       console.warn(
@@ -1905,7 +1906,7 @@ export const runRegionA = async (
     }
   }
   // 도달 불가(마지막 풀 실패는 위에서 throw) — 방어적 안전망.
-  throw lastError ?? new Error("llm-runtime: 모델 풀 체인이 비어있음.");
+  throw lastError ?? new Error("llm-runtime: the model pool chain is empty.");
 };
 
 // 기존 export 보존 — 회귀 0.

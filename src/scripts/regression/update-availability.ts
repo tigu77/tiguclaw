@@ -9,7 +9,7 @@
  * 지키는 것 넷:
  *  ①뒤처지면 available, 아니면 up-to-date — 기본 판정
  *  ②untracked 는 막지 않는다 — `reset --hard` 가 안 지우는 것으로 기능을 죽이면 안 된다
- *  ③`package-lock.json` 드리프트도 막지 않는다 — self-update 가 pull 전에 되돌리는 파일
+ *  ③`package-lock.json` 변경도 보존한다 — 실행 경로와 함께 blocked로 안내
  *  ④판정 불가는 `unknown` — **조용한 실패**(없는 업데이트를 있다고 하지 않는다)
  */
 import { execFile } from "node:child_process";
@@ -83,13 +83,13 @@ export const check: RegressionCheck = {
         ),
       );
 
-      // ③ lockfile 드리프트는 self-update 가 pull 전에 되돌린다 → 막으면 안 된다.
+      // ③ lockfile도 사용자 편집일 수 있으므로 자동 폐기하지 않는다.
       await writeFile(path.join(clone, "package-lock.json"), '{"x":1}\n');
       const s3 = await checkUpdateAvailability(clone);
       out.push(
         assert(
-          "★package-lock.json 드리프트가 업데이트를 막지 않는다(npm install 한 번이면 생기는 상태)",
-          s3.state === "available",
+          "★package-lock.json 변경도 자동 폐기하지 않는다 — 실행 경로와 같은 blocked 판정",
+          s3.state === "blocked" && s3.dirty.includes("package-lock.json"),
           `state=${s3.state} dirty=[${s3.dirty.join(",")}]`,
         ),
       );

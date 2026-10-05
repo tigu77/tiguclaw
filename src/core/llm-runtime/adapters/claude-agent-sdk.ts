@@ -39,6 +39,7 @@ import {
 } from "../prefix-fingerprint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { parseRateLimit } from "../rate-limit-view.js";
+import { ProviderUnavailableError } from "../rate-limit.js";
 import { createFastModeReporter } from "../fast-mode-view.js";
 import { claudeAuthAvailable } from "../provider-availability.js";
 import { promises as fs } from "node:fs";
@@ -150,7 +151,7 @@ import {
   idleConfigExempt,
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
-import { watchToolStart } from "../tool-watchdog.js";
+import { ToolHangError, watchToolStart } from "../tool-watchdog.js";
 import {
   SDK_SUBAGENT_TOOLS,
   withSdkSubagentsBlocked,
@@ -374,10 +375,10 @@ export const joinAnswers = (parts: ReadonlyArray<string | undefined>): string =>
     .join("\n\n");
 
 /** 이어 받던 두 번째 턴이 실패했을 때 첫 답 뒤에 붙이는 안내 — 조용히 삼키지 않는다. */
-export const STEER_TURN_FAILED_NOTE = "⚠️ 이어서 보내신 메시지는 처리 중 오류가 나서 답하지 못했습니다. 다시 보내 주세요.";
+export const STEER_TURN_FAILED_NOTE = "⚠️ An error occurred while handling the message you sent next, so it wasn't answered. Please send it again.";
 
 /** 이어 받은 턴이 말 없이 끝났을 때 — 조용히 첫 답만 나가면 «두 번째 메시지 무시» 와 같다. */
-export const STEER_TURN_EMPTY_NOTE = "(이어서 보내신 메시지에는 따로 드린 답이 없습니다.)";
+export const STEER_TURN_EMPTY_NOTE = "(There was no separate answer to the message you sent next.)";
 
 /** 앞 답 + 지금 턴의 답(실패면 실패 안내, 말이 없었으면 빈 답 안내) — 이어 받기·마감이 같은 규칙을 쓴다. */
 export const settleAnswer = (settled: string | undefined, current: string, failed: boolean): string =>
@@ -532,8 +533,8 @@ export const runClaude = async (
   //  넣을까" 를 물을 때 여기와 **같은 답**이어야 한다. 두 벌이면 구독 사용자(키 없이
   //  CLAUDE_CODE_OAUTH_TOKEN)가 한쪽에서만 조용히 빠진다.
   if (!claudeAuthAvailable()) {
-    throw new Error(
-      "Claude 인증 없음. ANTHROPIC_API_KEY 또는 CLAUDE_CODE_OAUTH_TOKEN 이 필요합니다.",
+    throw new ProviderUnavailableError(
+      "Claude credentials missing — set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN.",
     );
   }
 
@@ -2182,11 +2183,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
                     tool: toolName,
                     onHard: (tool, ms) => {
                       if (!effectiveAc.signal.aborted) {
-                        effectiveAc.abort(
-                          new Error(
-                            `도구 '${tool}' 이(가) ${Math.round(ms / 1000)}초 안에 응답하지 않아 턴을 중단했습니다.`,
-                          ),
-                        );
+                        effectiveAc.abort(new ToolHangError(tool, ms));
                       }
                     },
                   }),
@@ -2482,7 +2479,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     //   최소한 로그·turn_error 에는 남게 한다.
     if (isClaudeExecutableMissing(e)) {
       throw new Error(
-        `${bundledClaudeMissingHint()} (원본: ${e instanceof Error ? e.message : String(e)})`,
+        `${bundledClaudeMissingHint()} (original: ${e instanceof Error ? e.message : String(e)})`,
       );
     }
     throw e;

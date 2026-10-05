@@ -146,7 +146,7 @@ export const beginCodexLogin = async (): Promise<{ url: string; autoCallback: bo
           .end(
             '<!doctype html><meta charset="utf-8"><title>tiguclaw</title>' +
               '<body style="font:16px/1.6 system-ui;margin:12vh auto;max-width:30rem;padding:0 1.5rem">' +
-              "<h1>✅ 인증이 끝났습니다</h1><p>대시보드로 돌아가세요 — 상태가 곧 «인증됨» 으로 바뀝니다.</p>",
+              "<h1>✅ Signed in</h1><p>Go back to the dashboard — the status will switch to signed in shortly.</p>",
           );
         try {
           await completeCodexLogin({
@@ -188,11 +188,11 @@ export const finishCodexLogin = async (
 ): Promise<{ ok: boolean; message: string }> => {
   const session = pending;
   if (session === null) {
-    return { ok: false, message: "열려 있는 로그인이 없습니다 — 인증을 다시 시작하세요." };
+    return { ok: false, message: "No sign-in is in progress — start signing in again." };
   }
   const parsed = parseRedirectInput(pasted);
   if (parsed === null) {
-    return { ok: false, message: "code 를 못 찾았습니다 — 로그인 뒤 주소창 전체를 붙여넣어 주세요." };
+    return { ok: false, message: "No code found — after signing in, paste the full address bar URL." };
   }
   try {
     const r = await completeCodexLogin({
@@ -206,8 +206,8 @@ export const finishCodexLogin = async (
     return {
       ok: true,
       message:
-        `인증됐습니다 — 토큰을 홈 .env 에 저장했습니다(access ~${r.expiresInSec}초).` +
-        (r.clearedCooldowns > 0 ? ` codex 쿨다운 ${r.clearedCooldowns}건도 해제했습니다.` : ""),
+        `Signed in — saved the token to the home .env (access ~${r.expiresInSec}s).` +
+        (r.clearedCooldowns > 0 ? ` Also cleared ${r.clearedCooldowns} codex cooldown(s).` : ""),
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) };

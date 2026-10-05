@@ -47,8 +47,8 @@ const NUDGE_MS = 45_000;
  *  사용자가 브라우저에서 할 수 있는 행동(다시 보내기)을 준다. 중복 콜백은 `settled`
  *  가드가 무시하므로 여러 번 눌러도 안전하다.
  */
-const successPage = `<!doctype html><html lang="ko"><meta charset="utf-8">
-<title>tiguclaw OAuth 완료</title>
+const successPage = `<!doctype html><html lang="en"><meta charset="utf-8">
+<title>tiguclaw OAuth complete</title>
 <style>
  body{font:16px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem;color:#1a1a1a}
  h1{font-size:1.4rem;margin:0 0 .6rem}
@@ -58,21 +58,21 @@ const successPage = `<!doctype html><html lang="ko"><meta charset="utf-8">
  button:hover{background:#333}
  small{display:block;margin-top:1rem;color:#888}
 </style>
-<h1>✅ 인증이 끝났습니다</h1>
-<p>터미널로 돌아가면 설치가 이어집니다.</p>
-<p><strong>터미널이 그대로 멈춰 있나요?</strong> 아래를 눌러 한 번 더 보내보세요.</p>
-<button onclick="location.reload()">터미널로 다시 보내기</button>
-<small>그래도 안 되면 이 페이지의 주소창 전체를 복사해 터미널에 붙여넣고 Enter 하세요.</small>
+<h1>✅ Signed in</h1>
+<p>Go back to the terminal and setup will continue.</p>
+<p><strong>Is the terminal still stuck?</strong> Click below to send it again.</p>
+<button onclick="location.reload()">Send to the terminal again</button>
+<small>If that still doesn't work, copy this page's full address bar URL, paste it into the terminal and press Enter.</small>
 </html>`;
 
 const main = async (): Promise<void> => {
   const flow = await createAuthorizationFlow();
   console.log("\n=== tiguclaw Codex OAuth flow ===\n");
-  console.log("브라우저에서 아래 URL 을 열고 ChatGPT 로그인 + 권한 허용을 진행하세요:\n");
+  console.log("Open the URL below in a browser, sign in to ChatGPT and allow access:\n");
   console.log(flow.url);
-  console.log(`\ncallback 대기 중 (localhost:${PORT}${CALLBACK_PATH})...`);
+  console.log(`\nWaiting for the callback (localhost:${PORT}${CALLBACK_PATH})...`);
   console.log(
-    "★자동으로 안 넘어가면: 로그인 후 브라우저 **주소창 전체**를 복사해 여기에 붙여넣고 Enter.\n",
+    "★If it doesn't continue on its own: after signing in, copy the browser's **full address bar URL**, paste it here and press Enter.\n",
   );
 
   let settled = false;
@@ -112,15 +112,15 @@ const main = async (): Promise<void> => {
       //  바로 먹고, 토큰은 데몬이 다음 턴에 `.env` 변경을 보고 따라간다(`credential-env.ts`). 재시작 불필요.
       const cooldownNote =
         r.clearedCooldowns > 0
-          ? `\n⚠️ codex 쿨다운 ${r.clearedCooldowns}건을 해제했습니다(재인증 = 이전 한도 판정 무효).`
+          ? `\n⚠️ Cleared ${r.clearedCooldowns} codex cooldown(s) (signing in again voids the earlier rate-limit verdicts).`
           : "";
       const when = credentialFollowAvailable()
-        ? "이 홈을 쓰는 데몬은 다음 메시지부터 새 토큰을 씁니다"
-        : "데몬을 재시작하면 새 토큰을 씁니다(이 Node 에선 자동 반영이 꺼져 있습니다)";
-      console.log(`\n✅ 토큰 발급 + .env 저장 완료 — ${when}.${cooldownNote}`);
-      console.log(`   저장 위치: ${homeEnvPath()}`);
+        ? "a daemon using this home will use the new token from the next message"
+        : "restart the daemon to use the new token (automatic pickup is off on this Node version)";
+      console.log(`\n✅ Got the token and saved it to .env — ${when}.${cooldownNote}`);
+      console.log(`   Saved to: ${homeEnvPath()}`);
       console.log(`   access_token expires in ~${r.expiresInSec}s`);
-      console.log(`   refresh_token 보존 (자동 refresh hook 활성)`);
+      console.log(`   refresh_token kept (automatic refresh is on)`);
       resolve();
     };
 
@@ -133,7 +133,7 @@ const main = async (): Promise<void> => {
         // ★들어온 것을 전부 남긴다 — "첫 요청이 뭐였나" 를 다음엔 추론하지 않는다.
         console.log(
           `[codex-auth] ← ${req.method ?? "?"} ${url.pathname}` +
-            ` (${match ? "callback" : "무관 — 무시"}` +
+            ` (${match ? "callback" : "unrelated — ignored"}` +
             `${match ? `, code=${url.searchParams.has("code")} state=${url.searchParams.has("state")}` : ""})`,
         );
         if (!match) {
@@ -150,7 +150,7 @@ const main = async (): Promise<void> => {
         if (code === null) {
           res.writeHead(400).end("Missing code");
           console.warn(
-            "[codex-auth] code 없는 콜백 — 무시하고 계속 기다립니다(수동 붙여넣기도 가능).",
+            "[codex-auth] Callback without a code — ignoring it and still waiting (you can also paste the URL).",
           );
           return; // ★중단하지 않는다 — 프리페치·재시도 요청 하나로 흐름이 죽으면 안 된다.
         }
@@ -173,8 +173,8 @@ const main = async (): Promise<void> => {
       const msg = String(err);
       if (msg.includes("EADDRINUSE")) {
         console.error(
-          `🔴 포트 ${PORT} 이 이미 쓰이고 있습니다 — 공식 Codex CLI 로그인이 떠 있거나 ` +
-            `이전 codex-auth 가 안 죽었습니다. 그것을 닫고 다시 실행하세요.`,
+          `🔴 Port ${PORT} is already in use — the official Codex CLI login is running, or an ` +
+            `earlier codex-auth is still alive. Close it and run this again.`,
         );
       }
       fail(err);
@@ -186,20 +186,20 @@ const main = async (): Promise<void> => {
       const parsed = parseRedirectInput(line);
       if (parsed === null) {
         if (line.trim() !== "") {
-          console.warn("[codex-auth] code 를 못 찾았습니다 — 주소창 전체를 붙여넣어 주세요.");
+          console.warn("[codex-auth] No code found — paste the full address bar URL.");
         }
         return;
       }
-      console.log("[codex-auth] 붙여넣은 URL 에서 code 확인 — 토큰 교환합니다.");
+      console.log("[codex-auth] Found the code in the pasted URL — exchanging it for a token.");
       void complete(parsed.code, parsed.state).catch(fail);
     });
 
     nudge = setTimeout(() => {
       if (settled) return;
       console.log(
-        `\n… ${Math.round(NUDGE_MS / 1000)}초째 콜백이 안 옵니다.\n` +
-          "   브라우저에서 로그인을 마치셨다면 **주소창 전체를 복사해 여기에 붙여넣고 Enter** 하세요.\n" +
-          "   (콜백 페이지에서 새로고침을 해도 됩니다 — 둘 중 먼저 되는 쪽이 이깁니다.)\n",
+        `\n… No callback after ${Math.round(NUDGE_MS / 1000)} seconds.\n` +
+          "   If you have finished signing in, **copy the full address bar URL, paste it here and press Enter**.\n" +
+          "   (Reloading the callback page also works — whichever happens first wins.)\n",
       );
     }, NUDGE_MS);
   });

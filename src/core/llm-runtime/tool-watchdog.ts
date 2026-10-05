@@ -146,17 +146,31 @@ export const formatToolSlowNotice = (input: {
   const secs = Math.max(1, Math.round(input.secs));
   const subject =
     input.jobLabel === undefined
-      ? `도구 '${input.tool}' 이(가)`
-      : `백그라운드 작업 '${input.jobLabel}' 의 도구 '${input.tool}' 이(가)`;
-  // 조사는 레버마다 박는다 — "cancel_worker 으로" 는 틀린 한국어다(받침 ㄹ → "로").
-  const stop = input.jobLabel === undefined ? "`/stop` 으로" : "`cancel_worker` 로";
+      ? `Tool '${input.tool}'`
+      : `Tool '${input.tool}' in background task '${input.jobLabel}'`;
+  const stop = input.jobLabel === undefined ? "`/stop`" : "`cancel_worker`";
   return (
-    `⏳ ${subject} ${secs}초째 실행 중입니다. ` +
-    `오래 걸리는 작업이면 정상이니 그대로 두셔도 됩니다 — 끝나면 알려드려요. ` +
-    `안 끝나는 것 같으면 OS 권한 요청 다이얼로그가 떠 있는지, 외부 MCP 도구면 대상 앱이 켜져 있는지 확인해 보시고, ` +
-    `${stop} 중단하실 수 있어요.`
+    `⏳ ${subject} has been running for ${secs}s. ` +
+    `If it's a long job, that's normal — you can leave it, and you'll hear back when it finishes. ` +
+    `If it seems stuck, check whether an OS permission dialog is open (or, for an external MCP tool, whether its app is running); ` +
+    `you can stop it with ${stop}.`
   );
 };
+
+/**
+ * 도구 하드 상한으로 턴을 끊은 사유 — 어댑터가 abort 사유로 쓴다.
+ * ★분류는 **이름**으로 한다(`worker-jobs` 의 실패 분류). 문장은 사용자에게 보이므로 영어이고,
+ *  문구 매칭은 이름이 없는 문자열(옛 기록·감싸진 오류)용 폴백이다.
+ */
+export class ToolHangError extends Error {
+  constructor(
+    readonly tool: string,
+    readonly ms: number,
+  ) {
+    super(`Tool '${tool}' didn't respond within ${Math.round(ms / 1000)}s, so the turn was stopped.`);
+    this.name = "ToolHangError";
+  }
+}
 
 export interface ToolWatchInput {
   readonly channel: string;

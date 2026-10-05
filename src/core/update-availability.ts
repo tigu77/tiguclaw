@@ -299,12 +299,8 @@ export const checkUpdateAvailability = async (
   );
   const dirty = status.ok ? parsePorcelainZ(status.out) : [];
 
-  // ★`package-lock.json` 은 제외한다 — self-update 가 pull 직전에 `git checkout --` 로
-  //  되돌리는 파일이라 ff-only 를 막지 않는다. 그걸 blocked 로 세면 npm install 을 한 번만
-  //  돌려도 버튼이 영영 안 뜬다(실제로 흔한 상태다).
-  const blocking = dirty.filter(
-    (f) => f !== "package-lock.json" && !f.endsWith("/package-lock.json"),
-  );
+  // lock도 사용자 편집일 수 있다. 실제 updater와 같은 보존 정책으로 안내한다.
+  const blocking = dirty;
   if (blocking.length > 0) {
     const head = blocking.slice(0, 3).join(", ");
     const more = blocking.length > 3 ? ` 외 ${blocking.length - 3}개` : "";

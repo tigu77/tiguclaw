@@ -74,6 +74,10 @@ const runRefresh = async (
     channelFromThreadKey: () => null,
     channelMeta: () => null,
     deriveTabFallbackName: (tk: string) => `세션(${tk})`,
+    // 이름 고정 판정은 session-name-single-rule 이 실행으로 지킨다 — 여기선 정리 로직만 본다.
+    //  ★스텁이 없으면 ReferenceError 로 루프가 죽는다: 종전엔 pending 해제 **뒤**에 던져 안 보였고,
+    //   기본 탭도 부르게 되자(2026-10-05) 첫 행에서 죽어 정리 셋이 한꺼번에 빨개졌다.
+    commitPendingName: () => false,
     persistTabs: () => {},
     renderTabBar: () => {},
     clearReply: () => {},

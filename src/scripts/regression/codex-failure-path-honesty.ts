@@ -165,9 +165,9 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★재시도 무의미한 실패에 '잠시 후 다시 시도' 를 권하지 않는다",
-        !adviceDeterministic.includes("잠시 후 다시") &&
-          adviceDeterministic.includes("나눠") &&
-          adviceTransient.includes("잠시 후 다시"),
+        !adviceDeterministic.includes("try again in a moment") &&
+          adviceDeterministic.includes("smaller pieces") &&
+          adviceTransient.includes("try again in a moment"),
         `결정적="${adviceDeterministic.slice(0, 40)}…" / 일시적="${adviceTransient.slice(0, 20)}…"`,
       ),
     );

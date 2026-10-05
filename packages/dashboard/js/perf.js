@@ -48,6 +48,11 @@
         if (historyKeydown(e, input)) return;
         if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isTouchPrimary()) {
           e.preventDefault();
+          // ★엔터는 «보내기» 다 — 버튼이 중지 모드(응답 중 + 빈 입력)면 아무것도 안 한다 (2026-10-05 정태님: 응답 중 빈 입력에서
+          //  엔터를 치면 중지가 실행됐다). 제출 처리기는 버튼 모드만 보고 중지를 보내서, 엔터와 버튼 클릭이 갈리지 않았다.
+          //  중지는 **버튼을 눌러야만**. (`e.submitter` 로 가르면 옛 Safari 에서 버튼 중지까지 깨진다 — 그래서 여기서 막는다.)
+          const sendBtn = document.getElementById("chat-send");
+          if (sendBtn && sendBtn.dataset.mode === "stop") return;
           form.requestSubmit();
         }
       });

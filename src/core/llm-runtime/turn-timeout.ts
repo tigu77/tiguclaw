@@ -25,7 +25,9 @@
  * 핵심 불변식 (TT-I3): 이 에러의 message 는 facade `MODEL_REJECTED_PATTERNS`
  * (index.ts:60-80) 어느 정규식과도 매칭되면 안 된다 — 턴 타임아웃은 *모델 거부 아님*.
  * 매칭 시 멀쩡한 override 모델이 깨진 것으로 제거되고 무의미한 풀 폴백을 탄다. 1층
- * IdleTimeoutError 와 동일하게 "모델 거부 아님" 토큰을 박아 비매칭 보장 + 진단 가독성↑.
+ * IdleTimeoutError 와 동일하게 "not a provider rejection" 토큰을 박아 비매칭 보장 + 진단 가독성↑.
+ * ★문장에 `model` 을 쓰지 마라 — 시한 숫자에 `404` 가 끼면 `404…model` 패턴에 걸린다.
+ * ★`wall-clock time limit` 도 쓰지 마라 — 매니저 상한(`WorkerTimeoutError`)의 문구 폴백이 그걸 본다.
  */
 export class TurnTimeoutError extends Error {
   /** 백스톱 한계 (ms) — 진단용. 던지는 쪽이 자기 한계를 실어 보낸다. */
@@ -34,7 +36,7 @@ export class TurnTimeoutError extends Error {
   constructor(timeoutMs?: number) {
     // ⚠ 이 메시지 문자열은 isModelRejected 비매칭 보장의 일부 — 변경 시 검증 동반.
     super(
-      `턴 처리 시간 초과 (${timeoutMs ?? "미지정"}ms wall-clock 백스톱) — 모델 거부 아님`,
+      `Turn timed out at its wall-clock backstop (${timeoutMs ?? "unset"}ms) — not a provider rejection`,
     );
     this.name = "TurnTimeoutError";
     this.timeoutMs = timeoutMs;

@@ -23,7 +23,7 @@ export const addendumHeader = (round: number): string =>
 
 /** 거두기 턴이 실패·중단됐음을 보고서에 남기는 꼬리표. 조용히 잃지 않기 위한 것이다. */
 export const harvestFailureNote = (reason: string): string =>
-  `── 거두기 턴이 끝나지 못했다: ${reason} — 위 본 보고서는 그 전에 완성된 것이다 ──`;
+  `── The wrap-up turn didn't finish: ${reason} — the main report above was completed before that ──`;
 
 /**
  * 본 보고서 + 거두기 턴 산출물들 → 최종 결과 한 덩어리.

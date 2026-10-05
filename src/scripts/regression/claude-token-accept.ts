@@ -72,7 +72,7 @@ export const check: RegressionCheck = {
         assert(
           "★확인을 통과한 후보만 저장한다(낱말이 붙은 후보는 거부 → 원래 토큰) · 메모리·파일 둘 다 · Claude 쿨다운만 풀린다",
           r1.ok && process.env.CLAUDE_CODE_OAUTH_TOKEN === TOKEN && saved() === TOKEN && JSON.stringify(keys) === '["codex"]' &&
-            r1.message.includes("쿨다운"),
+            r1.message.includes("cooldown"),
           { ok: r1.ok, message: r1.message, keys, fileMatches: saved() === TOKEN },
         ),
       );
@@ -93,7 +93,7 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "확인을 못 하면(네트워크) 저장은 하되 «확인하지 못했다» 고 말한다 — 검증 실패로 인증을 막지 않는다",
-          r3.ok && process.env.CLAUDE_CODE_OAUTH_TOKEN === other && r3.message.includes("확인하지 못했습니다"),
+          r3.ok && process.env.CLAUDE_CODE_OAUTH_TOKEN === other && r3.message.includes("could not be confirmed"),
           { ok: r3.ok, message: r3.message },
         ),
       );
@@ -127,7 +127,7 @@ export const check: RegressionCheck = {
         out.push(
           assert(
             "★기본 확인이 실제로 돈다 — 401=거부(저장 안 함) · 500=모름(후보 하나면 저장) · 200=통함, 구독 머리(bearer·beta)와 시한을 싣는다",
-            !denied.ok && unknownOne.ok && unknownOne.message.includes("확인하지 못했습니다") && good.ok && good.message.includes("확인하고") &&
+            !denied.ok && unknownOne.ok && unknownOne.message.includes("could not be confirmed") && good.ok && good.message.includes("Checked and saved") &&
               calls[0]?.url.includes("/v1/models") === true && h.authorization === `Bearer ${TOKEN}` && h["anthropic-beta"] === "oauth-2025-04-20" &&
               calls.every((c) => c.signal),
             { denied: denied.ok, unknownOne: unknownOne.ok, good: good.ok, calls: calls.length, beta: h["anthropic-beta"], signal: calls.every((c) => c.signal) },

@@ -148,8 +148,8 @@ export const judgeGlobalCommand = (
   if (resolved === null) {
     return {
       kind: "missing",
-      detail: "PATH 에서 못 찾음",
-      fix: "설치 폴더에서 `npm run onboard` (전역 명령 등록을 다시 겁니다). 그 전까진 `node bin/tiguclaw.mjs <명령>` 으로 대신할 수 있습니다.",
+      detail: "not found on PATH",
+      fix: "Run `npm run onboard` in the install folder (it registers the global command again). Until then you can use `node bin/tiguclaw.mjs <command>` instead.",
     };
   }
   const norm = (p: string): string => {
@@ -180,8 +180,8 @@ export const judgeGlobalCommand = (
     if (inside(linked.root)) return { kind: "ok", detail: `${resolved} → ${linked.root}` };
     return {
       kind: "elsewhere",
-      detail: `${resolved} → ${linked.root} (이 설치가 아닙니다)`,
-      fix: "다른 tiguclaw 설치본이 전역 명령을 잡고 있습니다. 이 설치를 쓰려면 여기서 `npm run onboard` 를 다시 돌리거나, 명령마다 `node bin/tiguclaw.mjs <명령>` 을 쓰세요.",
+      detail: `${resolved} → ${linked.root} (not this install)`,
+      fix: "Another tiguclaw install owns the global command. To use this install, run `npm run onboard` here again, or use `node bin/tiguclaw.mjs <command>` for each command.",
     };
   }
   // ★2.5순위: **링크가 끊겼다** — 모르는 게 아니라 답을 아는 상태다 (2026-09-03 사용자 신고).
@@ -193,15 +193,15 @@ export const judgeGlobalCommand = (
   if (linked?.kind === "broken") {
     return {
       kind: "broken-link",
-      detail: `${resolved} → ${linked.expected} (없음 — 전역 링크가 끊겼습니다)`,
-      fix: "설치 폴더에서 `npm link` 로 전역 명령을 다시 거세요. 그 전까진 `node bin/tiguclaw.mjs <명령>` 으로 대신할 수 있습니다.",
+      detail: `${resolved} → ${linked.expected} (missing — the global link is broken)`,
+      fix: "Run `npm link` in the install folder to register the global command again. Until then you can use `node bin/tiguclaw.mjs <command>` instead.",
     };
   }
   // 3순위(링크 조회 실패 + 명령도 밖): **단정하지 않는다** — 모른다고 말한다.
   return {
     kind: "unknown",
-    detail: `${resolved} — 어느 설치를 가리키는지 확인 못 했습니다(npm 전역 조회 실패)`,
-    fix: "판정 불가입니다. 이 설치를 확실히 쓰려면 `node bin/tiguclaw.mjs <명령>` 을 쓰세요.",
+    detail: `${resolved} — could not tell which install it points to (the npm global lookup failed)`,
+    fix: "Cannot tell. To be sure you are using this install, run `node bin/tiguclaw.mjs <command>`.",
   };
 };
 

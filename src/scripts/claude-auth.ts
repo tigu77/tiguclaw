@@ -49,9 +49,9 @@ const main = async (): Promise<number> => {
     console.error(`\n★ ${bundledClaudeMissingHint()}`);
     return 1;
   }
-  console.log("\n=== Claude 구독 토큰 발급 ===");
-  console.log(`실행기: ${bin}`);
-  console.log("브라우저가 열리면 로그인하세요. (구독 계정이 필요합니다)\n");
+  console.log("\n=== Claude subscription token ===");
+  console.log(`Executable: ${bin}`);
+  console.log("Sign in when the browser opens. (A subscription account is required.)\n");
 
   // ★stdout 은 파이프로 받되 **그대로 되흘린다** — 우리가 토큰을 집기 위해 화면을 가로채면
   //  안 된다(사용자는 진행 상황을 봐야 한다). stdin·stderr 은 그대로 물려준다.
@@ -75,24 +75,24 @@ const main = async (): Promise<number> => {
   let r = await acceptClaudeToken(captured.out);
   if (!r.ok) {
     // ★자동이 안 되면 **막히지 않게** 한다. 실패 자체는 정직하게 말한다.
-    console.log(`\n${r.message}\n위 출력에서 토큰을 복사해 붙여넣고 빈 줄에서 Enter 를 누르세요(바로 Enter = 그만두기).`);
+    console.log(`\n${r.message}\nCopy the token from the output above, paste it, then press Enter on an empty line (Enter right away = give up).`);
     const pasted = await askLines("CLAUDE_CODE_OAUTH_TOKEN: ");
     if (pasted === "") {
-      console.error("\n★ .env 를 건드리지 않았습니다.");
+      console.error("\n★ .env was not changed.");
       return 1;
     }
     r = await acceptClaudeToken(pasted);
   }
   console.log(`\n${r.ok ? "✅" : "★"} ${r.message}`);
   // 어느 홈에 들어갔나 — 한 기계에 인스턴스가 여럿이면(개발·설치) 로그만으로 갈려야 한다.
-  if (r.savedTo !== undefined) console.log(`   저장 위치: ${r.savedTo}`);
+  if (r.savedTo !== undefined) console.log(`   Saved to: ${r.savedTo}`);
   return r.ok ? 0 : 1;
 };
 
 void main().then(
   (c) => process.exit(c),
   (e: unknown) => {
-    console.error("claude-auth 실패:", e instanceof Error ? e.message : String(e));
+    console.error("claude-auth failed:", e instanceof Error ? e.message : String(e));
     process.exit(1);
   },
 );

@@ -195,13 +195,13 @@ export const describeNativeLoadFailure = (
   //   better_sqlite3.node 를 잠가 EPERM). 도구가 이미 아는 순서를 사람이 다시 적으면
   //   그 사본이 먼저 낡는다.
   return (
-    "SQLite 네이티브 모듈(better-sqlite3)을 열 수 없습니다 — 설치가 덜 끝났거나 " +
-    `node 버전(${process.version})에 맞게 빌드되지 않았습니다.\n` +
-    "  조치: 터미널에서 `tiguclaw update` (데몬 정지 → 의존성 재설치 → 재빌드 → 기동, 실패 시 롤백)\n" +
-    "  ★`npm ci` 를 직접 돌리지 마세요 — 데몬이 떠 있으면 파일 잠금으로 네이티브 모듈이 " +
-    "안 깔려 오히려 멀쩡하던 설치가 깨집니다.\n" +
-    "  그래도 안 되면 빌드 도구가 필요합니다 — 윈도우: Visual Studio Build Tools(C++), " +
-    "리눅스: build-essential + python3."
+    "Cannot load the SQLite native module (better-sqlite3) — the install did not finish, or it " +
+    `was not built for this Node version (${process.version}).\n` +
+    "  Fix: run `tiguclaw update` in a terminal (stops the daemon → reinstalls dependencies → rebuilds → starts it, rolls back on failure)\n" +
+    "  ★Don't run `npm ci` yourself — while the daemon is running, file locks keep the native module " +
+    "from installing, and a working install ends up broken.\n" +
+    "  If that still fails, you need build tools — Windows: Visual Studio Build Tools (C++), " +
+    "Linux: build-essential + python3."
   );
 };
 
@@ -215,7 +215,7 @@ export const explainDbOpenFailure = (e: unknown): Error => {
   const hint = describeNativeLoadFailure(msg);
   if (hint === null) return e instanceof Error ? e : new Error(msg);
   // 원문을 버리지 않는다 — 안내를 **앞에** 붙여 사람이 먼저 읽게 한다.
-  const wrapped = new Error(`${hint}\n\n원문: ${msg}`);
+  const wrapped = new Error(`${hint}\n\nOriginal error: ${msg}`);
   // ★`stack` 을 **원본으로 덮지 않는다** (2026-08-19, 윈도우 사용자 머신 로그로 실증).
   //  종전엔 `wrapped.stack = e.stack` 이었다. 그런데 크래시 핸들러(`logFatal(..., err)`)는
   //  Error 객체를 통째로 넘기고 콘솔은 그럴 때 `message` 가 아니라 **`stack` 을 찍는다** —
@@ -227,7 +227,7 @@ export const explainDbOpenFailure = (e: unknown): Error => {
   wrapped.stack =
     originStack === undefined
       ? wrapped.stack
-      : `${wrapped.message}\n--- 원본 스택 ---\n${originStack}`;
+      : `${wrapped.message}\n--- original stack ---\n${originStack}`;
   return wrapped;
 };
 
@@ -1446,7 +1446,9 @@ export const sessionDisplayName = (
   if (custom !== undefined && custom !== "") return custom;
   // 기본 세션은 고정 라벨 — 여기 없으면 소비자마다 따로 특수처리하게 되고(실제로
   // `/sessions` 만 갖고 있었다), 대시보드에선 첫 발화로 파생돼 서로 달라진다.
-  if (threadKey === DEFAULT_SESSION_ID) return "기본 세션";
+  //  ★이제 대시보드가 기본 세션에도 «세션1» 을 남기므로(2026-10-05) 이 라벨은 **이름이 한 번도 안 남은 경우**(대시보드를 안 연
+  //   텔레그램 전용 사용 등)의 마지막 대체다 — 서버 고정 문구라 영어.
+  if (threadKey === DEFAULT_SESSION_ID) return "Default session";
   const from = preview?.replace(/\s+/g, " ").trim();
   if (from !== undefined && from !== "") {
     return from.length > SESSION_NAME_DERIVE_MAX

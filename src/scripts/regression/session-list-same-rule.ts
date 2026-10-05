@@ -58,7 +58,7 @@ const run = async (): Promise<Assertion[]> => {
   {
     const w = await sourceHas("../../core/entry", [
       /const hiddenCount = allThreads\.length - threads\.length;/,
-      /이름 없는 세션 \$\{hiddenCount\}개는 숨겼어요/,
+      /\$\{hiddenCount\} unnamed session[\s\S]{0,60}?hidden — give/,
     ]);
     out.push(
       assert(
@@ -118,7 +118,7 @@ const run = async (): Promise<Assertion[]> => {
     // ★`/clear` 는 **진입점에 남아 있다** — `/` 블록 앞에서 처리되는 갈래라 옮기지 않았다.
     //  일괄로 자리를 바꾸다 이것까지 옮겨 «막다른 안내» 로 오탐이 났다(2026-09-05).
     const w = await sourceHas("../../index.ts", [
-      /컨텍스트 초기화됨[\s\S]{0,200}?\/sessions archive/,
+      /Context cleared[\s\S]{0,200}?\/sessions archive/,
     ]);
     out.push(
       assert(

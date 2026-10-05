@@ -172,6 +172,22 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★엔터는 중지가 아니다 (2026-10-05 정태님: 응답 중 빈 입력에서 엔터 → 중지 실행). 제출 처리기는 버튼 모드만 보고 `/stop` 을
+    //  보내므로, 엔터 경로가 **제출 전에** 중지 모드를 걸러야 한다. 엔터 분기만 떼어 «중지 모드면 return» 이 requestSubmit 앞에 있는지 본다.
+    //  ★실제 동작은 헤드리스 Chrome(CDP 키 이벤트 · fetch 로 /stop 가로채 기록만 · 채팅 뷰 활성 + 포커스 흉내)으로 확인했다(10-05): 빈 입력 엔터 → /stop 0건·줄바꿈 없음 ·
+    //   버튼 클릭 → 1건 · 대조(확인 줄이 버튼을 못 찾게 하면) 엔터 → 1건. 이 검사는 소스 모양이라 그 실측의 대신이 아니라 경보다.
+    const perf = read("packages/dashboard/js/perf.js");
+    const enterBranch = /if \(e\.key === "Enter" && !e\.shiftKey[\s\S]*?\n {8}\}/.exec(perf)?.[0] ?? "";
+    const guardAt = enterBranch.search(/dataset\.mode === "stop"\) return;/);
+    const submitAt = enterBranch.indexOf("form.requestSubmit()");
+    out.push(
+      assert(
+        "★엔터는 «보내기» 만 — 버튼이 중지 모드(응답 중·빈 입력)면 제출하지 않는다(중지는 버튼으로만)",
+        guardAt >= 0 && submitAt > guardAt,
+        guardAt < 0 ? "★엔터 분기에 중지 모드 확인 없음" : submitAt <= guardAt ? "★제출이 확인보다 먼저" : "확인 → 제출",
+      ),
+    );
+
     return out;
   },
 };

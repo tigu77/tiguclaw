@@ -49,6 +49,20 @@ export const isAuthRejected = (errStr: string): boolean =>
 export const keepsFoldBudget = (errStr: string): boolean => isRateLimited(errStr) || isAuthRejected(errStr);
 
 /**
+ * **자격 증명 부재** — 어댑터가 API 를 부르기 **전에** 던지는 사전 가드(키·토큰이 아예 없음).
+ *
+ * ★판정은 **이름**으로 한다 (2026-10-05). 종전엔 문구(`인증 없음`·`토큰 없음`)를 정규식으로 맞춰서,
+ *  사용자에게 보이는 이 문장을 영어로 바꾸면 «풀 간 폴백» 판정이 조용히 죽었다. 문구 매칭은
+ *  감싸진 오류용 폴백으로만 남는다(`isProviderUnavailable`).
+ */
+export class ProviderUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderUnavailableError";
+  }
+}
+
+/**
  * **모델 과부하 판정** (2026-08-12) — 한도(계정 축)와 **다른 축**의 실패다.
  *
  * ★왜 나누나: 같은 "실패"라도 **누가 죽었는지**가 다르고, 그래서 대책이 다르다.
@@ -114,6 +128,8 @@ const parseResetsAtMs = (errStr: string): number | null => {
   return ms > 0 ? Math.min(ms, MAX_COOLDOWN_MS) : null;
 };
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
 /**
  * 한도 리셋 시점을 **사람이 읽는 문장**으로 — 여기가 정의점이다 (2026-08-14).
  *
@@ -134,17 +150,20 @@ export const formatResetAt = (
 ): string => {
   const at = new Date(now + ms);
   const min = Math.max(1, Math.round(ms / 60_000));
-  if (min < 60) return `약 ${min}분 후`;
+  if (min < 60) return `in about ${min} min`;
   // ★로케일 API 를 안 쓴다 — 같은 코드가 맥·윈도우·리눅스에서 도는데 `toLocaleTimeString`
   //  은 ICU 에 따라 "오전 3:14"·"AM 3:14"·"3:14 AM" 로 갈린다(실측: 맥에서 "AM 3:14").
   //  사용자에게 나가는 문장이 플랫폼마다 다르면 그 자체가 결함이다. 직접 조립한다.
+  //  ★서버 고정 문구는 영어다(2026-10-05 결정) — 월 이름도 직접 든다(로케일 API 금지 이유와 같다).
   const h24 = at.getHours();
-  const ampm = h24 < 12 ? "오전" : "오후";
+  const ampm = h24 < 12 ? "AM" : "PM";
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-  const hhmm = `${ampm} ${h12}시 ${String(at.getMinutes()).padStart(2, "0")}분`;
+  const hhmm = `${h12}:${String(at.getMinutes()).padStart(2, "0")} ${ampm}`;
+  const hours = Math.round(min / 60);
+  const hoursRel = `in about ${hours} hour${hours === 1 ? "" : "s"}`;
   const sameDay = at.toDateString() === new Date(now).toDateString();
-  if (sameDay) return `오늘 ${hhmm}쯤 (약 ${Math.round(min / 60)}시간 후)`;
+  if (sameDay) return `today around ${hhmm} (${hoursRel})`;
   const days = ms / 86_400_000;
-  const rel = days < 2 ? `약 ${Math.round(min / 60)}시간 후` : `약 ${days.toFixed(1)}일 후`;
-  return `${at.getMonth() + 1}월 ${at.getDate()}일 ${hhmm}쯤 (${rel})`;
+  const rel = days < 2 ? hoursRel : `in about ${days.toFixed(1)} days`;
+  return `${MONTHS[at.getMonth()]} ${at.getDate()} around ${hhmm} (${rel})`;
 };

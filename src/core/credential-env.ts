@@ -166,7 +166,7 @@ export const startHomeCredentialWatch = (envPath: string): void => {
   home.snapshot();
   // 꺼졌으면 **말한다** — 조용히 꺼지면 «재발급했는데 안 먹는다» 를 로그로 풀 수 없다(전체 검토).
   if (!credentialFollowAvailable()) {
-    console.warn("[env] 인증값 따라가기 꺼짐 — 이 Node 에 util.parseEnv 가 없습니다(20.12 미만). 재발급한 토큰은 재시작 뒤에 반영됩니다.");
+    console.warn("[env] Credential following is off — this Node has no util.parseEnv (older than 20.12). Re-issued tokens take effect after a restart.");
   }
 };
 

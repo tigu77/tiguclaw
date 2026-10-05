@@ -44,7 +44,7 @@ if (cmd !== undefined && LIFECYCLE.has(cmd)) {
   //  여기서 한 번 깔아준다: 순수 node + npm 만 쓰므로 dep-free 원칙을 안 깬다.
   const tsxEntry = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
   if (!existsSync(tsxEntry)) {
-    console.log("[tiguclaw] 의존성이 없습니다 — npm ci 로 설치합니다 (최초 1회)…");
+    console.log("[tiguclaw] Dependencies are missing — installing them with npm ci (first run only)…");
     // ci 는 lockfile 이 있어야 한다. 없으면(개발 중 체크아웃) install 로 강등.
     const useCi = existsSync(path.join(root, "package-lock.json"));
     // ★`--ignore-scripts=false` 를 **명시**한다 (2026-08-20 적대 검토 B-F1).
@@ -58,7 +58,7 @@ if (cmd !== undefined && LIFECYCLE.has(cmd)) {
     });
     if ((boot.status ?? 1) !== 0 || !existsSync(tsxEntry)) {
       console.error(
-        "[tiguclaw] 의존성 설치 실패 — 레포 루트에서 `npm ci` 를 직접 돌린 뒤 다시 시도하세요.",
+        "[tiguclaw] Dependency install failed — run `npm ci` in the repo root yourself, then try again.",
       );
       process.exit(1);
     }
@@ -80,9 +80,9 @@ if (cmd !== undefined && LIFECYCLE.has(cmd)) {
       });
       if ((heal.status ?? 1) !== 0 || (again.status ?? 1) !== 0) {
         console.error(
-          "[tiguclaw] SQLite 네이티브 모듈을 열 수 없습니다 — 이 상태로는 데몬이 부팅마다 죽습니다.\n" +
-            "   빌드 도구가 필요할 수 있습니다 — 윈도우: Visual Studio Build Tools(C++),\n" +
-            "   리눅스: build-essential + python3. 그 뒤 `npm rebuild better-sqlite3`.",
+          "[tiguclaw] Cannot load the SQLite native module — in this state the daemon will crash on every boot.\n" +
+            "   You may need build tools — Windows: Visual Studio Build Tools (C++),\n" +
+            "   Linux: build-essential + python3. Then run `npm rebuild better-sqlite3`.",
         );
         process.exit(1);
       }

@@ -157,7 +157,7 @@ const main = async (): Promise<void> => {
     await until(() => out.includes("휘발성회귀"), 20_000);
     // ② 휘발성 아님 — 목록. 명령이 남아야 한다(휘발이 전부로 새지 않는지).
     child.stdin.write("/sessions\n");
-    await until(() => out.includes("어느 세션에 묶을까요"), 20_000);
+    await until(() => out.includes("Which session should this chat use"), 20_000);
     // ★대문자 축(`/SESSIONS use x`)은 **여기서 안 본다** (2026-08-23 4라운드).
     //  그 입력은 슬래시 명령이 아니라 **LLM 턴을 실제로 돌린다** — 어댑터 SDK 는 env 밖
     //  (`~/.claude`)의 자격을 쓰므로 env 봉인으로도 못 막았고, 스위트가 돌 때마다 진짜

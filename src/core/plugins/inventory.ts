@@ -1128,21 +1128,21 @@ export const formatInventoryForUser = (inv: InventoryResult): string => {
     if (entries.length === 0) return null;
     const names = entries.map((e) =>
       e.category === "external_plugin" && e.enabled === false
-        ? `${e.name}(비활성)`
+        ? `${e.name}(disabled)`
         : e.name,
     );
     return `${name} (${entries.length}): ${names.join(" · ")}`;
   };
 
-  const lines: string[] = [`tiguclaw 플러그인 (총 ${total}건)`, ""];
+  const lines: string[] = [`tiguclaw plugins (${total} in total)`, ""];
 
-  const ch = compactLine("채널", inv.channel);
+  const ch = compactLine("Channels", inv.channel);
   if (ch !== null) lines.push(ch);
 
-  const sk = compactLine("스킬", inv.skill);
+  const sk = compactLine("Skills", inv.skill);
   if (sk !== null) lines.push(sk);
 
-  const ag = compactLine("에이전트", inv.agent);
+  const ag = compactLine("Agents", inv.agent);
   if (ag !== null) lines.push(ag);
 
   if (inv.mcp.length > 0) {
@@ -1155,7 +1155,7 @@ export const formatInventoryForUser = (inv: InventoryResult): string => {
     );
   }
 
-  const ex = compactLine("외부 플러그인", inv.external_plugin);
+  const ex = compactLine("External plugins", inv.external_plugin);
   if (ex !== null) lines.push(ex);
 
   return capWithEllipsis(lines.join("\n"), USER_CAP_BYTES);

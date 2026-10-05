@@ -219,7 +219,7 @@ export const check: RegressionCheck = {
     //  대신 제품 쪽을 튼튼하게 했다: 런타임(`file-ops`)이 같은 해소를 쓰고 부팅 로그에
     //  결과를 남기므로, 닥터가 조용히 꺼져도 **데몬 로그에서 드러난다**.
     const doctorChecks = /const rg = await ensureRipgrep\(getPaths\(\)\.home\)/.test(body);
-    const doctorReports = /issues\.push\("ripgrep 없음/.test(body);
+    const doctorReports = /issues\.push\("ripgrep missing/.test(body);
     // 런타임이 **같은 판정**을 쓴다 — 여기서 또 뒤지면 "닥터는 찾았다는데 데몬은 못 찾는" 상태가 된다.
     const runtimeShares =
       /findRipgrep\(getPaths\(\)\.home\)/.test(fileops) &&

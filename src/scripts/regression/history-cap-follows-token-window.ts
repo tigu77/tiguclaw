@@ -127,11 +127,12 @@ export const check: RegressionCheck = {
     const postWm = getThreadSummary("regr:cap-post")?.compactedThrough ?? 0;
     const postLeft = loadThreadHistoryWithIds("http-bridge", "regr:cap-post").filter((t) => t.id > postWm).reduce((n, t) => n + t.content.length, 0);
     // 턴 뒤 요약은 **그 시점에** 상한을 다시 계산한다 — 요청 때는 실측 없음(20만), 턴 중 2.3 을 쟀으면 뒤에서 그 기준으로 판단(헛접기 없음).
-    //  요청 때는 기준(약 13.3만) 바로 아래(약 13만)라 안 접고, 턴이 끝나며 기준을 넘는다 — 옛 상한이면 뒤에서 접고, 다시 계산하면 안 접는다.
-    seed("regr:cap-late", 13);
+    //  요청 때는 기준(약 12.9만 — 접힌 도구 결과 목록 몫 4천 자를 뺀 값, 2026-10-05) 바로 아래(약 12만)라 안 접고, 턴이 끝나며 기준을 넘는다
+    //  (약 13.2만) — 옛 상한이면 뒤에서 접고, 다시 계산하면 안 접는다.
+    seed("regr:cap-late", 12);
     await withPort("regr:cap-late:req", () => req("regr:cap-late"));
     recordTokenDensity("regr:cap-late", 230_000, 100_000); // 이 턴 안에서 잰 값
-    appendApiTurn({ channel: "http-bridge", threadKey: "regr:cap-late", claudeSessionId: "s-regr:cap-late", userContent: "하나 더 " + "마".repeat(4_000), assistantContent: "답 " + "바".repeat(4_000) });
+    appendApiTurn({ channel: "http-bridge", threadKey: "regr:cap-late", claudeSessionId: "s-regr:cap-late", userContent: "하나 더 " + "마".repeat(6_000), assistantContent: "답 " + "바".repeat(6_000) });
     await withPort("regr:cap-late:post", async () => { await H.compactHistoryAfterTurn("regr:cap-late"); await H.settleThreadCompaction("regr:cap-late"); });
 
     // 배선(소스) — OpenAI 는 실모델 가드로 실경로가 못 돈다 · 퍼사드가 재지 않는 어댑터의 턴 뒤 비율을 지운다

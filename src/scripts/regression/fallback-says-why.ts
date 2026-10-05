@@ -40,10 +40,10 @@ export const check: RegressionCheck = {
       .map((l) => l.replace(/\/\/.*$/, ""))
       .join("\n")
       .replace(/\/\*[\s\S]*?\*\//g, "");
-    const at = code.indexOf("지정 모델 \\`${requestedLabel}\\`");
+    const at = code.indexOf("The selected model \\`${requestedLabel}\\`");
     const block = at < 0 ? "" : code.slice(Math.max(0, at - 1200), at + 600);
 
-    const carries = /사유: \$\{reason\}/.test(block);
+    const carries = /Reason: \$\{reason\}/.test(block);
     // ★**조립을 실행해서 잰다** (2026-09-01). 종전엔 이 판정이 전부 소스 문자열이라
     //  `const note = upstreamLimitNote(...)` 를 `= ""` 한 줄로 바꾸면 P1 이 통째로 죽는데
     //  (해설이 다시 본문 뒤로 가 200자에 잘린다) 스위트가 초록이었다 — 부품만 실행하고
@@ -58,7 +58,7 @@ export const check: RegressionCheck = {
       " ".repeat(0);
     const assembled = fallbackReason(errorDetail(new Error(upstream485)));
     // ①해설이 **보인다** ②해설이 맨 앞이다 ③원문도 조금은 남는다 ④전체가 폭주하지 않는다
-    const noteVisible = assembled.startsWith("★ ") && /도구 호출이 안 됩니다/.test(assembled);
+    const noteVisible = assembled.startsWith("★ ") && /can't make tool calls/.test(assembled);
     const bodyKept = /400/.test(assembled);
     const bounded = assembled.length < 600;
     // ★해설이 **두 번 들어가지 않는다** — `errorDetail` 을 두 번 지난 오류(감싸기)에서
@@ -68,7 +68,7 @@ export const check: RegressionCheck = {
     //   경계를 안 넘는 픽스처는 검사가 아니다.
     const short = "400 thought_signature missing";
     const doubled = fallbackReason(errorDetail(new Error(errorDetail(new Error(short)))));
-    const noDoubleNote = (doubled.match(/도구 호출이 안 됩니다/g) ?? []).length === 1;
+    const noDoubleNote = (doubled.match(/can't make tool calls/g) ?? []).length === 1;
     // ★**해설이 자르기보다 앞에 놓인다** (적대 검토 P1). 종전엔 해설이 본문 뒤에 붙고
     //  전체를 200자로 잘랐다 — 동기가 된 실측 오류가 **485자**라 해설이 통째로 잘려나갔다.
     //  즉 이 릴리스의 요점이 **정작 그 사례에서 안 보였다.** 자르는 건 상류 원문뿐이어야 한다.
@@ -95,7 +95,7 @@ export const check: RegressionCheck = {
         block !== "" && carries && fromAdapter && noteFirst && noDoubleNote,
         block === ""
           ? "★고지 블록을 못 찾음"
-          : `485자 오류 → ${assembled.length}자 · 첫머리="${assembled.slice(0, 24)}…" · 원문잔존=${String(bodyKept)} · 이중해설(짧은본문 ${short.length}자)=${(doubled.match(/도구 호출이 안 됩니다/g) ?? []).length}회`,
+          : `485자 오류 → ${assembled.length}자 · 첫머리="${assembled.slice(0, 24)}…" · 원문잔존=${String(bodyKept)} · 이중해설(짧은본문 ${short.length}자)=${(doubled.match(/can't make tool calls/g) ?? []).length}회`,
       ),
       assert(
         "★★그 사유가 **재액터를 지난다** — 상류 오류 본문엔 요청 헤더가 섞여 나올 수 있고, 이 문장은 화면과 기록으로 간다",

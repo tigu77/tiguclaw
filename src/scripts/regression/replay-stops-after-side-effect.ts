@@ -139,7 +139,7 @@ export const check: RegressionCheck = {
         ),
         assert(
           "★그리고 실패 사유에 **부분 실행**이 실린다",
-          sideEffect.includes("다시 돌릴 수 없습니다"),
+          sideEffect.includes("can't be re-run"),
           sideEffect.split("\n").slice(-1)[0]?.slice(0, 60) ?? "",
         ),
       );
@@ -216,7 +216,7 @@ export const check: RegressionCheck = {
         ),
         assert(
           "★★부분 실행 실패가 **다음 풀의 성공에 가려지지 않는다**",
-          result.includes("다시 돌릴 수 없습니다") && !result.includes("둘째 풀 성공"),
+          result.includes("can't be re-run") && !result.includes("둘째 풀 성공"),
           result.split("\n").slice(-1)[0]?.slice(0, 60) ?? "",
         ),
       );

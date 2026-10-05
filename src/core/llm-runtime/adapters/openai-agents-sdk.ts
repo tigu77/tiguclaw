@@ -362,6 +362,7 @@ export const createTurnInputFilter = (deps: {
 import { assertLiveModelAllowed } from "../regression-model-guard.js";
 import { publishTurnMeta } from "../turn-meta.js";
 import { beginSummaryUsage } from "../auxiliary-usage.js";
+import { ProviderUnavailableError } from "../rate-limit.js";
 
 /**
  * SDK 도구 결과(`rawItem.output`)의 글 — string / `{text}` 노드 / **text 노드 배열**(MCP CallToolResult). 활동 미리보기와 기록이 같은 글을 쓴다.
@@ -418,8 +419,8 @@ export const runOpenAi = async (
   // 인증 가드 — provider conn 기반(기존 OPENAI_API_KEY 직접 throw 완화).
   // 키 없는 서버(사용자 정의, apiKeyEnv 없음)는 자리표시 키로 통과. 정품 openai/google 은 키 필요.
   if (conn.apiKey === undefined || conn.apiKey === "") {
-    throw new Error(
-      `'${input.provider ?? "openai"}' 인증 없음. ${conn.apiKeyEnv} 가 필요합니다.`,
+    throw new ProviderUnavailableError(
+      `'${input.provider ?? "openai"}' credentials missing — ${conn.apiKeyEnv} is required.`,
     );
   }
 

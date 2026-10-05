@@ -8,11 +8,12 @@
  *    덮어쓰거나 겨눴다(포트는 홈 `.env` 를 읽는데 라벨만 안 읽었다).
  *  ③ 감독자가 없는데 재시작 요청에 202 «접수» 를 줬다 — 판단은 그 뒤 코어가 해서 «중단» 은 로그에만 남았다.
  */
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { assert, assertIsolated, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -70,7 +71,7 @@ export const check: RegressionCheck = {
   guards: "한 기계의 두 인스턴스 — 운영 재시작이 점검용을 죽이고(홈 앞부분 일치) · --home 만 준 설치가 운영 예약작업을 덮어쓰고 · 감독자 없는 재시작이 202 를 주던 것",
   run: async (): Promise<Assertion[]> => {
     assertIsolated();
-    const d = (await import(path.join(repo, "bin/daemon.mjs"))) as Daemon;
+    const d = (await import(pathToFileURL(path.join(repo, "bin/daemon.mjs")).href)) as Daemon;
     const prod = "C:\\Users\\M\\.tiguclaw";
     // 예약작업 감독자 명령줄 · ConvertTo-Csv 가 따옴표를 겹친 모양 · 홈 아래 클론의 데몬 · 슬래시·대소문자가 다른 홈
     const sup = (home: string): string => `"C:\\nodejs\\node.exe" "E:\\r\\bin\\daemon.mjs" "supervise" "--home" "${home}" "--runtime" "built"`;
@@ -146,11 +147,20 @@ export const check: RegressionCheck = {
       let body: unknown;
       let published = 0;
       const res = { writeHead: (s: number) => { status = s; }, end: (b: string) => { body = JSON.parse(b); }, setHeader: () => {} };
+      const realSpawn = childProcess.spawnSync;
+      // Windows 호스트에 실제 운영 작업이 있어도 조회하지 않는다 — OS 경계만 fake.
+      childProcess.spawnSync = ((file: string) => {
+        if (file !== "schtasks") throw new Error(`unexpected command: ${file}`);
+        return { status: 1, stdout: "", stderr: "", pid: 0, output: [], signal: null };
+      }) as unknown as typeof childProcess.spawnSync;
+      syncBuiltinESMExports();
       Object.defineProperty(process, "platform", { value: platform });
       try {
         await routes.handleRestart({ res, bus: { publish: () => { published += 1; } } });
       } finally {
         Object.defineProperty(process, "platform", real);
+        childProcess.spawnSync = realSpawn;
+        syncBuiltinESMExports();
       }
       return { status, body, published };
     };

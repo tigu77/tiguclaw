@@ -266,9 +266,9 @@ const main = async (): Promise<void> => {
     // 2주기 완전 침묵 + 판단할 소환자 없음 → 자동 종료.
     await sleep(interval + 60);
     wj.__checkinTickForTest();
-    await until(() => sent.some((s2) => s2.includes("중단했습니다")), 4000);
+    await until(() => sent.some((s2) => s2.includes("**Stopped**")), 4000);
     out.afterSecond = String(wj.getJob(jid)?.status);
-    out.killNotice = sent.some((s2) => s2.includes("중단했습니다"));
+    out.killNotice = sent.some((s2) => s2.includes("**Stopped**"));
   }
   if (MODE === "longtool") {
     await sleep(interval + 60);

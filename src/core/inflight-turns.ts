@@ -12,6 +12,9 @@
  *  `setSelfUpdateRestart` 와 같은 컨벤션.
  */
 
+/** 재시작이 끊은 턴·잡의 오류 원문 — 턴 abort 사유와 잡 중단 이벤트가 같은 문장을 쓴다. */
+export const DAEMON_RESTART_INTERRUPTED = "Interrupted by daemon restart";
+
 interface InflightReporter {
   count: () => number;
   keys: () => string[];
@@ -91,7 +94,7 @@ export const listExternalTurns = (): Array<[string, InterruptedTurn]> => [...ext
 
 /** 통지 문구 — 무엇이 일어났고 무엇이 남지 않았고 무엇을 하면 되는지. */
 export const RESTART_INTERRUPT_TEXT =
-  "⚠️ 진행 중이던 작업이 데몬 재시작으로 중단됐습니다. 답변을 만들던 중이었고 그 내용은 남지 않았습니다 — 같은 요청을 다시 보내주세요.";
+  "⚠️ The task in progress was interrupted by a daemon restart. The answer was still being written and wasn't kept — please send the same request again.";
 
 export interface InterruptedTurn {
   readonly ac: AbortController;
@@ -127,7 +130,7 @@ export const notifyInterruptedTurns = async (
   await Promise.all(
     turns.map(async (t) => {
       // 통지만 하고 턴을 안 끊으면 살아남은 턴이 답장을 한 통 더 낸다(이중 답장).
-      t.ac.abort(new Error("데몬 재시작으로 중단"));
+      t.ac.abort(new Error(DAEMON_RESTART_INTERRUPTED));
       const dest = t.notifyDest ?? t;
       try {
         const r = await send({

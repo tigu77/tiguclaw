@@ -48,7 +48,7 @@ export const formatPromptOptionsText = (
   const lines = [question, ""];
   options.forEach((o, i) => lines.push(`${i + 1}. ${o.label}`));
   if (note !== undefined && note.trim() !== "") lines.push("", note.trim());
-  lines.push("", "원하는 보기의 번호나 내용을 답장으로 보내주세요.");
+  lines.push("", "Reply with the number or the text of the option you want.");
   return lines.join("\n");
 };
 

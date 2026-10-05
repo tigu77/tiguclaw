@@ -439,12 +439,12 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★★claude 행이 **비용 2배**로 찍힌다 — 어댑터가 그 값을 실제로 보내는데 화면이 다른 말을 하면 사용자가 비용을 잘못 판단한다(축을 «단가» 로 못박지 않는다 — 구독 경로는 안 쟀다)",
-        /claude-opus-5`\(빠름·비용 2배\)/.test(line),
+        /claude-opus-5`\(fast·2× cost\)/.test(line),
         line.split("→")[0]?.trim() ?? line,
       ),
       assert(
         "★★codex 행은 **크레딧 2.5배** — 두 어댑터의 대가는 모양이 다르다(단가 vs 크레딧). 한쪽 값을 다른 쪽에 찍으면 그게 «없는 비용» 이다",
-        /gpt-5\.6-sol`\(빠름·크레딧 2\.5배\)/.test(line),
+        /gpt-5\.6-sol`\(fast·2\.5× credits\)/.test(line),
         line,
       ),
       assert(
@@ -452,17 +452,17 @@ export const check: RegressionCheck = {
         //  모델마다 값이 다르고 우리가 잰 적이 없다. 그래도 «안 읽음» 이라 하면 안 된다 —
         //  그건 돈이 나가는데 안 나간다고 말하는 쪽이라 사용자가 안심하고 켜 둔다(P1).
         "★★openai 행은 «읽는다·대가 있다·배수는 모른다» 를 **그대로** 말한다 — 숫자를 지어내면 «없는 비용»(P4)이고, 표에서 빼면 «안 읽는다면서 돈은 나간다»(P1)다",
-        /gpt-5`\(빠름·비용 더 듦·배수 미측정\)/.test(line),
+        /gpt-5`\(fast·costs more·multiplier not measured\)/.test(line),
         line,
       ),
       assert(
         "★정말 안 읽는 자리(compat — google)에만 «안 읽음» 이 나온다 — 같은 **openai 어댑터**로 오지만 그쪽엔 그 손잡이가 없다",
-        /gemini-3-flash`\(빠름·이 provider 는 안 읽음\)/.test(line),
+        /gemini-3-flash`\(fast·ignored by this provider\)/.test(line),
         line,
       ),
       assert(
         "★★안 켠 원소엔 «빠름» 표기가 **없다** — 기본이 표준임을 화면이 말한다",
-        /gpt-5\.6-terra`(?!\(빠름)/.test(line),
+        /gpt-5\.6-terra`(?!\(fast)/.test(line),
         line,
       ),
     );
@@ -576,7 +576,7 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★★**사용자 정의 provider 이름**이 claude 어댑터를 타면 화면도 비용 2배라고 말한다 — 이름으로 판정하면 «안 읽음» 이라 하면서 2배를 청구한다",
-        /비용 2배/.test(custom) && !/안 읽음/.test(custom),
+        /2× cost/.test(custom) && !/ignored by this provider/.test(custom),
         custom,
       ),
     );

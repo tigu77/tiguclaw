@@ -92,17 +92,17 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★★프로파일에 안 적어도 **실제로 실려 나가는 강도**가 보인다 — 안 보이면 없는 값처럼 읽히는데 값은 나가고 있다",
-        body.includes("강도 medium") && body.includes("강도 low"),
-        body.split("\n").find((l) => l.includes("풀:"))?.trim() ?? "(풀 줄 없음)",
+        body.includes("effort medium") && body.includes("effort low"),
+        body.split("\n").find((l) => l.includes("pool:"))?.trim() ?? "(풀 줄 없음)",
       ),
       assert(
         "★★출처가 세 층으로 갈린다(이 프로파일 / 설정 / 모델기본) — 뭉치면 «전역을 바꿨는데 왜 안 먹지» 가 그대로 남는다",
-        body.includes("·설정") && body.includes("·모델기본") && body.includes("·이 프로파일"),
-        body.split("\n").find((l) => l.includes("풀:"))?.trim() ?? "(풀 줄 없음)",
+        body.includes("·settings)") && body.includes("·model default)") && body.includes("·this profile)"),
+        body.split("\n").find((l) => l.includes("pool:"))?.trim() ?? "(풀 줄 없음)",
       ),
       assert(
         "★모르는 모델엔 강도를 지어내지 않는다",
-        !/`codex:c`\(강도 [a-z]+·(설정|모델기본)\)/.test(body),
+        !/`codex:c`\(effort [a-z]+·(settings|model default)\)/.test(body),
         body.split("\n").find((l) => l.includes("codex:c"))?.trim() ?? "(codex:c 줄 없음)",
       ),
     );

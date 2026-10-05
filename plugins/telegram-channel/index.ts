@@ -719,8 +719,8 @@ export default class TelegramChannel implements Channel {
       staleInboundNotified = true;
       void ctx
         .reply(
-          `⏸️ 제가 꺼져 있는 동안 받은 메시지가 있습니다(${Math.round(INBOUND_STALE_MS / 60000)}분 이상 지난 것). ` +
-            "오래된 내용이라 자동으로 처리하지 않았어요 — 필요하면 다시 보내주세요.",
+          `⏸️ Some messages arrived while I was offline (more than ${Math.round(INBOUND_STALE_MS / 60000)} min old). ` +
+            "They're stale, so they weren't processed automatically — send them again if you still need them.",
         )
         .catch(() => {});
     };
@@ -990,7 +990,7 @@ export default class TelegramChannel implements Channel {
       await ctx.answerCallbackQuery().catch(() => {});
       if (value === undefined) {
         await ctx
-          .reply("이 선택지는 만료되었습니다. 다시 시도해 주세요.")
+          .reply("These options have expired. Please try again.")
           .catch(() => {});
         return;
       }

@@ -244,6 +244,22 @@ export const check: RegressionCheck = {
     const ordered = await H.summarizeInChunks("A".repeat(20_000) + "B".repeat(20_000) + "C".repeat(20_000), 25_000, async (piece: string, target: number) => {
       orderTargets.push({ len: piece.length, target }); return `조각-${piece[0]} ` + "나".repeat(60); });
     // 조각 하나가 짧은 거절 문구면 전체가 실패다(부분 성공 위장 금지).
+    // ★조각은 동시에 부른다(10-04) — 첫 응답 전에 모든 호출이 시작돼야 하고, 늦게 끝난 조각도 제자리에 붙는다.
+    let thrownCalls = 0;
+    let inFlight = 0;
+    let peak = 0;
+    const lateFirst = await H.summarizeInChunks("A".repeat(20_000) + "B".repeat(20_000) + "C".repeat(20_000), 25_000, async (piece: string) => {
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, piece[0] === "A" ? 30 : piece[0] === "B" ? 15 : 1)); // A 가 가장 늦게 끝난다
+      inFlight--; return `조각-${piece[0]} ` + "라".repeat(60); });
+    // 조각 하나가 **던지면** 전체가 그 오류로 거부된다 — «빈 요약» 으로 삼키면 429 가 쿨다운 대신 «요약 0자» 로 바뀐다(10-04 적대 검토).
+    let thrown: unknown;
+    try {
+      await H.summarizeInChunks("x".repeat(250), 100, async (piece: string) => {
+        if (piece === "x".repeat(piece.length) && thrownCalls++ === 1) throw new Error("429 rate limited");
+        return "요약 " + "마".repeat(60);
+      });
+    } catch (e) { thrown = e; }
     let refusedCall = 0;
     const refused = await H.summarizeInChunks("x".repeat(250), 100, async () => (++refusedCall === 2 ? "요약할 수 없습니다." : "요약 " + "다".repeat(60)));
     // 서로게이트 쌍(이모지)을 쪼개지 않는다.
@@ -308,6 +324,8 @@ export const check: RegressionCheck = {
         /^조각-A[^]*조각-B[^]*조각-C/.test(ordered) && orderTargets.length === 3 && orderTargets.every((x) => x.target === H.summaryTargetFor(x.len))
           && H.summaryTargetFor(20_000) !== H.summaryTargetFor(60_000), { ordered: ordered.slice(0, 40), orderTargets }),
       assert("★O 조각 하나가 짧은 거절 문구면 전체 실패(빈 결과)", refused === "", refused.slice(0, 40)),
+      assert("★O 조각 하나가 던지면 전체가 그 오류로 거부(빈 요약으로 삼키지 않는다)", thrown instanceof Error && /429/.test(thrown.message), String(thrown)),
+      assert("★O 조각은 동시에 부르고(첫 응답 전에 셋 다 시작) 늦게 끝난 조각도 제자리에 붙는다", peak === 3 && /^조각-A[^]*조각-B[^]*조각-C/.test(lateFirst), { peak, head: lateFirst.slice(0, 40) }),
       assert("★O 이모지를 나눠도 서로게이트 쌍이 쪼개지지 않는다", !emojiSplit && emojiParts.join("") === emoji, emojiParts.map((x) => x.length)),
       assert("★O 짧은 턴이 많아도 한 패스의 최종 입력(머리말 포함)이 예산 안", shortLen <= 1_000 && shortPlan.toFold.length > 10, { shortLen, turns: shortPlan.toFold.length }),
       assert("★O 질문 + 큰 답은 한 단위로 접힌다 · 잘릴 땐 뒤쪽(결론)을 남긴다",

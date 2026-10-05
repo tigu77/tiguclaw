@@ -25,11 +25,15 @@ import { assertIsolated, type Assertion, type RegressionCheck } from "./_framewo
 const run = async (): Promise<Assertion[]> => {
   assertIsolated();
   const out: Assertion[] = [];
-  const { classifyFailure } = await import("../../core/worker-jobs.js");
+  const { classifyFailure, WorkerTimeoutError } = await import("../../core/worker-jobs.js");
+  const { ToolHangError } = await import("../../core/llm-runtime/tool-watchdog.js");
+  const { IdleTimeoutError } = await import("../../core/llm-runtime/idle-timeout.js");
 
-  const WALL = "매니저 처리 시간 초과 (7200000ms wall-clock 상한) — 모델 거부 아님";
-  const TOOL = "[tool-hang] 도구 Bash 이(가) 780s 안에 안 끝나 턴을 중단합니다";
-  const IDLE = "유휴 타임아웃 90000ms — 모델 거부 아님";
+  // ★원문은 **실제 생성처**에서 만든다 — 손으로 적은 문장이면 생성처가 바뀌어도 초록이다.
+  //  (옛 한국어 원문 쪽은 `failure-classifiers-bilingual` 이 잰다.)
+  const WALL = new WorkerTimeoutError(7_200_000).message;
+  const TOOL = new ToolHangError("Bash", 780_000).message;
+  const IDLE = new IdleTimeoutError("idle", 90_000).message;
   const LIMIT = 'usage_limit_reached 429';
   const OVER = "error/server_is_overloaded: Our servers are currently overloaded.";
 
@@ -54,13 +58,13 @@ const run = async (): Promise<Assertion[]> => {
     .split("\n")
     .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
     .join("\n");
-  const saysNotStalled = /모델이 멈춘 게 아니라 진행 중이었을 수 있습니다/.test(code);
+  const saysNotStalled = /the model hadn't stalled; it may still have been making progress/.test(code);
   out.push({
     name: "★wall-clock 중단을 '모델이 멈췄다' 로 말하지 않는다",
     ok: saysNotStalled,
     got: saysNotStalled ? "명시 문구 있음" : "★여전히 멈췄다고 말한다(엉뚱한 곳을 뒤지게 된다)",
   });
-  const keepsRaw = /시간 관련 중단이 발생했습니다 — 원문: \$\{raw/.test(code);
+  const keepsRaw = /stopped for a time-related reason — original error: \$\{raw/.test(code);
   out.push({
     name: "분류 못 한 타임아웃은 원문을 실어 보낸다(뭉뚱그려 덮지 않는다)",
     ok: keepsRaw,

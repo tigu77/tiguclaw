@@ -21,12 +21,12 @@ $LtsMajor = if ($env:TIGUCLAW_NODE_MAJOR) { $env:TIGUCLAW_NODE_MAJOR } else { '2
 function Die($msg) { Write-Host "`n[X] $msg" -ForegroundColor Red; exit 1 }
 
 Write-Host ""
-Write-Host "=== tiguclaw 설치 ===" -ForegroundColor Cyan
-Write-Host "설치 위치: $Dir   (바꾸려면: `$env:TIGUCLAW_DIR='D:\tiguclaw')"
+Write-Host "=== Installing tiguclaw ===" -ForegroundColor Cyan
+Write-Host "Install location: $Dir   (to change it: `$env:TIGUCLAW_DIR='D:\tiguclaw')"
 Write-Host ""
 
 # ── 전제 ────────────────────────────────────────────────────────────────────
-if (-not (Get-Command git  -ErrorAction SilentlyContinue)) { Die "git 이 없습니다. 먼저 설치하세요: winget install Git.Git" }
+if (-not (Get-Command git  -ErrorAction SilentlyContinue)) { Die "git is not installed. Please install it first: winget install Git.Git" }
 
 # ★**Node 가 없으면 여기서 멈추지 않는다** — sh 판과 같은 이유·같은 방식이다(2026-09-09).
 #  `winget install` 을 부르지 않는다: 전역 변경이고, 무엇보다 **지울 때 같이 안 지워진다.**
@@ -52,18 +52,18 @@ function Install-PrivateNode {
   try {
     $sums = (Invoke-WebRequest -UseBasicParsing "$base/SHASUMS256.txt").Content -split "`n"
     $line = $sums | Where-Object { $_ -match "node-v[\d.]+-win-$arch\.zip\s*$" } | Select-Object -First 1
-    if (-not $line) { Die "이 플랫폼(win-$arch)용 Node 배포본을 목록에서 못 찾았습니다." }
+    if (-not $line) { Die "No Node release found for this platform (win-$arch)." }
     $parts = ($line -split '\s+') | Where-Object { $_ -ne '' }
     $want  = $parts[0]; $file = $parts[1]
-    Write-Host "   받는 중: $file"
+    Write-Host "   Downloading: $file"
     $zip = Join-Path $tmp $file
     Invoke-WebRequest -UseBasicParsing "$base/$file" -OutFile $zip
     # ★검증 실패는 «다시 시도» 가 아니라 중단이다 — 실행 파일을 받는 중이다.
     $got = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
-    if ($got -ne $want.ToLower()) { Die "Node 배포본 체크섬이 다릅니다 — 설치를 중단합니다.`n   기대: $want`n   실제: $got" }
+    if ($got -ne $want.ToLower()) { Die "Node checksum mismatch — installation stopped.`n   expected: $want`n   actual:   $got" }
     Expand-Archive -Path $zip -DestinationPath $tmp -Force
     $inner = Get-ChildItem -Path $tmp -Directory | Where-Object { $_.Name -like 'node-v*' } | Select-Object -First 1
-    if (-not $inner) { Die "Node 압축 안에서 폴더를 못 찾았습니다." }
+    if (-not $inner) { Die "Could not find the folder inside the Node archive." }
     # ★**임시 자리에 둔다** (2026-09-09, 코드 리뷰). `install.sh` 는 같은 날 이 문제를
     #  고쳤는데 이 파일만 그대로였다 — clone 뒤에 받으면 받기가 어떤 이유로든 실패할 때
     #  (목록 404·다운로드 끊김·체크섬 불일치·압축 폴더 없음·실행 실패) **clone 된 폴더만
@@ -72,12 +72,12 @@ function Install-PrivateNode {
     #  ★clone 보다 먼저 받으면 실패해도 아직 아무것도 안 만들었으니 그냥 끝난다.
     $script:NodeStage = $inner.FullName
     $script:NodeStageTmp = $tmp
-    if (-not (Test-Path (Join-Path $script:NodeStage 'node.exe'))) { Die "받은 Node 안에 node.exe 가 없습니다." }
+    if (-not (Test-Path (Join-Path $script:NodeStage 'node.exe'))) { Die "The downloaded Node has no node.exe." }
   } catch {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     throw
   }
-  Write-Host "[v] 전용 node 준비됨 (설치 폴더로 옮깁니다)" -ForegroundColor Green
+  Write-Host "[v] Private node ready (moving it into the install folder)" -ForegroundColor Green
 }
 
 # 받아둔 것을 설치 폴더 안으로 옮기고 PATH 를 앞세운다 — clone 뒤에 부른다.
@@ -86,22 +86,22 @@ function Move-PrivateNode {
   Copy-Item -Path (Join-Path $script:NodeStage '*') -Destination $NodeDir -Recurse -Force
   Remove-Item -Recurse -Force $script:NodeStageTmp -ErrorAction SilentlyContinue
   $env:PATH = "$NodeDir;$env:PATH"
-  if (-not (Test-NodeOk)) { Die "전용 Node 를 설치했는데 실행되지 않습니다 ($NodeDir\node.exe)." }
-  Write-Host "[v] 전용 node $(node -v) — $NodeDir (시스템은 안 건드렸습니다)" -ForegroundColor Green
+  if (-not (Test-NodeOk)) { Die "The private Node was installed but does not run ($NodeDir\node.exe)." }
+  Write-Host "[v] Private node $(node -v) — $NodeDir (your system was not touched)" -ForegroundColor Green
 }
 
 if (Test-NodeOk) {
   Write-Host "[v] node $(node -v) · git $((git --version).Split(' ')[2])"
 } else {
   if (Get-Command node -ErrorAction SilentlyContinue) {
-    Write-Host "! 지금 node 는 $(node -v) 인데 $MinNode 이상이 필요합니다." -ForegroundColor Yellow
+    Write-Host "! Your node is $(node -v), but $MinNode or newer is required." -ForegroundColor Yellow
   } else {
-    Write-Host "! Node.js 가 없습니다 ($MinNode 이상이 필요합니다)." -ForegroundColor Yellow
+    Write-Host "! Node.js is not installed ($MinNode or newer is required)." -ForegroundColor Yellow
   }
   Write-Host ""
-  Write-Host "  tiguclaw 전용 Node 를 이 설치 폴더 안에만 받을 수 있습니다:"
-  Write-Host "    $NodeDir   (내려받기 약 50MB · 설치 후 약 200MB · 관리자 권한 불필요 · 시스템 PATH 를 안 건드림)"
-  Write-Host "  지울 때는 설치 폴더를 지우면 같이 사라집니다."
+  Write-Host "  tiguclaw can download its own Node into this install folder only:"
+  Write-Host "    $NodeDir   (about 50 MB to download · about 200 MB installed · no admin rights · system PATH untouched)"
+  Write-Host "  Deleting the install folder removes it as well."
   Write-Host ""
   # ★묻는다 — 런타임을 받아 까는 일을 조용히 하지 않는다.
   # ★**값을 본다**(2026-09-09, 코드 리뷰). 종전 `-not $env:…` 는 «설정됐나» 만 봤고,
@@ -109,17 +109,17 @@ if (Test-NodeOk) {
   #  «묻지 말고 받아라» 였다 — 끄려고 0 을 넣은 사람이 정확히 반대를 얻는다.
   #  `install.sh` 는 같은 날 고쳤는데 이 파일만 그대로였다.
   if ($env:TIGUCLAW_AUTO_NODE -notmatch '^(1|true|yes|on|y)$') {
-    $ans = Read-Host "  받을까요? [Y/n]"
+    $ans = Read-Host "  Download it? [Y/n]"
     # ★거절을 **넓게** 받는다 — 질문이 한국어인데 거절만 ASCII 2형태였다.
     #  애매하면 안 받는 쪽이 맞다: 잘못 멈추면 다시 돌리면 되고, 잘못 받으면 200MB 가
     #  이미 내려와 있다.
     if ($ans -match '^\s*(n|no|nope|nah|q|quit|0|false|아니|아니오|아니요|싫어|취소)\s*$') {
-      Die "설치를 멈췄습니다. Node $MinNode 이상을 직접 설치한 뒤 다시 실행하세요 (winget install OpenJS.NodeJS.LTS)."
+      Die "Installation stopped. Install Node $MinNode or newer (winget install OpenJS.NodeJS.LTS) and run this again."
     }
   }
   $NeedNode = $true
   Write-Host ""
-  Write-Host "-> 전용 Node 받는 중..." -ForegroundColor Cyan
+  Write-Host "-> Downloading a private Node..." -ForegroundColor Cyan
   Install-PrivateNode          # ★clone 전에 받는다 — 실패해도 아무것도 안 남는다.
 }
 
@@ -147,20 +147,20 @@ if (Test-NodeOk) {
 if (Test-Path $Dir) {
   if (Test-Path (Join-Path $Dir '.git')) {
     Die @"
-$Dir 에 이미 설치돼 있습니다.
-   업데이트는:  cd $Dir; npx tiguclaw update
-   (그 명령이 정지 -> 의존성 -> 재빌드 -> 기동을 순서대로 합니다.
-    ★npm ci 를 직접 돌리지 마세요 — 데몬이 파일을 잡고 있으면 설치가 깨집니다.)
+tiguclaw is already installed in $Dir.
+   To update:  cd $Dir; npx tiguclaw update
+   (It stops the daemon, updates dependencies, rebuilds, and starts it again.
+    Do not run npm ci yourself — if the daemon holds files open, the install breaks.)
 "@
   }
-  Die "$Dir 이 이미 있는데 tiguclaw 설치본이 아닙니다. 다른 경로를 쓰세요: `$env:TIGUCLAW_DIR='D:\tiguclaw'"
+  Die "$Dir already exists but is not a tiguclaw install. Use another path: `$env:TIGUCLAW_DIR='D:\tiguclaw'"
 }
 
 # ── 받기 · 설치 ─────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "-> 코드 받는 중..."
+Write-Host "-> Downloading the code..."
 git clone --quiet $RepoUrl $Dir
-if ($LASTEXITCODE -ne 0) { Die "clone 실패 — 네트워크나 접근 권한을 확인하세요." }
+if ($LASTEXITCODE -ne 0) { Die "git clone failed — check your network or access." }
 Set-Location $Dir
 
 # ★전용 Node 는 clone 뒤에 받는다 — 폴더가 먼저 있으면 `git clone` 이 실패한다.
@@ -174,7 +174,7 @@ if ($NeedNode) { Move-PrivateNode }
 #  `install.sh` 는 같은 날 고쳤는데 이 파일만 그대로였다.
 if ($NeedNode) {
   $NpmShow  = Join-Path $NodeDir 'npm.cmd'
-  $HowtoTail = "`n   (이 설치본은 전용 Node 를 씁니다 — 터미널에서 계속 쓰시려면 PATH 에 다음을 더하세요:`n      `$env:PATH = '$NodeDir;' + `$env:PATH`n    안 더해도 채팅에서 /update 로 업데이트됩니다.)"
+  $HowtoTail = "`n   (This install uses a private Node — to keep using it from your terminal, add this to your PATH:`n      `$env:PATH = '$NodeDir;' + `$env:PATH`n    Even without it, you can update from chat with /update.)"
 } else {
   $NpmShow = 'npm'
   $HowtoTail = ''
@@ -183,7 +183,7 @@ if ($NeedNode) {
 # ★이제서야 npm 을 해석한다 — 전용 Node 를 깔았으면 그쪽 `npm.cmd` 가 잡혀야 한다(P2).
 $Npm = if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { "npm.cmd" } else { "npm" }
 
-Write-Host "-> 의존성 설치 중... (네이티브 모듈 빌드로 1~2분 걸릴 수 있습니다)"
+Write-Host "-> Installing dependencies... (building native modules can take 1-2 minutes)"
 # ★`--ignore-scripts=false` 를 **명시**한다 (2026-08-19 실사고). 사내 정책으로 npm 설정에
 #  ignore-scripts=true 가 켜져 있으면 `npm ci` 는 **성공하는데** 네이티브 빌드가 아예 안 돌아
 #  better_sqlite3.node 가 안 생긴다 -> 데몬이 부팅마다 죽는다. 전역 정책은 안 건드리고
@@ -191,10 +191,10 @@ Write-Host "-> 의존성 설치 중... (네이티브 모듈 빌드로 1~2분 걸
 & $Npm ci --no-audit --no-fund --ignore-scripts=false
 if ($LASTEXITCODE -ne 0) {
   Die @"
-의존성 설치 실패.
-   C++ 빌드 도구가 필요할 수 있습니다:
+Dependency install failed.
+   You may need the C++ build tools:
      winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
-   설치 후 다시:  cd $Dir; $NpmShow ci
+   Then retry:  cd $Dir; $NpmShow ci
 "@
 }
 
@@ -205,23 +205,23 @@ if ($LASTEXITCODE -ne 0) {
 #  종료코드는 "명령이 실패했나" 지 "결과가 쓸 만한가" 가 아니다 — 열어봐야 안다.
 #  ★우리 클린룸 검증(sync 스킬 §7)은 이미 이 확인을 하고 있었다. 정작 **사용자가 돌리는
 #   스크립트**에만 없었다 — 우리 설치는 검증하고 사용자 설치는 안 하고 있었던 셈이다.
-Write-Host "-> 네이티브 모듈 확인 중..."
+Write-Host "-> Checking native modules..."
 node -e "require('better-sqlite3')" 2>$null
 if ($LASTEXITCODE -ne 0) {
   # ★알려주고 끝내지 않는다 - **스스로 한 번 고쳐본다**(사용자가 명령을 외우게 하지 않는다).
-  Write-Host "   네이티브 모듈이 안 열립니다 - 다시 빌드합니다..."
+  Write-Host "   A native module failed to load - rebuilding..."
   & $Npm rebuild better-sqlite3 --ignore-scripts=false 2>$null | Out-Null
   node -e "require('better-sqlite3')" 2>$null
   if ($LASTEXITCODE -ne 0) {
     Die @"
-SQLite 네이티브 모듈을 열 수 없습니다 - 이 상태로는 데몬이 부팅마다 죽습니다.
+Cannot load the SQLite native module - the daemon would crash on every start.
 
-   C++ 빌드 도구가 필요합니다:
+   The C++ build tools are required:
      winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
-   그 뒤:  cd $Dir; $NpmShow rebuild better-sqlite3
+   Then:  cd $Dir; $NpmShow rebuild better-sqlite3
 "@
   }
-  Write-Host "   네이티브 모듈 복구 완료."
+  Write-Host "   Native module repaired."
 }
 
 # ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────

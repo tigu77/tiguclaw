@@ -153,7 +153,7 @@ export const check: RegressionCheck = {
     const dispatchWired = await sourceHas("../../../plugins/scheduler/src/dispatcher.ts", [
       /const r = await deliverOutbound\(\{/,
       /if \(!r\.delivered\) \{/,
-      /throw new Error\(`스케줄 발송 실패/,
+      /throw new Error\(`Schedule delivery failed/,
     ]);
     out.push(
       assert(

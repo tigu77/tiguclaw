@@ -129,8 +129,8 @@ const send = async (
     return {
       ok: false,
       detail: aborted
-        ? `시한 초과(${PROBE_TIMEOUT_MS / 1000}s) — 백엔드가 응답을 안 끝냄`
-        : `전송 실패: ${e instanceof Error ? e.message : String(e)}`,
+        ? `timed out (${PROBE_TIMEOUT_MS / 1000}s) — the backend never finished responding`
+        : `send failed: ${e instanceof Error ? e.message : String(e)}`,
       ms: Date.now() - t0,
     };
   }
@@ -141,7 +141,7 @@ const send = async (
   }
   if (res.body === null) {
     clearTimeout(killer);
-    return { ok: false, detail: "body 없음", ms: Date.now() - t0 };
+    return { ok: false, detail: "no body", ms: Date.now() - t0 };
   }
 
   // SSE 를 읽어 completed / error 중 무엇으로 끝나는지만 본다(어댑터와 동일 판정 축).
@@ -192,21 +192,21 @@ const send = async (
     if (ac.signal.aborted) {
       return {
         ok: false,
-        detail: `시한 초과(${PROBE_TIMEOUT_MS / 1000}s) — 스트림이 안 끝남` +
-          `${text !== "" ? `, 그때까지 받은 텍스트 ${text.length}자` : ", 텍스트 0자"}`,
+        detail: `timed out (${PROBE_TIMEOUT_MS / 1000}s) — the stream never finished` +
+          `${text !== "" ? `, ${text.length} chars of text received by then` : ", 0 chars of text"}`,
         ms: Date.now() - t0,
       };
     }
     return {
       ok: false,
-      detail: `스트림 읽기 실패: ${e instanceof Error ? e.message : String(e)}`,
+      detail: `stream read failed: ${e instanceof Error ? e.message : String(e)}`,
       ms: Date.now() - t0,
     };
   }
   clearTimeout(killer);
   const ms = Date.now() - t0;
   if (failure !== "") return { ok: false, detail: failure, ms };
-  if (!completed) return { ok: false, detail: "completed 없이 스트림 종료", ms };
+  if (!completed) return { ok: false, detail: "stream ended without completed", ms };
   return { ok: true, detail: `"${text.trim().slice(0, 40)}"`, ms };
 };
 
@@ -231,18 +231,18 @@ export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
   const hasAccess = (process.env.OPENAI_CODEX_OAUTH_TOKEN ?? "") !== "";
   const hasRefresh = (process.env.OPENAI_CODEX_OAUTH_REFRESH ?? "") !== "";
   const lines: string[] = [
-    `홈: ${home}`,
-    `토큰: access=${hasAccess ? "있음" : "없음"} refresh=${hasRefresh ? "있음" : "없음"}`,
+    `Home: ${home}`,
+    `Tokens: access=${hasAccess ? "present" : "missing"} refresh=${hasRefresh ? "present" : "missing"}`,
   ];
   if (!hasAccess && !hasRefresh) {
     return {
       lines,
-      verdict: "🔴 이 홈에 codex 토큰이 없습니다 — 데몬 로그의 `tiguclaw home:` 과 같은 홈인지 확인하세요.",
+      verdict: "🔴 There's no codex token in this home — check that it's the same home as `tiguclaw home:` in the daemon log.",
     };
   }
   const auth = getAuthProvider("codex");
   if (auth === undefined) {
-    return { lines, verdict: "🔴 codex auth provider 없음 — 이 빌드는 codex 미지원." };
+    return { lines, verdict: "🔴 No codex auth provider — this build doesn't support codex." };
   }
   let token: string;
   try {
@@ -250,7 +250,7 @@ export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
   } catch (e) {
     return {
       lines,
-      verdict: `🔴 토큰 획득 실패: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`,
+      verdict: `🔴 Couldn't get a token: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`,
     };
   }
   let accountId: string | undefined;
@@ -265,9 +265,9 @@ export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
     /* 없으면 생략 */
   }
   const model = resolveCodexModel();
-  lines.push(`모델: ${model}`);
+  lines.push(`Model: ${model}`);
   lines.push(
-    `LEAN=도구 0개·${LEAN_INSTRUCTIONS.length}자 / HEAVY=도구 ${HEAVY_TOOL_COUNT}개·${HEAVY_INSTRUCTION_CHARS.toLocaleString()}자`,
+    `LEAN=0 tools·${LEAN_INSTRUCTIONS.length} chars / HEAVY=${HEAVY_TOOL_COUNT} tools·${HEAVY_INSTRUCTION_CHARS.toLocaleString("en-US")} chars`,
   );
 
   let leanOk = 0;
@@ -283,11 +283,11 @@ export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
   }
   const verdict =
     leanOk > 0 && heavyOk === 0
-      ? "★무게가 원인 — 도구 수·instructions 크기를 줄이는 게 실효 대책입니다."
+      ? "★Weight is the cause — cutting the tool count and instructions size is what will help."
       : leanOk === 0 && heavyOk === 0
-        ? "무게 무관 — 계정/클라이언트 쪽입니다. 경량화로는 안 풀립니다."
+        ? "Not weight-related — it's on the account/client side. Slimming the request won't fix it."
         : leanOk > 0 && heavyOk > 0
-          ? "지금은 둘 다 정상 — **실패가 나는 중에** 다시 돌려야 판정됩니다."
-          : "혼재(간헐) — 몇 번 더 돌려 비율을 보세요.";
+          ? "Both are fine right now — run it again **while failures are happening** to get a verdict."
+          : "Mixed (intermittent) — run it a few more times and look at the ratio.";
   return { lines: [...lines, `LEAN ${leanOk}/2  HEAVY ${heavyOk}/2`], verdict };
 };

@@ -93,8 +93,8 @@ export const loadHomeEnv = (): void => {
 
   if (process.env.TIGUCLAW_SYSTEM_MD !== seamBefore) {
     console.warn(
-      `[env] TIGUCLAW_SYSTEM_MD 는 .env 로 설정할 수 없습니다 — 무시합니다(작동 헌법은 앱 정본만). ` +
-        `받은 값: ${process.env.TIGUCLAW_SYSTEM_MD ?? ""}`,
+      `[env] TIGUCLAW_SYSTEM_MD cannot be set from .env — ignoring it (the constitution comes only from the app's canonical copy). ` +
+        `Value received: ${process.env.TIGUCLAW_SYSTEM_MD ?? ""}`,
     );
     if (seamBefore === undefined) delete process.env.TIGUCLAW_SYSTEM_MD;
     else process.env.TIGUCLAW_SYSTEM_MD = seamBefore;

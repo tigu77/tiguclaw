@@ -129,7 +129,9 @@ const run = async (): Promise<Assertion[]> => {
       "utf8",
     );
     const wired =
-      /iterLastChunkAt = Date\.now\(\);[\s\S]{0,400}?\(delta\) => \{[\s\S]{0,400}?\},\s*\n\s*\(\) => (?:progressTimer\.beat\(\)|\{\s*firstOutputAt \?\?= Date\.now\(\);\s*progressTimer\.beat\(\);[^\n]*\n\s*\}),/.test(
+      // 진전 콜백은 진전 종류를 받는다(2026-10-05, 무진전 진단) — 인자·중간 줄을 허용한다. ★같은 배선을 `stall-notice-counts` 가
+      //  **동작으로** 지킨다(답 조각이 한계보다 오래 흘러도 재개 0 — 배선이 빠지면 그 시나리오가 무진전이 된다).
+      /iterLastChunkAt = Date\.now\(\);[\s\S]{0,400}?\(delta\) => \{[\s\S]{0,400}?\},\s*\n\s*\((?:kind)?\) => (?:progressTimer\.beat\(\)|\{\s*firstOutputAt \?\?= Date\.now\(\);[\s\S]{0,200}?progressTimer\.beat\(\);[^\n]*\n\s*\}),/.test(
         src,
       );
     out.push(

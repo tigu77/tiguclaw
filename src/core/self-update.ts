@@ -191,7 +191,7 @@ export const listDestructiveUncommitted = async (cwd: string): Promise<string[]>
     "git",
     ["status", "--porcelain", "--untracked-files=no"],
     cwd,
-  ).catch(() => ({ stdout: "", stderr: "" }));
+  );
   // ★줄 단위로 자른 뒤에 다듬는다 — 전체 `trim()` 은 **첫 줄의 상태 칸 앞 공백**을 먹어
   //  (` M path` → `M path`) 이어지는 `slice(3)` 을 한 칸 밀어 경로 첫 글자를 잘랐다
   //  (`tracked.txt` → `racked.txt`). 옛 검사는 `.slice(3)` 이 소스에 있는지만 봐서 못 봤다.
@@ -301,8 +301,8 @@ const rebuildBuiltDist = async (
       return {
         ok: false,
         error: tail
-          ? `진입점 미생성: dist(staging)/src/index.js\n원인(tsc 마지막 출력):\n${tail}`
-          : "진입점 미생성: dist(staging)/src/index.js — tsc 무출력(node_modules/typescript 손상 의심). 터미널에서 `tiguclaw update`(npm ci 선행) 로 복구하세요.",
+          ? `entry point not built: dist(staging)/src/index.js\ncause (last tsc output):\n${tail}`
+          : "entry point not built: dist(staging)/src/index.js — tsc printed nothing (node_modules/typescript may be damaged). Recover by running `tiguclaw update` in a terminal (it runs npm ci first).",
       };
     }
 
@@ -314,7 +314,7 @@ const rebuildBuiltDist = async (
       await rmrf(staging);
       return {
         ok: false,
-        error: `자산 복사 실패: ${
+        error: `copying assets failed: ${
           e instanceof Error ? e.message : String(e)
         }`,
       };
@@ -323,7 +323,7 @@ const rebuildBuiltDist = async (
     // 4) 플러그인 미러 검증 — dist/plugins 부재면 부팅 시 플러그인 0개(맥락 §2 블로커).
     if (!existsSync(path.join(staging, "plugins"))) {
       await rmrf(staging);
-      return { ok: false, error: "staging/plugins 부재(플러그인 미러 실패)" };
+      return { ok: false, error: "staging/plugins is missing (mirroring plugins failed)" };
     }
 
     // 5) ★원자 교체 — dist→backup, staging→dist. 둘 다 cwd 하위(동일 파일시스템)라
@@ -347,7 +347,7 @@ const rebuildBuiltDist = async (
       await rmrf(staging);
       return {
         ok: false,
-        error: `dist 원자 교체 실패: ${
+        error: `atomic dist swap failed: ${
           e instanceof Error ? e.message : String(e)
         }`,
       };
@@ -430,17 +430,10 @@ export const runSelfUpdate = async (
     }
 
     // ── 단계 3: git pull --ff-only (현재 브랜치 origin — install/dev 자동, 분기 0) ──
-    // 선처리: package-lock.json 로컬 드리프트 폐기. 이 파일은 npm install 이 재생성하는
-    // *생성물*이라 플랫폼·npm 버전차로 로컬이 쉽게 더러워지고("local changes to
-    // package-lock.json would be overwritten by merge"), 그게 ff-only pull 을 막아 자가
-    // 업데이트가 영영 깨진다(Windows 실사고). 생성물 한 파일만 origin 기준으로 되돌리는 건
-    // 안전 — 사용자 의미 편집이 아니고, pull 후 (단계 5)npm install 이 필요시 다시 만든다.
-    // 다른 트래킹 파일의 미커밋 변경은 건드리지 않으므로 여전히 ff-only 가 정직 실패한다
-    // (암묵 파괴 0 — §1·O1 유지). best-effort: 없거나 이미 clean 이면 무시.
-    try {
-      await run("git", ["checkout", "--", "package-lock.json"], cwd);
-    } catch {
-      /* 파일 없음·이미 clean·git 미지원 — pull 이 판정하므로 무시 */
+    // 생성물도 사용자 편집일 수 있다. lock을 포함해 추적 변경이 있으면 보존하고 거절한다.
+    const dirty = await listDestructiveUncommitted(cwd);
+    if (dirty.length > 0) {
+      return { status: "failed", from: prevSha, error: "There are uncommitted changes — the update was stopped and your files were left untouched." };
     }
     try {
       await run("git", ["pull", "--ff-only"], cwd);
@@ -539,9 +532,9 @@ export const runSelfUpdate = async (
           status: "failed",
           from: prevSha,
           error: redactSecrets(
-            `자동 업데이트 위임 실패(${
+            `Couldn't hand off the automatic update (${
               e instanceof Error ? e.message : String(e)
-            }) — 터미널에서 \`tiguclaw update\` 를 실행하세요.`,
+            }) — run \`tiguclaw update\` in a terminal.`,
           ),
         };
       }
@@ -571,7 +564,7 @@ export const runSelfUpdate = async (
           );
           return false;
         }
-        await run("git", ["reset", "--hard", prevSha], cwd);
+        await run("git", ["reset", "--keep", prevSha], cwd);
         if (depsChanged) {
           // deps 도 prev 상태로 되돌림 — 게이트 실패가 새 deps 였을 수도.
           await run("npm", ["install", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], cwd, {
@@ -632,10 +625,10 @@ export const runSelfUpdate = async (
               changedFiles: changed.length,
               rolledBack,
               error: redactSecrets(
-                "네이티브 모듈(better-sqlite3)이 새 버전에서 안 열립니다 — 이 상태로 재시작하면 " +
-                  "데몬이 부팅마다 죽습니다. 이전 버전으로 되돌렸습니다. " +
-                  "빌드 도구가 필요할 수 있습니다(윈도우: VS Build Tools C++, 리눅스: build-essential+python3). " +
-                  `원문: ${e2 instanceof Error ? e2.message : String(e2)}`,
+                "The native module (better-sqlite3) won't load in the new version — restarting like this " +
+                  "would make the daemon crash on every start, so it was rolled back to the previous version. " +
+                  "Build tools may be needed (Windows: VS Build Tools C++, Linux: build-essential + python3). " +
+                  `Original error: ${e2 instanceof Error ? e2.message : String(e2)}`,
               ),
             };
           }
@@ -650,7 +643,7 @@ export const runSelfUpdate = async (
           changedFiles: changed.length,
           rolledBack,
           error: redactSecrets(
-            `npm install 실패: ${e instanceof Error ? e.message : String(e)}`,
+            `npm install failed: ${e instanceof Error ? e.message : String(e)}`,
           ),
         };
       }
@@ -696,7 +689,7 @@ export const runSelfUpdate = async (
           ranNpmInstall,
           rolledBack,
           error: redactSecrets(
-            `built 재빌드 실패(옛 dist 유지·재시작 안 함): ${rebuild.error}`,
+            `Rebuild failed (the old build is kept and there's no restart): ${rebuild.error}`,
           ),
         };
       }
@@ -759,9 +752,9 @@ export const runSelfUpdate = async (
                     target: dest.target,
                     label: "self-update",
                     text:
-                      "🔴 업데이트는 받았는데 **재시작을 못 했습니다** — 재기동 수단을 확보하지 못했어요.\n" +
-                      "지금 도는 건 **옛 코드**입니다(데몬은 살아 있습니다). 새 코드는 다음 기동 때 적용됩니다.\n" +
-                      "완료 알림은 오지 않습니다 — 로그(`/logs`)에 원인이 남아 있어요.",
+                      "🔴 The update was downloaded but **the restart didn't happen** — there was no way to bring the daemon back up.\n" +
+                      "The **old code** is still running (the daemon is alive). The new code takes effect the next time it starts.\n" +
+                      "No completion notice will follow — the cause is in the logs (`/logs`).",
                   });
                 } catch {
                   // 통지 실패는 치명 아님 — 위 console.error 가 이미 남겼다.
@@ -787,7 +780,7 @@ export const runSelfUpdate = async (
         changedFiles: changed.length,
         ranNpmInstall,
         error: redactSecrets(
-          `재시작 예약 실패: ${e instanceof Error ? e.message : String(e)}`,
+          `Couldn't schedule the restart: ${e instanceof Error ? e.message : String(e)}`,
         ),
       };
     }

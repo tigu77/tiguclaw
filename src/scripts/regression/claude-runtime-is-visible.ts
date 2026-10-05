@@ -62,8 +62,8 @@ export const check: RegressionCheck = {
       // ── ① doctor ──
       assert(
         "★doctor 가 Claude 실행기를 본다(키만 보고 통과시키지 않는다)",
-        /findBundledClaude\(\)/.test(doctor) && /issues\.push\(\s*\n?\s*"Claude 실행기 없음/.test(doctor),
-        `해석 호출=${/findBundledClaude\(\)/.test(doctor)} · 문제로 보고=${/Claude 실행기 없음/.test(doctor)}`,
+        /findBundledClaude\(\)/.test(doctor) && /issues\.push\(\s*\n?\s*"Claude executable missing/.test(doctor),
+        `해석 호출=${/findBundledClaude\(\)/.test(doctor)} · 문제로 보고=${/Claude executable missing/.test(doctor)}`,
       ),
       // ── ② 어댑터 ──
       assert(
@@ -87,7 +87,7 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★안내가 전역 설치를 시키지 않는다(같은 259MB 를 두 벌 받게 하지 마라)",
-        !/npm i -g/.test(bundledClaudeMissingHint().split("지원 안 하는")[0]),
+        !/npm i -g/.test(bundledClaudeMissingHint().split("On an unsupported platform")[0]),
         bundledClaudeMissingHint().slice(0, 70),
       ),
       // ── ③ 경로 ──

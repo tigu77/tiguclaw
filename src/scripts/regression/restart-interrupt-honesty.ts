@@ -109,9 +109,9 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★통지가 '중단됐다 + 내용이 남지 않았다 + 다시 보내라' 를 말한다(조용한 손실 0)",
-        RESTART_INTERRUPT_TEXT.includes("중단") &&
-          RESTART_INTERRUPT_TEXT.includes("남지 않") &&
-          RESTART_INTERRUPT_TEXT.includes("다시"),
+        RESTART_INTERRUPT_TEXT.includes("interrupted") &&
+          RESTART_INTERRUPT_TEXT.includes("wasn't kept") &&
+          RESTART_INTERRUPT_TEXT.includes("send the same request again"),
         RESTART_INTERRUPT_TEXT.slice(0, 60),
       ),
     );

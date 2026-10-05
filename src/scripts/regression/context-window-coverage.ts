@@ -176,10 +176,10 @@ export const check: RegressionCheck = {
       //  멀쩡한 맥락을 지우게 만든다. 초과는 컨텍스트가 아니라 **우리 표**의 문제다.
       assert(
         "★100% 초과를 '거의 참'으로 말하지 않는다(사용자에게 /clear 를 시키지 않는다)",
-        !contextPressureLabel(106).includes("거의 참") &&
-          !contextPressureLabel(106).includes("`/clear` 고려") &&
-          contextPressureLabel(90).includes("거의 참") &&
-          contextPressureLabel(75).includes("여유") &&
+        !contextPressureLabel(106).includes("nearly full") &&
+          !contextPressureLabel(106).includes("consider `/clear`") &&
+          contextPressureLabel(90).includes("nearly full") &&
+          contextPressureLabel(75).includes("getting full") &&
           contextPressureLabel(20) === "",
         `106%→"${contextPressureLabel(106).trim()}"`,
       ),

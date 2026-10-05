@@ -82,7 +82,7 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "★못 뜨면 ✅ 대신 🔴 + exit 1",
-      /process\.exitCode = 1;/.test(code) && /🔴 \$\{verb\} 실패/.test(code),
+      /process\.exitCode = 1;/.test(code) && /🔴 Daemon not running after \$\{verb\.replace\(/.test(code),
       "실패 경로 확인",
     ),
   );

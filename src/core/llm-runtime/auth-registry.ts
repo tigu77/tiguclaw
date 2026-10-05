@@ -157,9 +157,9 @@ export const getAuthProvider = (provider: string): AuthProvider | undefined =>
 export class AuthProviderMissingError extends Error {
   constructor(
     readonly provider: string,
-    detail = "구독 인증 미설치/미인증",
+    detail = "subscription auth isn't installed or signed in",
   ) {
-    super(`auth-provider "${provider}" 부재: ${detail}`);
+    super(`auth-provider "${provider}" missing: ${detail}`);
     this.name = "AuthProviderMissingError";
   }
 }

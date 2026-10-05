@@ -115,7 +115,7 @@ const run = async (): Promise<void> => {
         outcome: "returned",
         text: out.text.slice(0, 400),
         hasPartial: out.text.includes(MARKER),
-        hasNotice: /오류가 발생했습니다|처리하지 못했습니다/.test(out.text),
+        hasNotice: /Something went wrong while handling|couldn't process the request/.test(out.text),
       }),
     );
   } catch (e) {

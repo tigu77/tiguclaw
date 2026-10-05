@@ -150,7 +150,7 @@ const scheduleDispatchRetry = (
         );
         deps.recordFiring(schedule.id, {
           ok: false,
-          error: `dispatch(재전송 실패): ${reason}`,
+          error: `dispatch (retry failed): ${reason}`,
         });
         bus.publish({
           type: "scheduler.error",
@@ -203,7 +203,7 @@ export const runScheduleFiring = async (
     if (schedule.prompt.startsWith(VERBATIM_PREFIX)) {
       const text = schedule.prompt.slice(VERBATIM_PREFIX.length).trim();
       if (text === "") {
-        deps.recordFiring(schedule.id, { ok: false, error: "직송 문구가 비어있음" });
+        deps.recordFiring(schedule.id, { ok: false, error: "The text to send after !say is empty" });
         return;
       }
       // ★catch 필수 — 이 경로는 `void runScheduleFiring(...)` 로 불린다(index.ts:185,223).

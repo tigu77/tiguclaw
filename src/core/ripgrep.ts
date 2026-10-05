@@ -187,14 +187,14 @@ export const ensureRipgrep = async (
     return { ok: true, path: found, detail: found, installed: false };
   }
   if (opts?.download === false) {
-    return { ok: false, path: null, detail: "미설치", installed: false };
+    return { ok: false, path: null, detail: "not installed", installed: false };
   }
   const rel = releaseAsset();
   if (rel === null) {
     return {
       ok: false,
       path: null,
-      detail: `자동 설치 미지원 플랫폼(${process.platform}/${process.arch}) — 수동 설치 필요`,
+      detail: `automatic install is not supported on this platform (${process.platform}/${process.arch}) — install it manually`,
       installed: false,
     };
   }
@@ -219,7 +219,7 @@ export const ensureRipgrep = async (
       await execFileP("tar", ["-xzf", archive, "-C", tmp], { timeout: 120_000 });
     }
     const extracted = path.join(tmp, rel.inner);
-    if (!existsSync(extracted)) throw new Error(`압축 안에 ${rel.inner} 가 없습니다`);
+    if (!existsSync(extracted)) throw new Error(`${rel.inner} is not in the archive`);
     const dest = managedRgPath(home);
     await fs.mkdir(path.dirname(dest), { recursive: true });
     // ★**원자적으로** 둔다 — 임시 이름으로 쓰고 검증한 뒤 rename. 중단된 복사가 남긴
@@ -245,11 +245,11 @@ export const ensureRipgrep = async (
         ? "winget install BurntSushi.ripgrep.MSVC"
         : process.platform === "darwin"
           ? "brew install ripgrep"
-          : "apt install ripgrep (또는 배포판 패키지 관리자)";
+          : "apt install ripgrep (or your distro's package manager)";
     return {
       ok: false,
       path: null,
-      detail: `자동 설치 실패(${msg}) — 수동: ${manual}`,
+      detail: `automatic install failed (${msg}) — install manually: ${manual}`,
       installed: false,
     };
   } finally {

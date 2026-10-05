@@ -36,7 +36,8 @@ import type { RegionASdkInput } from "../types.js";
 import type { SteeringInput } from "../../steering.js";
 import { isDerivedThread } from "../../threadkey.js";
 import { threadRevision } from "../../../store/thread-revision.js";
-import { toolResultRef } from "../../../store/tool-recall.js";
+import { listFoldedToolResults, TOOL_RECALL_NAME, toolResultRef } from "../../../store/tool-recall.js";
+import { getContextBoundary } from "../../../store/sessions.js";
 import { FALLBACK_CHARS_PER_TOKEN as STORE_FALLBACK_CHARS_PER_TOKEN, tokenDensityOf } from "../../../store/token-density.js";
 import { lookupContextWindow } from "../context-windows.js";
 import { loadModelInputLimits } from "../../settings.js";
@@ -283,6 +284,9 @@ export const mergeSseObservation = (
  *
  * 비-JSON 라인 (heartbeat 등) 은 skip. `[DONE]` 시그널 도 skip.
  */
+/** 진전 종류 — 무진전 가드의 타이머를 되돌리는 이벤트(답 텍스트·도구 호출 시작·도구 인자). 진단 로그에 «마지막 진전» 으로 실린다. */
+export type CodexProgressKind = "text" | "tool_call" | "tool_args";
+
 export const parseCodexSse = async (
   body: ReadableStream<Uint8Array>,
   // 유휴 타임아웃 heartbeat — chunk 수신마다 호출(타이머 reset). 미지정 = no-op
@@ -298,7 +302,7 @@ export const parseCodexSse = async (
   //  히어독으로 쓰는 Bash, 큰 Write 등)가 5분 상한에 걸려 생성 중이던 5분을 통째로 버렸다.
   //  모델이 뭘 내놓고 있으면 진전이다.
   // 미지정 = no-op(회귀 0).
-  onProgress?: () => void,
+  onProgress?: (kind: CodexProgressKind) => void,
   // externalTools 패스스루 스트리밍(2026-07-26, additive) — function_call lifecycle 의
   // 3분기(added→arguments.delta→done) 에서 index-기반 조각을 호출부에 노출한다. index 는
   // 이 parseCodexSse 호출(=1 iteration) 안에서 function_call 등장 순서(0,1,2…) — 병렬
@@ -316,6 +320,9 @@ export const parseCodexSse = async (
   //  `queries`·`sources` = 완료 항목(`output_item.done` 의 `web_search_call.action`)이 준 검색어·출처(2026-09-28) — 카드가
   //  «무엇을 찾았고 어디를 봤나» 를 보이게. 완료 항목 없이 끝난 검색은 둘 없이 한 번 알린다.
   onWebSearchCompleted?: (info: { durationMs: number; queries?: string[]; sources?: string[] }) => void,
+  // 이벤트 하나마다 그 종류 — `data:` 없는 SSE 주석은 `(주석)` (2026-10-05). 종류별 개수(`eventCounts`)는 **정상 종료 때만** 돌아와서,
+  //  무진전으로 끊긴 요청에 무엇이 왔는지(생존 신호인가·진행 이벤트인가)가 로그에 남을 수 없었다. 관측 전용 · 미지정 = no-op.
+  onEvent?: (kind: string) => void,
 ): Promise<CodexSseResult> => {
   /** 마지막으로 본 SSE 이벤트 타입 — 빈 응답이 completed 없이 끊겼는지 판별용. */
   let lastEvent = "(없음)";
@@ -386,6 +393,7 @@ export const parseCodexSse = async (
     const parts = buffer.split("\n\n");
     buffer = parts.pop() ?? "";
     for (const block of parts) {
+      if (onEvent !== undefined && !block.split("\n").some((l) => l.startsWith("data:")) && block.split("\n").some((l) => l.startsWith(":"))) onEvent("(주석)");
       for (const line of block.split("\n")) {
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
@@ -394,6 +402,7 @@ export const parseCodexSse = async (
           const event = JSON.parse(data) as CodexSseEvent;
           if (typeof event.type === "string") {
             eventCounts[event.type] = (eventCounts[event.type] ?? 0) + 1;
+            onEvent?.(event.type);
           }
           // 진단(gated) — codex 백엔드가 흘리는 SSE event.type 실측용. "생각 중"에 어떤
           // 이벤트(reasoning delta vs 무이벤트 keep-alive)가 오는지 = progress-aware 가드
@@ -439,7 +448,7 @@ export const parseCodexSse = async (
             // llm.delta fan-out — 순수 텍스트 증분만(누적본 아님). 호출부 coalescer 가
             // ~80ms∥120자로 묶어 publish. 미지정(onTextDelta===undefined)이면 no-op.
             onTextDelta?.(event.delta);
-            onProgress?.(); // 실제 output = 진전 → no-progress 타이머 reset.
+            onProgress?.("text"); // 실제 output = 진전 → no-progress 타이머 reset.
           }
           // V5.3 — function_call lifecycle 1 분기: output_item.added.
           // OpenClaw L407-418 답습 — partialJson 시작값 = item.arguments (대개 "").
@@ -456,7 +465,7 @@ export const parseCodexSse = async (
             };
             currentToolCallIndex += 1;
             sawToolCall = true; // 이후 도착하는 텍스트는 «도구 뒤» 다(관측 전용).
-            onProgress?.(); // 도구 호출 시작 = 진전 → no-progress 타이머 reset.
+            onProgress?.("tool_call"); // 도구 호출 시작 = 진전 → no-progress 타이머 reset.
             onToolCallDelta?.({
               index: currentToolCallIndex,
               id: callId !== "" ? callId : currentToolCall.id,
@@ -489,7 +498,7 @@ export const parseCodexSse = async (
             //   "beat 한 번 뒤 인자만 수천 토큰" 이다. 처음 드러난 계기는 하루만 살았던
             //   EditFiles(여러 파일 한 호출)였지만, 그 도구를 되돌린 뒤에도 결함은 남는다.
             //   ★도구가 바뀌면 스트림 모양이 바뀐다 — 그 스트림을 지켜보는 가드도 같이 봐야 한다.
-            onProgress?.();
+            onProgress?.("tool_args");
             onToolCallDelta?.({
               index: currentToolCallIndex,
               argumentsDelta: event.delta,
@@ -1062,11 +1071,11 @@ async function summarizeViaCodex(
     });
     if (!res.ok) {
       throw new Error(
-        `Codex 요약 호출 실패: ${res.status} ${await res.text().catch(() => "")}`,
+        `Codex summary request failed: ${res.status} ${await res.text().catch(() => "")}`,
       );
     }
     if (res.body === null) {
-      throw new Error("Codex 요약 응답 body 가 null — SSE 스트림 부재.");
+      throw new Error("Codex summary response body is null — no SSE stream.");
     }
     const result = await parseCodexSse(res.body, () => idleTimer.beat());
     finishUsage(result.lastEvent === "response.completed" && result.failure === undefined, result.usage === undefined ? undefined : {
@@ -1260,7 +1269,9 @@ export const historyTriggerChars = (fixedChars: number, capChars: number = CODEX
   Math.min(
     // 고정 임계(15만)는 **기본 상한일 때**(또는 환경변수로 명시했을 때) 건다 — 토큰 기준으로 상한이 커졌는데 15만에 묶이면 커진 몫을 못 쓴다.
     capChars <= CODEX_TURN_HISTORY_CHAR_CAP || TRIGGER_EXPLICIT ? CODEX_HISTORY_COMPACT_TRIGGER_CHARS : Number.POSITIVE_INFINITY,
-    Math.max(CODEX_SUMMARY_MAX_CHARS, capChars - fixedChars - CODEX_SUMMARY_MAX_CHARS),
+    // ★보내는 요약 뒤엔 접힌 도구 결과 목록이 붙는다(`foldedToolIndex`) — 그 몫(상한 `FOLDED_TOOL_INDEX_MAX_CHARS`)도 미리 뺀다.
+    //  안 빼면 창 안전망은 목록까지 세는데 기준은 몰라서, 그 차이만큼 가장 오래된 원문 턴이 요약에도 원문에도 없이 빠졌다(2026-10-05 적대 검토 F1).
+    Math.max(summaryCapChars(capChars), capChars - fixedChars - summaryCapChars(capChars) - FOLDED_TOOL_INDEX_MAX_CHARS),
   );
 
 /**
@@ -1380,9 +1391,14 @@ export const applyRecompaction = (
   return next.length < summary.length ? next : null;
 };
 
-/** 요약을 요약할 때의 분량 — 원문 요약(4%)과 달리 이미 압축된 글이라 훨씬 완만하게 줄인다. */
-export const recompactTargetFor = (chars: number): number =>
-  Math.min(SUMMARY_TARGET_MAX * 2, Math.max(SUMMARY_TARGET_MIN, Math.round(chars * 0.4)));
+/**
+ * 요약을 요약할 때의 분량 — 원문 요약(4%)과 달리 이미 압축된 글이라 훨씬 완만하게(40%) 줄인다.
+ * ★천장은 **요약 상한을 따른다** (2026-10-04 적대 검토): 고정 8천 자는 상한 2만 시절 값이라, 상한이 6만이 되자 앞 구간
+ *  3.2만 자가 늘 8천 자(25%)로 눌렸다 — 재압축이 드물어진 대신 한 번의 손실이 커진다. 앞 구간은 많아야 상한의 절반이므로
+ *  천장 = 상한의 20%(= 절반 × 40%). 상한 2만이면 종전과 같은 8천 자다.
+ */
+export const recompactTargetFor = (chars: number, cap: number = CODEX_SUMMARY_MAX_CHARS): number =>
+  Math.min(Math.max(SUMMARY_TARGET_MAX * 2, Math.floor(cap * 0.2)), Math.max(SUMMARY_TARGET_MIN, Math.round(chars * 0.4)));
 
 /**
  * 요약기 포트 (2026-08-09 적대 검토 2R).
@@ -1499,7 +1515,7 @@ export const foldPromptOf = (toFold: readonly { role: string; content: string }[
  */
 export const splitForFold = (text: string, budget: number, maxChunks: number): string[] => {
   const n = Math.max(1, Math.ceil(text.length / budget));
-  if (n > maxChunks) throw new Error(`요약 조각 ${n}개 > 상한 ${maxChunks} (입력 ${text.length}자·예산 ${budget}자) — 계획 불일치`);
+  if (n > maxChunks) throw new Error(`Summary would need ${n} chunks > limit ${maxChunks} (input ${text.length} chars, budget ${budget}) — plan mismatch`);
   const parts: string[] = [];
   let start = 0;
   for (let k = 0; k < n; k++) {
@@ -1535,15 +1551,17 @@ export const summarizeInChunks = async (
   call: (piece: string, targetChars: number) => Promise<string>,
 ): Promise<string> => {
   if (budget === undefined || text.length <= budget) return call(text, summaryTargetFor(text.length));
-  const out: string[] = [];
-  for (const piece of splitForFold(text, budget, CODEX_FOLD_MAX_CHUNKS)) {
-    const r = (await call(piece, summaryTargetFor(piece.length))).trim();
-    // ★조각마다 판정한다 — 전체에만 걸면 한 조각의 짧은 거절 문구(«요약할 수 없습니다.»)가 이어 붙어 부분 성공으로
-    //  넘어간다(재검토 재현: 워터마크가 큰 턴을 넘고 누적 요약에 거절 문구가 남았다).
-    if (!isUsableSummary(r)) return "";
-    out.push(r);
-  }
-  return out.join("\n");
+  // ★조각은 **동시에** 부른다 (2026-10-04). 차례로 부르면 하루치 한 턴(12만 자 = 4만 자 3조각)이 한 패스 63초였고,
+  //  요청 때 접기는 그걸 최대 3패스 돌고서야 답을 시작했다 — 벤치 실측 «턴 준비» 64~264초, 합 935초
+  //  (`long-session-compaction`, 아스트라 10-04 ①). 조각·지시문·이어 붙이는 순서는 그대로라 요약 결과는 같고,
+  //  기다림만 «합» 에서 «가장 긴 하나» 가 된다. 호출은 서로 독립이다(codex = HTTP 요청 하나 · openai = 매번 새 에이전트).
+  const rs = (await Promise.all(
+    splitForFold(text, budget, CODEX_FOLD_MAX_CHUNKS).map((piece) => call(piece, summaryTargetFor(piece.length))),
+  )).map((r) => r.trim());
+  // ★조각마다 판정한다 — 전체에만 걸면 한 조각의 짧은 거절 문구(«요약할 수 없습니다.»)가 이어 붙어 부분 성공으로
+  //  넘어간다(재검토 재현: 워터마크가 큰 턴을 넘고 누적 요약에 거절 문구가 남았다).
+  if (!rs.every((r) => isUsableSummary(r))) return "";
+  return rs.join("\n");
 };
 
 /**
@@ -2057,13 +2075,13 @@ const compactThreadNowUnlocked = async (
   const existing = getThreadSummary(threadKey);
   const watermark = existing?.compactedThrough ?? 0;
   const allTurns = loadHistoryTurns(channel, threadKey, watermark, true);
-  if (allTurns.length === 0) return { ok: false, reason: "이 대화엔 아직 기록이 없습니다." };
+  if (allTurns.length === 0) return { ok: false, reason: "this conversation has no history yet." };
   const prior = existing?.summary ?? "";
   const unsummarized = allTurns.filter((t) => t.id > watermark);
   // triggerChars 0 = 임계 무시(수동 호출). keepRecent 는 기본값 그대로 — 최근은 안 접는다.
   const plan = planHistoryCompaction(unsummarized, watermark, { triggerChars: 0 });
   if (!plan.needed || plan.toFold.length === 0) {
-    return { ok: false, reason: "압축할 만큼 오래된 대화가 없습니다(최근 대화는 원문 유지)." };
+    return { ok: false, reason: "there aren't enough older messages to compact (recent ones are kept as is)." };
   }
   const folded = foldPromptOf(plan.toFold);
   // ★새 조각만 요약하고 **덧붙인다** — 옛 요약을 다시 요약하지 않는다(2026-08-09).
@@ -2091,11 +2109,11 @@ const compactThreadNowUnlocked = async (
       noteCompactionOutcome(threadKey, false, `요약 ${got}자(수동)`, prompt.length);
       return {
         ok: false,
-        reason: `요약이 ${got}자로 너무 짧아 압축하지 않았습니다(하한 ${MIN_USABLE_SUMMARY_CHARS}자). 원문은 그대로 보존됩니다.`,
+        reason: `the summary came out too short (${got} chars, minimum ${MIN_USABLE_SUMMARY_CHARS}). The original messages are kept as is.`,
       };
     }
     if (threadRevision(threadKey) !== startRevision) {
-      return { ok: false, reason: "요약하는 동안 대화가 초기화·변경돼 저장하지 않았습니다. 다시 시도해 주세요." };
+      return { ok: false, reason: "the conversation was cleared or changed while summarizing, so nothing was saved. Please try again." };
     }
     upsertThreadSummary({
       threadKey,
@@ -2176,7 +2194,7 @@ const yieldedPassBudget = new Map<string, number>();
  */
 const threadLocks = new Map<string, Promise<void>>();
 const abortError = (signal: AbortSignal): unknown =>
-  signal.reason ?? Object.assign(new Error("요약 대기 중 취소됨"), { name: "AbortError" });
+  signal.reason ?? Object.assign(new Error("Cancelled while waiting for the summary"), { name: "AbortError" });
 export const withThreadCompactionLock = async <T>(
   threadKey: string,
   /**
@@ -2330,6 +2348,8 @@ const compactThreadHistoryUnlocked = async (args: {
   //  저수위를 임계로 삼아 그 아래로 내려갈 때까지 반복한다. 각 패스의 크기는 적응 예산 그대로라
   //  요약 호출은 안전하고, 한 번 정리하면 한동안 안 돌아온다(진동 제거).
   const highWater = historyTriggerChars(historyFixedChars(args.budget.instructionsChars, args.budget.promptChars), args.budget.capChars);
+  // 누적 요약 상한 — 이력 상한과 같은 창 기준(`summaryCapChars`). 기준과 재압축이 **같은 값**을 본다.
+  const summaryCap = summaryCapChars(args.budget.capChars);
   // ★뒤에서 접을 땐 **접을지**는 직전 턴 크기로(요청이라면 접었을 때만), **얼마나**는 프롬프트 몫 0 기준 저수위까지 —
   //  그러면 접은 뒤 몫 상한(50K) 이하의 어떤 요청도 다시 접지 않는다(대기 재발 없음) · 과잉 접기는 직전 프롬프트가 컸을
   //  때만, 그것도 덜 접는다(2026-09-29 재검토 P2: 몫 0 으로만 판정하면 경량·중간 세션이 요청 때 접기로 돌아갔다).
@@ -2525,14 +2545,14 @@ const compactThreadHistoryUnlocked = async (args: {
   for (let rp = 0; rp < CODEX_SUMMARY_RECOMPACT_MAX_PASSES; rp++) {
     // 양보했거나 지금 뒤에 줄이 섰으면 재압축(요약 호출)도 미룬다 — 요약이 좀 긴 것뿐, 손실은 0 이다(아래 주석).
     if (yielded || args.yieldTo?.() === true) break;
-    const rec = planSummaryRecompaction(summary, CODEX_SUMMARY_MAX_CHARS);
+    const rec = planSummaryRecompaction(summary, summaryCap);
     if (!rec.needed) break;
     if ((cooldownPort?.remainingMs(args.provider) ?? 0) !== 0) break;
     let folded: string;
     try {
       folded = await args.summarize(
         rec.oldPart,
-        recompactTargetFor(rec.oldPart.length),
+        recompactTargetFor(rec.oldPart.length, summaryCap),
       );
     } catch (e) {
       console.warn(
@@ -2547,7 +2567,7 @@ const compactThreadHistoryUnlocked = async (args: {
     if (next === null) {
       console.warn(
         `[${args.adapter} 6b] 재압축 결과가 안 줄어 버린다 — 앞 구간 ${rec.oldPart.length}자 → ` +
-          `${folded.trim().length}자(목표 ${recompactTargetFor(rec.oldPart.length)}자). 누적 ${summary.length}자 유지.`,
+          `${folded.trim().length}자(목표 ${recompactTargetFor(rec.oldPart.length, summaryCap)}자). 누적 ${summary.length}자 유지.`,
       );
       break;
     }
@@ -2557,13 +2577,13 @@ const compactThreadHistoryUnlocked = async (args: {
     expectedGeneration = generation();
     console.log(
       `[${args.adapter} 6b] 누적 요약 재압축 ${rp + 1}회차 — 앞 구간 ${rec.oldPart.length}자 → ` +
-        `${folded.trim().length}자 (상한 ${CODEX_SUMMARY_MAX_CHARS}자, 최종 ${summary.length}자)`,
+        `${folded.trim().length}자 (상한 ${summaryCap}자, 최종 ${summary.length}자)`,
     );
   }
-  if (summary.length > CODEX_SUMMARY_MAX_CHARS) {
+  if (summary.length > summaryCap) {
     // 수렴 못 했으면 **남긴다** — 조용히 지나가면 최근 턴이 밀려나는 걸 아무도 모른다.
     console.warn(
-      `[${args.adapter} 6b] ★누적 요약이 상한을 넘은 채다 — ${summary.length}자 > ${CODEX_SUMMARY_MAX_CHARS}자 ` +
+      `[${args.adapter} 6b] ★누적 요약이 상한을 넘은 채다 — ${summary.length}자 > ${summaryCap}자 ` +
         `(구간 ${summary.split(SUMMARY_SECTION_SEP).length}개). 프롬프트 예산에서 최근 원문 턴이 밀릴 수 있다.`,
     );
   }
@@ -2603,11 +2623,56 @@ type CompactArgs = Parameters<typeof compactThreadHistoryUnlocked>[0];
 export const compactThreadHistory = async (args: CompactArgs): Promise<CompactedThreadHistory> => {
   if (args.postTurn !== true) lastCompactArgs.set(args.threadKey, args);
   // ★답변 뒤 접기는 **선택적인 일**이다 — 뒤에 요청이 줄을 서면 패스 사이에서 양보한다(2026-10-03, 회사돌쇠 압축 인계서 1단계).
-  return withThreadCompactionLock(
+  const r = await withThreadCompactionLock(
     args.threadKey,
     (hasWaiter) => compactThreadHistoryUnlocked(args.postTurn === true ? { ...args, yieldTo: hasWaiter } : args),
     args.signal,
   );
+  // 접힌 도구 결과 목록은 **보내는 요약에만** 붙인다 — 저장된 요약(재압축 대상)엔 안 넣는다(재압축이 지우지 못하게).
+  //  턴 뒤 접기는 반환값을 버리므로 만들지 않는다.
+  if (args.postTurn === true) return r;
+  const index = foldedToolIndex(args.channel, args.threadKey, r.watermark);
+  return index === "" ? r : { ...r, summary: r.summary.trim() === "" ? index : `${r.summary.trim()}\n\n${index}` };
+};
+
+/** 접힌 도구 결과 목록의 최대 건수 — 최근 것부터. 항목당 인자 미리보기 길이. */
+export const FOLDED_TOOL_INDEX_LIMIT = 30;
+const FOLDED_TOOL_INDEX_ARGS = 80;
+/**
+ * 목록 **전체**의 상한(자) — 요약 기준이 이 몫을 미리 뺀다(`historyTriggerChars`). 항목마다 길이를 묶는 대신 전체를 묶는다 —
+ * 미리보기 상한 하나를 지워도(적대 검토 W1) 목록이 창을 넘지 않게. 넘치면 오래된 항목부터 뺀다.
+ */
+export const FOLDED_TOOL_INDEX_MAX_CHARS = 4_000;
+/** 워터마크·경계가 같으면 목록도 같다 — 대화별로 한 벌만 기억한다(요청마다 다시 훑지 않게, 적대 검토 F2). 바운드. */
+const foldedIndexCache = new Map<string, { key: string; text: string }>();
+const FOLDED_INDEX_CACHE_MAX = 200;
+/**
+ * **접힌 긴 도구 결과 목록** (2026-10-05) — 요약 블록 뒤에 붙는다. 요약 모델이 참조를 빠뜨려도 회수 길이 남게 하는, 기록에서 만든 결정적 목록.
+ * 대상은 접을 때 «참조 + 앞부분» 으로 줄어든 결과(`FOLD_TOOL_OUTPUT_HEAD` 초과)다. 워터마크가 그대로면 같은 글 — 요약이 바뀌는 순간에만 바뀐다.
+ */
+export const foldedToolIndex = (channel: ChannelName, threadKey: string, watermark: number): string => {
+  if (watermark <= 0) return "";
+  const conv = `${channel}\u0000${threadKey}`;
+  const key = `${watermark}\u0000${getContextBoundary(channel, threadKey)}`;
+  const hit = foldedIndexCache.get(conv);
+  if (hit !== undefined && hit.key === key) return hit.text;
+  const rows = listFoldedToolResults(channel, threadKey, watermark, FOLD_TOOL_OUTPUT_HEAD, FOLDED_TOOL_INDEX_LIMIT);
+  const oneLine = (x: string, n: number): string => {
+    const t = x.replace(/\s+/g, " ").trim();
+    return t.length <= n ? t : `${t.slice(0, n)}…`;
+  };
+  const head = (n: number) =>
+    `〔요약에 접힌 긴 도구 결과 ${n}건 — 위 요약에 필요한 값이 없으면 추측하지 말고 ${TOOL_RECALL_NAME}(ref) 로 원문을 다시 읽는다〕`;
+  let lines = rows.map((r) => `- ref ${r.ref} · ${oneLine(r.tool, 40)}(${oneLine(r.args, FOLDED_TOOL_INDEX_ARGS)}) · ${r.chars}자`);
+  // 전체 상한 — 넘치면 오래된 줄부터 뺀다(머리줄 포함해서 잰다).
+  const size = (ls: string[]) => head(ls.length).length + ls.reduce((n, l) => n + 1 + l.length, 0);
+  //  요약 뒤에 붙일 때 들어가는 줄바꿈 두 자(`\n\n`)까지 예약 안에 든다(재검토 C).
+  while (lines.length > 0 && size(lines) > FOLDED_TOOL_INDEX_MAX_CHARS - 2) lines = lines.slice(1);
+  const text = lines.length === 0 ? "" : `${head(lines.length)}\n${lines.join("\n")}`;
+  foldedIndexCache.delete(conv);
+  foldedIndexCache.set(conv, { key, text });
+  if (foldedIndexCache.size > FOLDED_INDEX_CACHE_MAX) foldedIndexCache.delete(foldedIndexCache.keys().next().value as string);
+  return text;
 };
 
 /**
@@ -2923,6 +2988,25 @@ export const CODEX_SUMMARY_MAX_CHARS = parsePosIntEnv(
   process.env.CODEX_SUMMARY_MAX_CHARS,
   20_000,
 );
+/** 환경변수로 **명시한** 요약 상한 — 명시했으면 창이 커도 그 값을 쓴다(`TRIGGER_EXPLICIT` 와 같은 규칙). */
+const SUMMARY_MAX_EXPLICIT = (() => { const n = Number(process.env.CODEX_SUMMARY_MAX_CHARS); return Number.isInteger(n) && n > 0; })();
+/** 이력 상한이 기본값보다 커진 몫 중 누적 요약에 주는 비율 — 창을 아는 모델에서만. */
+export const SUMMARY_CAP_GROWTH = 0.2;
+/**
+ * **누적 요약 상한을 이력 상한(창)에 맞춘다** (2026-10-04, 정태님: «한 번 요약한 뒤 곧바로 또 요약하면 안 된다 · 능력이 떨어지면 안 된다»).
+ * ★사고: 이력 상한은 09-30 에 창 기준(Codex ≈40만 자)으로 커졌는데 요약 상한은 2만 자 고정으로 남았다. 큰 대화에선 한 번 접을 때
+ *  요약이 4~5천 자씩 붙어 **매 턴** 상한을 넘었고, 매 턴 가장 오래된 구간을 **다시 요약**했다 — 벤치 `long-session-compaction`
+ *  실측: 재압축이 요청마다 ≈80초(턴 준비 140~190초 중), 그리고 초반 구간이 턴마다 한 세대씩 더 뭉개졌다(08-09 의 «요약의 요약»
+ *  열화와 같은 기제). 이력 상한이 기본값(20만)보다 커진 몫의 20% 를 더 준다 — Codex 창(≈40만)에서 ≈6만 자, 재압축이 수 턴에
+ *  한 번으로 드물어진다.
+ * ★**연속이다** (적대 검토): 첫 판은 «상한의 15%» 라 20만→20만1자에서 요약 상한이 2만→3만으로 뛰고 원문 기준이 1만 자 **줄었다**
+ *  (밀도를 잰 대화가 안 잰 대화보다 원문 창이 작아지는 역전). 커진 몫에만 비율을 걸면 기준은 상한과 함께 단조 증가한다.
+ * ★두 경계: 창을 모르는 모델(이력 상한이 기본값 이하)과 환경변수로 명시한 값은 오늘 그대로 — 모르는 창을 추정해 키우지 않는다.
+ */
+export const summaryCapChars = (capChars: number = CODEX_TURN_HISTORY_CHAR_CAP): number =>
+  capChars <= CODEX_TURN_HISTORY_CHAR_CAP || SUMMARY_MAX_EXPLICIT
+    ? CODEX_SUMMARY_MAX_CHARS
+    : CODEX_SUMMARY_MAX_CHARS + Math.floor((capChars - CODEX_TURN_HISTORY_CHAR_CAP) * SUMMARY_CAP_GROWTH);
 
 export const CODEX_COMPACT_MAX_PASSES = parsePosIntEnv(
   process.env.CODEX_COMPACT_MAX_PASSES,

@@ -113,30 +113,30 @@ export const acceptClaudeToken = async (
 ): Promise<{ ok: boolean; message: string; savedTo?: string }> => {
   const candidates = claudeTokenCandidates(raw);
   if (candidates.length === 0) {
-    return { ok: false, message: "토큰을 찾지 못했습니다 — `sk-ant-` 로 시작하는 값을 붙여넣어 주세요." };
+    return { ok: false, message: "No token found — paste the value that starts with `sk-ant-`." };
   }
   const unverified: string[] = [];
   for (const c of candidates) {
     const v = await check(c);
-    if (v === "ok") return save(c, "토큰을 확인하고 저장했습니다");
+    if (v === "ok") return save(c, "Checked and saved the token");
     if (v === "unknown") unverified.push(c);
   }
   if (unverified.length === 1) {
-    return save(unverified[0]!, "토큰을 저장했습니다(확인 요청이 실패해 유효한지는 확인하지 못했습니다)");
+    return save(unverified[0]!, "Saved the token (the check request failed, so it could not be confirmed as valid)");
   }
   if (unverified.length > 1) {
     return {
       ok: false,
       message:
-        "토큰이 여러 조각으로 나뉘어 있는데 확인 요청이 실패해 어느 쪽이 맞는지 알 수 없습니다 — 저장하지 않았습니다. " +
-        "잠시 뒤 다시 붙여넣어 주세요.",
+        "The token is split into several pieces and the check request failed, so it is unclear which one is right — nothing was saved. " +
+        "Paste it again in a moment.",
     };
   }
   return {
     ok: false,
     message:
-      "Anthropic 이 이 토큰을 거부합니다(401) — 저장하지 않았습니다. 줄바꿈으로 잘렸거나 이전 토큰일 수 있습니다. " +
-      "`npm run claude-auth` 로 새로 발급해 주세요.",
+      "Anthropic rejected this token (401) — nothing was saved. It may have been cut by a line break, or it may be an old token. " +
+      "Get a new one with `npm run claude-auth`.",
   };
 };
 
@@ -148,13 +148,13 @@ const save = async (token: string, lead: string): Promise<{ ok: boolean; message
   const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim() !== "";
   // 재시작 없이 따라가는 기능이 이 Node 에 없으면 «다음 메시지부터» 는 거짓이다(전체 검토).
   const { credentialFollowAvailable } = await import("../credential-env.js");
-  const when = credentialFollowAvailable() ? "다음 메시지부터 새 토큰을 씁니다" : "데몬을 재시작하면 새 토큰을 씁니다(이 Node 에선 자동 반영이 꺼져 있습니다)";
+  const when = credentialFollowAvailable() ? "the new token is used from the next message" : "restart the daemon to use the new token (automatic pickup is off on this Node version)";
   return {
     ok: true,
     savedTo,
     message:
       `${lead} — ${when}.` +
-      (apiKey ? " 다만 API 키(ANTHROPIC_API_KEY)도 설정돼 있어 그쪽이 먼저 쓰일 수 있습니다." : "") +
-      (cleared > 0 ? ` Claude 대기(쿨다운) ${cleared}건도 풀었습니다.` : ""),
+      (apiKey ? " Note that an API key (ANTHROPIC_API_KEY) is also set and may be used first." : "") +
+      (cleared > 0 ? ` Also cleared ${cleared} Claude cooldown(s).` : ""),
   };
 };

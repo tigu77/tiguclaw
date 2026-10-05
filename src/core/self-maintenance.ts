@@ -73,7 +73,7 @@ const reportFindings = (bus: EventBus | null, findings: HealthFinding[]): void =
   void deliverOutbound({
     channel: pushTo,
     target: null, // 채널 기본 대상(소유자) — 좌표 하드코딩 0.
-    text: `🩺 자가 점검에서 이상을 발견했습니다.\n\n${lines}`,
+    text: `🩺 Self-check found a problem.\n\n${lines}`,
     label: "self-maintenance:health",
     notice: true, // 인프라 통지 — 비서 발화 아님.
   }).catch(() => {

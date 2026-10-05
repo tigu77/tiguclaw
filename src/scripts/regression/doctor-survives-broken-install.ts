@@ -300,7 +300,7 @@ export const check: RegressionCheck = {
           },
         );
         const outText = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-        const sawProblem = /🔴 문제 \d+개/.test(outText);
+        const sawProblem = /🔴 \d+ problem\(s\)/.test(outText);
         out.push(
           assert(
             "doctor 가 그 환경에서 문제를 보고한다(전제 확인)",

@@ -111,7 +111,7 @@ export const handleSessionArchive = async (ctx: RouteCtx): Promise<void> => {
     return;
   }
   if (threadKey === DEFAULT_SESSION_ID) {
-    writeJson(res, 400, { error: "기본 세션은 보관할 수 없습니다" });
+    writeJson(res, 400, { error: "The default session can't be archived" });
     return;
   }
   const archived = abody.archived !== false; // 미지정 = 보관.

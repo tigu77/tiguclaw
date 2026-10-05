@@ -89,8 +89,8 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "생략된 본문 줄 수를 표시한다(조용히 지우지 않는다)",
-        r.dropped === 8 && joined.includes("본문 8줄 생략"),
-        `dropped=${r.dropped} 표시=${joined.includes("본문 8줄 생략")}`,
+        r.dropped === 8 && joined.includes("8 text lines omitted"),
+        `dropped=${r.dropped} 표시=${joined.includes("8 text lines omitted")}`,
       ),
     );
 
@@ -114,7 +114,7 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★한 줄짜리 거대 덤프도 상한에서 잘린다",
-        capped.length < 500 && capped.includes("자 생략>"),
+        capped.length < 500 && capped.includes("chars omitted>"),
         `${capped.length}자`,
       ),
     );
@@ -188,7 +188,7 @@ export const check: RegressionCheck = {
     // 헤더가 표본 크기를 속이지 않는다 — 자른 **뒤** 줄 수를 센다.
     const honest = await sourceHas("../../index.ts", [
       /const shownLines = shown === "" \? 0 : shown\.split\("\\n"\)\.length/,
-      /\$\{shownLines\}줄 표시/,
+      /showing \$\{shownLines\} line/,
     ]);
     out.push(
       assert(

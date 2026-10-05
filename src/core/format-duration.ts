@@ -29,3 +29,20 @@ export const formatDurationKo = (ms: number): string => {
   const m = totalMin % 60;
   return m === 0 ? `${h}시간` : `${h}시간 ${m}분`;
 };
+
+/**
+ * 영어판 — 서버가 채널로 바로 내보내는 고정 문구용(2026-10-05 결정: 서버 고정 문구는 영어).
+ * 같은 단위 규칙(초 → 분 → 시간)을 쓴다. 모델이 읽는 글(점검 보고 등)은 위 한국어판을 그대로 쓴다.
+ */
+export const formatDurationEn = (ms: number): string => {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  if (sec < 60) return `${sec}s`;
+  const totalMin = Math.floor(sec / 60);
+  if (totalMin < 60) {
+    const s = sec % 60;
+    return s === 0 ? `${totalMin} min` : `${totalMin} min ${s}s`;
+  }
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+};

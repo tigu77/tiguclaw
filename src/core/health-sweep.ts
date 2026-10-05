@@ -213,26 +213,28 @@ export const describeTurnErrors = (rawPayloads: string[]): string => {
       background += 1;
     }
     const detail = `${str(p.message)} ${str(p.error)}`;
+    // ★시간 종료는 **발행 때 정한 종류**(`errorKind`)를 먼저 본다 — 문장을 바꿔도 안 흔들린다.
+    //  문구는 종류가 없는 기록용 폴백이고 두 언어를 다 본다(이 함수는 DB 의 옛 한국어 기록도 읽는다).
     const cause = isModelOverloaded(detail)
-      ? "과부하"
-      : /timeout|시간|abort/i.test(detail)
-        ? "중단·타임아웃"
-        : "실패";
+      ? "overloaded"
+      : str(p.errorKind) === "timeout" || /timeout|timed out|time limit|abort|시간/i.test(detail)
+        ? "aborted/timed out"
+        : "failed";
     const who = str(p.model) !== "" ? `${str(p.adapter)}/${str(p.model)}` : str(p.adapter);
-    const label = `${who === "" ? "미상" : who} ${cause}`;
+    const label = `${who === "" ? "unknown" : who} ${cause}`;
     byCause.set(label, (byCause.get(label) ?? 0) + 1);
   }
   const top = [...byCause.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 3)
-    .map(([label, n]) => `${label} ${n}건`)
+    .map(([label, n]) => `${label} ×${n}`)
     .join(" · ");
   const where =
     background === 0
-      ? "내 대화"
+      ? "in your conversations"
       : background === rawPayloads.length
-        ? "전부 배경·외부 호출(서브에이전트·매니저·엔드포인트·게이트웨이)"
-        : `배경·외부 호출 ${background}건 포함`;
+        ? "all in background or external calls — agents, managers, endpoints, gateway"
+        : `including ${background} in background or external calls`;
   return `${top} (${where}).`;
 };
 
@@ -252,7 +254,7 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
       const reason = String(s.lastError ?? "").slice(0, 90);
       out.push({
         kind: "schedule_failure",
-        summary: `스케줄 '${s.label}' 실패 — ${reason || "사유 미상"} (내용은 대화 기록에 남아 있을 수 있습니다)`,
+        summary: `Schedule '${s.label}' failed — ${reason || "reason unknown"} (its content may still be in the conversation history)`,
       });
     }
   } catch {
@@ -277,13 +279,13 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
       out.push({
         kind: "backup_stale",
         summary:
-          "데이터 백업이 한 번도 없습니다. 기억·세션·대화가 이 DB 한 파일에 있어, 없어지면 되돌릴 방법이 없습니다.",
+          "There has never been a data backup. Memories, sessions and conversations all live in this one DB file — if it's lost, there's no way to get them back.",
       });
     } else if (Date.now() - b.latestAt > STALE_MS) {
       const days = Math.floor((Date.now() - b.latestAt) / 86_400_000);
       out.push({
         kind: "backup_stale",
-        summary: `백업이 ${days}일째 갱신되지 않았습니다(자동 백업이 멈춘 것 같습니다).`,
+        summary: `The backup hasn't been updated for ${days} day${days === 1 ? "" : "s"} (automatic backup seems to have stopped).`,
       });
     }
   } catch {
@@ -297,7 +299,7 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
     if (r.truncated > 0) {
       out.push({
         kind: "memory_index_truncated",
-        summary: `기억 ${r.total}건 중 ${r.truncated}건이 매 턴 프롬프트에 안 실립니다(상한 초과). 덜 쓰이는 것부터 잘리지만, 상한을 올리거나 안 쓰는 기억을 정리할 때입니다.`,
+        summary: `${r.truncated} of ${r.total} memories don't fit in the prompt on each turn (over the limit). The least-used ones are dropped first, but it's time to raise the limit or clean out memories you no longer use.`,
       });
     }
   } catch {
@@ -326,7 +328,7 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
       const list = big.map((d) => `'${d.name}' ${(d.bytes / 1024).toFixed(1)}KB`).join(" · ");
       out.push({
         kind: "project_doc_oversized",
-        summary: `프로젝트 입구 문서(PROJECT.md)가 커졌습니다 — ${list}. 비서에게 «PROJECT.md 정리해줘» 라고 하면 모든 작업에 필요한 것만 남기고 나머지는 하위 문서로 옮기는 안을 보여 드립니다(지우지 않습니다). 문서가 다시 고쳐질 때만 또 알립니다.`,
+        summary: `A project's entry document (PROJECT.md) has grown large — ${list}. Ask the assistant to "tidy up PROJECT.md" and it will propose keeping only what every task needs and moving the rest into sub-documents (nothing is deleted). You'll only hear about this again after the document is edited.`,
       });
     }
   } catch {
@@ -351,7 +353,7 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
     if (actionable.length >= TURN_ERROR_THRESHOLD) {
       out.push({
         kind: "turn_errors",
-        summary: `턴 실패 ${actionable.length}건 — ${describeTurnErrors(actionable.map((e) => e.payload))}`,
+        summary: `${actionable.length} failed turns — ${describeTurnErrors(actionable.map((e) => e.payload))}`,
       });
     }
   } catch {
@@ -368,7 +370,7 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
       if (repeat >= REPEAT_PARAGRAPH_THRESHOLD) {
         out.push({
           kind: "repetition",
-          summary: `답변 하나에 같은 문단이 ${repeat}번 반복됐습니다 — 어댑터 이상(대화 재구성 결함) 가능성.`,
+          summary: `A single answer repeated the same paragraph ${repeat} times — possibly an adapter problem (a flaw in how the conversation is rebuilt).`,
         });
         break; // 같은 창에서 여러 건이어도 1회만 보고(노이즈 억제).
       }

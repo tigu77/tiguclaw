@@ -406,6 +406,8 @@ export interface WorkerFailedPayload {
   status?: string;
   /** redact 된 원인(≤300자). 게이트 A: task 와 둘 다 비면 drop. */
   error?: string;
+  /** 원인이 타입 오류였으면 그 이름(예: `WorkerTimeoutError`) — 문장보다 먼저 본다. */
+  errorName?: string;
   /** 매니저 작업 지시(≤500자). 작업 근사 키의 원천. */
   task?: string;
 }
@@ -423,9 +425,12 @@ export const normalizeTaskKey = (task: string): string =>
  * 집계 라벨). worker-jobs payload 는 handleTurnError 처럼 errorKind 를 안 실어주므로 여기서
  * 근사. evaluateFailureLowRiskGate 의 KNOWN_KINDS(timeout·model_rejected·error)와 정합.
  */
-export const deriveWorkerErrorKind = (error: string): string => {
+export const deriveWorkerErrorKind = (error: string, errorName?: string): string => {
+  // ★이름 먼저 (2026-10-05) — 코어가 실어 준 타입 이름이면 문장과 무관하게 가른다(시간 종료 계열).
+  //  문구는 이름이 없는 기록용 폴백이고 **두 언어**를 본다(옛 한국어 원문이 이벤트에 남아 있다).
+  if (errorName !== undefined && /Timeout|ToolHang/.test(errorName)) return "timeout";
   const t = error.toLowerCase();
-  if (/시간 초과|타임아웃|idle|timeout|무진전|stall|spinning/.test(t)) return "timeout";
+  if (/시간 초과|타임아웃|응답하지 않아|안 끝나|idle|timeout|timed out|time limit|didn't respond within|무진전|stall|spinning/.test(t)) return "timeout";
   if (/usage_limit|usage limit|429|rate.?limit|거부|rejected|refus/.test(t))
     return "model_rejected";
   return "error";

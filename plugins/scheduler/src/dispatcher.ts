@@ -34,6 +34,6 @@ export const dispatch = async (input: DispatchInput): Promise<void> => {
     observeThreadKey: input.sessionThreadKey,
   });
   if (!r.delivered) {
-    throw new Error(`스케줄 발송 실패 — ${r.reason ?? "미배달"}`);
+    throw new Error(`Schedule delivery failed — ${r.reason ?? "not delivered"}`);
   }
 };

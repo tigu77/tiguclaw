@@ -29,6 +29,7 @@ import { tierDescription, unresolvableTierText } from "./tier-description.js";
 import { getEventBus } from "../../eventbus.js";
 import { DAEMON_SUBAGENT_TOOL } from "../subagent-tools.js";
 import type { SteeringChannel } from "../../steering.js";
+import type { WorkerOutcome } from "../../worker-jobs.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -448,6 +449,7 @@ export const startDetachedAgent = (o: {
       WORKER_HARD_GRACE_MS,
       WorkerTimeoutError,
       asFiniteTimeoutMs,
+      failureOutcome,
     } = await import("../../worker-jobs.js");
     const { createSteeringChannel } = await import("../../steering.js");
 
@@ -458,7 +460,7 @@ export const startDetachedAgent = (o: {
     const steerCh = WORKER_STEERING_ENABLED ? createSteeringChannel() : undefined;
     if (steerCh !== undefined) setSteerChannel(o.jobId, steerCh);
 
-    let outcome: { result: string } | { error: string };
+    let outcome: WorkerOutcome;
     // ★도구 스텝 카운터·구독 해제는 `try` **밖**에 둔다 — finally 와 결과 판정이 둘 다 본다.
     let childToolSteps = 0;
     let unsubTools: () => void = () => {};
@@ -537,7 +539,7 @@ export const startDetachedAgent = (o: {
       })();
       outcome = { result: out.text };
     } catch (e) {
-      outcome = { error: e instanceof Error ? e.message : String(e) };
+      outcome = failureOutcome(e);
     } finally {
       // 정상·throw·취소 모두 해제 — 구독 누수 0(worker-registry 동형 패턴).
       try { unsubTools(); } catch { /* best-effort */ }

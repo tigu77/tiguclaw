@@ -32,8 +32,12 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ① 단정하지 않는다 ────────────────────────────────────────────────────
   //  "멈춰 있어요" 가 사용자를 "한도에 걸렸다" 로 오독하게 만든 문장이다.
-  const verdictWords = ["멈춰 있", "멈췄", "중단됐", "실패"];
-  const hit = verdictWords.filter((w) => worker.includes(w) || main.includes(w));
+  //  (2026-10-05 서버 고정 문구 영어 통일 — 단정 표현도 영어로 센다.)
+  // ★«stuck» 은 조건문 «If it seems stuck» 만 허용하고 나머지는 전부 단정으로 센다(2026-10-05 적대 검토 G2 — «is stuck» 만 세서
+  //  «Tool X seems stuck» 이 초록이었다). 허용 문구를 지운 뒤 단어로 본다.
+  const allowed = (t: string): string => t.split("If it seems stuck").join("");
+  const verdictWords = ["stuck", "has stopped", "stopped responding", "was interrupted", "failed", "hung"];
+  const hit = verdictWords.filter((w) => [worker, main].some((t) => new RegExp(`\\b${w}\\b`).test(allowed(t))));
   out.push(
     assert(
       "★멈췄다고 단정하지 않는다(경과 보고지 판정이 아니다)",
@@ -44,8 +48,8 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ② 정상이 먼저, 드문 원인이 나중 ──────────────────────────────────────
   //  순서가 곧 진단이다. 권한 다이얼로그를 앞세우면 그게 원인으로 읽힌다.
-  const normalAt = worker.indexOf("정상");
-  const rareAt = worker.indexOf("권한");
+  const normalAt = worker.indexOf("normal");
+  const rareAt = worker.indexOf("permission");
   out.push(
     assert(
       "★'정상일 수 있다' 가 드문 원인(권한 다이얼로그)보다 앞에 온다",
@@ -67,7 +71,7 @@ const run = async (): Promise<Assertion[]> => {
   out.push(
     assert(
       "경과 초와 도구 이름이 실린다",
-      worker.includes("180초") && worker.includes("Bash") && worker.includes("VoxelBuilder"),
+      worker.includes("180s") && worker.includes("Bash") && worker.includes("VoxelBuilder"),
       worker.slice(0, 60),
     ),
   );

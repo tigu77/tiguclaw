@@ -331,8 +331,8 @@ const run = async (): Promise<Assertion[]> => {
     });
     out.push({
       name: "★상태는 밀지 않고 /status 에서 본다(알림은 놓치면 끝이다)",
-      ok: /backupInfo\(\)/.test(idx) && /백업:/.test(idx),
-      got: `/status 줄=${/백업:/.test(idx)}`,
+      ok: /backupInfo\(\)/.test(idx) && /Backup:/.test(idx),
+      got: `/status 줄=${/Backup:/.test(idx)}`,
     });
   }
 

@@ -43,14 +43,14 @@ const MAX_LINE_CHARS = 400;
 const stripInlineCarriers = (line: string): string =>
   line
     // `tail: …` 이후는 모델·사용자 발화 서술이다(stream-trace·codex-turn-end).
-    .replace(/\btail:\s.*$/u, "tail: <생략>")
+    .replace(/\btail:\s.*$/u, "tail: <omitted>")
     // 빈 응답 진단이 싣는 사용자 원문.
-    .replace(/\buserText=.*$/u, "userText=<생략>")
+    .replace(/\buserText=.*$/u, "userText=<omitted>")
     // 백엔드 원문 payload.
-    .replace(/\braw=.*$/u, "raw=<생략>")
+    .replace(/\braw=.*$/u, "raw=<omitted>")
     // 텔레그램 chatId 등 채널 좌표(PII).
-    .replace(/\b(addr|target)=\d{6,}/gu, "$1=<가림>")
-    .replace(/\btg:\d{6,}/gu, "tg:<가림>");
+    .replace(/\b(addr|target)=\d{6,}/gu, "$1=<hidden>")
+    .replace(/\btg:\d{6,}/gu, "tg:<hidden>");
 
 /**
  * 채널로 내보낼 줄들을 만든다. 계속 줄은 **연속 구간마다 한 줄**로 접어, 어디가 생략됐는지
@@ -64,7 +64,7 @@ export const sanitizeLogTail = (
   let run = 0;
   const flushRun = (): void => {
     if (run > 0) {
-      out.push(`… (본문 ${run}줄 생략)`);
+      out.push(`… (${run} text line${run === 1 ? "" : "s"} omitted)`);
       run = 0;
     }
   };
@@ -78,7 +78,7 @@ export const sanitizeLogTail = (
     const stripped = stripInlineCarriers(line);
     out.push(
       stripped.length > MAX_LINE_CHARS
-        ? `${stripped.slice(0, MAX_LINE_CHARS)}… <${stripped.length - MAX_LINE_CHARS}자 생략>`
+        ? `${stripped.slice(0, MAX_LINE_CHARS)}… <${stripped.length - MAX_LINE_CHARS} chars omitted>`
         : stripped,
     );
   }

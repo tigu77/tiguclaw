@@ -177,36 +177,36 @@ const askRequired = async (prompt: string, retryHint: string): Promise<string> =
 const askProvider = async (): Promise<Provider> => {
   const has = declaredAuthProviders();
   const all: Array<{ p: Provider; desc: string; aliases: string[] }> = [
-    { p: "anthropic", desc: "anthropic  — Anthropic API 키 (가장 쉬움, 토큰 종량)", aliases: ["anthropic"] },
+    { p: "anthropic", desc: "anthropic  — Anthropic API key (easiest, pay per token)", aliases: ["anthropic"] },
     ...(has.has("claude-subscription")
       ? [{
           p: "claude-sub" as Provider,
-          desc: "claude-sub — Claude 구독 OAuth (`claude setup-token`, 키 입력 없이 토큰)",
+          desc: "claude-sub — Claude subscription OAuth (`claude setup-token`, a token instead of a key)",
           aliases: ["claude-sub", "claude"],
         }]
       : []),
-    { p: "openai", desc: "openai     — OpenAI API 키 (토큰 종량)", aliases: ["openai"] },
+    { p: "openai", desc: "openai     — OpenAI API key (pay per token)", aliases: ["openai"] },
     ...(has.has("codex")
       ? [{
           p: "codex" as Provider,
-          desc: "codex      — ChatGPT 구독 OAuth (키 입력 없음, 설치 후 발급)",
+          desc: "codex      — ChatGPT subscription OAuth (no key to enter, sign in after setup)",
           aliases: ["codex"],
         }]
       : []),
   ];
   console.log("");
-  console.log("[1/4] LLM provider 선택 — 가진 것 하나만 고르세요.");
+  console.log("[1/4] Choose an LLM provider — pick one you have.");
   all.forEach((o, i) => console.log(`  ${i + 1}) ${o.desc}`));
   const nums = all.map((_, i) => String(i + 1));
   for (;;) {
-    const v = await ask(`  선택 [${nums.join("/")}] (기본 1): `);
+    const v = await ask(`  Choice [${nums.join("/")}] (default 1): `);
     if (v === "") return all[0]!.p;
     const byNum = nums.indexOf(v);
     if (byNum >= 0) return all[byNum]!.p;
     const lower = v.toLowerCase();
     const hit = all.find((o) => o.aliases.includes(lower));
     if (hit !== undefined) return hit.p;
-    console.log(`  ⚠️  ${nums.join(", ")} 중 하나를 입력하세요.`);
+    console.log(`  ⚠️  Enter one of ${nums.join(", ")}.`);
   }
 };
 
@@ -217,13 +217,13 @@ const collectProviderConfig = async (
 > => {
   if (provider === "anthropic") {
     console.log("");
-    console.log("  → Anthropic 콘솔(console.anthropic.com)에서 API 키를 발급하세요.");
+    console.log("  → Create an API key in the Anthropic Console (console.anthropic.com).");
     // ★Claude Code 설치 안내는 **필요 없다** (2026-08-27 확인). Agent SDK 가 플랫폼별
     //  `claude` 바이너리를 optional 의존으로 **같이 깔기** 때문에 키만으로 돈다
     //  (실증: PATH 를 비우고 SDK 를 돌려도 정상 기동).
     const anthropicKey = await askRequired(
       "  ANTHROPIC_API_KEY (sk-ant-...): ",
-      "키는 비워둘 수 없습니다. 발급 후 붙여넣으세요.",
+      "The key can't be empty. Create one and paste it here.",
     );
     return {
       anthropicKey,
@@ -233,13 +233,13 @@ const collectProviderConfig = async (
   }
   if (provider === "claude-sub") {
     console.log("");
-    console.log("  → Claude 구독(Pro/Max)으로 인증합니다 — 키 대신 OAuth 토큰을 씁니다.");
+    console.log("  → Signing in with your Claude subscription (Pro/Max) — an OAuth token is used instead of a key.");
     // ★여기서 토큰을 **받아 적지 않는다** (2026-08-27). codex 와 같은 모양으로, 온보드
     //  [2/5] 가 `npm run claude-auth` 를 대신 돌린다 — 사용자는 브라우저 로그인만 하면 된다.
     //  종전엔 "CLI 를 깔고 → 토큰을 받고 → 붙여넣으세요" 세 걸음이었고, 첫 걸음은 이미
     //  `npm ci` 로 받아둔 259MB 를 한 번 더 받는 것이었다.
-    console.log("     발급은 다음 단계에서 자동으로 진행합니다 (`npm run claude-auth`).");
-    console.log("     브라우저가 열리면 로그인만 하세요 — 토큰은 저희가 저장합니다.");
+    console.log("     The token is issued automatically in the next step (`npm run claude-auth`).");
+    console.log("     When the browser opens, just sign in — tiguclaw saves the token for you.");
     return {
       anthropicKey: "",
       claudeOauthToken: "",
@@ -248,10 +248,10 @@ const collectProviderConfig = async (
   }
   if (provider === "openai") {
     console.log("");
-    console.log("  → OpenAI 플랫폼(platform.openai.com)에서 API 키를 발급하세요.");
+    console.log("  → Create an API key on the OpenAI Platform (platform.openai.com).");
     const openaiKey = await askRequired(
       "  OPENAI_API_KEY (sk-...): ",
-      "키는 비워둘 수 없습니다. 발급 후 붙여넣으세요.",
+      "The key can't be empty. Create one and paste it here.",
     );
     return {
       anthropicKey: "",
@@ -261,8 +261,8 @@ const collectProviderConfig = async (
   }
   // codex
   console.log("");
-  console.log("  → codex 는 ChatGPT 구독 OAuth 를 사용합니다. 여기서 키 입력은 없습니다.");
-  console.log("     설치 후 반드시 `npm run codex-auth` 로 OAuth 토큰을 발급하세요.");
+  console.log("  → codex uses ChatGPT subscription OAuth. There is no key to enter here.");
+  console.log("     After setup, you must get an OAuth token with `npm run codex-auth`.");
   return {
     anthropicKey: "",
     claudeOauthToken: "",
@@ -292,15 +292,15 @@ const chooseModelMode = async (tier: {
   low: string;
 }): Promise<ModelMode> => {
   console.log("");
-  console.log("  ── 모델 셋팅 ─────────────────────────────────────");
-  console.log("  1) 자동 (권장) — 아무것도 적지 않습니다. 데몬이 백엔드에 물어");
-  console.log("     인증된 provider 의 **최신** 모델로 high/mid/low 를 매번 구성합니다.");
-  console.log("     새 모델이 나오면 따라갑니다. 등급은 패밀리 안에서만 움직여");
-  console.log("     (opus→opus) 비용 등급이 조용히 올라가지 않습니다.");
-  console.log("  2) 고정 — 지금 아는 값을 settings.json 에 박습니다. 재현성이 필요하거나");
-  console.log("     특정 모델을 써야 할 때. 나중에 바꾸려면 그 파일을 고쳐야 합니다.");
-  console.log(`     (현재 아는 값: high=${tier.high} · mid=${tier.mid} · low=${tier.low})`);
-  const v = await ask("  선택 [1/2] (기본 1): ");
+  console.log("  ── Models ────────────────────────────────────────");
+  console.log("  1) Auto (recommended) — nothing is written. The daemon asks the backend and");
+  console.log("     builds high/mid/low from the **latest** models of your signed-in providers every time.");
+  console.log("     It follows new models as they ship. Each tier only moves within its family");
+  console.log("     (opus→opus), so the cost tier never rises silently.");
+  console.log("  2) Fixed — writes the currently known values into settings.json. For when you need");
+  console.log("     reproducibility or a specific model. To change them later, edit that file.");
+  console.log(`     (currently known: high=${tier.high} · mid=${tier.mid} · low=${tier.low})`);
+  const v = await ask("  Choice [1/2] (default 1): ");
   if (v === "" || v === "1") return "auto";
   const pick = async (label: string, cur: string): Promise<string> => {
     const raw = await ask(`  ${label} (Enter=${cur}): `);
@@ -345,14 +345,14 @@ const detectTelegramUserId = async (
   try {
     const me = await telegramApi(token, "getMe");
     if (!me.ok || me.result === undefined) {
-      console.log("  ⚠️  봇 토큰이 유효하지 않습니다(getMe 실패). 수동 입력으로 진행합니다.");
+      console.log("  ⚠️  The bot token is not valid (getMe failed). Continuing with manual entry.");
       return null;
     }
-    console.log(`  ✅ 봇 확인: @${me.result.username}`);
+    console.log(`  ✅ Bot found: @${me.result.username}`);
     // webhook 설정 시 getUpdates 가 막히므로 해제(대기 업데이트는 보존).
     await telegramApi(token, "deleteWebhook", { drop_pending_updates: false });
     console.log("");
-    console.log("  → 지금 텔레그램에서 이 봇에게 아무 메시지나 보내세요 (최대 2분 대기)…");
+    console.log("  → Now send this bot any message on Telegram (waiting up to 2 minutes)…");
     const deadline = Date.now() + 120_000;
     let offset: number | undefined;
     while (Date.now() < deadline) {
@@ -375,11 +375,11 @@ const detectTelegramUserId = async (
       }
       await sleep(500);
     }
-    console.log("  ⚠️  2분 내 메시지를 못 받았습니다. 수동 입력으로 진행합니다.");
+    console.log("  ⚠️  No message arrived within 2 minutes. Continuing with manual entry.");
     return null;
   } catch (e) {
     console.log(
-      `  ⚠️  자동 감지 오류: ${e instanceof Error ? e.message : String(e)} — 수동 입력으로 진행합니다.`,
+      `  ⚠️  Auto-detection failed: ${e instanceof Error ? e.message : String(e)} — continuing with manual entry.`,
     );
     return null;
   }
@@ -389,28 +389,28 @@ const collectTelegram = async (): Promise<
   Pick<Answers, "telegramToken" | "telegramUserIds">
 > => {
   console.log("");
-  console.log("[3/4] 텔레그램 (선택) — CLI 만 쓸 거면 건너뛸 수 있습니다.");
-  const skip = await ask("  텔레그램을 설정할까요? [y/N]: ");
+  console.log("[3/4] Telegram (optional) — skip this if you only use the CLI.");
+  const skip = await ask("  Set up Telegram? [y/N]: ");
   if (skip.toLowerCase() !== "y" && skip.toLowerCase() !== "yes") {
-    console.log("  → 텔레그램 건너뜀. (나중에 .env 에 TELEGRAM_BOT_TOKEN 추가 가능)");
+    console.log("  → Skipped Telegram. (You can add TELEGRAM_BOT_TOKEN to .env later.)");
     return { telegramToken: "", telegramUserIds: "" };
   }
 
-  console.log("  → @BotFather 에서 /newbot → 봇 생성 후 토큰을 복사하세요.");
+  console.log("  → In @BotFather, run /newbot to create a bot, then copy its token.");
   const telegramToken = await askRequired(
     "  TELEGRAM_BOT_TOKEN: ",
-    "봇 토큰은 비워둘 수 없습니다 (텔레그램을 설정하기로 선택함).",
+    "The bot token can't be empty (you chose to set up Telegram).",
   );
 
   console.log("");
-  console.log("  소유자 user id — 봇 토큰으로 자동 감지 가능(봇에게 메시지 1번 보내면 됨).");
-  const auto = await ask("  자동 감지할까요? [Y/n]: ");
+  console.log("  Owner user id — can be detected automatically with the bot token (just send the bot one message).");
+  const auto = await ask("  Detect it automatically? [Y/n]: ");
   let telegramUserIds = "";
   if (auto.toLowerCase() !== "n" && auto.toLowerCase() !== "no") {
     const detected = await detectTelegramUserId(telegramToken);
     if (detected !== null) {
-      console.log(`  → 감지됨: ${detected.id} (${detected.name})`);
-      const ok = await ask("  이 ID 를 소유자로 설정할까요? [Y/n]: ");
+      console.log(`  → Detected: ${detected.id} (${detected.name})`);
+      const ok = await ask("  Set this ID as the owner? [Y/n]: ");
       if (ok.toLowerCase() !== "n" && ok.toLowerCase() !== "no") {
         telegramUserIds = detected.id;
       }
@@ -418,86 +418,85 @@ const collectTelegram = async (): Promise<
   }
   if (telegramUserIds.length === 0) {
     console.log("");
-    console.log("  → 수동: @userinfobot 에게 메시지를 보내 내 user id 를 확인 후 입력.");
-    console.log("    (여러 명 허용 시 콤마로: 111,222)");
+    console.log("  → Manual: message @userinfobot to find your user id, then enter it.");
+    console.log("    (to allow several people, separate with commas: 111,222)");
     telegramUserIds = await ask("  TELEGRAM_ALLOWED_USER_IDS: ");
   }
   if (telegramUserIds.length === 0) {
     console.log("");
-    console.log("  ⚠️⚠️  경고: allowlist 가 비어 있습니다.");
-    console.log("  ⚠️    봇이 잠겨 어떤 메시지도 처리하지 않습니다 (소유자 식별 불가 = 전면 차단).");
-    console.log("  ⚠️    나중에 .env 의 TELEGRAM_ALLOWED_USER_IDS 를 반드시 채우세요.");
+    console.log("  ⚠️⚠️  Warning: the allowlist is empty.");
+    console.log("  ⚠️    The bot is locked and will not handle any message (no owner can be identified = everything is blocked).");
+    console.log("  ⚠️    Be sure to fill in TELEGRAM_ALLOWED_USER_IDS in .env later.");
   }
   console.log("");
-  console.log("  💡 보안 권장 — @BotFather 에서 봇을 1:1 전용으로 잠그세요:");
-  console.log("     /setjoingroups → Disable  (봇을 그룹에 추가 못 하게)");
-  console.log("     /setprivacy   → Enable    (그룹에서 명령만 — 기본값)");
+  console.log("  💡 Security tip — in @BotFather, lock the bot to one-on-one chats:");
+  console.log("     /setjoingroups → Disable  (the bot can't be added to groups)");
+  console.log("     /setprivacy   → Enable    (commands only in groups — the default)");
   return { telegramToken, telegramUserIds };
 };
 
 const renderEnv = (a: Answers): string => {
-  return `# tiguclaw .env — \`tiguclaw init\` 마법사 생성.
-# ★ 이 파일은 비밀(토큰)을 담습니다. 절대 커밋/공유하지 마세요. (.gitignore 처리됨)
+  return `# tiguclaw .env — generated by the \`tiguclaw init\` wizard.
+# ★ This file holds secrets (tokens). Never commit or share it. (It is in .gitignore.)
 
-# 앱 런타임 홈. ★이 .env 는 홈 안에 있으므로 TIGUCLAW_HOME 은 여기서 결정되지 않습니다 —
-# 환경변수(launchd/셸)로 설정되며 미설정 시 ~/.tiguclaw. daemon:install 이 유닛에 주입합니다.
-# (이 줄은 참고용 — 값을 바꿔도 .env 를 찾는 홈 경로엔 영향 없음.)
+# App runtime home. ★This .env lives inside the home, so TIGUCLAW_HOME is not decided here —
+# it comes from the environment (launchd/shell) and defaults to ~/.tiguclaw. daemon:install puts it into the service.
+# (This line is for reference only — changing it does not change where .env is looked up.)
 TIGUCLAW_HOME=
 
-# ── LLM provider 키 ─────────────────────────────────────────────
-# ★온보딩이 고른 provider — tiguclaw onboard 가 이 값으로 codex OAuth 단계를 켠다
-#  (2026-08-13). 종전엔 REGION_A_MODELS 접두로 유추했는데, 모델을 **자동**으로 두면
-#  그 값이 비어서 codex 를 골라도 인증 단계를 통째로 건너뛰었다(무인증 부팅).
+# ── LLM provider keys ───────────────────────────────────────────
+# ★The provider chosen during onboarding — tiguclaw onboard uses it to decide whether to run
+#  the codex OAuth step (it can't be inferred from the models, which are often left on auto).
 TIGUCLAW_PROVIDER=${a.provider}
-# 미선택 provider 키는 빈 값으로 남겨둡니다.
-# (다른 provider 로 바꾸려면 해당 키를 채우세요 — 모델은 settings.json 의 프로파일, 없으면 인증된 provider 로 자동 구성.)
+# Keys for providers you didn't choose are left empty.
+# (To switch providers, fill in that key — models come from the profiles in settings.json, or are built automatically from signed-in providers.)
 ANTHROPIC_API_KEY=${a.anthropicKey}
-# Claude 구독 OAuth (claude-sub provider). \`claude setup-token\` 으로 발급, claude 어댑터가
-# ANTHROPIC_API_KEY 대신 이 토큰으로 인증. 둘 중 하나만 있으면 됩니다.
+# Claude subscription OAuth (claude-sub provider). Issued with \`claude setup-token\`; the claude adapter
+# signs in with this token instead of ANTHROPIC_API_KEY. You only need one of the two.
 CLAUDE_CODE_OAUTH_TOKEN=${a.claudeOauthToken}
 OPENAI_API_KEY=${a.openaiKey}
 
-# (미사용 provider — region-A 미연결, 참고용)
+# (Unused provider — not wired to region A, for reference)
 GOOGLE_GENERATIVE_AI_API_KEY=
 
-# ChatGPT OAuth 우회 (codex provider). \`npm run codex-auth\` 로 자동 발급/갱신됩니다.
-# codex 를 선택했어도 설치 후 codex-auth 를 실행해야 토큰이 채워집니다.
+# ChatGPT OAuth (codex provider). Issued and refreshed automatically by \`npm run codex-auth\`.
+# Even if you chose codex, the tokens are only filled in after you run codex-auth.
 OPENAI_CODEX_OAUTH_TOKEN=
 OPENAI_CODEX_OAUTH_REFRESH=
 OPENAI_CODEX_OAUTH_EXPIRES=
 
-# ── 모델 ───────────────────────────────────────────────────────
-# 모델은 여기가 아니라 settings.json 의 모델 프로파일(models.profiles)로 정합니다.
-# 프로파일이 없으면 인증된 provider 의 최신 모델로 자동 구성됩니다(\`/models\` 로 확인).
+# ── Models ──────────────────────────────────────────────────────
+# Models are not set here but by the model profiles in settings.json (models.profiles).
+# Without profiles, the latest models of your signed-in providers are used (check with \`/models\`).
 
-# ── 텔레그램 채널 ───────────────────────────────────────────────
-# TELEGRAM_ALLOWED_USER_IDS 가 비면 봇이 잠겨 어떤 메시지도 처리하지 않습니다.
+# ── Telegram channel ────────────────────────────────────────────
+# If TELEGRAM_ALLOWED_USER_IDS is empty, the bot is locked and handles no messages.
 TELEGRAM_BOT_TOKEN=${a.telegramToken}
 TELEGRAM_ALLOWED_USER_IDS=${a.telegramUserIds}
 
-# ── HTTP 브리지 채널 ────────────────────────────────────────────
-# 인증 토큰 (Authorization: Bearer). init 이 자동 생성했습니다.
+# ── HTTP bridge channel ─────────────────────────────────────────
+# Auth token (Authorization: Bearer). Generated by init.
 HTTP_BRIDGE_TOKEN=${a.httpBridgeToken}
-# 포트 기본값 7011. 바꿀 때만 주석을 푸세요(기본값은 적지 않는 편이 안전합니다).
+# Default port 7011. Uncomment only to change it (leaving the default unwritten is safer).
 # HTTP_BRIDGE_PORT=7011
 
-# ── 대시보드 ────────────────────────────────────────────────────
-# 브라우저로 http://127.0.0.1:7010 을 열면 웹 대시보드입니다.
-# 127.0.0.1 에만 바인딩됩니다 — 다른 기기에서 쓰려면 포트를 열지 말고 사설 네트워크로
-# 터널링하세요(예: tailscale serve 7010).
+# ── Dashboard ───────────────────────────────────────────────────
+# Open http://127.0.0.1:7010 in a browser for the web dashboard.
+# It binds to 127.0.0.1 only — to use it from another device, don't open the port; tunnel it
+# over a private network instead (e.g. tailscale serve 7010).
 # DASHBOARD_PORT=7010
 
-# ── LLM 게이트웨이 (선택) ───────────────────────────────────────
-# 다른 로컬 앱이 tiguclaw 멀티LLM 백엔드를 OpenAI 호환으로 씀: POST /v1/chat/completions
-# (http-bridge 포트). ★토큰 설정 시에만 활성(미설정=비활성). 앱 *서버* 가 이 토큰으로 호출
-# (브라우저에 노출 금지). 앱은 비서(codex 등)와 다른 백엔드로 분리 권장(rate-limit·밴 격리).
+# ── LLM gateway (optional) ──────────────────────────────────────
+# Lets other local apps use the tiguclaw multi-LLM backend through an OpenAI-compatible API: POST /v1/chat/completions
+# (on the http-bridge port). ★Only enabled when a token is set (unset = disabled). The app *server* calls it with this token
+# (never expose it to a browser). Keep apps on a different backend from the assistant (codex etc.) to isolate rate limits and bans.
 LLM_GATEWAY_TOKEN=
-# 게이트웨이 기본 모델 풀(콤마, provider:model). 미설정 시 기본 모델 프로파일(없으면 자동 구성).
+# Default model pool for the gateway (comma-separated, provider:model). Unset = the default model profile (or the automatic setup).
 LLM_GATEWAY_MODELS=
-# 동시 처리 상한(앱 폭주가 비서 흔드는 것 방지). 기본 4.
+# Concurrency cap (keeps a runaway app from disturbing the assistant). Default 4.
 LLM_GATEWAY_MAX_CONCURRENCY=4
 
-# ── 데몬 ────────────────────────────────────────────────────────
+# ── Daemon ──────────────────────────────────────────────────────
 LOG_LEVEL=info
 NODE_ENV=production
 `;
@@ -505,23 +504,23 @@ NODE_ENV=production
 
 const main = async (): Promise<void> => {
   console.log("");
-  console.log("=== tiguclaw init — 자가호스트 설치 마법사 ===");
-  console.log("대화형으로 LLM·텔레그램·토큰을 설정해 .env 를 생성합니다.");
-  console.log("키·토큰 발급 단계가 헷갈리면 README 의 '키·토큰 발급 가이드' 섹션을 참고하세요.");
+  console.log("=== tiguclaw init — self-hosted setup wizard ===");
+  console.log("Sets up the LLM, Telegram and tokens interactively and creates .env.");
+  console.log("If getting keys or tokens is confusing, see the key and token guide in the README.");
 
   // ★ 안전장치: 기존 .env 가 있으면 명시적 동의 없이는 중단.
   if (existsSync(ENV_PATH)) {
     console.log("");
-    console.log(`⚠️  이미 .env 가 존재합니다: ${ENV_PATH}`);
-    console.log("⚠️  이 파일에는 라이브 데몬의 실제 토큰이 들어있을 수 있습니다.");
-    console.log("⚠️  덮어쓰면 복구할 수 없습니다.");
-    const confirm = await ask('계속 덮어쓰려면 "overwrite" 를 입력하세요 (그 외 입력 = 중단): ');
+    console.log(`⚠️  A .env already exists: ${ENV_PATH}`);
+    console.log("⚠️  It may hold the real tokens of a running daemon.");
+    console.log("⚠️  Overwriting it cannot be undone.");
+    const confirm = await ask('Type "overwrite" to overwrite it (anything else cancels): ');
     if (confirm !== "overwrite" && confirm.toLowerCase() !== "y") {
-      console.log("→ 중단했습니다. 기존 .env 는 그대로 유지됩니다.");
+      console.log("→ Cancelled. The existing .env is left as is.");
       rl.close();
       return;
     }
-    console.log("→ 덮어쓰기를 진행합니다.");
+    console.log("→ Overwriting.");
   }
 
   const provider = await askProvider();
@@ -530,15 +529,15 @@ const main = async (): Promise<void> => {
   const tier = modelMode === "auto" ? { high: "", mid: "", low: "" } : modelMode;
 
   console.log("");
-  console.log("[2/4] HTTP 브리지 인증 토큰 자동 생성 중...");
+  console.log("[2/4] Generating the HTTP bridge auth token...");
   const httpBridgeToken = randomBytes(32).toString("hex");
-  console.log("  ✅ HTTP_BRIDGE_TOKEN 생성 완료 (.env 에 기록됩니다).");
+  console.log("  ✅ Generated HTTP_BRIDGE_TOKEN (it will be written to .env).");
 
   const telegram = await collectTelegram();
 
   console.log("");
-  console.log("[4/4] 포트 = 코드 기본값 사용 (브리지 7011 · 대시보드 7010).");
-  console.log("  ℹ️  바꾸려면 .env 의 해당 주석을 푸세요(적어두지 않는 게 기본 — 갈라집니다).");
+  console.log("[4/4] Ports = code defaults (bridge 7011 · dashboard 7010).");
+  console.log("  ℹ️  To change them, uncomment the matching lines in .env (they are left out by default so they can't drift).");
 
   const answers: Answers = {
     provider,
@@ -560,37 +559,37 @@ const main = async (): Promise<void> => {
   //  공유/회사 PC·다중 사용자 환경에서 전 백엔드 크리덴셜 노출 경로.
   writeFileSync(ENV_PATH, renderEnv(answers), { encoding: "utf8", mode: 0o600 });
   console.log("");
-  console.log(`✅ .env 작성 완료: ${ENV_PATH}  (런타임 홈 — 레포 아님)`);
+  console.log(`✅ Wrote .env: ${ENV_PATH}  (runtime home, not the repo)`);
 
   // 모델 프로파일 seed (settings.json) — .env 의 REGION_A_MODELS/MODEL_TIER_* 를 명명 프로파일로
   // 승격(ADR model-profiles). 기존 settings.json 의 hooks 등은 보존, models.profiles 만 병합.
   // ★자동이면 **아무것도 안 쓴다** — 쓰는 순간 그 값에 고정되고 자동 최신이 죽는다.
   if (modelMode === "auto") {
     console.log(
-      "✅ 모델 = 자동. settings.json 에 프로파일을 만들지 않았습니다 — 데몬이 매번 " +
-        "인증된 provider 의 최신으로 high/mid/low 를 구성합니다(`/models` 로 확인).",
+      "✅ Models = auto. No profiles were written to settings.json — the daemon builds " +
+        "high/mid/low from the latest models of your signed-in providers every time (see `/models`).",
     );
   } else {
     seedModelProfiles(buildSeedProfiles(answers), "high");
     console.log(
-      `✅ settings.json 모델 프로파일 seed 완료: ${SETTINGS_PATH}  (high/mid/low · 기본=high)`,
+      `✅ Seeded model profiles in settings.json: ${SETTINGS_PATH}  (high/mid/low · default=high)`,
     );
   }
 
   console.log("");
-  console.log("── 다음 단계 ──────────────────────────────────────");
-  console.log("  ① `npm install` 이 완료됐는지 확인하세요.");
+  console.log("── Next steps ─────────────────────────────────────");
+  console.log("  ① Make sure `npm install` has finished.");
   if (provider === "codex") {
-    console.log("  ② `npm run codex-auth` 로 ChatGPT OAuth 토큰을 발급하세요. (codex 필수)");
+    console.log("  ② Get a ChatGPT OAuth token with `npm run codex-auth`. (required for codex)");
   } else {
-    console.log("  ② (codex provider 아님 — OAuth 발급 단계 건너뜀)");
+    console.log("  ② (not the codex provider — skipping the OAuth step)");
   }
-  console.log("  ③ `npm run daemon:install` (상시 데몬) 또는 `npm run dev` (개발)로 실행하세요.");
-  console.log("  ④ `npm run doctor` 로 설정을 검증하세요.");
-  console.log("  ⑤ 텔레그램에서 봇에게 메시지를 보내 응답을 확인하세요.");
-  console.log("  ⑥ 브라우저로 http://127.0.0.1:7010 — 웹 대시보드(채팅·진행 상황·백그라운드 작업).");
+  console.log("  ③ Start it with `npm run daemon:install` (always-on daemon) or `npm run dev` (development).");
+  console.log("  ④ Check the setup with `npm run doctor`.");
+  console.log("  ⑤ Send your bot a message on Telegram to check that it replies.");
+  console.log("  ⑥ Open http://127.0.0.1:7010 in a browser — the web dashboard (chat, progress, background jobs).");
   console.log("");
-  console.log("  ★ .env 는 절대 커밋·공유하지 마세요 (실 토큰 포함).");
+  console.log("  ★ Never commit or share .env (it holds real tokens).");
   console.log("");
 
   rl.close();

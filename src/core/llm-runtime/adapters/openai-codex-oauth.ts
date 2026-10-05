@@ -183,6 +183,7 @@ import {
   parseCodexSseObserved,
   compatibleReplayOutput,
   formatCodexDebugInput,
+  type CodexProgressKind,
   type CodexSseResult,
   type ResponseInputItem,
 } from "./openai-codex-oauth-history.js";
@@ -243,7 +244,7 @@ class CodexBackendFailureError extends Error {
     readonly userWhy: string,
     readonly retryable: boolean,
   ) {
-    super(`codex 백엔드가 요청 실패를 보고했습니다 — ${userWhy}`);
+    super(`The codex backend reported a request failure — ${userWhy}`);
     this.name = "CodexBackendFailureError";
   }
 }
@@ -270,17 +271,17 @@ export const codexFailureAdviceForTest = (userWhy: string, retryable: boolean): 
   codexFailureAdvice({ userWhy, retryable } as CodexBackendFailureError);
 
 const codexFailureAdvice = (e: CodexBackendFailureError): string => {
-  if (e.retryable) return "잠시 후 다시 시도해 주세요.";
+  if (e.retryable) return "Please try again in a moment.";
   if (e.userWhy.includes("max_output_tokens")) {
     return (
-      "모델이 출력 한도를 다 써서 끊겼습니다 — 같은 요청을 다시 보내도 같은 지점에서 멈춥니다. " +
-      "작업을 더 작은 단위로 나눠 요청해 주세요."
+      "The model used up its output limit and was cut off — sending the same request again will stop at the same point. " +
+      "Please split the work into smaller pieces."
     );
   }
   if (e.userWhy.includes("content_filter")) {
-    return "콘텐츠 필터에 걸렸습니다 — 같은 요청은 계속 막히므로 표현을 바꿔 다시 물어봐 주세요.";
+    return "It was blocked by the content filter — the same request will keep being blocked, so please rephrase it.";
   }
-  return "같은 요청은 다시 보내도 같은 결과라, 요청을 바꿔서 시도해 주세요.";
+  return "Sending the same request again would give the same result, so please change the request and try again.";
 };
 
 
@@ -1712,8 +1713,8 @@ export const runOpenAiCodex = async (
         const cap = loadModelInputLimits().get(`codex:${model}`);
         if (cap !== undefined && bodyJson.length > cap) {
           throw new Error(
-            `codex: 조립된 입력 ${bodyJson.length.toLocaleString()}자가 상한 ${cap.toLocaleString()}자를 넘어 호출하지 않음 ` +
-              `(이 백엔드는 한도 초과 시 오류 없이 빈 응답을 준다 — 20초를 버리는 대신 즉시 다음 모델로).`,
+            `codex: the assembled input (${bodyJson.length.toLocaleString("en-US")} chars) is over the ${cap.toLocaleString("en-US")}-char limit, so it wasn't sent ` +
+              `(this backend returns an empty response instead of an error when over the limit — moving to the next model now instead of losing 20 seconds).`,
           );
         }
       }
@@ -1727,6 +1728,11 @@ export const runOpenAiCodex = async (
       // 발화는 turn/매니저 예산(input.abortSignal)과 별개라 재개에 예산이 남는다. 모델 폴백 아님.
       let sseResult: CodexSseResult;
       let stallAttempt = 0;
+      /** 무진전으로 재시도를 시작한 시각 — 결과(완료·소진·취소)를 로그에 남길 때 쓴다. 0 = 이 요청은 재시도 안 함. */
+      let stallRetryAt = 0;
+      /** 재시도 결과를 이미 한 줄 남겼나 — 루프를 빠져나가는 예외가 무엇이든 한 번은 남긴다. */
+      let stallOutcomeLogged = false;
+      try {
       for (;;) {
         const idleAc = new AbortController();
         // no-progress 타이머 — onProgress(진전)에만 beat. abort 시 linkAbort 가 fetch signal 로.
@@ -1751,6 +1757,11 @@ export const runOpenAiCodex = async (
         // 계측 — 이 iteration 스트림의 청크 수·마지막청크 시각 (dead=chunks0 vs spinning 판별).
         let iterChunks = 0;
         let iterLastChunkAt = 0;
+        // ★이 시도에 온 이벤트 종류별 개수 + 마지막 진전 — 무진전으로 끊겨도 남는다(2026-10-05). 종전엔 «청크 97개» 만 남아
+        //  그게 생존 신호인지 진행 이벤트인지, 긴 추론인지 정체인지 가를 수 없었다(회사돌쇠 10-05 · 맥 돌쇠 9~10월 spinning 19건).
+        const iterEvents = new Map<string, number>();
+        let lastProgressKind: CodexProgressKind | undefined;
+        let lastProgressAt = 0;
         const iterStart = Date.now();
         firstSendAt ??= iterStart;
         sendAt = iterStart;
@@ -1807,11 +1818,11 @@ export const runOpenAiCodex = async (
         }
         if (!res.ok) {
           throw new Error(
-            `Codex backend 호출 실패: ${res.status} ${await res.text().catch(() => "")}`,
+            `Codex backend request failed: ${res.status} ${await res.text().catch(() => "")}`,
           );
         }
         if (res.body === null) {
-          throw new Error("Codex backend response.body 가 null — SSE 스트림 부재.");
+          throw new Error("Codex backend response.body is null — no SSE stream.");
         }
         headersAt = Date.now();
 
@@ -1836,8 +1847,10 @@ export const runOpenAiCodex = async (
             deltaStream.push(delta); // llm.delta fan-out (coalesce → publish, depth-0).
             tracePush(delta); // 매니저/서브에이전트 서술 로그 트레이스(deltaStream 꺼진 턴만).
           },
-          () => {
+          (kind) => {
             firstOutputAt ??= Date.now();
+            lastProgressKind = kind;
+            lastProgressAt = Date.now();
             progressTimer.beat(); // onProgress — 실제 output/tool = 진전 → 타이머 reset.
           },
           externalToolNames.size === 0
@@ -1910,6 +1923,9 @@ export const runOpenAiCodex = async (
                 })(),
               } satisfies RegionAActivityPayload,
             });
+          },
+          (kind) => {
+            iterEvents.set(kind, (iterEvents.get(kind) ?? 0) + 1);
           },
         );
         if (typeof sseResult.lastEvent === "string") lastSseEvent = sseResult.lastEvent;
@@ -2029,10 +2045,11 @@ export const runOpenAiCodex = async (
           input.abortSignal?.aborted !== true
         ) {
           stallAttempt += 1;
-          const iterSec = Math.round((Date.now() - iterStart) / 1000);
+          const now = Date.now();
+          const iterSec = Math.round((now - iterStart) / 1000);
           const lastChunkAgoSec =
             iterLastChunkAt > 0
-              ? Math.round((Date.now() - iterLastChunkAt) / 1000)
+              ? Math.round((now - iterLastChunkAt) / 1000)
               : -1;
           // turnWallExceeded 면 trickle(느리게 흐르다 wall-clock 캡 초과) — dead/spinning
           // (progressTimer 발화)과 구분해 관측 정확성 확보. resume 동작은 세 경우 모두 동일.
@@ -2046,38 +2063,20 @@ export const runOpenAiCodex = async (
             : iterChunks > 0
               ? "spinning"
               : "dead";
+          // ★이 시도에 무엇이 왔나 — 종류·개수만(본문·인자·추론 내용은 싣지 않는다). 정체와 긴 추론을 가르는 재료.
+          const events = Object.fromEntries([...iterEvents.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8));
+          const eventsText = Object.entries(events).map(([k, v]) => `${k.replace(/^response\./, "")}×${v}`).join(",") || "없음";
+          const sinceProgressMs = lastProgressAt > 0 ? now - lastProgressAt : now - iterStart;
+          const progressText = lastProgressKind === undefined ? "진전=이 시도엔 없음" : `마지막진전=${lastProgressKind} ${Math.round(sinceProgressMs / 1000)}s 전`;
           console.warn(
             turnWallExceeded
               ? `codex 턴 wall-clock 상한 초과(trickle, ${
-                  Date.now() - iterStart
-                }ms; chunks=${iterChunks}, iteration=${iteration}, thread=${input.threadKey}) — 같은 컨텍스트로 스텝 재개 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}`
+                  now - iterStart
+                }ms; chunks=${iterChunks}, ${progressText}, 이벤트=[${eventsText}], iteration=${iteration}, thread=${input.threadKey}) — 같은 컨텍스트로 스텝 재개 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}`
               : `codex ${kind} (chunks=${iterChunks}, iter=${iterSec}s, 마지막청크 ${
                   lastChunkAgoSec < 0 ? "없음" : `${lastChunkAgoSec}s 전`
-                }, iteration=${iteration}, thread=${input.threadKey}) — 같은 컨텍스트로 스텝 재개 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}`,
+                }, ${progressText}, 이벤트=[${eventsText}], iteration=${iteration}, thread=${input.threadKey}) — 같은 컨텍스트로 스텝 재개 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}`,
           );
-          try {
-            bus.publish({
-              type: "llm.stream_stall",
-              ts: Date.now(),
-              payload: {
-                channel: input.channel,
-                threadKey: input.threadKey,
-                adapter: "codex",
-                model,
-                iteration,
-                kind: eventKind,
-                trickle: turnWallExceeded,
-                chunks: iterChunks,
-                iterMs: Date.now() - iterStart,
-                lastChunkAgoMs:
-                  iterLastChunkAt > 0 ? Date.now() - iterLastChunkAt : -1,
-                attempt: stallAttempt,
-                maxRetries: CODEX_STALL_MAX_RETRIES,
-              },
-            });
-          } catch {
-            /* 관측 발행 실패는 재개를 막지 않는다. */
-          }
           // progressTimer.done()·deltaStream.flush() 는 아래 finally 가 continue 시에도 수행.
           // ★signal 은 `input.abortSignal`(턴 예산)이다. `effectiveAc.signal` 을 주면
           //  **항상 0ms** 가 된다 — 이 분기는 `reason instanceof IdleTimeoutError` 일 때만
@@ -2095,7 +2094,43 @@ export const runOpenAiCodex = async (
           //  판정을 **원리적으로 통과할 수 없다** → `sideEffectExecuted` 가 취소를 삼켜
           //  `/stop` 후 답장이 한 통 더 가고 취소된 턴이 성공으로 적재된다.
           //  `?? reason` 은 안전망일 뿐이다(aborted 면 spec 상 reason 이 항상 있다).
-          if (turnSignal?.aborted === true) throw turnSignal.reason ?? reason;
+          if (turnSignal?.aborted === true) {
+            // 재개 전이라 «재시도» 가 아니다 — 누적에도 안 센다(발행 전). 이름표는 사유대로(턴 시한 ≠ 사용자 취소, 적대 검토 F3).
+            stallOutcomeLogged = true;
+            console.warn(`[codex-stall] 재시도 결과=${turnSignal.reason instanceof TurnTimeoutError ? "턴 시한" : "취소"} — 이 요청 재시도 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES} 직전, iteration=${iteration}, thread=${input.threadKey}`);
+            throw turnSignal.reason ?? reason;
+          }
+          // ★알림 이벤트는 **실제로 재시도를 시작할 때** 낸다(2026-10-05) — 대기 중 취소된 건 재개가 아니다(작업 누적에 안 센다).
+          //  `stallId` 로 소비자가 중복을 거른다(같은 사건을 두 번 세지 않게).
+          stallRetryAt = Date.now();
+          try {
+            bus.publish({
+              type: "llm.stream_stall",
+              ts: stallRetryAt,
+              payload: {
+                channel: input.channel,
+                threadKey: input.threadKey,
+                adapter: "codex",
+                model,
+                iteration,
+                kind: eventKind,
+                trickle: turnWallExceeded,
+                chunks: iterChunks,
+                iterMs: now - iterStart,
+                lastChunkAgoMs:
+                  iterLastChunkAt > 0 ? now - iterLastChunkAt : -1,
+                attempt: stallAttempt,
+                maxRetries: CODEX_STALL_MAX_RETRIES,
+                stallId: randomUUID(),
+                noProgressMs: CODEX_NO_PROGRESS_MS,
+                sinceProgressMs,
+                ...(lastProgressKind !== undefined ? { lastProgressKind } : {}),
+                events,
+              },
+            });
+          } catch {
+            /* 관측 발행 실패는 재개를 막지 않는다. */
+          }
           continue; // 같은 body 로 iteration 재시도.
         }
         if (
@@ -2103,6 +2138,10 @@ export const runOpenAiCodex = async (
           (reason instanceof IdleTimeoutError ||
             reason instanceof TurnTimeoutError)
         ) {
+          if (reason instanceof IdleTimeoutError && stallAttempt >= CODEX_STALL_MAX_RETRIES) {
+            stallOutcomeLogged = true;
+            console.warn(`[codex-stall] 재시도 결과=소진 — 이 요청 재시도 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES} 모두 무진전, 재개 후 ${Math.round((Date.now() - stallRetryAt) / 1000)}s, iteration=${iteration}, thread=${input.threadKey}`);
+          }
           throw reason;
         }
         throw e;
@@ -2116,6 +2155,20 @@ export const runOpenAiCodex = async (
         deltaStream.flush();
         traceFlush("iter"); // 매니저 서술 트레이스도 iteration 경계마다 flush(길게 끄는 턴도 로그).
       }
+      }
+      } catch (err) {
+        // ★재시도한 요청이 **어떤 경로로든** 예외로 끝나면 결과를 남긴다(2026-10-05 적대 검토 F2) — 재시도 중 취소·턴 시한·네트워크·
+        //  백엔드 실패 소진이 종전엔 «감지» 줄만 남기고 끝을 안 알렸다. 경로마다 로그를 다는 대신 루프를 한 번 감싼다(빠뜨릴 자리가 없다).
+        if (stallRetryAt > 0 && !stallOutcomeLogged) {
+          const why = input.abortSignal?.aborted === true
+            ? input.abortSignal.reason instanceof TurnTimeoutError ? "턴 시한" : "취소"
+            : err instanceof Error ? err.name : String(err);
+          console.warn(`[codex-stall] 재시도 결과=실패(${why}) — 이 요청 재시도 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}, 재개 후 ${Math.round((Date.now() - stallRetryAt) / 1000)}s, iteration=${iteration}, thread=${input.threadKey}`);
+        }
+        throw err;
+      }
+      if (stallRetryAt > 0) {
+        console.log(`[codex-stall] 재시도 결과=완료 — 이 요청 재시도 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}, 재개 후 ${Math.round((Date.now() - stallRetryAt) / 1000)}s, iteration=${iteration}, thread=${input.threadKey}`);
       }
       const { text, responseId, toolCalls, usage } = sseResult;
       {
@@ -2857,7 +2910,7 @@ export const runOpenAiCodex = async (
     if (sideEffectExecuted) {
       const ranList =
         executedToolNames.size > 0
-          ? `\n\n이번 턴에 실행한 도구: ${[...executedToolNames].join(", ")}.`
+          ? `\n\nTools run in this turn: ${[...executedToolNames].join(", ")}.`
           : "";
       // ★삼키기 전에 남긴다 (2026-08-08). 이 분기는 에러를 **답장 텍스트로 바꿔** 정상 종료
       //  시킨다(폴백 중복 실행 방지 = 옳은 설계). 그런데 바꾸면서 **아무것도 안 남겨서**,
@@ -2872,14 +2925,14 @@ export const runOpenAiCodex = async (
         // userWhy = raw 원문 제외판. why 를 쓰면 백엔드 JSON 400자가 그대로 답장에 실린다.
         //  안내는 retryable 로 갈린다 — `retryable=false` 의 근거가 "같은 요청은 같은 벽"
         //  이라, 거기에 "잠시 후 다시 시도" 를 권하면 자기모순이다.
-        notice = `백엔드가 요청을 처리하지 못했습니다 — ${e.userWhy}${ranList}\n\n${codexFailureAdvice(e)}`;
+        notice = `The backend couldn't process the request — ${e.userWhy}${ranList}\n\n${codexFailureAdvice(e)}`;
       } else if (e instanceof IdleTimeoutError) {
-        notice = `응답이 지연되어 중단했습니다.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
+        notice = `Stopped because the response was taking too long.${ranList}\n\nCheck the results, or ask again.`;
       } else {
         // HTTP 실패·전송 실패·그 밖의 일반 에러. 종전엔 이 갈래가 통째로 throw 로 빠져
         // 폴백이 부작용을 중복 실행했다.
         const detail = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
-        notice = `요청 처리 중 오류가 발생했습니다 — ${detail}${ranList}\n\n이어서 하려면 "이어서 진행해줘" 라고 말씀해 주세요.`;
+        notice = `Something went wrong while handling the request — ${detail}${ranList}\n\nTo pick up where it left off, just say "continue".`;
       }
 
       // ★이미 화면에 흘러간 텍스트 **뒤에 붙인다** (2026-08-08).
@@ -2990,7 +3043,7 @@ export const runOpenAiCodex = async (
   const OVERSIZE_SUSPECT_CHARS = 600_000;
   const describeOversizeSuspicion = (chars: number): string =>
     chars >= OVERSIZE_SUSPECT_CHARS
-      ? ` (요청이 ${chars.toLocaleString()}자로 매우 큽니다 — 이 백엔드는 컨텍스트 한도 초과 시 오류 대신 빈 응답을 주는 것으로 관측됐습니다. 관측된 성공 상한은 약 60만자)`
+      ? ` (the request is very large at ${chars.toLocaleString("en-US")} chars — this backend has been seen to return an empty response instead of an error when over its context limit; the largest observed success was about 600,000 chars)`
       : "";
 
   // codex empty-response fix (2026-05-24) Fix 2 — 최종 빈 출력 처리.
@@ -3021,16 +3074,16 @@ export const runOpenAiCodex = async (
     );
     if (!sideEffectExecuted) {
       throw new Error(
-        `codex: 최종 응답 텍스트 비어있음 (부작용 도구 미실행) — 풀 폴백 유도${describeOversizeSuspicion(input.text.length)}`,
+        `codex: the final response text was empty (no side-effecting tool ran) — falling back to the next model${describeOversizeSuspicion(input.text.length)}`,
       );
     }
     // 2026-06-05 — 실행된 도구 이름을 fallback 텍스트에 자동 포함. 사용자가 텔레그램
     //  응답에서 "방금 무엇이 처리됐는지" 즉시 인지 (이전엔 본문 0 = UX 깜깜).
     const ranList =
       executedToolNames.size > 0
-        ? `\n\n이번 턴에 실행한 도구: ${[...executedToolNames].join(", ")}.`
+        ? `\n\nTools run in this turn: ${[...executedToolNames].join(", ")}.`
         : "";
-    finalText = `요청은 처리했지만 요약 텍스트를 만들지 못했어요.${ranList}\n\n결과를 확인하시거나 다시 한 번 물어봐 주세요.`;
+    finalText = `The request was carried out, but no summary text could be produced.${ranList}\n\nCheck the results, or ask again.`;
   }
 
   return {

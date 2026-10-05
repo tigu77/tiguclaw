@@ -68,10 +68,10 @@ const byVendor = (models: readonly string[]): Map<string, number> => {
 
 const fmtCount = (v: ProviderView): string =>
   v.models.length > 0
-    ? `모델 ${String(v.models.length)}개`
+    ? `${String(v.models.length)} model${v.models.length === 1 ? "" : "s"}`
     : v.authed
-      ? "모델 목록 없음(조회 실패 또는 미지원)"
-      : "인증 없음";
+      ? "no model list (lookup failed or not supported)"
+      : "not signed in";
 
 /** 이름·인자를 사람이 친 대로 비교한다(대소문자 무시). */
 const eq = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
@@ -90,9 +90,9 @@ export const renderProviders = (
 ): string => {
   if (views.length === 0) {
     return [
-      "🔌 프로바이더",
-      "붙어 있는 provider 가 없습니다.",
-      "`<home>/settings.json` 의 `models.providers` 에 추가하면 여기 나타납니다.",
+      "🔌 Providers",
+      "No providers are connected.",
+      "Add one under `models.providers` in `<home>/settings.json` and it will show up here.",
     ].join("\n\n");
   }
 
@@ -101,11 +101,11 @@ export const renderProviders = (
   if (parts.length === 0) {
     const lines = views.map((v) => `• **${v.name}** — ${fmtCount(v)}`);
     return [
-      "🔌 프로바이더",
+      "🔌 Providers",
       lines.join("\n"),
-      "`/providers <이름>` 으로 그 provider 의 모델을 봅니다. " +
-        "`/providers <이름> <검색어>` 로 좁힐 수 있습니다.",
-      "여기 있는 모델을 쓰려면 `/models` 의 프로파일에 `provider:model` 로 적습니다.",
+      "`/providers <name>` shows that provider's models. " +
+        "Narrow it down with `/providers <name> <search>`.",
+      "To use a model listed here, add it as `provider:model` to a profile (see `/models`).",
     ].join("\n\n");
   }
 
@@ -114,8 +114,8 @@ export const renderProviders = (
   const view = views.find((v) => eq(v.name, wanted!));
   if (view === undefined) {
     return [
-      `🔌 \`${wanted!}\` 라는 provider 는 없습니다.`,
-      `있는 것: ${views.map((v) => `\`${v.name}\``).join(" · ")}`,
+      `🔌 There's no provider called \`${wanted!}\`.`,
+      `Available: ${views.map((v) => `\`${v.name}\``).join(" · ")}`,
     ].join("\n\n");
   }
 
@@ -130,7 +130,7 @@ export const renderProviders = (
       `🔌 **${view.name}**`,
       needle === ""
         ? fmtCount(view)
-        : `\`${needle}\` 와 맞는 모델이 없습니다(전체 ${String(view.models.length)}개).`,
+        : `No models match \`${needle}\` (${String(view.models.length)} in total).`,
     ].join("\n\n");
   }
 
@@ -140,19 +140,19 @@ export const renderProviders = (
   if (vendors.size > 1) {
     const ranked = [...vendors.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     return [
-      `🔌 **${view.name}** — 모델 ${String(view.models.length)}개 · 벤더 ${String(ranked.length)}종`,
+      `🔌 **${view.name}** — ${String(view.models.length)} models · ${String(ranked.length)} vendors`,
       ranked.map(([v, n]) => `${v}(${String(n)})`).join(" · "),
-      `\`/providers ${view.name} <벤더>\` 로 그 벤더의 모델을 봅니다. ` +
-        `이름 일부로 바로 찾아도 됩니다(\`/providers ${view.name} sonnet\`).`,
+      `\`/providers ${view.name} <vendor>\` shows that vendor's models. ` +
+        `You can also search by part of a name (\`/providers ${view.name} sonnet\`).`,
     ].join("\n\n");
   }
 
   const shown = matched.slice(0, CAP);
   const head =
     needle === ""
-      ? `🔌 **${view.name}** — 모델 ${String(view.models.length)}개`
-      : `🔌 **${view.name}** — \`${needle}\` 와 맞는 ${String(matched.length)}개 ` +
-        `(전체 ${String(view.models.length)}개)`;
+      ? `🔌 **${view.name}** — ${String(view.models.length)} model${view.models.length === 1 ? "" : "s"}`
+      : `🔌 **${view.name}** — ${String(matched.length)} matching \`${needle}\` ` +
+        `(${String(view.models.length)} in total)`;
 
   const body = shown
     .map((m) => `• \`${view.name}:${m}\`${capsLabel(caps?.(`${view.name}:${m}`))}`)
@@ -162,10 +162,10 @@ export const renderProviders = (
   if (matched.length > shown.length) {
     // ★남은 것에 **닿을 길**을 같이 준다. 개수만 말하면 캡이 곧 벽이 된다.
     tail.push(
-      `…외 ${String(matched.length - shown.length)}개. ` +
-        `\`/providers ${view.name} <검색어>\` 로 좁히세요.`,
+      `…and ${String(matched.length - shown.length)} more. ` +
+        `Narrow it down with \`/providers ${view.name} <search>\`.`,
     );
   }
-  tail.push("목록에 있다고 다 쓸 수 있는 건 아닙니다 — 안 되면 그 이유를 알려드립니다.");
+  tail.push("Not every listed model is guaranteed to work — if one doesn't, you'll be told why.");
   return [head, body, ...tail].join("\n\n");
 };

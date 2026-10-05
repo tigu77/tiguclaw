@@ -66,8 +66,8 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★순서가 **보고 → 안내** 다 — 안내가 앞이면 사용자는 실패로 읽고 본문을 안 본다",
-        j.text.indexOf("부분보고-표식") < j.text.indexOf("오류가 발생했습니다"),
-        `보고 위치=${j.text.indexOf("부분보고-표식")} · 안내 위치=${j.text.indexOf("오류가 발생했습니다")}`,
+        j.text.indexOf("부분보고-표식") < j.text.indexOf("Something went wrong"),
+        `보고 위치=${j.text.indexOf("부분보고-표식")} · 안내 위치=${j.text.indexOf("Something went wrong")}`,
       ),
     ];
   },

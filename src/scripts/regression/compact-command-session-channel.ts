@@ -59,7 +59,7 @@ export const check: RegressionCheck = {
     return [
       assert("재현 조건: 세션 저장 채널이 인입 채널(telegram)과 다르다(같으면 공짜 초록)", sid !== "telegram", sid),
       assert("★텔레그램에서 친 /compact 가 세션의 기록을 찾아 접는다(«기록이 없습니다» 아님)",
-        summarized > 0 && (getThreadSummary(TK)?.compactedThrough ?? 0) > 0 && replies.some((r) => r.includes("압축했습니다")), { summarized, replies }),
+        summarized > 0 && (getThreadSummary(TK)?.compactedThrough ?? 0) > 0 && replies.some((r) => r.includes("Compacted")), { summarized, replies }),
       assert("★/stop 으로 멈춘 /compact 는 답을 덧붙이지 않고 요약도 안 부른다", cancelled.replies === 0 && cancelled.summarized === 0, cancelled),
     ];
   },

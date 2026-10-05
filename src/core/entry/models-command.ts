@@ -39,6 +39,12 @@ export interface ModelCaps {
   reasoningFrom?: "설정" | "모델기본";
 }
 
+/** 강도 출처(내부 값) → 화면 낱말. 내부 값은 카탈로그(`resolveReasoningOrigin`)가 정한다. */
+const REASONING_ORIGIN_LABEL: Record<"설정" | "모델기본", string> = {
+  설정: "settings",
+  모델기본: "model default",
+};
+
 /** 사람이 읽는 크기 — 128000 → `128K`. */
 const compactTokens = (n: number): string =>
   n >= 1_000_000
@@ -57,8 +63,8 @@ export const capsLabel = (c: ModelCaps | undefined): string => {
   if (c === undefined) return "";
   const parts: string[] = [];
   if (c.context !== undefined) parts.push(compactTokens(c.context));
-  if (c.tools === true) parts.push("도구✅");
-  else if (c.tools === false) parts.push("도구✖");
+  if (c.tools === true) parts.push("tools✅");
+  else if (c.tools === false) parts.push("tools✖");
   return parts.length === 0 ? "" : ` [${parts.join(" · ")}]`;
 };
 
@@ -81,7 +87,7 @@ const formatPool = (
   speedKeyOf: ((spec: string) => string | undefined) | undefined,
 ): string => {
   const parts = pool.filter((e) => e.spec.trim() !== "");
-  if (parts.length === 0) return "(빈 풀 — 어댑터 디폴트로 강등)";
+  if (parts.length === 0) return "(empty pool — falls back to the adapter default)";
   return parts
     .map((e) => {
       const spec = e.spec.trim();
@@ -93,8 +99,8 @@ const formatPool = (
         effective === undefined
           ? ""
           : e.reasoning !== undefined
-            ? `(강도 ${e.reasoning}·이 프로파일)`
-            : `(강도 ${effective}·${c?.reasoningFrom ?? "모델기본"})`;
+            ? `(effort ${e.reasoning}·this profile)`
+            : `(effort ${effective}·${REASONING_ORIGIN_LABEL[c?.reasoningFrom ?? "모델기본"]})`;
       // ★능력은 **재놓고 안 보여주면 없는 것과 같다** (2026-08-31). 컨텍스트·도구 지원을
       //  벤더에게 물어 카탈로그에 담아뒀는데 사용자가 모델을 고르는 이 화면이 안 썼다.
       // ★빠른 티어는 **대가가 있는 선택**이라 반드시 보인다 — 한도를 더 빨리 쓰는 설정이
@@ -119,18 +125,18 @@ const formatPool = (
       const cost = speedKeyOf === undefined ? undefined : SPEED_TIER_COST[speedKeyOf(spec) ?? ""];
       // ★`rate` 는 **API 과금** 축의 배수다. 구독 경로에서 한도가 같은 배수로 닳는지는
       //  안 쟀으므로(2026-09-11 N9) «단가» 로 못박지 않고 «비용» 으로 말한다.
-      const unitWord = cost?.unit === "credits" ? "크레딧" : "비용";
+      const unitWord = cost?.unit === "credits" ? "credits" : "cost";
       const fast =
         e.speed !== "fast"
           ? ""
           : cost === undefined
-            ? "(빠름·이 provider 는 안 읽음)"
+            ? "(fast·ignored by this provider)"
             // ★배수는 **잰 것만** 적는다 (2026-09-12 N6). 읽는 건 맞는데 배수를 모르면
             //  «모른다» 고 말한다 — 숫자를 지어내면 그게 «없는 비용»(P4)이고, 숨기면
             //  «안 읽는다면서 돈은 나간다»(P1)다. 둘 다 하지 않는 제3의 답이 이 문구다.
             : cost.multiplier === undefined
-              ? `(빠름·${unitWord} 더 듦·배수 미측정)`
-              : `(빠름·${unitWord} ${cost.multiplier}배)`;
+              ? `(fast·${cost.unit === "credits" ? "uses more credits" : "costs more"}·multiplier not measured)`
+              : `(fast·${cost.multiplier}× ${unitWord})`;
       // ★«안 읽음» 은 **비용 표에 그 어댑터가 없을 때** 나온다 — 해석 자체를 못 한 경우
       //  (미지 provider·콜론 없음)도 같은 문구다(2026-09-11 N1). 그 원소는 `poolToSpecs` 가
       //  통째로 drop 하므로 애초에 안 쓰이는데, 화면은 «쓰이는데 비용만 없음» 처럼 보인다.
@@ -150,15 +156,15 @@ const formatProfile = (
 ): string => {
   const lines: string[] = [];
   const desc = prof.description?.trim();
-  const tag = isDefault ? " (기본)" : "";
+  const tag = isDefault ? " (default)" : "";
   lines.push(
     desc && desc !== ""
       ? `● \`${name}\`${tag} — ${desc}`
       : `● \`${name}\`${tag}`,
   );
-  lines.push(`   풀: ${formatPool(prof.pool, caps, speedKeyOf)}`);
+  lines.push(`   pool: ${formatPool(prof.pool, caps, speedKeyOf)}`);
   if (prof.fallback !== undefined && prof.fallback.trim() !== "") {
-    lines.push(`   폴백 프로파일: \`${prof.fallback.trim()}\``);
+    lines.push(`   fallback profile: \`${prof.fallback.trim()}\``);
   }
   return lines.join("\n");
 };
@@ -182,10 +188,10 @@ const orderedNames = (
  */
 const renderNoProfiles = (): string =>
   [
-    "쓸 수 있는 모델 프로파일이 없습니다 — `settings.json` 에 프로파일이 없고, 인증된 provider 도 없어 자동 구성을 만들지 못했습니다.",
+    "No model profiles are available — there are none in `settings.json`, and no provider is signed in to build one automatically.",
     "",
-    "provider 에 로그인하면(예: `npm run claude-auth`·`npm run codex-auth`) 그 provider 의 최신 모델로 자동 구성됩니다.",
-    "직접 정하려면 `<home>/settings.json` 의 `models.profiles.<이름>` 에 정의하세요.",
+    "Sign in to a provider (e.g. `npm run claude-auth` or `npm run codex-auth`) and a profile is built from its latest models.",
+    "To set it yourself, define `models.profiles.<name>` in `<home>/settings.json`.",
   ].join("\n");
 
 /**
@@ -224,22 +230,22 @@ export const renderModelProfiles = (
    */
   speedKeyOf: ((spec: string) => string | undefined) | undefined,
 ): string => {
-  const blocks: string[] = ["🧩 모델 프로파일"];
+  const blocks: string[] = ["🧩 Model profiles"];
   // ★출처를 밝힌다 (2026-08-13) — 프로파일이 settings.json 에 없으면 인증된 provider 로
   //  자동 조립한 값을 보여주는데, 그걸 사용자가 적어둔 것과 구분 못 하면 "내가 언제
   //  이걸 설정했지" 가 된다. 자동값은 자동이라고 말하고, 어디를 고치면 되는지 같이 준다.
   if (builtin) {
     blocks.push(
-      "출처: **빌트인 자동값** — `settings.json` 에 프로파일이 없어 " +
-        "지금 인증된 provider 로 조립했습니다. 하나라도 직접 적으면 그쪽이 이깁니다.",
+      "Source: **built-in defaults** — there are no profiles in `settings.json`, so this was " +
+        "assembled from the providers you're signed in to. Any profile you write yourself takes precedence.",
     );
   }
 
   // 세션 override 는 프로파일보다 우선(그 대화의 메인 turn 을 고정) — 있으면 맨 위에 명시.
   if (sessionOverride !== null && sessionOverride.trim() !== "") {
     blocks.push(
-      `현재: 이 대화의 세션 모델 override \`${sessionOverride.trim()}\` ` +
-        "(프로파일 무시 · `/model reset` 으로 해제)",
+      `Current: this conversation's session model override \`${sessionOverride.trim()}\` ` +
+        "(profiles are ignored · `/model reset` clears it)",
     );
   }
 
@@ -254,6 +260,6 @@ export const renderModelProfiles = (
       .map((n) => formatProfile(n, profiles[n]!, n === defaultName, caps, speedKeyOf))
       .join("\n\n"),
   );
-  blocks.push("프로파일 추가·수정은 대화로 요청하세요 (비서가 settings.json 을 편집합니다).");
+  blocks.push("To add or change a profile, just ask in the chat (the assistant edits settings.json).");
   return blocks.join("\n\n");
 };

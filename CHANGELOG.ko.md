@@ -8,10 +8,15 @@
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-10-07
+
+### Added
+
+- **문구를 직접 바꿀 수 있습니다.** 홈의 `locales/<언어>.json` 에 같은 키를 적으면 그 문구만 바뀝니다.
+
 ### Changed
 
 - **알림·명령 응답도 언어 설정을 따릅니다.** 언어를 정하지 않았으면 이 컴퓨터의 언어로 나오고, 대시보드는 여는 브라우저의 언어를 따릅니다. 맞는 언어가 없으면 영어입니다. 설정에서 고른 언어가 항상 우선합니다.
-- **문구를 직접 바꿀 수 있습니다.** 홈의 `locales/<언어>.json` 에 같은 키를 적으면 그 문구만 바뀝니다.
 
 ### Fixed
 
@@ -2423,7 +2428,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...HEAD
+[0.67.0]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...v0.64.0

@@ -302,7 +302,7 @@ Handed to `getDataRoutes` handlers and tool implementations.
 | `host.fetch(url, init)` | Outbound. Only hosts listed in `needs.network` |
 | `host.settings` | Only *your* settings (§5). Not other plugins', not core's |
 | `host.dataDir` | Your storage (`<home>/plugins/<name>`) |
-| `host.locale` | Configured language — for passing to external APIs |
+| `host.locale` | The language in use (the one set in settings, else this computer's, else English) — for passing to external APIs |
 | `host.log(msg)` | Logging, automatically prefixed |
 | `host.postCard({text, widget, data})` | Attach a card to **the reply in progress** |
 | `host.on(type, fn)` | Subscribe to core events. Trailing `.` means prefix (`"worker."`) |

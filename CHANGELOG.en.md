@@ -8,10 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-10-07
+
+### Added
+
+- **You can reword messages yourself** — put the same key in `locales/<language>.json` under your home and only that line changes.
+
 ### Changed
 
 - **Notices and command replies now follow your language setting too.** If you haven't picked a language, they use this computer's language and the dashboard follows your browser's, falling back to English. A language you pick in Settings always wins.
-- **You can reword messages yourself** — put the same key in `locales/<language>.json` under your home and only that line changes.
 
 ### Fixed
 
@@ -873,7 +878,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...HEAD
+[0.67.0]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...v0.64.0

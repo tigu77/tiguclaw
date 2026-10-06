@@ -297,7 +297,7 @@ getDataRoutes() {
 | `host.fetch(url, init)` | 밖으로. `needs.network` 에 적은 호스트만 |
 | `host.settings` | 이 플러그인 몫 설정만(§5). 남의 것도, 코어 것도 안 보입니다 |
 | `host.dataDir` | 이 플러그인 몫 저장 자리(`<홈>/plugins/<이름>`) |
-| `host.locale` | 설정 언어 — 외부 API 에 언어를 넘길 때 |
+| `host.locale` | 지금 쓰는 언어(설정한 언어, 없으면 이 컴퓨터의 언어, 그것도 없으면 영어) — 외부 API 에 언어를 넘길 때 |
 | `host.log(msg)` | 로그. 접두사가 자동으로 붙습니다 |
 | `host.postCard({text, widget, data})` | **지금 하는 답**에 카드를 붙입니다 |
 | `host.on(type, fn)` | 코어 이벤트 구독. `"worker."` 처럼 `.` 으로 끝나면 접두사 |

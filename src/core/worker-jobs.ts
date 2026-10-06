@@ -37,7 +37,6 @@ import { formatResetAt, isRateLimited, parseCooldownMs } from "./llm-runtime/rat
 import { bumpRevision, stampFor, RUNNING_WORK } from "./resource-revision.js";
 import { DAEMON_RESTART_INTERRUPTED } from "./inflight-turns.js";
 import { randomUUID } from "node:crypto";
-import { extractTelegramChatId } from "./threadkey.js";
 import type { ChannelName, MessageHandler } from "../channels/types.js";
 import {
   upsertWorkerJob,
@@ -2592,7 +2591,11 @@ const subscribeWorkerToolSlowNotify = (): void => {
     if (!tk.startsWith("worker:")) {
       if (!shouldNotifyToolSlow(tool)) return;
       if (mainTurnSlowNotified.has(tk)) return;
-      const chatId = extractTelegramChatId(tk);
+      // ★받는 곳은 `telegramTargetFor` 한 곳이 정한다 (2026-10-06 회사 PC 사고). 종전엔 세션 키에서 chatId 를 직접 뽑아,
+      //  v0.7 채널/세션 분리 뒤 `dashboard:<uuid>` 세션으로 텔레그램 대화를 하는 사용자에겐 **이 알림이 한 번도 안 갔다** —
+      //  Bash 가 3일 멈춘 동안 동료는 «오래 걸린다 · /stop» 안내를 못 받았다(로그엔 [tool-slow] 만). 09-26 에 같은 부류 세 곳을
+      //  이 함수로 옮겼는데 여기만 남아 있었다. 마지막 채널이 텔레그램이 아니면(대시보드에서 보는 중) null → 푸시 안 함.
+      const chatId = telegramTargetFor(tk);
       if (chatId === null) return; // 대시보드·CLI 는 화면에서 보므로 푸시 안 함(중복 방지).
       if (mainTurnSlowNotified.size > 500) mainTurnSlowNotified.clear();
       mainTurnSlowNotified.add(tk);

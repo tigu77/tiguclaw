@@ -42,8 +42,10 @@ export const check: RegressionCheck = {
       // ★메인 턴 분기 — `worker:` 가 아니어도 처리한다(종전엔 즉시 return).
       /if \(!tk\.startsWith\("worker:"\)\) \{/,
       /mainTurnSlowNotified/,
-      // 화면을 안 보는 채널만 민다(대시보드는 SSE 로 보므로 중복 푸시 금지).
-      /extractTelegramChatId\(tk\)/,
+      // 화면을 안 보는 채널만 민다(대시보드는 SSE 로 보므로 중복 푸시 금지). ★받는 곳은 공용 판정(`telegramTargetFor`)이
+      //  정한다 — 종전 검사는 `extractTelegramChatId(tk)` 를 못 박아 `dashboard:` 세션의 무통지 결함을 지켰다(2026-10-06).
+      //  실제로 도착하는지는 `main-turn-tool-slow-reaches-telegram` 이 전송으로 잰다.
+      /telegramTargetFor\(tk\)/,
       // 턴이 끝나면 1회 마커 해제 — 안 그러면 그 세션은 **영영 한 번만** 알린다.
       /mainTurnSlowNotified\.delete\(doneTk\)/,
     ]);

@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pressing Enter on the dashboard with an empty input while the assistant was replying stopped the reply.** Stopping now happens only through the button.
 - **Renaming a dashboard tab could lose the edit when the screen refreshed, and further renames stopped working.**
 - **Summarizing a long conversation while the Codex backend was overloaded could drop rules you had given.**
+- **When chatting over Telegram, the «this tool is taking a while — you can stop it with `/stop`» notice never arrived.**
 - **When a background task or a tool hit its time limit, the cause was reported as a usage limit or a user stop.**
 
 ## [0.65.0] - 2026-10-04

@@ -175,6 +175,8 @@ import {
   type SelfUpdateResult,
 } from "./core/self-update.js";
 import { deliverOutbound } from "./core/outbound.js";
+import { withReplyQuote } from "./core/reply-quote.js";
+import { buildReinjectMessage, toSteeringInput } from "./core/steering.js";
 import {
   shouldSuggestForThread,
   readSuggestionSettings,
@@ -1183,13 +1185,7 @@ const handler: MessageHandler = async (msg) => {
   // reply_to 원문을 실으면(telegram) "어느 메시지에 이어가는지"를 LLM 에 명시 —
   // 지시어("이거 이어서") 의 대상 모호성 해소. 미설정 채널(cli·http-bridge)은 무영향.
   // 슬래시 확장·훅 처리 후라 덮어쓰임 0. input.text 에 들어가 user turn 으로 persist.
-  if (msg.replyToText !== undefined && msg.replyToText !== "") {
-    effectiveText =
-      "〔사용자가 다음 메시지에 답글로 보냈습니다 — 이 내용에 이어 아래 요청을 처리하세요〕\n" +
-      `${msg.replyToText}\n` +
-      "〔/답글 대상 메시지〕\n\n" +
-      effectiveText;
-  }
+  effectiveText = withReplyQuote(effectiveText, msg.replyToText);
   // 턴 AbortController — idle(1층, region 어댑터 createIdleTimer)·외부 cancel 경로용.
   // signal 을 route→runRegionA→어댑터로 운반(어댑터가 자기 1층 idle AC 와 OR 결합).
   //
@@ -1461,23 +1457,10 @@ const handler: MessageHandler = async (msg) => {
         //  `s.text` 를 그대로 써서 (a) 사용자 화면에 "내가 보낸 메시지" 로 framing 전문이
         //  노출되고 (b) 새 턴엔 "이어갈 작업" 이 없는데 "하던 작업을 계속하라" 는 틀린 문맥이
         //  모델에 들어갔다. framing 은 *진행 중 턴에 끼워넣을 때* 만 유효하다.
-        const text = leftover
-          .map((s) => s.raw)
-          .filter((t) => typeof t === "string" && t.trim() !== "")
-          .join("\n\n");
-        const atts = leftover.flatMap((s) => s.attachments ?? []);
-        if (text !== "" || atts.length > 0) {
-          const reinject = {
-            ...msg,
-            text,
-            ...(atts.length > 0 ? { attachments: atts } : {}),
-            receivedAt: Date.now(),
-            // ★재-echo 금지 — 이 메시지는 steering buffer 에 accept 될 때 이미
-            //  publishInboundEcho 로 화면에 떴다. 재주입에서 또 echo 하면 같은 메시지가
-            //  두 번 보인다(사용자 지적: "대기중이면 대기중 처리가 들어갔을거고, 아니면
-            //  화면에 보이잖아"). synthetic=true 가 echo 스킵의 기존 수단이다.
-            synthetic: true as const,
-          };
+        // 조립은 `buildReinjectMessage`(core/steering.ts) 한 곳 — 메시지마다 자기 답글 원문, 그 턴을 연 메시지의 원문은
+        //  비움, 재-echo 금지(synthetic: 끼워넣을 때 이미 화면에 떴다 — 사용자 지적 «같은 메시지가 두 번 보인다»).
+        const reinject = buildReinjectMessage(msg, leftover);
+        if (reinject !== null) {
           // serializedHandler 경유 = thread 직렬 큐 합류(이 턴 finally 종료 후 실행) + 정상 턴
           // 시맨틱. 재주입 시점엔 이 채널이 이미 close+삭제라 재-steer 안 됨(새 턴으로 처리).
           void Promise.resolve(serializedHandler(reinject)).catch((e) => {
@@ -1649,23 +1632,8 @@ bus.subscribe((event) => {
 const steerable = (msg: IncomingMessage): boolean =>
   msg.synthetic !== true && !msg.text.trim().startsWith("/");
 
-// ★steering framing(2026-07-24): mid-turn 메시지를 "새 지시"가 아니라 "작업 중 끼어든 노트"로
-// 감싼다. 안 감싸면 진행 중 codex/claude 모델이 새 사용자 메시지를 새 지시로 받아 **하던 작업을
-// 버리고** 그것만 답하고 턴을 끝냈다(강제완료 버그). 이 note 로 "작업 이어가되 반영/후처리" 를
-// 지시. echo(publishInboundEcho)는 원문 msg 를 쓰므로 사용자 화면엔 원문만 보인다 — 이 framing 은
-// 모델 입력에만 실린다. 3어댑터 전부 s.text 를 읽으므로 여기 한 곳 = LLM-agnostic parity.
-const STEERING_NOTE_PREFIX =
-  "[진행 중 작업에 사용자가 끼어들어 보낸 메시지입니다. 지금 하던 작업을 중단·포기하지 말고 " +
-  "계속하세요 — 현재 작업에 대한 조정·추가 지시면 반영해 이어가고, 별개의 새 요청이면 지금 " +
-  "작업을 마친 뒤에 다루세요. 사용자 원문:]";
-
-// 채널 IncomingMessage → 중립 SteeringInput(ADR §3). 텍스트(framing 래핑)·첨부·도착시각만 실어 채널 무관화.
-const toSteeringInput = (msg: IncomingMessage): SteeringInput => ({
-  text: `${STEERING_NOTE_PREFIX}\n${msg.text}`,
-  raw: msg.text, // 사용자 원문 — 재주입·표시는 반드시 이걸 쓴다(framing 노출 사고 방지).
-  ...(msg.attachments !== undefined ? { attachments: msg.attachments } : {}),
-  ts: Date.now(),
-});
+// steering framing 과 채널 메시지 → 중립 SteeringInput 변환은 `core/steering.ts`(toSteeringInput)가 한다 — 답글 원문까지
+//  한 곳에서 싣고 회귀가 순수 함수로 재게 하려고 옮겼다(2026-10-06).
 
 const inboundLine = (msg: IncomingMessage, route: InboundRoute): string =>
   formatInboundLog({

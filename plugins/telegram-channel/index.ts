@@ -745,18 +745,14 @@ export default class TelegramChannel implements Channel {
       if (text.length === 0) return;
       // 답글(reply) 원문 회수 — telegram 이 주는 reply_to_message 의 텍스트/캡션을
       // 중립 필드 replyToText 로 실어 핸들러가 인용 주입(LLM-agnostic). 텍스트 없는
-      // 답글(사진 등)은 미설정(skip). 길이 캡 1500 — 장문 원문 bloat 방지.
+      // 답글(사진 등)은 미설정(skip). 길이(앞·끝 남기기)는 코어 `withReplyQuote` 한 곳이 정한다(2026-10-06 —
+      // 종전엔 여기서 앞 1,500자만 남겨 긴 답의 끝이 잘렸다). 텔레그램 메시지는 원래 4,096자 상한이다.
       const repliedRaw = (
         ctx.message.reply_to_message?.text ??
         ctx.message.reply_to_message?.caption ??
         ""
       ).trim();
-      const replyToText =
-        repliedRaw.length === 0
-          ? undefined
-          : repliedRaw.length > 1500
-            ? `${repliedRaw.slice(0, 1500)}…(이하 생략)`
-            : repliedRaw;
+      const replyToText = repliedRaw.length === 0 ? undefined : repliedRaw;
       // 채널/세션 분리(ADR 2026-07-15) — 텔레그램은 세션 셀렉터 없음 → 기본 세션(DEFAULT).
       // chatId 는 세션 정체성이 아니라 **배달 좌표**(channelAddress)로만 운반한다. resolveSessionId
       // 로 sessionId 를 구해 threadKey 에 세팅(직렬 큐/`/stop` 정합)하고, session 을 실어 route 가

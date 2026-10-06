@@ -92,10 +92,11 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
       options,
       ...(presentOpts?.note !== undefined ? { note: presentOpts.note } : {}),
     });
-  // 답글 인용(대시보드 등) — body.replyToText 를 중립 필드로 실어 route 직전 인용 주입
-  // (telegram 의 reply_to_message 와 동형·LLM-agnostic, index.ts 934 단일 지점). 캡 1500.
+  // 답글 인용(대시보드 등) — body.replyToText 를 중립 필드로 실어 보낸다. 길이(앞·끝 남기기)는 코어
+  //  `withReplyQuote` 한 곳이 정한다(2026-10-06 — 종전엔 채널마다 앞 1,500자만 남겨 긴 답의 끝이 잘렸다).
+  //  여기 상한은 요청 본문 크기 방어일 뿐이다.
   const replyToText =
-    typeof body.replyToText === "string" ? body.replyToText.trim().slice(0, 1500) : "";
+    typeof body.replyToText === "string" ? body.replyToText.trim().slice(0, 50_000) : "";
   // 큐-취소 correlationId(ADR 2026-07-15) — 클라(대시보드)가 전송 순간 만든 상관 id.
   // 실제 사용자 인바운드(POST /messages)만 실린다 — 이 값을 큐 항목 식별 키로 전달해
   // 대기 중(미시작) 항목을 나중에 POST /cancel-queued 로 지목 취소 가능. 미부여 = 익명

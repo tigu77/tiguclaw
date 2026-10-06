@@ -17,7 +17,8 @@
  * ★견고성(ADR §3): close() 멱등, drain 은 빈 배열 안전, stream 은 close/abort 에 종료 보장
  * (무한대기 0). 부품 1개(작은 async 큐)로 최소 표면 유지(단순성 게이트 §Q6).
  */
-import type { Attachment } from "../channels/types.js";
+import type { Attachment, IncomingMessage } from "../channels/types.js";
+import { withReplyQuote } from "./reply-quote.js";
 
 /** 채널이 만드는 중립 steering 의도(채널·LLM 무관). telegram·대시보드·cli·http 동형. */
 export interface SteeringInput {
@@ -41,6 +42,11 @@ export interface SteeringInput {
   attachments?: Attachment[];
   /** 도착 시각(관측·정렬용). 개입점이 Date.now() 로 채운다. */
   ts: number;
+  /**
+   * 이 메시지가 답글이면 그 대상 원문(2026-10-06). `text` 에는 이미 붙어 있고, 미소비분을 새 턴으로 재주입할 때
+   * `raw` 에 **자기** 원문을 다시 붙이려고 따로 든다(재주입은 그 턴을 연 다른 메시지의 원문을 쓰면 안 된다).
+   */
+  replyToText?: string;
   /**
    * **누가 넣었나** (2026-08-19, ADR background-subagents 위험 목록).
    *
@@ -222,4 +228,63 @@ export const createSteeringChannel = (): SteeringChannel => {
       }
     },
   };
+};
+
+// ★steering framing(2026-07-24): mid-turn 메시지를 "새 지시"가 아니라 "작업 중 끼어든 노트"로
+// 감싼다. 안 감싸면 진행 중 codex/claude 모델이 새 사용자 메시지를 새 지시로 받아 **하던 작업을
+// 버리고** 그것만 답하고 턴을 끝냈다(강제완료 버그). 이 note 로 "작업 이어가되 반영/후처리" 를
+// 지시. echo(publishInboundEcho)는 원문 msg 를 쓰므로 사용자 화면엔 원문만 보인다 — 이 framing 은
+// 모델 입력에만 실린다. 3어댑터 전부 s.text 를 읽으므로 여기 한 곳 = LLM-agnostic parity.
+export const STEERING_NOTE_PREFIX =
+  "[진행 중 작업에 사용자가 끼어들어 보낸 메시지입니다. 지금 하던 작업을 중단·포기하지 말고 " +
+  "계속하세요 — 현재 작업에 대한 조정·추가 지시면 반영해 이어가고, 별개의 새 요청이면 지금 " +
+  "작업을 마친 뒤에 다루세요. 사용자 원문:]";
+
+/**
+ * 채널 IncomingMessage → 중립 SteeringInput(ADR §3). 텍스트(framing 래핑)·첨부·도착시각만 실어 채널 무관화.
+ * ★답글 원문도 싣는다(2026-10-06) — 응답 중에 보낸 답글이 무엇에 대한 말인지 비서가 알아야 한다(종전엔 빠졌다).
+ */
+export const toSteeringInput = (msg: IncomingMessage): SteeringInput => ({
+  text: `${STEERING_NOTE_PREFIX}\n${withReplyQuote(msg.text, msg.replyToText)}`,
+  raw: msg.text, // 사용자 원문 — 재주입·표시는 반드시 이걸 쓴다(framing 노출 사고 방지).
+  ...(msg.replyToText !== undefined && msg.replyToText.trim() !== "" ? { replyToText: msg.replyToText } : {}),
+  ...(msg.attachments !== undefined ? { attachments: msg.attachments } : {}),
+  ts: Date.now(),
+});
+
+/**
+ * 미소비 끼워넣기를 새 턴으로 재주입할 본문 — 원문(raw)으로, 메시지마다 **자기** 답글 원문을 붙인다(2026-10-06).
+ * ★재주입 메시지는 그 턴을 연 메시지(`...msg`)를 바탕으로 만들므로, 그 답글 원문이 남아 있으면 다른 메시지에 엉뚱한
+ *  원문이 붙는다 — 호출부가 그 필드를 비우고 이 본문을 쓴다.
+ */
+export const reinjectTextFor = (leftover: readonly SteeringInput[]): string =>
+  leftover
+    // 본문이 비어도 답글이면 남긴다 — 첨부만 담은 답글의 인용이 재주입에서 사라지지 않게(재검토 P1, 새 턴 경로와 같게).
+    .filter((s) => (typeof s.raw === "string" && s.raw.trim() !== "") || (s.replyToText ?? "").trim() !== "")
+    .map((s) => withReplyQuote(s.raw ?? "", s.replyToText))
+    .join("\n\n");
+
+/**
+ * 미소비 끼워넣기를 **새 턴으로 다시 태울 메시지** — 없으면 null.
+ * ★그 턴을 연 메시지(`msg`)를 바탕으로 하되 그 메시지의 답글 원문은 **비운다** — 본문에 이미 메시지마다 자기 원문이
+ *  붙어 있다(reinjectTextFor). 남겨 두면 새 턴 경로가 그 원문을 한 번 더, 다른 메시지들 앞에 붙인다.
+ * ★`synthetic` — 이 메시지들은 끼워넣을 때 이미 화면에 떴다. 재주입에서 또 echo 하면 두 번 보인다.
+ * 순수 함수로 둔 이유: index.ts 안에서 조립하면 검사가 정규식밖에 못 하고, 덧붙이기 한 줄에 뚫렸다(재검토 G1·G2).
+ */
+export const buildReinjectMessage = <M extends IncomingMessage>(
+  msg: M,
+  leftover: readonly SteeringInput[],
+  now: number = Date.now(),
+): IncomingMessage | null => {
+  const text = reinjectTextFor(leftover);
+  const atts = leftover.flatMap((s) => s.attachments ?? []);
+  if (text === "" && atts.length === 0) return null;
+  const { replyToText: _thisTurnsQuote, ...turnMsg } = msg;
+  return {
+    ...turnMsg,
+    text,
+    ...(atts.length > 0 ? { attachments: atts } : {}),
+    receivedAt: now,
+    synthetic: true as const,
+  } as IncomingMessage;
 };

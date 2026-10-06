@@ -46,7 +46,7 @@ FROM sz, grow;"
 
 **상태 확인은 두 가지로:**
 ```
-/status                     → "백업: 3시간 전 · 7벌 (940MB)" 한 줄
+/status                     → "Backup: 3 h ago · 7 copies (940MB)" 한 줄
 ls -lt <home>/data/backup/  → 실제 파일
 ```
 성공은 **일부러 조용하다**(매일 알림은 배경 소음이 된다). 실패와 첫 벌만 알린다.

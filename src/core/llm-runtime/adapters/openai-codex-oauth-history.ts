@@ -1081,17 +1081,27 @@ async function summarizeViaCodex(
     finishUsage(result.lastEvent === "response.completed" && result.failure === undefined, result.usage === undefined ? undefined : {
       ...result.usage, requests: 1, requestUsageEntries: [result.usage],
     });
-    // ★스트림 안에서 실패를 알렸고 텍스트가 없으면 **던진다** (2026-10-05 레드팀 F1). codex 는 과부하·한도를 HTTP 200 스트림의
-    //  `error` 이벤트로 알리는데, 빈 텍스트만 돌려주면 호출부가 «요약이 쓸 수 없는 크기» 로 보고 예산을 무조건 줄였다 —
-    //  과부하에 예산을 유지하는 판정(`keepsFoldBudget`)이 실제 과부하 모양엔 닿지 않았다(벤치 사고 날 축소 22회 전부 이 경로).
-    //  던지면 catch 가 사유로 가른다(과부하·한도·인증 = 유지, 그 밖 = 축소). 사유가 로그에도 남는다.
-    //  텍스트가 있으면 종전대로 쓴다(출력 상한 `incomplete` 의 부분 요약 등 — 그 판단은 호출부 하한이 한다).
-    if (result.failure !== undefined && result.text.trim() === "") {
+    // ★스트림 안 실패는 **종류로 가른다** (2026-10-05 레드팀 F1 → 재검토 I1·I2).
+    //  - 생성 실패(`error`·`response.failed` — 과부하·한도·서버 오류): 텍스트가 있어도 **던진다**. 앞서 받은 조각은 생성
+    //    도중 끊긴 것이라 요약으로 확정하면 잘린 요약이 누적 요약에 박힌다(종전: 50자만 넘으면 성공 처리).
+    //  - 출력 상한(`response.incomplete`): 받은 부분 요약을 쓴다 — 텍스트가 없을 때만 던진다.
+    //  던지면 catch 가 사유로 가른다(과부하·한도·인증 = 예산 유지, 그 밖 = 축소). 종전엔 빈 텍스트만 돌려줘 «요약이 쓸 수
+    //  없는 크기» 경로가 과부하에도 예산을 무조건 줄였다(벤치 사고 날 축소 22회 전부 이 경로).
+    if (result.failure !== undefined && (result.failure.source !== "response.incomplete" || result.text.trim() === "")) {
       const f = result.failure;
+      // 사유가 없으면 원문을 **로그에만** 남긴다 — 이 오류 문장은 수동 /compact 답장으로도 나가므로 백엔드 JSON 을 싣지 않는다
+      //  (메인 턴 경로가 사용자용·로그용 사유를 나눈 것과 같은 이유, 재검토 I3).
+      if (f.code === undefined && f.message === undefined && f.raw !== undefined) {
+        console.warn(`[codex 6b] 요약 스트림 실패 원문(사유 없음) — ${f.source} raw=${f.raw}`);
+      }
+      // ★버린 조각 길이는 **로그에만** — 던지는 문장은 분류기(한도·인증·과부하 판정)의 입력이라, 거기 숫자를 섞으면
+      //  길이가 우연히 429 일 때 «사용량 한도» 로 읽혀 provider 쿨다운이 걸린다(재검토 실측).
+      if (result.text.trim() !== "") {
+        console.warn(`[codex 6b] 생성 도중 실패 — 받은 조각 ${result.text.trim().length}자를 요약으로 쓰지 않는다 (${f.source})`);
+      }
       throw new Error(
         `Codex summary stream failed: ${f.source}${f.code !== undefined ? `/${f.code}` : ""}` +
-          `${f.message !== undefined ? `: ${f.message}` : ""}` +
-          `${f.code === undefined && f.message === undefined && f.raw !== undefined ? ` raw=${f.raw}` : ""}`,
+          `${f.message !== undefined ? `: ${f.message}` : ""}`,
       );
     }
     return result.text;

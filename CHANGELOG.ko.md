@@ -8,6 +8,24 @@
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-10-06
+
+### Changed
+
+- **설치 스크립트·CLI·서버 알림·채팅 명령 응답·오류 문장이 영어로 통일됐습니다.** 비서의 답과 대시보드 화면은 지금처럼 설정한 언어를 따릅니다.
+- **긴 Codex 대화의 요약이 빨라지고, 요약한 뒤에도 앞서 준 규칙과 사실을 덜 잃습니다.** 요약으로 접힌 긴 도구 결과는 비서가 다시 꺼내 볼 수 있습니다.
+- **응답이 멈춰 다시 시도할 때의 알림이 이번 요청의 재시도와 작업 전체의 누적을 나눠 말합니다.**
+- **대시보드의 기본 세션에도 다른 세션처럼 이름(«세션1»)이 붙습니다.**
+- **수정한 파일 때문에 업데이트가 멈추면 그 파일 이름을 알려 줍니다.** 업데이트 실패 알림은 실제로 되돌린 범위만 말하고, 업데이트 로그가 항상 남습니다.
+- **Windows: 설치할 때 셸에서 준 인스턴스 설정(포트·서비스 이름 등)이 업데이트·재등록 뒤에도 유지됩니다.** 홈 `.env` 에 적은 값이 언제나 우선합니다.
+
+### Fixed
+
+- **대시보드에서 비서가 답하는 중 입력칸이 비어 있을 때 엔터를 치면 응답이 중지되던 문제를 수정했습니다.** 이제 중지는 버튼으로만 합니다.
+- **대시보드에서 탭 이름을 바꾸는 중 화면이 갱신되면 편집이 사라지고 이름을 더 바꿀 수 없던 문제를 수정했습니다.**
+- **Codex 백엔드가 혼잡할 때 긴 대화를 요약하면서 사용자가 준 규칙을 잃던 문제를 수정했습니다.**
+- **백그라운드 작업이나 도구가 시간 제한으로 멈췄을 때 원인이 «사용량 한도»나 «사용자 중단»으로 안내되던 문제를 수정했습니다.**
+
 ## [0.65.0] - 2026-10-04
 
 ### Added
@@ -2393,7 +2411,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...HEAD
+[0.66.0]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...v0.63.0

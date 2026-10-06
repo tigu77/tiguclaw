@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-10-06
+
+### Changed
+
+- **Install scripts, the CLI, server notices, chat command replies and error messages are now in English.** The assistant's replies and the dashboard still follow your language setting.
+- **Long Codex conversations are summarized faster and keep earlier rules and facts better afterwards.** The assistant can reopen long tool results that were folded into a summary.
+- **Retry notices after a stalled response now tell this request's retries apart from the running total for the whole task.**
+- **The default dashboard session now gets a name («Session 1») like the others.**
+- **When modified files block an update, the update names them.** Failure notices state only what was actually rolled back, and an update log is always kept.
+- **Windows: instance settings given in the shell at install time (ports, service name and so on) survive updates and re-registration.** Values in the home `.env` always win.
+
+### Fixed
+
+- **Pressing Enter on the dashboard with an empty input while the assistant was replying stopped the reply.** Stopping now happens only through the button.
+- **Renaming a dashboard tab could lose the edit when the screen refreshed, and further renames stopped working.**
+- **Summarizing a long conversation while the Codex backend was overloaded could drop rules you had given.**
+- **When a background task or a tool hit its time limit, the cause was reported as a usage limit or a user stop.**
+
 ## [0.65.0] - 2026-10-04
 
 ### Added
@@ -843,7 +861,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...HEAD
+[0.66.0]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/tigu77/tiguclaw/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/tigu77/tiguclaw/compare/v0.62.0...v0.63.0

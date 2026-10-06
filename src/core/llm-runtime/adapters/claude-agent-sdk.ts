@@ -56,6 +56,7 @@ import {
 import type { SteeringChannel, SteeringInput } from "../../steering.js";
 import { getSession, invalidateResume } from "../../../store/sessions.js";
 import { getPaths } from "../../paths.js";
+import { translate } from "../../i18n.js";
 import { bundledClaudeMissingHint } from "../../claude-cli.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { buildActivityDetail } from "./_activity-detail.js";
@@ -374,17 +375,24 @@ export const joinAnswers = (parts: ReadonlyArray<string | undefined>): string =>
     .filter((t) => t !== "")
     .join("\n\n");
 
-/** 이어 받던 두 번째 턴이 실패했을 때 첫 답 뒤에 붙이는 안내 — 조용히 삼키지 않는다. */
-export const STEER_TURN_FAILED_NOTE = "⚠️ An error occurred while handling the message you sent next, so it wasn't answered. Please send it again.";
+/** 이어 받던 두 번째 턴이 실패했을 때 첫 답 뒤에 붙이는 안내 — 조용히 삼키지 않는다. 사용자 언어로(부를 때마다 읽는다). */
+export const steerTurnFailedNote = (): string => translate("srv.steer.turnFailed");
 
 /** 이어 받은 턴이 말 없이 끝났을 때 — 조용히 첫 답만 나가면 «두 번째 메시지 무시» 와 같다. */
-export const STEER_TURN_EMPTY_NOTE = "(There was no separate answer to the message you sent next.)";
+export const steerTurnEmptyNote = (): string => translate("srv.steer.turnEmpty");
+
+/**
+ * 영어 고정판 — 옛 이름을 import 하는 회귀용(회귀 러너는 영어로 돈다). 문장의 정본은 카탈로그 한 곳이다.
+ * 제품 코드는 위 함수를 쓴다(모듈 로드 때 한 번 정한 값이라 사용자 언어를 못 따른다).
+ */
+export const STEER_TURN_FAILED_NOTE = translate("srv.steer.turnFailed", undefined, "en");
+export const STEER_TURN_EMPTY_NOTE = translate("srv.steer.turnEmpty", undefined, "en");
 
 /** 앞 답 + 지금 턴의 답(실패면 실패 안내, 말이 없었으면 빈 답 안내) — 이어 받기·마감이 같은 규칙을 쓴다. */
 export const settleAnswer = (settled: string | undefined, current: string, failed: boolean): string =>
   settled === undefined
     ? joinAnswers([current])
-    : joinAnswers([settled, failed ? STEER_TURN_FAILED_NOTE : current.trim() === "" ? STEER_TURN_EMPTY_NOTE : current]);
+    : joinAnswers([settled, failed ? steerTurnFailedNote() : current.trim() === "" ? steerTurnEmptyNote() : current]);
 
 /**
  * ★**이미 답이 있으면 뒤따르는 실패로 버리지 않는다** (2026-09-29 적대 재검토 F1, P3).

@@ -140,7 +140,7 @@ export const check: RegressionCheck = {
       /await sleep\(wait, effectiveAc\.signal\)/,
       /if \(effectiveAc\.signal\.aborted\) throw e;/,
       // 사용자 답장엔 raw 를 뺀 판 + retryable 별 실효 대책.
-      /\$\{e\.userWhy\}\$\{ranList\}\\n\\n\$\{codexFailureAdvice\(e\)\}/,
+      /translate\("srv\.codex\.backendFailed", \{ why: e\.userWhy \}\)\}\$\{ranList\}\\n\\n\$\{codexFailureAdvice\(e\)\}/,
     ]);
     out.push(
       assert(

@@ -42,6 +42,7 @@ import { FALLBACK_CHARS_PER_TOKEN as STORE_FALLBACK_CHARS_PER_TOKEN, tokenDensit
 import { lookupContextWindow } from "../context-windows.js";
 import { loadModelInputLimits } from "../../settings.js";
 import { isUserCancelled } from "../../steering.js";
+import { translate } from "../../i18n.js";
 
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -2108,13 +2109,13 @@ const compactThreadNowUnlocked = async (
   const existing = getThreadSummary(threadKey);
   const watermark = existing?.compactedThrough ?? 0;
   const allTurns = loadHistoryTurns(channel, threadKey, watermark, true);
-  if (allTurns.length === 0) return { ok: false, reason: "this conversation has no history yet." };
+  if (allTurns.length === 0) return { ok: false, reason: translate("srv.compact.noHistory") };
   const prior = existing?.summary ?? "";
   const unsummarized = allTurns.filter((t) => t.id > watermark);
   // triggerChars 0 = 임계 무시(수동 호출). keepRecent 는 기본값 그대로 — 최근은 안 접는다.
   const plan = planHistoryCompaction(unsummarized, watermark, { triggerChars: 0 });
   if (!plan.needed || plan.toFold.length === 0) {
-    return { ok: false, reason: "there aren't enough older messages to compact (recent ones are kept as is)." };
+    return { ok: false, reason: translate("srv.compact.nothingOld") };
   }
   const folded = foldPromptOf(plan.toFold);
   // ★새 조각만 요약하고 **덧붙인다** — 옛 요약을 다시 요약하지 않는다(2026-08-09).
@@ -2142,11 +2143,11 @@ const compactThreadNowUnlocked = async (
       noteCompactionOutcome(threadKey, false, `요약 ${got}자(수동)`, prompt.length);
       return {
         ok: false,
-        reason: `the summary came out too short (${got} chars, minimum ${MIN_USABLE_SUMMARY_CHARS}). The original messages are kept as is.`,
+        reason: translate("srv.compact.tooShort", { got, min: MIN_USABLE_SUMMARY_CHARS }),
       };
     }
     if (threadRevision(threadKey) !== startRevision) {
-      return { ok: false, reason: "the conversation was cleared or changed while summarizing, so nothing was saved. Please try again." };
+      return { ok: false, reason: translate("srv.compact.changed") };
     }
     upsertThreadSummary({
       threadKey,

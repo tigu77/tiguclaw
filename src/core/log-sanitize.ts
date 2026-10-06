@@ -25,6 +25,8 @@
  * 이유가 그것이므로 회귀가 양쪽(지워짐·남음)을 함께 본다.
  */
 
+import { translate } from "./i18n.js";
+
 /** 데몬 로그 한 줄의 접두사 — `logging.ts` 의 `[${localStamp}] [${level}] ` 와 짝. */
 // ★레벨을 **열거하지 않는다**. 같은 날 `logFatal` 이 `[fatal]` 레벨을 새로 만들었는데
 //  이 목록에 없어서 `/logs` 가 크래시 원인 줄을 통째로 버렸다 — 두 수정이 서로를 무력화했고,
@@ -39,18 +41,25 @@ const LOG_LINE_PREFIX =
  */
 const MAX_LINE_CHARS = 400;
 
+/** 지운 자리 표시 — 화면 문구라 호출마다 한 번 번역해 줄마다 넘긴다(줄 수만큼 카탈로그를 읽지 않게). */
+interface Marks {
+  readonly omitted: string;
+  readonly hidden: string;
+}
+
 /** 접두사 있는 줄 안의 캐리어 제거 — 구조로 못 가르는 것만 이름으로 잡는다. */
-const stripInlineCarriers = (line: string): string =>
+// ★바꿀 문장을 **함수**로 넘긴다 — 번역문에 `$` 가 들어가면 치환 패턴(`$1`·`$&`)으로 읽힌다.
+const stripInlineCarriers = (line: string, mark: Marks): string =>
   line
     // `tail: …` 이후는 모델·사용자 발화 서술이다(stream-trace·codex-turn-end).
-    .replace(/\btail:\s.*$/u, "tail: <omitted>")
+    .replace(/\btail:\s.*$/u, () => `tail: ${mark.omitted}`)
     // 빈 응답 진단이 싣는 사용자 원문.
-    .replace(/\buserText=.*$/u, "userText=<omitted>")
+    .replace(/\buserText=.*$/u, () => `userText=${mark.omitted}`)
     // 백엔드 원문 payload.
-    .replace(/\braw=.*$/u, "raw=<omitted>")
+    .replace(/\braw=.*$/u, () => `raw=${mark.omitted}`)
     // 텔레그램 chatId 등 채널 좌표(PII).
-    .replace(/\b(addr|target)=\d{6,}/gu, "$1=<hidden>")
-    .replace(/\btg:\d{6,}/gu, "tg:<hidden>");
+    .replace(/\b(addr|target)=\d{6,}/gu, (_m, key: string) => `${key}=${mark.hidden}`)
+    .replace(/\btg:\d{6,}/gu, () => `tg:${mark.hidden}`);
 
 /**
  * 채널로 내보낼 줄들을 만든다. 계속 줄은 **연속 구간마다 한 줄**로 접어, 어디가 생략됐는지
@@ -62,9 +71,13 @@ export const sanitizeLogTail = (
   const out: string[] = [];
   let dropped = 0;
   let run = 0;
+  const mark: Marks = {
+    omitted: translate("srv.logs.omittedMark"),
+    hidden: translate("srv.logs.hiddenMark"),
+  };
   const flushRun = (): void => {
     if (run > 0) {
-      out.push(`… (${run} text line${run === 1 ? "" : "s"} omitted)`);
+      out.push(translate(run === 1 ? "srv.logs.linesOmitted.one" : "srv.logs.linesOmitted.other", { n: run }));
       run = 0;
     }
   };
@@ -75,10 +88,10 @@ export const sanitizeLogTail = (
       continue;
     }
     flushRun();
-    const stripped = stripInlineCarriers(line);
+    const stripped = stripInlineCarriers(line, mark);
     out.push(
       stripped.length > MAX_LINE_CHARS
-        ? `${stripped.slice(0, MAX_LINE_CHARS)}… <${stripped.length - MAX_LINE_CHARS} chars omitted>`
+        ? `${stripped.slice(0, MAX_LINE_CHARS)}… ${translate("srv.logs.charsOmitted", { n: stripped.length - MAX_LINE_CHARS })}`
         : stripped,
     );
   }

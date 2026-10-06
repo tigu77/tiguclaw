@@ -168,7 +168,7 @@ export const handleGetMemoryCap = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleSetLocale = async (ctx: RouteCtx): Promise<void> => {
-  const { req, res } = ctx;
+  const { req, res, bus } = ctx;
   let lbody: Record<string, unknown>;
   try {
     lbody = await readJsonBody(req);
@@ -187,6 +187,8 @@ export const handleSetLocale = async (ctx: RouteCtx): Promise<void> => {
       writeJson(res, 400, { error: `'${want}' 언어가 설치돼 있지 않습니다` });
       return;
     }
+    // 명령 메뉴(텔레그램 `setMyCommands`)는 부팅·명령 변경 때만 다시 그린다 — 언어가 바뀌면 다시 그리게 알린다(2026-10-07 적대 검토 P4).
+    bus?.publish({ type: "commands.changed", ts: Date.now(), payload: { reason: "locale" } });
     writeJson(res, 200, { ok: true, locale: want });
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);

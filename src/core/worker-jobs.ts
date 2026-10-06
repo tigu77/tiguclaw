@@ -46,7 +46,8 @@ import {
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
 import type { TurnSpend } from "./llm-runtime/turn-spend.js";
-import { formatDurationEn, formatDurationKo } from "./format-duration.js";
+import { formatDuration, formatDurationKo } from "./format-duration.js";
+import { translate } from "./i18n.js";
 import { isSubagentTool } from "./llm-runtime/subagent-tools.js";
 import { createSteeringChannel } from "./steering.js";
 import type { SteeringChannel, SteeringInput } from "./steering.js";
@@ -1208,12 +1209,14 @@ const checkinTick = (): void => {
         const hook = cancelHooks.get(job.jobId);
         if (hook !== undefined) hook();
         evidence.delete(job.jobId);
-        // 사용자에게 바로 가는 통지(LLM 무경유) — 서버 고정 문구라 영어(2026-10-05 결정).
+        // 사용자에게 바로 가는 통지(LLM 무경유) — 서버 고정 문구라 카탈로그(사용자 언어)로.
         await notifyJobOwner(
           job,
-          `🛑 **Stopped** ${job.kind === "agent" ? "agent" : "manager"} \`${name}\` — there was no activity for ${formatDurationEn(quietMs)}.\n` +
-            `Task: ${job.task.slice(0, 200)}\n` +
-            `Let me know whether to pick it up where it left off or start over.`,
+          translate(job.kind === "agent" ? "srv.job.stalledStopped.agent" : "srv.job.stalledStopped.manager", {
+            name,
+            quiet: formatDuration(quietMs),
+            task: job.task.slice(0, 200),
+          }),
         );
       }
     })().catch((e: unknown) => {
@@ -2474,27 +2477,24 @@ const SIGNAL_RECENT_MS = 60_000;
 /** 잡마다 기억하는 무진전 재시도 id 수 — 중복 이벤트는 바로 뒤따라오므로 최근 몇 개면 된다. */
 const STALL_SEEN_KEEP = 16;
 /**
- * 무진전 재시도 알림 문구 — **사실대로**, 그리고 **영어** (2026-10-05). 신호는 오는데 답·도구가 안 나오는 경우(spinning)를 «응답이
+ * 무진전 재시도 알림 문구 — **사실대로** (2026-10-05). 문장은 카탈로그(`srv.job.stallRetry.*`)가 사용자 언어로 낸다(2026-10-06). 신호는 오는데 답·도구가 안 나오는 경우(spinning)를 «응답이
  * 멎었다» 고 하지 않는다. 요청별 재시도와 작업 누적을 따로 보인다(앞엣것만 보이면 세 번 멈춰도 늘 «1/2»).
- * ★서버가 고정 문구로 내보내는 말은 영어다(2026-10-05 정태님: 번역하지 않을 거면 영어로 통일 — 레포 기본 언어). 사용자 언어로
- *  말해야 하는 것은 비서(모델)가 한다.
  */
 export const stallNoticeText = (
   label: string,
   s: { attempt?: number; maxRetries?: number; total: number; kind?: string; noProgressMs?: number; lastChunkAgoMs?: number },
 ): string => {
   const mins = s.noProgressMs !== undefined ? Math.max(1, Math.round(s.noProgressMs / 60_000)) : undefined;
-  const span = mins !== undefined ? ` for ${mins} min` : "";
   // ★«신호가 계속 온다» 는 **마지막 신호가 최근일 때만** (2026-10-05 적대 검토 F1) — 첫 이벤트 하나만 받고 끊긴 스트림도
   //  `spinning` 으로 분류된다(청크 1개 이상). 그 경우는 «응답이 없다» 가 사실이다. 판정 재료는 이벤트의 `lastChunkAgoMs`.
   const signalsRecent = s.lastChunkAgoMs !== undefined && s.lastChunkAgoMs >= 0 && s.lastChunkAgoMs < SIGNAL_RECENT_MS;
-  const why =
-    s.kind === "trickle"
-      ? "the response has been streaming for too long"
-      : s.kind === "spinning" && signalsRecent
-        ? `the server is still sending signals but no answer or tool call has come${span}`
-        : `no response has come${span}`;
-  return `⚠️ Background task '${label}': ${why}, so the same request is being retried — this request ${s.attempt ?? "?"}/${s.maxRetries ?? "?"} · ${s.total} retr${s.total === 1 ? "y" : "ies"} so far for this task.`;
+  // 문장은 사유 × 시간 유무마다 키 하나(조각 이어붙이기 금지). 누적 횟수는 «·» 뒤 독립 구절이라 따로 고른다(단·복수).
+  const total = translate(s.total === 1 ? "srv.job.stallRetry.total.one" : "srv.job.stallRetry.total.other", { n: s.total });
+  const common = { label, attempt: s.attempt ?? "?", max: s.maxRetries ?? "?", total };
+  if (s.kind === "trickle") return translate("srv.job.stallRetry.trickle", common);
+  const spinning = s.kind === "spinning" && signalsRecent;
+  if (mins === undefined) return translate(spinning ? "srv.job.stallRetry.spinning" : "srv.job.stallRetry.silent", common);
+  return translate(spinning ? "srv.job.stallRetry.spinningFor" : "srv.job.stallRetry.silentFor", { ...common, mins });
 };
 const subscribeWorkerStallNotify = (): void => {
   if (stallNotifySubscribed) return;
@@ -2658,6 +2658,8 @@ export const registerWorkerHandler = (handler: MessageHandler): void => {
 export const humanizeWorkerError = (raw: string, errorName?: string): string => {
   // 판정은 `failureKind` 한 곳 — 로그(`classifyFailure`)와 같은 답을 낸다(이름 먼저, 문구는 두 언어 폴백).
   const kind = failureKind(raw, errorName);
+  // 원문을 싣는 자리에 빈 원문이 오면 «알 수 없는 오류» 로 — 종전 `?? "unknown error"` 가 하던 일(2026-10-07 적대 검토 P6: «…()» 로 나갔다).
+  const shown = (n: number): string => (raw.trim() === "" ? translate("srv.job.error.unknown") : raw.slice(0, n));
   // codex 사용량 한도(429 usage_limit) — resets_in_seconds 가 있으면 "~N분 후 리셋" 안내.
   // 사용자가 *언제 다시 시도하면 되는지* 알게(가장 actionable). 양 provider 무관 문자열만.
   // ★공용 판정·파서를 쓴다 (2026-07-30 검토 지적). 종전 정규식은 claude 의
@@ -2668,9 +2670,9 @@ export const humanizeWorkerError = (raw: string, errorName?: string): string => 
     const ms = parseCooldownMs(raw);
     if (ms !== null) {
       // 문구는 `formatResetAt` 한 곳에서 — 여기서 다시 만들면 한쪽만 늙는다.
-      return `LLM usage limit reached (429) — it resets ${formatResetAt(ms)}. Try again after that.`;
+      return translate("srv.job.error.limitUntil", { when: formatResetAt(ms) });
     }
-    return "LLM usage limit reached (429) — try again once the limit resets.";
+    return translate("srv.job.error.limit");
   }
   // ── 시간 관련 종료 — **원인을 뭉치지 않는다** (2026-08-12, 사용자: "무슨 에러가 난 건지
   //    정확하게 알려주는 게 중요하지"). 종전엔 아래 셋을 한 정규식으로 묶어 전부
@@ -2683,29 +2685,28 @@ export const humanizeWorkerError = (raw: string, errorName?: string): string => 
   if (kind === "wall") {
     const ms = /\((\d+)ms/.exec(raw);
     const hours = ms === null ? null : Math.round((Number(ms[1]) / 3_600_000) * 10) / 10;
-    return (
-      `The task hit the ${hours === null ? "configured" : `${hours}-hour`} wall-clock limit and was stopped — ` +
-      `**the model hadn't stalled; it may still have been making progress.** Continue it, or split it into smaller pieces to stay under the limit.`
-    );
+    return hours === null
+      ? translate("srv.job.error.wall")
+      : translate("srv.job.error.wallHours", { hours });
   }
   if (kind === "tool") {
-    return `A tool ran past its time limit, so the turn was stopped (${raw.slice(0, 160)}). This isn't a model problem — that tool took too long.`;
+    return translate("srv.job.error.tool", { raw: shown(160) });
   }
   if (kind === "idle") {
-    return "The model **sent nothing at all** for the allowed time, so it was stopped (idle timeout). The backend is the place to look.";
+    return translate("srv.job.error.idle");
   }
   if (kind === "timeout") {
     // 분류 못 한 타임아웃 — **원문을 그대로 실어 보낸다.** 뭉뚱그린 문구로 덮으면
     // 사용자가 엉뚱한 곳을 뒤진다(그게 이 수정의 이유다).
-    return `The task was stopped for a time-related reason — original error: ${raw.slice(0, 200)}`;
+    return translate("srv.job.error.timeout", { raw: shown(200) });
   }
   // 풀 전체 소진 — 모든 어댑터가 동시에 실패(단일 provider 풀 흔들림 등). 원문 일부 보존.
   if (kind === "pool") {
-    return `None of the available LLM models could respond for now. Try again in a little while. (Cause: ${raw.slice(0, 160)})`;
+    return translate("srv.job.error.pool", { raw: shown(160) });
   }
   // 미분류 — 원문을 길이 cap 해 그대로 노출(사용자=운영자, "에러 다 보이는 게 좋다"). 빈값 방어.
   const t = raw.trim();
-  return t === "" ? "unknown error" : t.slice(0, 400);
+  return t === "" ? translate("srv.job.error.unknown") : t.slice(0, 400);
 };
 
 /**
@@ -2718,31 +2719,25 @@ export const humanizeWorkerError = (raw: string, errorName?: string): string => 
  */
 const buildRawNotice = (job: WorkerJobRecord): string => {
   if (job.status === "done") {
-    return (
-      `✅ Background task '${job.label}' finished.\n` +
-      `Result:\n${job.result ?? "(no result)"}`
-    );
+    return translate("srv.job.done", { label: job.label, result: job.result ?? translate("srv.job.noResult") });
   }
   if (job.status === "cancelled") {
-    return `🛑 Cancelled background task '${job.label}' as requested.`;
+    return translate("srv.job.cancelled", { label: job.label });
   }
   // 부분 진행 힌트 — daemon 경계엔 정확한 처리 건수가 없다(매니저 thread 의 부수효과로만
   // 존재, region 도메인). 카운트를 *지어내지 않고* 일부 진행 가능성을 정직히 안내해
   // 사용자가 이어서/처음부터 중 결정하게 한다(임무 §3 — feasible 범위 한도).
-  return (
-    `⚠️ Background task '${job.label}' failed.\n` +
-    `Cause: ${humanizeWorkerError(job.error ?? "unknown error", job.errorName)}\n` +
-    `Part of it may already be done — let me know whether to continue from there or start over.`
-  );
+  // 원인이 비면(`job.error` 없음) `humanizeWorkerError` 가 «알 수 없는 오류» 를 사용자 언어로 낸다.
+  return translate("srv.job.failed", { label: job.label, cause: humanizeWorkerError(job.error ?? "", job.errorName) });
 };
 
 /** 작업자가 끝난 뒤 도착해 반영 못 한 지시 — raw 통지 꼬리. 비면 "". */
 export const lateNotice = (late: readonly string[], label: string): string =>
   late.length === 0
     ? ""
-    : `\n\n⚠️ Your latest instruction arrived **after** task '${label}' had already finished, so it wasn't applied:\n` +
+    : `\n\n${translate("srv.job.late.head", { label })}\n` +
       late.map((t) => `· ${t}`).join("\n") +
-      `\nIf it's still needed, check the result above and ask again.`;
+      `\n${translate("srv.job.late.tail")}`;
 
 /** 완료 턴에 싣는 맡긴 임무 — 앞(목표)과 끝(후처리 단계)이 판정에 필요해 둘 다 남긴다. 원문은 이 대화의 위임 호출에 있다. */
 const TASK_HEAD = 3_000;
@@ -3277,9 +3272,7 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
       publishInterrupted(job);
       continue;
     }
-    const text =
-      `⚠️ Background task '${job.label}' that you started earlier was interrupted by a daemon restart. ` +
-      `No result came back — ask again if you still need it.`;
+    const text = translate("srv.job.interruptedByRestart", { label: job.label });
     try {
       // 영속된 notifyDest(store 가 미러)가 있으면 그걸로, 없으면 channel/threadKey 폴백 →
       // 재시작 후에도 스케줄 매니저 통지가 올바른 chatId 로 도달(정직 통지 강화). store 가

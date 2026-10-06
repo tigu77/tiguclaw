@@ -19,6 +19,7 @@
  *  ⑤ 실패 로그에 판정 재료가 실린다(얼마나 돌았나·분류·스레드·원문)
  *  ⑥ ★도구 하드컷은 **기본 꺼짐** — 오래 걸리는 걸 시계로 죽이지 않는다
  */
+import { withSrvText } from "./_srv-text.js";
 import { readFile } from "node:fs/promises";
 import { assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -54,17 +55,18 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ②③ 사용자 문구 — wall-clock 은 "멈춘 게 아니다", 미분류는 원문 보존 ─────
   const src = await readFile(new URL("../../core/worker-jobs.ts", import.meta.url), "utf8");
-  const code = src
+  // 문구는 카탈로그에 있다(2026-10-06) — 이 파일이 부르는 srv 키의 영어 문장을 붙여 본다.
+  const code = withSrvText(src
     .split("\n")
     .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
-    .join("\n");
+    .join("\n"));
   const saysNotStalled = /the model hadn't stalled; it may still have been making progress/.test(code);
   out.push({
     name: "★wall-clock 중단을 '모델이 멈췄다' 로 말하지 않는다",
     ok: saysNotStalled,
     got: saysNotStalled ? "명시 문구 있음" : "★여전히 멈췄다고 말한다(엉뚱한 곳을 뒤지게 된다)",
   });
-  const keepsRaw = /stopped for a time-related reason — original error: \$\{raw/.test(code);
+  const keepsRaw = /stopped for a time-related reason — original error: \{raw\}/.test(code);
   out.push({
     name: "분류 못 한 타임아웃은 원문을 실어 보낸다(뭉뚱그려 덮지 않는다)",
     ok: keepsRaw,

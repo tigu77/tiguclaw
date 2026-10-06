@@ -27,6 +27,7 @@
 import { CODEX_BASE_URL } from "./adapters/openai-codex-oauth-history.js";
 import { resolveCodexModel } from "./adapters/openai-codex-oauth.js";
 import { getAuthProvider } from "./auth-registry.js";
+import { translate } from "../i18n.js";
 // ★인증 등록은 **여기서 하지 않는다** (2026-09-01). 종전엔 `import "./auth-providers.js"`
 //  side-effect 였는데, 그 파일은 구독 인증을 플러그인으로 빼면서 **삭제됐다.** 그런데
 //  `tsc` 는 **부작용 import 를 검사하지 않는다**(값을 import 해야 TS2307 — 실측) →
@@ -129,8 +130,8 @@ const send = async (
     return {
       ok: false,
       detail: aborted
-        ? `timed out (${PROBE_TIMEOUT_MS / 1000}s) — the backend never finished responding`
-        : `send failed: ${e instanceof Error ? e.message : String(e)}`,
+        ? translate("srv.diagnose.timeoutResponse", { s: PROBE_TIMEOUT_MS / 1000 })
+        : translate("srv.diagnose.sendFailed", { err: e instanceof Error ? e.message : String(e) }),
       ms: Date.now() - t0,
     };
   }
@@ -141,7 +142,7 @@ const send = async (
   }
   if (res.body === null) {
     clearTimeout(killer);
-    return { ok: false, detail: "no body", ms: Date.now() - t0 };
+    return { ok: false, detail: translate("srv.diagnose.noBody"), ms: Date.now() - t0 };
   }
 
   // SSE 를 읽어 completed / error 중 무엇으로 끝나는지만 본다(어댑터와 동일 판정 축).
@@ -192,21 +193,23 @@ const send = async (
     if (ac.signal.aborted) {
       return {
         ok: false,
-        detail: `timed out (${PROBE_TIMEOUT_MS / 1000}s) — the stream never finished` +
-          `${text !== "" ? `, ${text.length} chars of text received by then` : ", 0 chars of text"}`,
+        detail:
+          text !== ""
+            ? translate("srv.diagnose.timeoutStreamText", { s: PROBE_TIMEOUT_MS / 1000, n: text.length })
+            : translate("srv.diagnose.timeoutStreamEmpty", { s: PROBE_TIMEOUT_MS / 1000 }),
         ms: Date.now() - t0,
       };
     }
     return {
       ok: false,
-      detail: `stream read failed: ${e instanceof Error ? e.message : String(e)}`,
+      detail: translate("srv.diagnose.streamFailed", { err: e instanceof Error ? e.message : String(e) }),
       ms: Date.now() - t0,
     };
   }
   clearTimeout(killer);
   const ms = Date.now() - t0;
   if (failure !== "") return { ok: false, detail: failure, ms };
-  if (!completed) return { ok: false, detail: "stream ended without completed", ms };
+  if (!completed) return { ok: false, detail: translate("srv.diagnose.noCompleted"), ms };
   return { ok: true, detail: `"${text.trim().slice(0, 40)}"`, ms };
 };
 
@@ -230,19 +233,19 @@ export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
   const home = getPaths().home;
   const hasAccess = (process.env.OPENAI_CODEX_OAUTH_TOKEN ?? "") !== "";
   const hasRefresh = (process.env.OPENAI_CODEX_OAUTH_REFRESH ?? "") !== "";
+  const has = (v: boolean): string => translate(v ? "srv.diagnose.present" : "srv.diagnose.missing");
   const lines: string[] = [
-    `Home: ${home}`,
-    `Tokens: access=${hasAccess ? "present" : "missing"} refresh=${hasRefresh ? "present" : "missing"}`,
+    translate("srv.diagnose.home", { home }),
+    translate("srv.diagnose.tokens", { access: has(hasAccess), refresh: has(hasRefresh) }),
   ];
+  // ★`🔴` 는 카탈로그 밖에 둔다 — 셸 진입점(`diagnose-codex.ts`)이 `startsWith("🔴")` 로 실패를 가른다.
+  //  번역 파일이 그 표식을 빼먹으면 실패가 성공 종료코드로 끝난다.
   if (!hasAccess && !hasRefresh) {
-    return {
-      lines,
-      verdict: "🔴 There's no codex token in this home — check that it's the same home as `tiguclaw home:` in the daemon log.",
-    };
+    return { lines, verdict: `🔴 ${translate("srv.diagnose.noToken")}` };
   }
   const auth = getAuthProvider("codex");
   if (auth === undefined) {
-    return { lines, verdict: "🔴 No codex auth provider — this build doesn't support codex." };
+    return { lines, verdict: `🔴 ${translate("srv.diagnose.noAuthProvider")}` };
   }
   let token: string;
   try {
@@ -250,7 +253,7 @@ export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
   } catch (e) {
     return {
       lines,
-      verdict: `🔴 Couldn't get a token: ${e instanceof Error ? e.message.slice(0, 200) : String(e)}`,
+      verdict: `🔴 ${translate("srv.diagnose.tokenFailed", { err: e instanceof Error ? e.message.slice(0, 200) : String(e) })}`,
     };
   }
   let accountId: string | undefined;
@@ -265,9 +268,13 @@ export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
     /* 없으면 생략 */
   }
   const model = resolveCodexModel();
-  lines.push(`Model: ${model}`);
+  lines.push(translate("srv.diagnose.model", { model }));
   lines.push(
-    `LEAN=0 tools·${LEAN_INSTRUCTIONS.length} chars / HEAVY=${HEAVY_TOOL_COUNT} tools·${HEAVY_INSTRUCTION_CHARS.toLocaleString("en-US")} chars`,
+    translate("srv.diagnose.weights", {
+      leanChars: LEAN_INSTRUCTIONS.length,
+      heavyTools: HEAVY_TOOL_COUNT,
+      heavyChars: HEAVY_INSTRUCTION_CHARS.toLocaleString("en-US"),
+    }),
   );
 
   let leanOk = 0;
@@ -283,11 +290,11 @@ export const runCodexWeightProbe = async (): Promise<WeightProbeReport> => {
   }
   const verdict =
     leanOk > 0 && heavyOk === 0
-      ? "★Weight is the cause — cutting the tool count and instructions size is what will help."
+      ? translate("srv.diagnose.verdictWeight")
       : leanOk === 0 && heavyOk === 0
-        ? "Not weight-related — it's on the account/client side. Slimming the request won't fix it."
+        ? translate("srv.diagnose.verdictNotWeight")
         : leanOk > 0 && heavyOk > 0
-          ? "Both are fine right now — run it again **while failures are happening** to get a verdict."
-          : "Mixed (intermittent) — run it a few more times and look at the ratio.";
+          ? translate("srv.diagnose.verdictBothOk")
+          : translate("srv.diagnose.verdictMixed");
   return { lines: [...lines, `LEAN ${leanOk}/2  HEAVY ${heavyOk}/2`], verdict };
 };

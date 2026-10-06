@@ -38,7 +38,8 @@ import type {
   MessageHandler,
 } from "./channels/types.js";
 import { initEventBus, type EventBus } from "./core/eventbus.js";
-import { formatDurationEn } from "./core/format-duration.js";
+import { formatDuration } from "./core/format-duration.js";
+import { translate } from "./core/i18n.js";
 import {
   setChannelPresence,
   type ChannelPresence,
@@ -241,11 +242,7 @@ export const modelSpecSanityWarning = (args: string): string | null => {
   // prefix 중 하나라도 맞으면 정상 — 무경고.
   if (hints.some((p) => model.startsWith(p))) return null;
   const expected = hints.map((p) => `\`${p}\``).join(" / ");
-  return (
-    `⚠️ \`${args}\` — ${provider} models usually start with ${expected}. ` +
-    "Check for a typo. (It was applied as is; if the model is rejected, the next turn " +
-    "falls back to the default model automatically.)"
-  );
+  return translate("srv.model.sanityWarning", { spec: args, provider, expected });
 };
 
 // 파일 로깅 최우선 활성화 — 이후 모든 console.*(부팅·plugin·route·handler 스택)가
@@ -490,8 +487,8 @@ startSelfMaintenance(bus);
 // 인메모리 ring/SSE 가 병적으로 거대한 모델 출력에 부풀지 않게 하는 폭주 방어용일 뿐.
 // (구 500자 미리보기 캡은 대시보드=로그 시절 잔재 — 진짜 채팅이 된 지금 제거.)
 
-/** 진행 중이던 턴을 사용자·잡 취소로 멈췄을 때의 짧은 통지(인입 응답·egress 공용). */
-const STOPPED_NOTICE = "🛑 Stopped the task that was in progress.";
+/** 진행 중이던 턴을 사용자·잡 취소로 멈췄을 때의 짧은 통지(인입 응답·egress 공용). 언어는 보낼 때 정한다. */
+const STOPPED_NOTICE = (): string => translate("srv.turn.stopped");
 
 // 영역 A 에러 → 사용자 친화 메시지. 사용 한도/레이트리밋(codex usage_limit_reached·429·quota 등)은
 // 원문 JSON 덤프 대신 *명확한 안내*(어느 백엔드·리셋까지 대략 N분·전환/다중풀 제안)로. provider 무관
@@ -501,10 +498,7 @@ const formatRegionAError = (detail: string, errorName?: string): string => {
   // 처리불가 이미지(400 invalid_request + image) — 원문 JSON 대신 명확한 안내. 스레드 자가치유는
   // 어댑터가 처리(resume 무효화)하므로 여기선 사용자 안내만. [[project_bad_image_poisons_claude_resume]]
   if (/\b400\b/.test(d) && /invalid_request_error/i.test(d) && /\bimage\b/i.test(d)) {
-    return (
-      `⚠️ The attached image couldn't be processed. Check its format (JPEG, PNG, GIF or WebP) and size (very small or very large images aren't accepted).\n` +
-      `Sending a different image will work — this one has been set aside so it won't block the conversation.`
-    );
+    return translate("srv.turn.imageRejected");
   }
   // ★공용 판정을 쓴다 (2026-07-30 검토 지적) — 사본이 3곳이었고 그중 llm-runtime 만 claude
   //  문구를 고쳐서, 사용자에겐 여전히 "⚠️ 요청 처리 중 오류" + 원문 덤프가 나갔다(한도 안내·
@@ -513,17 +507,15 @@ const formatRegionAError = (detail: string, errorName?: string): string => {
   // 이름이 먼저(`failureKind`) — 우리 타입 오류의 문장엔 서드파티 이름이 섞인다(도구 이름에 `rate_limit` 이 있으면 도구 멈춤이
   //  «사용량 한도» 안내로 나갔다, 2026-10-05 재검토). 이름이 없는 상류 오류는 종전처럼 문자열로 판정한다.
   const isLimit = failureKind(d, errorName) === "limit";
-  if (!isLimit) return `⚠️ Something went wrong while handling your request:\n${detail}`;
+  if (!isLimit) return translate("srv.turn.error", { detail });
   const provMatch = d.match(/codex|anthropic|claude|openai|gemini|ollama/i);
   const prov = provMatch ? provMatch[0].toLowerCase() : "LLM";
   // ★리셋 시점 문구는 `formatResetAt` 한 곳에서 만든다 (2026-08-14) — 종전엔 여기와
   //  worker-jobs 가 각자 "N분 후" 를 만들어, 5.6일 한도가 `약 8118분 후` 로 나갔다.
   const cooldownMs = parseCooldownMs(d);
-  const when = cooldownMs !== null ? ` It resets ${formatResetAt(cooldownMs)}.` : "";
-  return (
-    `⚠️ The ${prov} backend has hit its usage limit (rate limit).${when}\n` +
-    `To keep going now, switch to a model on another backend — or use a pool of models (e.g. codex + claude) so limits and outages fall back automatically.`
-  );
+  return cooldownMs !== null
+    ? translate("srv.turn.rateLimitResets", { provider: prov, when: formatResetAt(cooldownMs) })
+    : translate("srv.turn.rateLimit", { provider: prov });
 };
 
 // 빌트인 슬래시 명령(라우터 우회·조기 return)의 응답 통로 — msg.reply 로 보내고 **channel.message.out
@@ -585,15 +577,18 @@ const buildLogTail = async (argRaw: string): Promise<string> => {
     // 잘린 첫 줄은 파편이라 버린다(헤더의 줄 수와 화면이 어긋나지 않게).
     const shown = truncated ? body.slice(body.indexOf("\n") + 1) : body;
     const shownLines = shown === "" ? 0 : shown.split("\n").length;
-    return (
-      `📜 ${ymd} — showing ${shownLines} line${shownLines === 1 ? "" : "s"}` +
-      `${truncated ? ` (requested ${n} · ${out.length - shownLines} cut by the length limit)` : ""}` +
-      ` — file ${Math.round(size / 1024)}KB${readFrom > 0 ? ", read from the end only" : ""}\n` +
-      `Conversation text is left out — diagnostic figures only` +
-      `${dropped > 0 ? ` (${dropped} text line${dropped === 1 ? "" : "s"} omitted)` : ""}.\n\n\`\`\`\n${shown}\n\`\`\``
-    );
+    // 헤더는 «표시 · (잘림) — 파일» 칸을 잇는 상태 줄이다 — 칸마다 키 하나(값은 자리표시자).
+    const shownCell = translate(shownLines === 1 ? "srv.logs.shown.one" : "srv.logs.shown.other", { date: ymd, count: shownLines });
+    const cutCell = truncated ? ` ${translate("srv.logs.cut", { requested: n, cut: out.length - shownLines })}` : "";
+    const kb = Math.round(size / 1024);
+    const fileCell = translate(readFrom > 0 ? "srv.logs.fileTail" : "srv.logs.file", { kb });
+    const omitted =
+      dropped > 0
+        ? translate(dropped === 1 ? "srv.logs.omittedCount.one" : "srv.logs.omittedCount.other", { count: dropped })
+        : translate("srv.logs.omitted");
+    return `${shownCell}${cutCell} — ${fileCell}\n${omitted}\n\n\`\`\`\n${shown}\n\`\`\``;
   } catch (e) {
-    return `Couldn't read the log: ${e instanceof Error ? e.message : String(e)}`;
+    return translate("srv.logs.readFailed", { error: e instanceof Error ? e.message : String(e) });
   }
 };
 
@@ -861,10 +856,7 @@ const handler: MessageHandler = async (msg) => {
       // ★"세션은 그대로" 라고만 하면 **다음에 뭘 해야 하는지**를 안 준다 (2026-08-22 신고).
       //  실제로 세션을 없애려던 사용자가 `/clear` 를 쓰고, 안 없어지니 같은 이름으로 새로
       //  만들어 목록에 중복이 남았다. 여기가 그 갈림길이므로 대안을 같은 줄에 둔다.
-      had
-        ? "Context cleared — starting a fresh conversation (this conversation's name and settings are kept).\n" +
-          "To remove the session itself from the list, use `/sessions archive`."
-        : "There's no context to clear.",
+      translate(had ? "srv.clear.done" : "srv.clear.nothing"),
     );
     return;
   }
@@ -872,18 +864,16 @@ const handler: MessageHandler = async (msg) => {
   // (LLM 턴 0, 즉답·무료·결정적). 서브·매니저 통합 잡 모델(kind) 기반 — listJobs 단일 소스.
   // 원칙 4: 상태 조회를 모델에게 안 시킴(원칙 1 슈퍼셋의 사용자-driven 갈래).
   if (trimmed === "/agents") {
-    // 아이콘을 카탈로그에서 읽는다(아래 iconKey) — 동적 import 로 부팅 그래프를 안 늘린다.
-    const { translate } = await import("./core/i18n.js");
     const running = listJobs({ runningOnly: true });
     if (running.length === 0) {
-      await replyCommand(msg,"No background tasks are running right now.");
+      await replyCommand(msg, translate("srv.agents.none"));
       return;
     }
     const now = Date.now();
     // 경과 문구는 `core/format-duration` 한 곳에서 — 종전엔 여기·정체 보고·그 로그가 각자
     // 분 단위 나눗셈을 했고, 그러면 한 곳만 늙는다(`reset-time-is-readable` 가 잡으려던 바로
     // 그 부류). 시간 단위도 여기서 같이 얻는다(2시간짜리 잡이 "125분째" 로 보이던 것).
-    const fmtElapsed = (startedAt: number): string => `running for ${formatDurationEn(now - startedAt)}`;
+    const fmtElapsed = (startedAt: number): string => translate("srv.agents.elapsed", { elapsed: formatDuration(now - startedAt) });
     // 최신 먼저(listJobs 가 startedAt 내림차순). 매니저/서브 구분 라벨.
     const lines = running.map((j) => {
       // ★아이콘은 **카탈로그에서** (2026-09-10 정태님: *"코드에 박힌 걸 빼면 되지 않을까"*).
@@ -893,7 +883,7 @@ const handler: MessageHandler = async (msg) => {
       const iconKey = j.kind === "agent" ? "job.kind.agent.icon" : "job.kind.worker.icon";
       const iconT = translate(iconKey);
       const icon = iconT !== iconKey ? iconT : j.kind === "agent" ? "🤖" : "🎖️";
-      const kindLabel = j.kind === "agent" ? "Subagent" : "Manager";
+      const kindLabel = translate(j.kind === "agent" ? "srv.agents.kind.agent" : "srv.agents.kind.worker");
       const name = j.kind === "agent" ? (j.agentName ?? j.label) : j.label;
       // 모델 티어 표시(low/mid/high 등) — 매니저·서브 공통. modelTier 있고 default/빈값 아닐 때만.
       const tier =
@@ -911,13 +901,13 @@ const handler: MessageHandler = async (msg) => {
           ? ""
           : act.inFlight.length > 0
             ? `\n   └ ${act.inFlight
-                .map((f) => `\`${f.tool}\` for ${formatDurationEn(now - f.since)}`)
+                .map((f) => translate("srv.agents.toolFor", { tool: f.tool, elapsed: formatDuration(now - f.since) }))
                 .join(", ")}`
-            : `\n   └ last activity ${formatDurationEn(now - act.lastActivityAt)} ago`;
+            : `\n   └ ${translate("srv.agents.lastActivity", { elapsed: formatDuration(now - act.lastActivityAt) })}`;
       return `${icon} ${kindLabel} \`${name}\`${tier} — ${fmtElapsed(j.startedAt)}${doing}`;
     });
     await replyCommand(msg,
-      `🔧 ${running.length} background task${running.length === 1 ? "" : "s"} running:\n\n${lines.join("\n")}`,
+      `${translate(running.length === 1 ? "srv.agents.header.one" : "srv.agents.header.other", { count: running.length })}\n\n${lines.join("\n")}`,
     );
     return;
   }
@@ -935,27 +925,19 @@ const handler: MessageHandler = async (msg) => {
       //  프로파일 풀을 보여줬고, env 가 비면 «anthropic 디폴트» 라고 틀리게 말했다. 판정은 런타임과 같은 함수다.
       const base = describeBasePool();
       const poolSource = base.source === "profile"
-        ? `profile '${base.profile}'`
-        : `built-in ${BUILTIN_DEFAULT_TIER} — automatic, latest models of signed-in providers` +
-          (base.profileUnresolved !== undefined ? ` · because default profile '${base.profileUnresolved}' doesn't resolve` : "");
+        ? translate("srv.model.source.profile", { profile: base.profile ?? "" })
+        : base.profileUnresolved !== undefined
+          ? translate("srv.model.source.builtinUnresolved", { tier: BUILTIN_DEFAULT_TIER, profile: base.profileUnresolved })
+          : translate("srv.model.source.builtin", { tier: BUILTIN_DEFAULT_TIER });
       const basePool = base.specs
-        .map((s) => `${s.provider ?? s.adapter}:${s.model === "" ? "(adapter default)" : s.model}`)
-        .join(" → ") || "(none)";
+        .map((s) => `${s.provider ?? s.adapter}:${s.model === "" ? translate("srv.model.adapterDefault") : s.model}`)
+        .join(" → ") || translate("srv.model.poolNone");
       const lines = [
-        `Session model override: ${current ?? "(none — using the default pool)"}`,
+        current !== null ? translate("srv.model.override", { spec: current }) : translate("srv.model.overrideNone"),
         ...(current !== null ? [unresolvedOverrideNote(current)].filter((l) => l !== "") : []),
-        `Default pool (${poolSource}): ${basePool}`,
+        translate("srv.model.defaultPool", { source: poolSource, pool: basePool }),
         "",
-        "Usage:",
-        "  `/model <provider:model>` — change the main model for this session",
-        "  `/model reset` — clear the session override (back to the default pool)",
-        "",
-        "Examples:",
-        "  `/model anthropic:claude-sonnet-5`",
-        "  `/model anthropic:claude-opus-5`",
-        "  `/model codex:gpt-5-codex`",
-        "",
-        "Note: provider is `anthropic`, `codex` or `openai`. `/model reset` undoes the override.",
+        translate("srv.model.help"),
       ];
       await replyCommand(msg,lines.join("\n"));
       return;
@@ -963,7 +945,7 @@ const handler: MessageHandler = async (msg) => {
     if (args === "reset") {
       const had = clearSessionModelOverride(sidChannel, msg.threadKey);
       await replyCommand(msg,
-        had ? "Session model override cleared — back to the default pool." : "There's no override to clear.",
+        translate(had ? "srv.model.resetDone" : "srv.model.resetNone"),
       );
       return;
     }
@@ -979,11 +961,7 @@ const handler: MessageHandler = async (msg) => {
     const validPool = parseModelSpecList(args);
     if (validPool.length === 0) {
       // 유효 spec 0개 → 기존 단일 거부 톤 재사용 (저장 안 함).
-      await replyCommand(msg,
-        `Invalid format: \`${args}\` — use \`provider:model\`. ` +
-          "A comma-separated pool (in fallback order) also works. provider is anthropic, codex or openai. " +
-          "e.g. `anthropic:claude-sonnet-5` or `codex:gpt-5-codex,anthropic:claude-sonnet-5`",
-      );
+      await replyCommand(msg, translate("srv.model.invalid", { spec: args }));
       return;
     }
     // canonical 저장 — region specLabel 이 adapter→provider 복원 보장(round-trip 안전).
@@ -994,20 +972,19 @@ const handler: MessageHandler = async (msg) => {
     const sanityWarnings = validPool
       .map((s) => modelSpecSanityWarning(specLabel(s)))
       .filter((w): w is string => w !== null);
-    const poolNote =
-      validPool.length === 1
-        ? ""
-        : ` (pool of ${validPool.length}, falling back in order)`;
     const extraLines: string[] = [];
     if (invalidParts.length > 0) {
       extraLines.push(
-        `⚠️ Ignored: ${invalidParts.map((p) => `\`${p}\``).join(", ")} (invalid format)`,
+        translate("srv.model.ignored", { items: invalidParts.map((p) => `\`${p}\``).join(", ") }),
       );
     }
     extraLines.push(...sanityWarnings);
+    const setLine =
+      validPool.length === 1
+        ? translate("srv.model.set", { spec: canonical })
+        : translate("srv.model.setPool", { spec: canonical, count: validPool.length });
     await replyCommand(msg,
-      `Session model → \`${canonical}\`${poolNote}. Applies from the next turn.` +
-        (extraLines.length === 0 ? "" : `\n${extraLines.join("\n")}`),
+      setLine + (extraLines.length === 0 ? "" : `\n${extraLines.join("\n")}`),
     );
     return;
   }
@@ -1176,7 +1153,7 @@ const handler: MessageHandler = async (msg) => {
   });
   if (hookOut.block) {
     // 실패 표식 — 완료 턴이 차단되면 결과가 전해지지 않았다(raw 안전망이 대신 보낸다).
-    await replyCommand(msg, `A hook blocked this request: ${hookOut.blockReason ?? ""}`, { turnFailed: true });
+    await replyCommand(msg, translate("srv.turn.hookBlocked", { reason: hookOut.blockReason ?? "" }), { turnFailed: true });
     return;
   }
   if (hookOut.additionalContext.length > 0) {
@@ -1371,7 +1348,7 @@ const handler: MessageHandler = async (msg) => {
       stoppedByUser(turnAc.signal)
     ) {
       // egress 에도 알린다 — 활동 표시만 떴다 사라지고 아무 말이 없으면 유령이다.
-      await fanOutEgress(egressTargets, STOPPED_NOTICE, bus, msg.threadKey);
+      await fanOutEgress(egressTargets, STOPPED_NOTICE(), bus, msg.threadKey);
       return;
     }
     // 잡 취소(WorkerCancelledError, U-I4 개정) — 대시보드 잡 카드에서 native Task 를 ⏹️ 중지하면
@@ -1382,8 +1359,8 @@ const handler: MessageHandler = async (msg) => {
     // 이 out 으로 꺼짐). 내부 토큰("모델 거부 아님") 노출 없이 깔끔히.
     if (e instanceof Error && e.name === "WorkerCancelledError") {
       // 실패 표식 — 완료 턴이 이어 하던 일이 중지되면 매니저 결과는 아직 안 전해졌다(raw 안전망이 대신 보낸다).
-      await replyCommand(msg, STOPPED_NOTICE, { turnFailed: true });
-      await fanOutEgress(egressTargets, STOPPED_NOTICE, bus, msg.threadKey);
+      await replyCommand(msg, STOPPED_NOTICE(), { turnFailed: true });
+      await fanOutEgress(egressTargets, STOPPED_NOTICE(), bus, msg.threadKey);
       return;
     }
     // wall-clock 시간컷 제거(2026-06-23) 후 이 catch 는 어댑터/도구가 실제 던진 에러
@@ -1544,29 +1521,28 @@ setSelfUpdateRestart(() => restartDaemon("self-update:tool"));
 // 공용 톤). status 4종 each. updating 은 from→to·파일수·"곧 재시작" 고지.
 const formatSelfUpdateResult = (r: SelfUpdateResult): string => {
   if (r.status === "busy") {
-    return "An update is already in progress. You'll get a notice when it's done.";
+    return translate("srv.update.busy");
   }
   if (r.status === "up-to-date") {
-    return "Already up to date. Nothing changed, so there's no restart.";
+    return translate("srv.update.upToDate");
   }
   if (r.status === "updating") {
     const span =
-      r.from !== undefined && r.to !== undefined ? `${r.from} → ${r.to}` : "latest";
-    const files = r.changedFiles !== undefined ? ` (${r.changedFiles} file${r.changedFiles === 1 ? "" : "s"})` : "";
-    const npm = r.ranNpmInstall === true ? ", dependencies updated" : "";
+      r.from !== undefined && r.to !== undefined ? `${r.from} → ${r.to}` : translate("srv.update.latest");
+    // 버전 뒤에 붙는 주석 칸(파일 수 · 의존성) — 칸마다 키 하나, 앞 공백·쉼표까지 카탈로그 값이다.
+    const files =
+      r.changedFiles !== undefined
+        ? translate(r.changedFiles === 1 ? "srv.update.fileCount.one" : "srv.update.fileCount.other", { count: r.changedFiles })
+        : "";
+    const deps = r.ranNpmInstall === true ? translate("srv.update.depsUpdated") : "";
     const sec = Math.round((r.restartInMs ?? 5000) / 1000);
-    return (
-      `🔄 Update applied: ${span}${files}${npm}.\n` +
-      `Restarting in about ${sec}s — you'll get a notice when it's done.`
-    );
+    return `${translate("srv.update.applied", { span, files, deps })}\n${translate("srv.update.restartingIn", { sec })}`;
   }
   // failed — 의존성 설치·빌드 실패 시 자동 롤백·데몬 생존을 명시(먹통 아님).
-  const rolled =
-    r.rolledBack === true
-      ? "The changes were rolled back automatically, and the daemon is still running normally."
-      : "The daemon is still running normally.";
-  const detail = r.error !== undefined && r.error !== "" ? `\nCause: ${r.error}` : "";
-  return `⚠️ The update failed. ${rolled}${detail}`;
+  const state = translate(r.rolledBack === true ? "srv.update.state.rolledBack" : "srv.update.state.running");
+  return r.error !== undefined && r.error !== ""
+    ? translate("srv.update.failedWithCause", { state, error: r.error })
+    : translate("srv.update.failed", { state });
 };
 
 // 슬래시·통지가 쓰는 notify dest 도출 — 메시지의 channel/threadKey 에서 generic 좌표 추출.
@@ -1662,20 +1638,14 @@ const serializedHandler: MessageHandler = (msg) => {
     console.log(inboundLine(msg, "command"));
     publishInboundEcho(msg);
     void msg
-      .reply(
-        "🔄 Restarting shortly… you'll get a notice when it's done.",
-      )
+      .reply(translate("srv.restart.soon"))
       .catch(() => {})
       .finally(() => {
         if (restartDaemon(`telegram:${msg.channel}`)) return;
         // ★재시작을 중단했으면 **말한다**. 안 그러면 "곧 재시작합니다" 만 남고 아무 일도
         //  안 일어나 사용자가 먹통으로 오해한다(이번 사고의 사용자 체감이 정확히 그것).
         void msg
-          .reply(
-            "🔴 Restart cancelled — there was no way to bring the daemon back up.\n" +
-              "This OS has no automatic restart (supervisor), so shutting down now would have left it off. " +
-              "The daemon is still running, so you can carry on with the conversation. The cause is in the logs (`/logs`).",
-          )
+          .reply(translate("srv.restart.cancelled"))
           .catch(() => {});
       });
     return Promise.resolve();
@@ -1720,7 +1690,7 @@ const serializedHandler: MessageHandler = (msg) => {
     console.log(inboundLine(msg, "command"));
     publishInboundEcho(msg);
     void (async (): Promise<void> => {
-      await replyCommand(msg, "🔬 Running the codex request-weight A/B diagnosis… (up to 2 min)").catch(
+      await replyCommand(msg, translate("srv.diagnose.running")).catch(
         () => {},
       );
       let out: string;
@@ -1731,7 +1701,7 @@ const serializedHandler: MessageHandler = (msg) => {
         const r = await runCodexWeightProbe();
         out = `${r.lines.join("\n")}\n\n→ ${r.verdict}`;
       } catch (e) {
-        out = `Diagnosis failed: ${e instanceof Error ? e.message : String(e)}`;
+        out = translate("srv.diagnose.failed", { error: e instanceof Error ? e.message : String(e) });
       }
       await replyCommand(msg, out).catch(() => {});
     })();
@@ -1761,7 +1731,7 @@ const serializedHandler: MessageHandler = (msg) => {
         const stopped = entry.command === true ? 0 : cancelJobsForThread(msg.threadKey);
         await replyCommand(msg, stopReplyText(stopped, entry.steered ?? 0)).catch(() => {});
       } else {
-        await replyCommand(msg, "Nothing is in progress right now.").catch(() => {});
+        await replyCommand(msg, translate("srv.stop.idle")).catch(() => {});
       }
     })();
     return Promise.resolve();
@@ -1788,7 +1758,7 @@ const serializedHandler: MessageHandler = (msg) => {
       } catch (e) {
         // runSelfUpdate 는 throw 0 설계지만 방어적으로 catch — 데몬 생존.
         const err = redactSecrets(e instanceof Error ? e.message : String(e));
-        await replyCommand(msg,`⚠️ Something went wrong during the update: ${err}`).catch(() => {});
+        await replyCommand(msg, translate("srv.update.crashed", { error: err })).catch(() => {});
       }
     })();
     return Promise.resolve();
@@ -2119,7 +2089,7 @@ const updateNotified = await (async (): Promise<boolean> => {
     //  win32+built 는 pull 을 마친 뒤 CLI 에 위임하므로 CLI 가 뜨는 prevSha 는 이미 새
     //  커밋 = from===to 가 항상 참 → 그걸로 분기하면 윈도우의 정상 업데이트가 전부
     //  "이미 최신" 으로 오보된다(실측). 조건 없이 완료로 보고한다.
-    const text = "✅ Update complete — restarted on the new version.";
+    const text = translate("srv.update.complete");
     // 단일 통로 — 라우팅·발송·관측(대시보드 표시)을 deliverOutbound 가 담당(채널 미지정=cli).
     // 세션 귀속 = 기본 세션(업데이트 통지는 세션 없는 시스템 발화 → 새 세션 생성 대신
     // dashboard:default 메인 채팅에 표시). 배달은 요청자 좌표(notify) 그대로.
@@ -2157,7 +2127,7 @@ if (!updateNotified && !updateFailedNotified) {
       listSchedules({ onlyEnabled: true, triggerType: "reboot" }).length > 0;
     if (!hasRebootSchedule) {
       const chatId = getMostRecentTelegramChatId();
-      const text = "✅ Restart complete";
+      const text = translate("srv.restart.complete");
       // 단일 통로 — telegram 이면 발송+관측(대시보드 표시), 대상 없으면(설치 직후) cli 로 콘솔만.
       // 세션 귀속 = 기본 세션(재시작 통지 = 세션 없는 시스템 발화 → dashboard:default 표시).
       await deliverOutbound({

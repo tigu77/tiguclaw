@@ -7,6 +7,8 @@
  *     **코드 변경 0.** 스킬·에이전트가 홈 폴더 파일로 늘어나는 것과 같은 방식이다
  *     ([[project_core_philosophy]]: 코어는 단순 불변, 능력은 데이터).
  *  ③ **LLM 이 만드는 말은 제외**하고 **화면**이 보여주는 것은 전부.
+ *  ★2026-10-06 개정: **서버 문구(채팅 알림·명령 응답)도 이 카탈로그로 간다**(`srv.` 키 — 정태님 «키 형태로, 덮어쓸 수 있게,
+ *   기본 언어는 설치 언어·없으면 영어»). 아래 «범위를 좁혔다» 는 그 이전 판단의 기록이다.
  *
  * ★③의 범위를 좁혔다 (2026-08-25 사용자 결정: *"그냥 서버에서 내려오는건 그냥 쓰고 번역
  *  안해도돼"*). 종전엔 이 자리에 *"서버가 텔레그램으로 내보내는 통지까지 — 안 하면 반쪽이
@@ -34,6 +36,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { appRoot, getPaths } from "./paths.js";
 import { loadSettingsLayers } from "./settings.js";
+import { osLocale } from "./os-locale.js";
 
 /** 기본 언어 — 배포본이 항상 들고 있는 카탈로그. 폴백의 바닥이다. */
 export const BASE_LOCALE = "ko";
@@ -115,26 +118,38 @@ export const localeFromAcceptLanguage = (
 };
 
 /**
- * 보는 사람의 브라우저 언어에 맞는 게 없을 때 — **영어**. 공개 첫 화면(README)·서버 고정 문구가 영어라서다.
- * 기본 언어(`BASE_LOCALE`)는 카탈로그 폴백의 바닥이고, «처음 보는 사람에게 보일 언어» 와는 다른 판단이다.
+ * 서버가 만드는 문구(채팅 알림·명령 응답·CLI)의 키 접두사 (2026-10-06). 화면 문구와 같은 카탈로그·같은 덮어쓰기(`<홈>/locales/<언어>.json`)를
+ * 쓰되, 브라우저로는 내려보내지 않는다(`catalogForClient`).
  */
-export const VIEWER_FALLBACK_LOCALE = "en";
+export const SERVER_KEY_PREFIX = "srv.";
+
+/** 아무것도 못 정했을 때의 언어 — **영어**. 공개 첫 화면(README)과 설치 안내가 영어라서다. */
+export const FALLBACK_LOCALE = "en";
 
 /**
- * 화면 언어 — **사용자가 정한 값이 이긴다.** 없으면 보는 사람의 브라우저 언어, 거기 맞는 게 없으면 영어 (2026-10-06).
- * ★처음 설치하면 `locale` 이 없다 — 종전엔 그때 누구나 한국어 대시보드를 받았다(영어권 사용자는 영어 알림 + 한국어 화면).
+ * 설정이 없을 때의 기본 언어 — **이 기계의 OS 언어**(설치된 카탈로그 중), 없으면 영어 (2026-10-06 정태님 «기본 언어는 설치 언어, 없으면 영어»).
+ * ★설치 때 `settings.json` 에 적지 않고 매번 읽는다 — 이미 설치된 인스턴스도 같이 따라오고, 판정이 셸 두 벌과 갈리지 않으며,
+ *  «사용자가 정한 값» 과 섞이지 않는다. 기본 언어(`BASE_LOCALE`)는 카탈로그 폴백의 바닥이고 이것과 다른 판단이다.
+ */
+export const machineLocale = (available: readonly string[] = availableLocales()): string =>
+  localeFromAcceptLanguage(osLocale(), available) ??
+  (available.includes(FALLBACK_LOCALE) ? FALLBACK_LOCALE : BASE_LOCALE);
+
+/**
+ * 화면·문구 언어 — **사용자가 정한 값이 이긴다.** 없으면 보는 사람의 브라우저 언어(대시보드), 그다음 이 기계의 OS 언어, 끝으로 영어.
+ * ★처음 설치하면 `locale` 이 없다 — 종전엔 그때 누구나 한국어였다(영어권 사용자는 영어 알림 + 한국어 화면).
  * ★고른 값을 `settings.json` 에 **쓰지 않는다** — 쓰면 추측이 사용자 결정처럼 굳는다. 바꾸는 길은 설정 화면 하나다.
- * ★보는 사람이 없으면(헤더 없음 — 텔레그램·스케줄·셸 요청) 종전 그대로 기본 언어다.
+ * ★보는 사람이 없으면(헤더 없음 — 텔레그램 알림·스케줄·명령 응답) OS 언어부터 본다.
  */
 export const localeForViewer = (acceptLanguage: string | undefined, cwd: string = process.cwd()): string => {
   const set = configuredLocale(cwd);
   if (set !== undefined) return set;
-  if (acceptLanguage === undefined || acceptLanguage.trim() === "") return BASE_LOCALE;
   const available = availableLocales();
-  return (
-    localeFromAcceptLanguage(acceptLanguage, available) ??
-    (available.includes(VIEWER_FALLBACK_LOCALE) ? VIEWER_FALLBACK_LOCALE : BASE_LOCALE)
-  );
+  const fromBrowser =
+    acceptLanguage === undefined || acceptLanguage.trim() === ""
+      ? undefined
+      : localeFromAcceptLanguage(acceptLanguage, available);
+  return fromBrowser ?? machineLocale(available);
 };
 
 /** 지금 처리 중인 요청을 보낸 브라우저의 `Accept-Language` — 브리지가 요청마다 건다(`withViewerLanguage`). */
@@ -148,22 +163,46 @@ const viewer = new AsyncLocalStorage<string>();
 export const withViewerLanguage = <T>(acceptLanguage: string | string[] | undefined, fn: () => T): T =>
   typeof acceptLanguage === "string" && acceptLanguage.trim() !== "" ? viewer.run(acceptLanguage, fn) : fn();
 
-/** 지금 쓸 언어 — 설정 → (요청 중이면) 보는 사람의 브라우저 → 기본. */
+/** 지금 쓸 언어 — 설정 → (요청 중이면) 보는 사람의 브라우저 → OS 언어 → 영어. */
 export const readLocale = (cwd: string = process.cwd()): string => localeForViewer(viewer.getStore(), cwd);
 
-const cache = new Map<string, { stamp: string; catalog: Catalog }>();
+/** 카탈로그 파일의 수정 시각 — 이게 바뀌면 캐시를 버린다. */
+const stampOf = (f: string): string => {
+  try {
+    return String(statSync(f).mtimeMs);
+  } catch {
+    return "-";
+  }
+};
 
-/** 카탈로그 파일들의 수정 시각 — 이게 바뀌면 캐시를 버린다. */
-const stampOf = (files: string[]): string =>
-  files
-    .map((f) => {
-      try {
-        return `${f}:${statSync(f).mtimeMs}`;
-      } catch {
-        return `${f}:-`;
-      }
-    })
-    .join("|");
+/**
+ * 카탈로그 읽개 — 배포본(`appDir`)과 사용자 홈(`homeDir`)의 `<언어>.json` 을 합친다(홈이 덮는다).
+ *
+ * ★**배포본은 처음 읽을 때 고정한다** (2026-10-07 적대 검토 P2). 업데이트는 파일을 바꾼 뒤 재시작하는데, 그 사이(위임 업데이트·재시작
+ *  알림·5초 창)에 **옛 코드가 새 카탈로그**를 읽으면 키 이름을 바꾼 문구는 키 그대로(`srv.update.applied`), 자리표시자를 바꾼 문구는
+ *  `{sec}` 그대로 나간다. 배포본 문구는 코드와 한 몸이라 코드와 같은 수명을 갖는다(바뀌면 재시작 — 설정 반영 경계의 «코드» 쪽).
+ * ★홈 덮어쓰기는 **수정 시각으로** 매번 확인한다 — 사용자가 고친 문구는 재시작 없이 다음 문장부터(데이터는 fresh).
+ */
+export const createCatalogLoader = (dirs: () => { appDir: string; homeDir: string }): ((locale: string) => Catalog) => {
+  const app = new Map<string, Record<string, string>>();
+  const cache = new Map<string, { stamp: string; catalog: Catalog }>();
+  return (locale) => {
+    const { appDir, homeDir } = dirs();
+    const appFile = path.join(appDir, `${locale}.json`);
+    let base = app.get(appFile);
+    if (base === undefined) {
+      base = existsSync(appFile) ? readJson(appFile) : {};
+      app.set(appFile, base);
+    }
+    const homeFile = path.join(homeDir, `${locale}.json`);
+    const stamp = `${appFile}|${homeFile}:${stampOf(homeFile)}`;
+    const hit = cache.get(locale);
+    if (hit !== undefined && hit.stamp === stamp) return hit.catalog;
+    const merged: Record<string, string> = { ...base, ...(existsSync(homeFile) ? readJson(homeFile) : {}) };
+    cache.set(locale, { stamp, catalog: merged });
+    return merged;
+  };
+};
 
 /**
  * 한 언어의 카탈로그(배포본 위에 홈을 덮은 것).
@@ -176,18 +215,10 @@ const stampOf = (files: string[]): string =>
  *   그걸 지워도 초록이었다. 재보니 **언어 전환 땐 애초에 필요 없었다**(새 언어는 캐시에
  *   없다). 정말 필요한 건 **파일 편집** 때고, 그건 시각으로 잡는 게 맞다.
  */
-export const loadCatalog = (locale: string): Catalog => {
-  const files = catalogDirs().map((d) => path.join(d, `${locale}.json`));
-  const stamp = stampOf(files);
-  const hit = cache.get(locale);
-  if (hit !== undefined && hit.stamp === stamp) return hit.catalog;
-  const merged: Record<string, string> = {};
-  for (const f of files) {
-    if (existsSync(f)) Object.assign(merged, readJson(f));
-  }
-  cache.set(locale, { stamp, catalog: merged });
-  return merged;
-};
+export const loadCatalog = createCatalogLoader(() => ({
+  appDir: path.join(appRoot(), "locales"),
+  homeDir: path.join(getPaths().home, "locales"),
+}));
 
 /**
  * 자리표시자를 채운다. **없는 값은 자리표시자를 그대로 둔다** — 지우면 문장이 조용히
@@ -205,7 +236,7 @@ export const interpolate = (
       });
 
 /**
- * 키 → 문장. **폴백: 사용자 언어 → 기본 언어 → 키 자체.**
+ * 키 → 문장. **폴백: 사용자 언어 → 영어 → 기본 언어 → 키 자체.**
  *
  * ★키 자체를 마지막에 두는 이유: 빈 문자열이면 버튼이 사라져 **화면이 깨진다.** 키가 보이면
  *  못생겼을 뿐 동작은 살아 있고, 무엇이 빠졌는지도 바로 보인다.
@@ -222,8 +253,10 @@ export const translate = (
   //  모드가 정확히 그것이라 헤더가 이미 그렇게 적어놨는데, 조회가 그걸 안 봤다.
   const pick = (v: string | undefined): string | undefined =>
     v !== undefined && v !== "" ? v : undefined;
+  // 폴백 순서: 그 언어 → 영어(서버 문구의 원본 언어) → 기본 언어 → 키. 반쯤 번역한 파일의 빈 자리가 한국어로 새지 않게 영어를 먼저 본다.
   const found =
     pick(loadCatalog(lang)[key]) ??
+    (lang === FALLBACK_LOCALE ? undefined : pick(loadCatalog(FALLBACK_LOCALE)[key])) ??
     (lang === BASE_LOCALE ? undefined : pick(loadCatalog(BASE_LOCALE)[key]));
   return interpolate(found ?? key, params);
 };
@@ -242,11 +275,15 @@ export const catalogForClient = (
   // ★빈 값이 기본 언어를 **덮지 못하게** 한다 — 얕은 스프레드는 `""` 도 값으로 쳐서
   //  덮는다(위 `translate` 와 같은 이유). 화면은 이 병합 결과만 받으므로 여기서 막아야
   //  브라우저 쪽이 다시 판단할 필요가 없다(가장자리는 판단하지 않는다).
-  const base = loadCatalog(BASE_LOCALE);
-  const over = loadCatalog(lang);
-  const strings: Record<string, string> = { ...base };
-  for (const [k, v] of Object.entries(over)) {
-    if (typeof v === "string" && v !== "") strings[k] = v;
+  // ★폴백 순서는 `translate` 와 같다 — 그 언어 → 영어 → 기본 언어(2026-10-07 적대 검토 P3: 서버는 영어, 화면은 한국어로 갈렸다).
+  //  아래 층부터 깔고 위 층이 덮는다.
+  const layers = [BASE_LOCALE, FALLBACK_LOCALE, lang].filter((l, i, a) => a.indexOf(l) === i);
+  // ★서버 문구(`srv.`)는 화면에 안 싣는다 — 서버가 문장으로 만들어 보내므로 브라우저가 쓸 일이 없고, 수백 개가 매 페이지에 실린다.
+  const strings: Record<string, string> = {};
+  for (const l of layers) {
+    for (const [k, v] of Object.entries(loadCatalog(l))) {
+      if (typeof v === "string" && v !== "" && !k.startsWith(SERVER_KEY_PREFIX)) strings[k] = v;
+    }
   }
   return { locale: lang, strings, available: availableLocales() };
 };

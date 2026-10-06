@@ -21,6 +21,7 @@ import {
 } from "../entry/command-registry.js";
 import { isModuleDisabled } from "../settings.js";
 import { listHooksForInventory } from "../entry/hook-runner.js";
+import { translate } from "../i18n.js";
 
 /**
  * 메모리 MCP 가 내보내는 도구 이름 — **정의점에서 가져온다.**
@@ -1128,21 +1129,21 @@ export const formatInventoryForUser = (inv: InventoryResult): string => {
     if (entries.length === 0) return null;
     const names = entries.map((e) =>
       e.category === "external_plugin" && e.enabled === false
-        ? `${e.name}(disabled)`
+        ? translate("srv.plugins.disabledName", { name: e.name })
         : e.name,
     );
     return `${name} (${entries.length}): ${names.join(" · ")}`;
   };
 
-  const lines: string[] = [`tiguclaw plugins (${total} in total)`, ""];
+  const lines: string[] = [translate("srv.plugins.header", { total }), ""];
 
-  const ch = compactLine("Channels", inv.channel);
+  const ch = compactLine(translate("srv.plugins.channels"), inv.channel);
   if (ch !== null) lines.push(ch);
 
-  const sk = compactLine("Skills", inv.skill);
+  const sk = compactLine(translate("srv.plugins.skills"), inv.skill);
   if (sk !== null) lines.push(sk);
 
-  const ag = compactLine("Agents", inv.agent);
+  const ag = compactLine(translate("srv.plugins.agents"), inv.agent);
   if (ag !== null) lines.push(ag);
 
   if (inv.mcp.length > 0) {
@@ -1155,7 +1156,7 @@ export const formatInventoryForUser = (inv: InventoryResult): string => {
     );
   }
 
-  const ex = compactLine("External plugins", inv.external_plugin);
+  const ex = compactLine(translate("srv.plugins.externalPlugins"), inv.external_plugin);
   if (ex !== null) lines.push(ex);
 
   return capWithEllipsis(lines.join("\n"), USER_CAP_BYTES);

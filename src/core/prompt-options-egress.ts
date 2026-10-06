@@ -17,6 +17,7 @@
  */
 import type { ChannelOutbound } from "./channel-outbound.js";
 import type { IncomingMessage } from "../channels/types.js";
+import { translate } from "./i18n.js";
 
 export interface PromptOptionsEgressTarget {
   channel: string;
@@ -48,7 +49,7 @@ export const formatPromptOptionsText = (
   const lines = [question, ""];
   options.forEach((o, i) => lines.push(`${i + 1}. ${o.label}`));
   if (note !== undefined && note.trim() !== "") lines.push("", note.trim());
-  lines.push("", "Reply with the number or the text of the option you want.");
+  lines.push("", translate("srv.options.replyHint"));
   return lines.join("\n");
 };
 

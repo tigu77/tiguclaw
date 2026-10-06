@@ -35,6 +35,7 @@ import { listMemoriesForIndex } from "../store/memory.js";
 // 실패 분류는 런타임과 **같은 판정**을 쓴다 — 여기서 정규식을 또 만들면 두 곳이 갈린다.
 import { isModelOverloaded, isRateLimited } from "./llm-runtime/rate-limit.js";
 import { failureKind } from "./worker-jobs.js";
+import { translate } from "./i18n.js";
 import { MEMORY_INDEX_CAP_BYTES } from "./prompt-assembly.js";
 import { listProjects } from "../store/projects.js";
 import { statSync } from "node:fs";
@@ -219,26 +220,26 @@ export const describeTurnErrors = (rawPayloads: string[]): string => {
     // ★시간 종료는 **발행 때 정한 종류**(`errorKind`)를 먼저 본다 — 문장을 바꿔도 안 흔들린다.
     //  문구는 종류가 없는 기록용 폴백이고 두 언어를 다 본다(이 함수는 DB 의 옛 한국어 기록도 읽는다).
     const cause = isModelOverloaded(detail)
-      ? "overloaded"
+      ? translate("srv.health.cause.overloaded")
       : str(p.errorKind) === "timeout" || /timeout|timed out|time limit|abort|시간/i.test(detail)
-        ? "aborted/timed out"
-        : "failed";
+        ? translate("srv.health.cause.timedOut")
+        : translate("srv.health.cause.failed");
     const who = str(p.model) !== "" ? `${str(p.adapter)}/${str(p.model)}` : str(p.adapter);
-    const label = `${who === "" ? "unknown" : who} ${cause}`;
+    const label = translate("srv.health.cause.line", { who: who === "" ? translate("srv.health.cause.unknownWho") : who, cause });
     byCause.set(label, (byCause.get(label) ?? 0) + 1);
   }
   const top = [...byCause.entries()]
     .sort((a, b) => b[1] - a[1])
     .slice(0, 3)
-    .map(([label, n]) => `${label} ×${n}`)
+    .map(([label, n]) => translate("srv.health.cause.count", { label, n }))
     .join(" · ");
   const where =
     background === 0
-      ? "in your conversations"
+      ? translate("srv.health.where.mine")
       : background === rawPayloads.length
-        ? "all in background or external calls — agents, managers, endpoints, gateway"
-        : `including ${background} in background or external calls`;
-  return `${top} (${where}).`;
+        ? translate("srv.health.where.allBackground")
+        : translate("srv.health.where.someBackground", { n: background });
+  return translate("srv.health.turnErrorsDetail", { top, where });
 };
 
 /**
@@ -257,7 +258,10 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
       const reason = String(s.lastError ?? "").slice(0, 90);
       out.push({
         kind: "schedule_failure",
-        summary: `Schedule '${s.label}' failed — ${reason || "reason unknown"} (its content may still be in the conversation history)`,
+        summary:
+          reason === ""
+            ? translate("srv.health.scheduleFailedNoReason", { label: s.label })
+            : translate("srv.health.scheduleFailed", { label: s.label, reason }),
       });
     }
   } catch {
@@ -281,14 +285,13 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
     if (b.latestAt === null) {
       out.push({
         kind: "backup_stale",
-        summary:
-          "There has never been a data backup. Memories, sessions and conversations all live in this one DB file — if it's lost, there's no way to get them back.",
+        summary: translate("srv.health.backup.never"),
       });
     } else if (Date.now() - b.latestAt > STALE_MS) {
       const days = Math.floor((Date.now() - b.latestAt) / 86_400_000);
       out.push({
         kind: "backup_stale",
-        summary: `The backup hasn't been updated for ${days} day${days === 1 ? "" : "s"} (automatic backup seems to have stopped).`,
+        summary: translate(days === 1 ? "srv.health.backup.stale.one" : "srv.health.backup.stale.other", { days }),
       });
     }
   } catch {
@@ -302,7 +305,7 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
     if (r.truncated > 0) {
       out.push({
         kind: "memory_index_truncated",
-        summary: `${r.truncated} of ${r.total} memories don't fit in the prompt on each turn (over the limit). The least-used ones are dropped first, but it's time to raise the limit or clean out memories you no longer use.`,
+        summary: translate("srv.health.memoryTruncated", { truncated: r.truncated, total: r.total }),
       });
     }
   } catch {
@@ -331,7 +334,7 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
       const list = big.map((d) => `'${d.name}' ${(d.bytes / 1024).toFixed(1)}KB`).join(" · ");
       out.push({
         kind: "project_doc_oversized",
-        summary: `A project's entry document (PROJECT.md) has grown large — ${list}. Ask the assistant to "tidy up PROJECT.md" and it will propose keeping only what every task needs and moving the rest into sub-documents (nothing is deleted). You'll only hear about this again after the document is edited.`,
+        summary: translate("srv.health.projectDocOversized", { list }),
       });
     }
   } catch {
@@ -356,7 +359,10 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
     if (actionable.length >= TURN_ERROR_THRESHOLD) {
       out.push({
         kind: "turn_errors",
-        summary: `${actionable.length} failed turns — ${describeTurnErrors(actionable.map((e) => e.payload))}`,
+        summary: translate("srv.health.turnErrors", {
+          n: actionable.length,
+          detail: describeTurnErrors(actionable.map((e) => e.payload)),
+        }),
       });
     }
   } catch {
@@ -373,7 +379,7 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
       if (repeat >= REPEAT_PARAGRAPH_THRESHOLD) {
         out.push({
           kind: "repetition",
-          summary: `A single answer repeated the same paragraph ${repeat} times — possibly an adapter problem (a flaw in how the conversation is rebuilt).`,
+          summary: translate("srv.health.repetition", { n: repeat }),
         });
         break; // 같은 창에서 여러 건이어도 1회만 보고(노이즈 억제).
       }

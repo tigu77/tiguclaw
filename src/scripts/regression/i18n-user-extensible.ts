@@ -5,8 +5,7 @@
  *  ① 언어를 **바꿀 수 있다**(`settings.json` 의 `locale`)
  *  ② 언어를 **쉽게 추가**할 수 있다 — `<home>/locales/<lang>.json` 을 놓으면 끝, **코드 변경 0**
  *  ③ **LLM 이 만드는 말은 제외**하고 **화면**이 보여주는 것은 전부.
- *     ★서버 통지는 범위 밖이다 (2026-08-25 사용자 결정) — 통지의 정상 경로는 LLM 이
- *      다시 쓰므로 이미 사용자 언어다. 근거는 `core/i18n.ts` 헤더에.
+ *     ★서버 문구도 이제 같은 카탈로그다(2026-10-06 개정 — `srv.` 키, 검사는 `server-strings-catalog`).
  *
  * ★②의 전제는 **부분 번역이 안전한 것**이다. 사람이 처음부터 완역할 리 없다 — 몇 줄만 옮겨
  *  보고, 쓰면서 늘린다. 그때 빠진 키가 **빈 문자열**로 나오면 버튼이 사라지고 화면이 깨진다.
@@ -34,9 +33,9 @@ import { fileURLToPath } from "node:url";
 
 const CHILD = fileURLToPath(new URL("./_i18n-child.ts", import.meta.url));
 
-const runIn = (home: string, argv: string[] = []): Record<string, unknown> => {
+const runIn = (home: string, argv: string[] = [], osLocale = "en"): Record<string, unknown> => {
   const out = execFileSync(process.execPath, ["--import", "tsx", CHILD, ...argv], {
-    env: { ...process.env, TIGUCLAW_HOME: home },
+    env: { ...process.env, TIGUCLAW_HOME: home, TIGUCLAW_OS_LOCALE: osLocale },
     encoding: "utf8",
     timeout: 60_000,
   });
@@ -53,11 +52,14 @@ const run = async (): Promise<Assertion[]> => {
     // ── ① 기본 상태 — 아무것도 안 놓으면 기본 언어 ──────────────────────────
     writeFileSync(path.join(home, "settings.json"), "{}\n", "utf8");
     const base = runIn(home);
+    const baseKoOs = runIn(home, [], "ko-KR");
+    const baseOtherOs = runIn(home, [], "ja-JP");
     out.push(
       assert(
-        "설정이 없으면 기본 언어(ko)로 돈다",
-        base.locale === "ko" && typeof base.send === "string" && base.send !== "",
-        `locale=${String(base.locale)} send=${JSON.stringify(base.send)}`,
+        "설정이 없으면 이 기계의 OS 언어로 돈다 — 한국어 OS→ko · 영어 OS→en · 카탈로그 없는 언어→영어 (2026-10-06)",
+        base.locale === "en" && baseKoOs.locale === "ko" && baseOtherOs.locale === "en" &&
+          typeof base.send === "string" && base.send !== "",
+        `영어 OS=${String(base.locale)} · 한국어 OS=${String(baseKoOs.locale)} · 일본어 OS=${String(baseOtherOs.locale)} send=${JSON.stringify(base.send)}`,
       ),
     );
 
@@ -88,9 +90,9 @@ const run = async (): Promise<Assertion[]> => {
         JSON.stringify(en.send),
       ),
       assert(
-        "★**반만 번역해도** 나머지는 기본 언어로 나온다(화면이 안 깨진다)",
-        en.settingsLabel === "설정",
-        `안 번역한 키 → ${JSON.stringify(en.settingsLabel)} (기대: 기본 언어 문구)`,
+        "★**반만 번역해도** 나머지는 영어로 나온다(화면이 안 깨진다 · 2026-10-06 폴백 언어 영어)",
+        en.settingsLabel === "Settings",
+        `안 번역한 키 → ${JSON.stringify(en.settingsLabel)} (기대: 영어 문구)`,
       ),
       assert(
         "★어떤 키도 **빈 문자열**을 내지 않는다(빈 버튼은 없는 버튼이다)",
@@ -122,8 +124,8 @@ const run = async (): Promise<Assertion[]> => {
     const bad = runIn(home);
     out.push(
       assert(
-        "★설치 안 된 언어를 고르면 조용히 기본으로 떨어진다(오타가 화면을 안 죽인다)",
-        bad.locale === "ko" && bad.send !== "" && typeof bad.send === "string",
+        "★설치 안 된 언어를 고르면 조용히 기본(OS 언어 → 영어)으로 떨어진다(오타가 화면을 안 죽인다)",
+        bad.locale === "en" && bad.send !== "" && typeof bad.send === "string",
         `locale=${String(bad.locale)} send=${JSON.stringify(bad.send)}`,
       ),
     );

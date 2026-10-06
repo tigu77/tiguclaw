@@ -14,6 +14,7 @@
  *  뜨면 배경 소음이 된다. 이 레포가 이미 데인 형상이라(같은 warn 이 12일 묻힘) 자원 축은
  *  하루 1회로 묶여 있어야 한다.
  */
+import { withSrvText } from "./_srv-text.js";
 import { mkdtempSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -288,7 +289,7 @@ const run = async (): Promise<Assertion[]> => {
     const bk = await readFile(new URL("../../store/backup.ts", import.meta.url), "utf8");
     // ★`/status` 본문이 `core/entry/slash-commands.ts` 로 나갔다(2026-09-05 구조 감사 ③) —
   //  지키는 성질(«백업 상태를 밀지 않고 /status 에서 본다»)은 그대로, 읽는 자리만 옮긴다.
-  const idx = readEntrySource();
+  const idx = withSrvText(readEntrySource());
     // ★설정을 **실제로 돌려서** 확인한다 (2026-08-12, 사용자: "자동 백업 할 건지는
     //  설정에 두자 · 기본은 켜있는걸로"). 종전엔 소스 정규식뿐이라 동의어 하나로 뚫렸다.
     {

@@ -49,6 +49,12 @@ export const check: RegressionCheck = {
         noHeader: localeForViewer(undefined, unset),
         pinnedEn: localeForViewer("en-US,en;q=0.9", pinned),
       };
+      // OS 가 한국어인 기계 — 보는 사람이 없거나 브라우저 언어가 카탈로그에 없으면 OS 언어
+      const savedOs = process.env.TIGUCLAW_OS_LOCALE;
+      process.env.TIGUCLAW_OS_LOCALE = "ko-KR";
+      const koOs = { noHeader: localeForViewer(undefined, unset), ja: localeForViewer("ja-JP", unset) };
+      if (savedOs === undefined) delete process.env.TIGUCLAW_OS_LOCALE;
+      else process.env.TIGUCLAW_OS_LOCALE = savedOs;
       // 요청 문맥 — 데몬 쪽 `readLocale()`(플러그인 `host.locale` 이 부르는 것)이 보는 사람을 따르나. await 를 건너도.
       const inEn = await withViewerLanguage("en-US,en;q=0.9", async () => {
         await new Promise((r) => setTimeout(r, 1));
@@ -68,9 +74,10 @@ export const check: RegressionCheck = {
           JSON.stringify(parse),
         ),
         assert(
-          "★설정에 언어가 없으면 브라우저를 따른다 — 한국어→한국어 · 영어→영어 · 맞는 게 없으면 영어 · 보는 사람이 없으면 종전 기본",
-          pre === undefined && viewer.ko === "ko" && viewer.en === "en" && viewer.ja === "en" && viewer.noHeader === "ko",
-          `전제(설정 없음)=${String(pre)} · ${JSON.stringify(viewer)}`,
+          "★설정에 언어가 없으면 브라우저를 따른다 — 한국어→한국어 · 영어→영어 · 맞는 게 없거나 보는 사람이 없으면 OS 언어(여기선 영어)",
+          pre === undefined && viewer.ko === "ko" && viewer.en === "en" && viewer.ja === "en" && viewer.noHeader === "en" &&
+            koOs.noHeader === "ko" && koOs.ja === "ko",
+          `전제(설정 없음)=${String(pre)} · ${JSON.stringify(viewer)} · 한국어 OS ${JSON.stringify(koOs)}`,
         ),
         assert(
           "★사용자가 정한 언어는 브라우저보다 우선이고, 고른 값을 설정 파일에 쓰지 않는다",
@@ -78,17 +85,18 @@ export const check: RegressionCheck = {
           `고정+영어 브라우저=${viewer.pinnedEn}`,
         ),
         assert(
-          "★요청 문맥 안의 readLocale(플러그인 문구가 쓰는 것)도 보는 사람의 언어 — await 를 건너도 · 문맥 밖은 종전 기본",
-          inEn === "en" && inKo === "ko" && outside === "ko",
+          "★요청 문맥 안의 readLocale(플러그인 문구가 쓰는 것)도 보는 사람의 언어 — await 를 건너도 · 문맥 밖은 OS 언어",
+          inEn === "en" && inKo === "ko" && outside === "en",
           `영어 요청=${inEn} · 한국어 요청=${inKo} · 밖=${outside}`,
         ),
         assert(
-          "배선 — 대시보드가 화면 언어를 브라우저로 고르고 브리지 요청에 언어를 싣는다 · 브리지는 그 문맥에서 처리한다",
+          "배선 — 대시보드가 화면 언어를 브라우저로 고르고 브리지 요청에 언어를 싣는다 · 브리지는 ★인증 화면(/auth-*)만 그 문맥에서 처리한다(대화 턴까지 감싸면 그 안에서 만든 구독·타이머·cron 이 언어를 물려받는다)",
           /catalogForClient\(localeForViewer\(viewerLanguage\.getStore\(\)\)\)/.test(dash) &&
             /\.\.\.viewerLanguageHeader\(\),\s*\n\s*Authorization/.test(dash) &&
             /viewerLanguage\.run\(lang, handle\)/.test(dash) &&
-            /withViewerLanguage\(req\.headers\["accept-language"\], \(\) => this\.handleRequest\(req, res\)\)/.test(bridge),
-          `화면=${/catalogForClient\(localeForViewer/.test(dash)} · 프록시=${/viewerLanguageHeader\(\)/.test(dash)} · 브리지=${/withViewerLanguage\(req/.test(bridge)}`,
+            /const viewerLang = new URL\(req\.url \?\? "\/", "http:\/\/x"\)\.pathname\.startsWith\("\/auth-"\) \? req\.headers\["accept-language"\] : undefined;/.test(bridge) &&
+            /withViewerLanguage\(viewerLang, \(\) => this\.handleRequest\(req, res\)\)/.test(bridge),
+          `화면=${/catalogForClient\(localeForViewer/.test(dash)} · 프록시=${/viewerLanguageHeader\(\)/.test(dash)} · 브리지(인증 화면만)=${/withViewerLanguage\(viewerLang/.test(bridge)}`,
         ),
       ];
     } finally {

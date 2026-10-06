@@ -1,4 +1,5 @@
 import nodeFs from "node:fs";
+import { withSrvText } from "./_srv-text.js";
 import nodePath from "node:path";
 import * as nodeUrl from "node:url";
 import ts from "typescript";
@@ -107,8 +108,10 @@ export const sourceHas = async (
   patterns: RegExp[],
 ): Promise<{ ok: boolean; missing: string[] }> => {
   const url = new URL(relFromRegressionDir, import.meta.url);
-  const src = await readCode(url);
-  if (src === null) return { ok: false, missing: [`읽기 실패(경로 오타?) ${String(url)}`] };
+  const raw = await readCode(url);
+  if (raw === null) return { ok: false, missing: [`읽기 실패(경로 오타?) ${String(url)}`] };
+  // ★서버 문구는 카탈로그에 있다(2026-10-06) — 소스가 **부르는** srv 키의 영어 문장을 붙여 본다(안 부르면 안 붙는다).
+  const src = withSrvText(raw);
   const missing = patterns.filter((re) => !re.test(src)).map((re) => String(re));
   return { ok: missing.length === 0, missing };
 };

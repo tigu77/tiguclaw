@@ -115,6 +115,9 @@ const countLeftoverHomes = (mine: string, mineRemoved: boolean): string[] => {
 //  **열지 않는다.** 여기서 그 모듈을 import 해 상수를 받으면 그 import 가 곧 로드라 문자열로 둔다
 //  — 두 곳이 갈리면 `regression-runner-env-isolation` 이 sentinel 유입으로 빨개진다.
 process.env.TIGUCLAW_DISABLE_ENV_FILE = "1";
+// ★OS 언어를 고정한다 (2026-10-06) — 설정이 없으면 서버 문구가 OS 언어를 따르는데, 개발 맥은 한국어·CI 는 영어라
+//  같은 검사가 두 곳에서 다른 문장을 본다. 언어를 보는 검사는 자기 env·설정으로 바꿔 쓴다(`os-locale.ts`).
+process.env.TIGUCLAW_OS_LOCALE = "en";
 // Inherited by regression children; never infer safety from missing credentials.
 process.env.TIGUCLAW_REGRESSION_NO_LIVE_MODEL = "1";
 

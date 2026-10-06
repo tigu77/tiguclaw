@@ -21,6 +21,7 @@ import { registerChannelOutbound } from "../../core/channel-outbound.js";
 import { replyCommand } from "../../core/entry/reply-command.js";
 import { __resetJobsForTest, markCancelled, markDone, onWorkerComplete, registerJob, registerWorkerHandler } from "../../core/worker-jobs.js";
 import type { IncomingMessage } from "../../channels/types.js";
+import { srvEn } from "./_srv-text.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const CH = "regr-judge";
@@ -88,11 +89,14 @@ export const check: RegressionCheck = {
     const failReplies = [
       entry.match(/replyCommand\(msg, formatRegionAError\(detail(?:, errName)?\)[^;]*;/)?.[0] ?? "(오류 응답 없음)",
       entry.match(/replyCommand\(msg, STOPPED_NOTICE[^;]*;/)?.[0] ?? "(🛑 응답 없음)",
-      entry.match(/replyCommand\(msg, `A hook blocked this request[^;]*;/)?.[0] ?? "(훅 차단 응답 없음)",
+      entry.match(/replyCommand\(msg, translate\("srv\.turn\.hookBlocked"[^;]*;/)?.[0] ?? "(훅 차단 응답 없음)",
     ];
     out.push(assert("진입점의 오류·🛑 중지·훅 차단 응답이 실패 표식(turnFailed)을 단다", failReplies.every((r) => r.includes("{ turnFailed: true }")), failReplies));
     // ★중지 안내는 세 자리가 상수 하나를 쓴다(2026-10-05) — 그 상수가 비면 취소해도 사용자에게 아무 말이 안 간다(적대 검토 G3: 빈 문자열이 초록이었다).
-    const stopped = /const STOPPED_NOTICE = "(🛑 [^"]{10,})"/.exec(entry)?.[1];
+    // 문구는 카탈로그에 있다(2026-10-06 서버 문구 키화) — 상수가 그 키를 부르는지 + 영어 값이 «무엇을 멈췄나» 를 말하는지.
+    const stopped = /const STOPPED_NOTICE = \(\): string => translate\("srv\.turn\.stopped"\)/.test(entry) && /^🛑 .{10,}/.test(srvEn("srv.turn.stopped"))
+      ? srvEn("srv.turn.stopped")
+      : undefined;
     out.push(assert("🛑 중지 안내 상수가 비어 있지 않은 문장이다(«무엇을 멈췄나» 를 말한다)", stopped !== undefined && /stopped/i.test(stopped), stopped ?? "(상수 없음·빈 값)"));
 
     // P-2 — 작업자가 끝난 뒤 온 지시

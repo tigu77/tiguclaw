@@ -2,6 +2,7 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import type { Channel, IncomingMessage, MessageHandler } from "../../src/channels/types.js";
 import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
+import { translate } from "../../src/core/i18n.js";
 
 export default class CliChannel implements Channel {
   readonly name = "cli" as const;
@@ -48,7 +49,7 @@ export default class CliChannel implements Channel {
         if (opts?.note !== undefined && opts.note.trim() !== "") {
           lines.push(`  (${opts.note})`);
         }
-        lines.push("Enter a number, or type your own answer.");
+        lines.push(translate("srv.cli.optionsPrompt"));
         process.stdout.write(`${lines.join("\n")}\n`);
         rl.prompt();
         pendingOptions = options;

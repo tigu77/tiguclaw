@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **On a fresh install, the dashboard follows your browser's language** — Korean for a Korean browser, English otherwise. A language you pick in Settings always wins.
+- **Notices and command replies now follow your language setting too.** If you haven't picked a language, they use this computer's language and the dashboard follows your browser's, falling back to English. A language you pick in Settings always wins.
+- **You can reword messages yourself** — put the same key in `locales/<language>.json` under your home and only that line changes.
 
 ### Fixed
 

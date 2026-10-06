@@ -17,6 +17,7 @@
  *  안전장치가 기능을 죽인 것이다. 그리고 **이 검사가 소스 정규식이라 그걸 못 봤다**
  *  (코드 문구는 멀쩡했으니까). 그래서 아래는 임시 레포에 **진짜 git 을 돌린다.**
  */
+import { withSrvText } from "./_srv-text.js";
 import { execFile } from "node:child_process";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -149,7 +150,7 @@ export const check: RegressionCheck = {
       assert(
         "★위임 실행 실패도 재가동 후 사용자에게 통지된다(조용한 소실 0)",
         // 문장은 `updateFailedText`(self-update.ts) 한 곳에서 만든다 — 결과(outcome)대로 말하게 2026-10-05 에 옮겼다.
-        /UPDATE_FAILED_MARKER/.test(idx) && /updateFailedText\(data\)/.test(idx) && /Update failed \(stage: \$\{stage\}\)/.test(rd("src/core/self-update.ts")),
+        /UPDATE_FAILED_MARKER/.test(idx) && /updateFailedText\(data\)/.test(idx) && /Update failed \(stage: \{stage\}\)/.test(withSrvText(rd("src/core/self-update.ts"))),
         /updateFailedText\(data\)/.test(idx) ? "마커 기반 통지 확인" : "★위임 실패가 조용히 사라진다",
       ),
     );

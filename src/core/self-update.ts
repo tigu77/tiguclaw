@@ -24,6 +24,7 @@ import path from "node:path";
 import { sourceRoot, getPaths } from "./paths.js";
 import { ensureRipgrep } from "./ripgrep.js";
 import { redactSecrets } from "./outbound-sanitize.js";
+import { translate } from "./i18n.js";
 
 /** 마커파일 — 부팅 시 1회 소비되는 "업데이트 완료" 통지 좌표 (architect §4). */
 export const UPDATE_COMPLETE_MARKER = ".update-complete";
@@ -40,17 +41,20 @@ export const UPDATE_FAILED_MARKER = ".update-failed";
  */
 export const updateFailedText = (m: { stage?: string; outcome?: string; detail?: string; logPath?: string | null }): string => {
   const stage = typeof m.stage === "string" ? m.stage : "unknown";
-  const what =
+  const what = translate(
     m.outcome === "unchanged"
-      ? "nothing was changed; the assistant kept running the current version."
+      ? "srv.update.outcome.unchanged"
       : m.outcome === "rolled-back"
-        ? "rolled back to the previous version and restarted."
+        ? "srv.update.outcome.rolledBack"
         : m.outcome === "needs-check"
-          ? "the previous version could not be fully restored — run `tiguclaw update` in a terminal and check the log."
-          : "see the log for what was restored.";
-  const detail = typeof m.detail === "string" && m.detail ? `\n${m.detail}` : "";
-  const logLine = typeof m.logPath === "string" && m.logPath ? `\nLog: ${m.logPath}` : "";
-  return `❌ Update failed (stage: ${stage}) — ${what}${detail}${logLine}`;
+          ? "srv.update.outcome.needsCheck"
+          : "srv.update.outcome.unknown",
+  );
+  // 줄 단위로 잇는다 — 상세는 CLI 가 남긴 원문, 로그 줄은 경로만 끼운다.
+  const lines = [translate("srv.update.failedNotice", { stage, what })];
+  if (typeof m.detail === "string" && m.detail) lines.push(m.detail);
+  if (typeof m.logPath === "string" && m.logPath) lines.push(translate("srv.update.logLine", { path: m.logPath }));
+  return lines.join("\n");
 };
 
 export type SelfUpdateStatus =
@@ -321,8 +325,8 @@ const rebuildBuiltDist = async (
       return {
         ok: false,
         error: tail
-          ? `entry point not built: dist(staging)/src/index.js\ncause (last tsc output):\n${tail}`
-          : "entry point not built: dist(staging)/src/index.js — tsc printed nothing (node_modules/typescript may be damaged). Recover by running `tiguclaw update` in a terminal (it runs npm ci first).",
+          ? translate("srv.update.err.entryNotBuiltTail", { tail })
+          : translate("srv.update.err.entryNotBuilt"),
       };
     }
 
@@ -334,16 +338,14 @@ const rebuildBuiltDist = async (
       await rmrf(staging);
       return {
         ok: false,
-        error: `copying assets failed: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
+        error: translate("srv.update.err.copyAssets", { error: e instanceof Error ? e.message : String(e) }),
       };
     }
 
     // 4) 플러그인 미러 검증 — dist/plugins 부재면 부팅 시 플러그인 0개(맥락 §2 블로커).
     if (!existsSync(path.join(staging, "plugins"))) {
       await rmrf(staging);
-      return { ok: false, error: "staging/plugins is missing (mirroring plugins failed)" };
+      return { ok: false, error: translate("srv.update.err.pluginsMissing") };
     }
 
     // 5) ★원자 교체 — dist→backup, staging→dist. 둘 다 cwd 하위(동일 파일시스템)라
@@ -367,9 +369,7 @@ const rebuildBuiltDist = async (
       await rmrf(staging);
       return {
         ok: false,
-        error: `atomic dist swap failed: ${
-          e instanceof Error ? e.message : String(e)
-        }`,
+        error: translate("srv.update.err.swap", { error: e instanceof Error ? e.message : String(e) }),
       };
     }
 
@@ -472,15 +472,16 @@ export const runSelfUpdate = async (
       return {
         status: "failed",
         from: prevSha,
-        error: redactSecrets(`Couldn't check for uncommitted changes (${e instanceof Error ? e.message : String(e)}) — the update was stopped.`),
+        error: redactSecrets(translate("srv.update.err.dirtyCheck", { error: e instanceof Error ? e.message : String(e) })),
       };
     }
     if (dirty.length > 0) {
-      const named = `${dirty.slice(0, 3).join(", ")}${dirty.length > 3 ? ` (+${dirty.length - 3} more)` : ""}`;
+      const first = dirty.slice(0, 3).join(", ");
+      const named = dirty.length > 3 ? translate("srv.update.err.filesAndMore", { files: first, count: dirty.length - 3 }) : first;
       return {
         status: "failed",
         from: prevSha,
-        error: `There are uncommitted changes (${named}) — the update was stopped and your files were left untouched.`,
+        error: translate("srv.update.err.dirty", { files: named }),
       };
     }
     try {
@@ -580,9 +581,7 @@ export const runSelfUpdate = async (
           status: "failed",
           from: prevSha,
           error: redactSecrets(
-            `Couldn't hand off the automatic update (${
-              e instanceof Error ? e.message : String(e)
-            }) — run \`tiguclaw update\` in a terminal.`,
+            translate("srv.update.err.handoff", { error: e instanceof Error ? e.message : String(e) }),
           ),
         };
       }
@@ -676,10 +675,7 @@ export const runSelfUpdate = async (
               changedFiles: changed.length,
               rolledBack,
               error: redactSecrets(
-                "The native module (better-sqlite3) won't load in the new version — restarting like this " +
-                  "would make the daemon crash on every start, so it was rolled back to the previous version. " +
-                  "Build tools may be needed (Windows: VS Build Tools C++, Linux: build-essential + python3). " +
-                  `Original error: ${e2 instanceof Error ? e2.message : String(e2)}`,
+                translate("srv.update.err.nativeModule", { error: e2 instanceof Error ? e2.message : String(e2) }),
               ),
             };
           }
@@ -694,7 +690,7 @@ export const runSelfUpdate = async (
           changedFiles: changed.length,
           rolledBack,
           error: redactSecrets(
-            `npm install failed: ${e instanceof Error ? e.message : String(e)}`,
+            translate("srv.update.err.npmInstall", { error: e instanceof Error ? e.message : String(e) }),
           ),
         };
       }
@@ -740,7 +736,7 @@ export const runSelfUpdate = async (
           ranNpmInstall,
           rolledBack,
           error: redactSecrets(
-            `Rebuild failed (the old build is kept and there's no restart): ${rebuild.error}`,
+            translate("srv.update.err.rebuild", { error: rebuild.error }),
           ),
         };
       }
@@ -802,10 +798,7 @@ export const runSelfUpdate = async (
                     channel: dest.channel,
                     target: dest.target,
                     label: "self-update",
-                    text:
-                      "🔴 The update was downloaded but **the restart didn't happen** — there was no way to bring the daemon back up.\n" +
-                      "The **old code** is still running (the daemon is alive). The new code takes effect the next time it starts.\n" +
-                      "No completion notice will follow — the cause is in the logs (`/logs`).",
+                    text: translate("srv.update.restartUnavailable"),
                   });
                 } catch {
                   // 통지 실패는 치명 아님 — 위 console.error 가 이미 남겼다.
@@ -831,7 +824,7 @@ export const runSelfUpdate = async (
         changedFiles: changed.length,
         ranNpmInstall,
         error: redactSecrets(
-          `Couldn't schedule the restart: ${e instanceof Error ? e.message : String(e)}`,
+          translate("srv.update.err.scheduleRestart", { error: e instanceof Error ? e.message : String(e) }),
         ),
       };
     }

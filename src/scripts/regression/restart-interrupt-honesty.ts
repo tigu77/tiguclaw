@@ -83,7 +83,7 @@ export const check: RegressionCheck = {
     // ★③ 통지가 실제로 나간다 — **프로덕션 함수**를 돌리고 발송된 것을 본다.
     //  (ESM 모듈은 읽기 전용이라 deliverOutbound 를 목으로 못 바꾼다. 그래서 통지 로직이
     //   send 를 인자로 받는다 — 경계를 열어야 검사가 진짜가 된다.)
-    const { notifyInterruptedTurns, RESTART_INTERRUPT_TEXT } = await import(
+    const { notifyInterruptedTurns } = await import(
       "../../core/inflight-turns.js"
     );
     const sent: Array<{ channel: string; text: string; label: string }> = [];
@@ -108,11 +108,11 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
+        // ★**실제로 보낸 문장**을 본다(2026-10-07 적대 검토 G2 — 종전엔 발송에 안 쓰이는 옛 상수를 봐서, 발송 문장을 바꿔도 초록이었다).
         "★통지가 '중단됐다 + 내용이 남지 않았다 + 다시 보내라' 를 말한다(조용한 손실 0)",
-        RESTART_INTERRUPT_TEXT.includes("interrupted") &&
-          RESTART_INTERRUPT_TEXT.includes("wasn't kept") &&
-          RESTART_INTERRUPT_TEXT.includes("send the same request again"),
-        RESTART_INTERRUPT_TEXT.slice(0, 60),
+        sent.length > 0 &&
+          sent.every((s) => s.text.includes("interrupted") && s.text.includes("wasn't kept") && s.text.includes("send the same request again")),
+        (sent[0]?.text ?? "(발송 없음)").slice(0, 60),
       ),
     );
     out.push(

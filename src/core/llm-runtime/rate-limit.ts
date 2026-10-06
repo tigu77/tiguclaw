@@ -9,8 +9,10 @@
  *
  *  그래서 한 곳으로 모으는데, facade(`llm-runtime/index.ts`)에 두면
  *  `worker-jobs → llm-runtime → … → worker-registry → worker-jobs` **순환**이 생긴다.
- *  의존 0인 리프로 빼서 세 곳이 모두 여기만 import 한다.
+ *  의존 0인 리프로 빼서 세 곳이 모두 여기만 import 한다(예외는 문구 카탈로그 `i18n` 하나 — 그쪽은 이 트리를 안 본다).
  */
+
+import { translate } from "../i18n.js";
 
 export const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000; // 10분
 export const MAX_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000; // 7일 상한(비정상 값 방어, 실측 다일 한도는 통과)
@@ -132,7 +134,15 @@ const parseResetsAtMs = (errStr: string): number | null => {
   return ms > 0 ? Math.min(ms, MAX_COOLDOWN_MS) : null;
 };
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+/** 달 이름 키(0 = 1월) — 언어마다 표기가 달라(Oct / 10월) 카탈로그가 정한다. */
+const MONTH_KEYS = [
+  "srv.resetAt.month1", "srv.resetAt.month2", "srv.resetAt.month3", "srv.resetAt.month4",
+  "srv.resetAt.month5", "srv.resetAt.month6", "srv.resetAt.month7", "srv.resetAt.month8",
+  "srv.resetAt.month9", "srv.resetAt.month10", "srv.resetAt.month11", "srv.resetAt.month12",
+] as const;
+/** 오전·오후 표기 — 어순까지 언어마다 다르므로(3:14 PM / 오후 3시 14분) 시각 전체를 키 하나로. */
+const TIME_KEY = { AM: "srv.resetAt.timeAm", PM: "srv.resetAt.timePm" } as const;
+const TIME_ON_HOUR_KEY = { AM: "srv.resetAt.timeAmOnHour", PM: "srv.resetAt.timePmOnHour" } as const;
 
 /**
  * 한도 리셋 시점을 **사람이 읽는 문장**으로 — 여기가 정의점이다 (2026-08-14).
@@ -154,20 +164,23 @@ export const formatResetAt = (
 ): string => {
   const at = new Date(now + ms);
   const min = Math.max(1, Math.round(ms / 60_000));
-  if (min < 60) return `in about ${min} min`;
+  if (min < 60) return translate("srv.resetAt.inMinutes", { n: min });
   // ★로케일 API 를 안 쓴다 — 같은 코드가 맥·윈도우·리눅스에서 도는데 `toLocaleTimeString`
   //  은 ICU 에 따라 "오전 3:14"·"AM 3:14"·"3:14 AM" 로 갈린다(실측: 맥에서 "AM 3:14").
   //  사용자에게 나가는 문장이 플랫폼마다 다르면 그 자체가 결함이다. 직접 조립한다.
-  //  ★서버 고정 문구는 영어다(2026-10-05 결정) — 월 이름도 직접 든다(로케일 API 금지 이유와 같다).
+  //  ★표기는 카탈로그가 정한다(2026-10-06 서버 문구 번역) — 월 이름·오전/오후도 키로 든다(로케일 API 금지 이유와 같다).
   const h24 = at.getHours();
   const ampm = h24 < 12 ? "AM" : "PM";
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-  const hhmm = `${h12}:${String(at.getMinutes()).padStart(2, "0")} ${ampm}`;
+  // 정각은 따로 — 한국어 «오후 3시쯤» 이 «오후 3시 00분쯤» 이 되지 않게(2026-10-07 적대 검토 P6). 영어 값은 `{h}:00 AM` 이라 출력이 같다.
+  const hhmm = at.getMinutes() === 0
+    ? translate(TIME_ON_HOUR_KEY[ampm], { h: h12 })
+    : translate(TIME_KEY[ampm], { h: h12, mm: String(at.getMinutes()).padStart(2, "0") });
   const hours = Math.round(min / 60);
-  const hoursRel = `in about ${hours} hour${hours === 1 ? "" : "s"}`;
+  const hoursRel = translate(hours === 1 ? "srv.resetAt.inHours.one" : "srv.resetAt.inHours.other", { n: hours });
   const sameDay = at.toDateString() === new Date(now).toDateString();
-  if (sameDay) return `today around ${hhmm} (${hoursRel})`;
+  if (sameDay) return translate("srv.resetAt.today", { time: hhmm, rel: hoursRel });
   const days = ms / 86_400_000;
-  const rel = days < 2 ? hoursRel : `in about ${days.toFixed(1)} days`;
-  return `${MONTHS[at.getMonth()]} ${at.getDate()} around ${hhmm} (${rel})`;
+  const rel = days < 2 ? hoursRel : translate("srv.resetAt.inDays", { n: days.toFixed(1) });
+  return translate("srv.resetAt.date", { month: translate(MONTH_KEYS[at.getMonth()]!), day: at.getDate(), time: hhmm, rel });
 };

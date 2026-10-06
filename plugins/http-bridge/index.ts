@@ -377,8 +377,11 @@ class HttpBridge implements Channel, Observer {
       //   예외 전용 fallback(=가짜 견고함)이었고, 이건 **재현된** 유출을 닫는다.
       //  ★이미 응답했으면 아무것도 안 쓴다(이중 응답 금지 — `writeJson` 이 던지면 그게
       //   곧 `ERR_HTTP_HEADERS_SENT` 이고 같은 사고의 재발이다).
-      // 요청을 보낸 브라우저의 언어 안에서 처리한다 — 설정에 언어가 없을 때 플러그인 문구가 화면과 같은 언어가 되게(`withViewerLanguage`).
-      void withViewerLanguage(req.headers["accept-language"], () => this.handleRequest(req, res)).catch((e: unknown) => {
+      // 구독 인증 화면(`/auth-*`)만 보는 사람의 브라우저 언어로 처리한다 — 설정에 언어가 없을 때 버튼·안내가 화면과 같은 언어가 되게.
+      // ★요청 **전체**를 감싸지 않는다(2026-10-07 적대 검토 P1): AsyncLocalStorage 는 그 안에서 만든 이벤트 구독·타이머·cron 이
+      //  영구히 물려받아, 대시보드 대화 턴 하나가 뒤의 텔레그램 알림·스케줄 발화 언어를 바꿨다. 대화 턴은 설정 → OS 언어를 따른다.
+      const viewerLang = new URL(req.url ?? "/", "http://x").pathname.startsWith("/auth-") ? req.headers["accept-language"] : undefined;
+      void withViewerLanguage(viewerLang, () => this.handleRequest(req, res)).catch((e: unknown) => {
         console.error(
           `http-bridge: 요청 처리 실패 ${req.method ?? "?"} ${req.url ?? "?"} — ` +
             `${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`,

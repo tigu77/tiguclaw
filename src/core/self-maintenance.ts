@@ -25,6 +25,7 @@ import { deliverOutbound } from "./outbound.js";
 import { runBackupIfDue, backupNotice } from "../store/backup.js";
 import { runHealthSweep, type HealthFinding } from "./health-sweep.js";
 import { refreshModelCatalog } from "./llm-runtime/model-catalog.js";
+import { translate } from "./i18n.js";
 
 /** 주기 — 백스톱. 이벤트가 없어도 이 간격으로 한 번은 본다. */
 const TICK_INTERVAL_MS = 60 * 60 * 1000; // 1시간
@@ -73,7 +74,7 @@ const reportFindings = (bus: EventBus | null, findings: HealthFinding[]): void =
   void deliverOutbound({
     channel: pushTo,
     target: null, // 채널 기본 대상(소유자) — 좌표 하드코딩 0.
-    text: `🩺 Self-check found a problem.\n\n${lines}`,
+    text: translate("srv.health.found", { findings: lines }),
     label: "self-maintenance:health",
     notice: true, // 인프라 통지 — 비서 발화 아님.
   }).catch(() => {

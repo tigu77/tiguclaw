@@ -65,6 +65,7 @@ import {
   markCooldownProbe,
 } from "../../store/cooldowns.js";
 import { getEventBus } from "../eventbus.js";
+import { translate } from "../i18n.js";
 import { contextWindowContradiction } from "./context-windows.js";
 // 통지 좌표 도출 — 어댑터 3종·update_self 와 **같은 함수**를 쓴다(좌표 판정 단일 진실).
 import { notifyDestFromCoords } from "../self-update.js";
@@ -392,7 +393,7 @@ export const poolToSpecs = (
 export const unresolvedOverrideNote = (override: string, cwd?: string): string =>
   parseModelSpecList(override, cwd).length > 0
     ? ""
-    : `⚠️ This conversation's model override \`${override}\` can't be used, so the session profile or default model is used instead — clear it with \`/model reset\`.\n` +
+    : `${translate("srv.model.overrideUnusable", { override })}\n` +
       splitSpecs(override).map((t) => specIssue("override", t, cwd)).filter((x): x is string => x !== undefined).join("\n");
 
 /**
@@ -401,19 +402,25 @@ export const unresolvedOverrideNote = (override: string, cwd?: string): string =
  *  «정의하세요» 나 «위 경고를 보세요» 가 틀린 안내가 된다(재검토 2026-09-28: 모르는 adapter 는 경고 없이 버려져, 가리킨 경고가
  *  없었다). override 경고도 이 함수를 쓴다(한쪽만 가르던 것 — 재검토 F4).
  */
-const specIssue = (where: string, spec: string, cwd?: string): string | undefined => {
+const specIssue = (where: string, spec: string, cwd?: string, locale?: string): string | undefined => {
   if (parseModelSpec(spec, cwd) !== null) return undefined;
   const idx = spec.indexOf(":");
   const provider = idx === -1 ? "" : spec.slice(0, idx).trim();
-  if (idx === -1 || provider === "" || spec.slice(idx + 1).trim() === "") return `'${spec}' in ${where} isn't in \`provider:model\` form, so it's skipped.`;
+  if (idx === -1 || provider === "" || spec.slice(idx + 1).trim() === "") {
+    return translate("srv.model.specIssue.form", { spec, where }, locale);
+  }
   if (!writtenProviderNames(cwd).has(provider)) {
-    return `'${spec}' in ${where} is skipped because there's no provider '${provider}' — define it under \`models.providers.${provider}\` in settings.json.`;
+    return translate("srv.model.specIssue.noProvider", { spec, where, provider }, locale);
   }
   const cfg = loadModelProviders(cwd)[provider];
   if (cfg !== undefined && !isKnownAdapter(cfg.adapter)) {
-    return `'${spec}' in ${where} is skipped because provider '${provider}' uses an unknown adapter '${cfg.adapter}' — the adapter must be one of ${Object.keys(KNOWN_ADAPTERS).join(" · ")}.`;
+    return translate(
+      "srv.model.specIssue.unknownAdapter",
+      { spec, where, provider, adapter: cfg.adapter, known: Object.keys(KNOWN_ADAPTERS).join(" · ") },
+      locale,
+    );
   }
-  return `'${spec}' in ${where} is skipped because provider '${provider}' is misconfigured and was ignored — see the \`[settings] models.providers.${provider}\` warning above.`;
+  return translate("srv.model.specIssue.misconfigured", { spec, where, provider }, locale);
 };
 
 const splitSpecs = (raw: string | undefined): string[] =>
@@ -430,7 +437,8 @@ const splitSpecs = (raw: string | undefined): string[] =>
  */
 export const unresolvedModelSpecs = (cwd?: string): string[] => {
   const issues: string[] = [];
-  const add = (where: string, spec: string) => { const i = specIssue(where, spec, cwd); if (i !== undefined) issues.push(i); };
+  // 부팅 로그 전용이라 영어로 고정한다(로그는 번역하지 않는다 — `/model` 응답의 같은 사유는 사용자 언어).
+  const add = (where: string, spec: string) => { const i = specIssue(where, spec, cwd, "en"); if (i !== undefined) issues.push(i); };
   const profiles = loadModelProfiles(cwd);
   for (const [name, prof] of Object.entries(profiles)) for (const e of prof.pool) add(`profile '${name}'`, e.spec);
   // 옛 `.env` 모델 풀(REGION_A_MODELS·MODEL_TIER_*)은 더 읽지 않으므로 진단하지 않는다(부팅이 프로파일로 옮긴다).
@@ -1682,15 +1690,17 @@ const runPool = async (
           //  오지 않을 답을 기다린다(바로 아래 `hasFallback` 에 같은 이유로 `!replayBlocked`
           //  를 달아놨는데 이 문구만 빠져 있었다 — 같은 catch 안 스무 줄 위다).
           // 인증 거부는 «언제 풀린다» 가 아니라 «다시 로그인해야 한다» 가 사실이다.
+          // 줄마다 키 하나 — 첫 줄(무엇이 막혔나)과 둘째 줄(이 요청은 어떻게 되나)이 서로 독립이다.
           text:
             (entered.reason === "auth"
-              ? `⚠️ ${adapterLabel(spec.adapter)} rejected the credentials — log in again or check the key (once fixed, \`/cooldown clear\` brings it back right away).\n`
-              : `⚠️ ${adapterLabel(spec.adapter)} hit its usage limit — it resets ${when}.\n`) +
+              ? translate("srv.limit.authRejected", { adapter: adapterLabel(spec.adapter) })
+              : translate("srv.limit.reached", { adapter: adapterLabel(spec.adapter), when })) +
+            "\n" +
             (replayBlocked
-              ? `This request stops here because a tool already ran (running it again would run that tool twice).`
+              ? translate("srv.limit.replayBlocked")
               : entered.reason === "auth"
-                ? `Meanwhile, switching to another model automatically (the conversation carries on).`
-                : `Until then, switching to another model automatically (the conversation carries on).`),
+                ? translate("srv.limit.switchMeanwhile")
+                : translate("srv.limit.switchUntil")),
           label: "cooldown",
         }).catch(() => undefined); // 통지 실패가 턴을 무르지 않는다.
       }
@@ -1858,9 +1868,9 @@ export const runRegionA = async (
       //  이제 해설을 따로 뽑아 **앞에** 두고, 자르는 건 상류 원문뿐이다.
       const reason = fallbackReason(lastError === undefined ? "" : errorDetail(lastError));
       const notice =
-        `\n\n⚠️ The selected model \`${requestedLabel}\` couldn't be used, so the default model answered.` +
-        (reason === "" ? "" : `\nReason: ${reason}`) +
-        `\nTo choose a model again: \`/model <provider:model>\`.`;
+        `\n\n${translate("srv.model.fallback", { model: requestedLabel })}` +
+        (reason === "" ? "" : `\n${translate("srv.model.fallbackReason", { reason })}`) +
+        `\n${translate("srv.model.fallbackHowTo")}`;
       return {
         ...output,
         text: output.text === "" ? output.text : `${output.text}${notice}`,

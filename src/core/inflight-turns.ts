@@ -11,6 +11,7 @@
  *  index.ts 가 자기 Map 을 보는 getter 를 여기 꽂는다. 단일 진실은 계속 Map 이다.
  *  `setSelfUpdateRestart` 와 같은 컨벤션.
  */
+import { translate } from "./i18n.js";
 
 /** 재시작이 끊은 턴·잡의 오류 원문 — 턴 abort 사유와 잡 중단 이벤트가 같은 문장을 쓴다. */
 export const DAEMON_RESTART_INTERRUPTED = "Interrupted by daemon restart";
@@ -92,9 +93,8 @@ export const withExternalTurn = async <T>(
 /** 리포터가 합칠 때 쓴다(index.ts). 이 모듈 밖에서 직접 순회하지 않는다. */
 export const listExternalTurns = (): Array<[string, InterruptedTurn]> => [...externalTurns];
 
-/** 통지 문구 — 무엇이 일어났고 무엇이 남지 않았고 무엇을 하면 되는지. */
-export const RESTART_INTERRUPT_TEXT =
-  "⚠️ The task in progress was interrupted by a daemon restart. The answer was still being written and wasn't kept — please send the same request again.";
+/** 통지 문구 — 무엇이 일어났고 무엇이 남지 않았고 무엇을 하면 되는지. 언어는 보낼 때 정한다(카탈로그 `srv.turn.restartInterrupted`). */
+export const restartInterruptText = (): string => translate("srv.turn.restartInterrupted");
 
 export interface InterruptedTurn {
   readonly ac: AbortController;
@@ -136,7 +136,7 @@ export const notifyInterruptedTurns = async (
         const r = await send({
           channel: dest.channel,
           target: dest.target,
-          text: RESTART_INTERRUPT_TEXT,
+          text: restartInterruptText(),
           label: "restart-interrupt",
         });
         // ★`delivered:false` 는 **throw 하지 않는다** — 반환값을 안 보면 통지 자체가 조용히

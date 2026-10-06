@@ -28,6 +28,7 @@ import path from "node:path";
 import { parseFrontmatter } from "../llm-runtime/capabilities/skill-registry.js";
 import { dedupeWithShadows, warnShadowed } from "../llm-runtime/capabilities/dedup-by-source.js";
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../paths.js";
+import { translate } from "../i18n.js";
 
 /**
  * 빌트인(하드코딩) 슬래시 명령의 채널중립 표현 — 커스텀 `Command` 와 달리 파일이 없다.
@@ -50,26 +51,28 @@ export interface BuiltinCommand {
  *
  * 신규 빌트인 슬래시를 `src/index.ts` 에 추가하면 반드시 여기에도 한 줄 추가할 것.
  */
+// ★설명은 **읽는 순간** 번역한다(getter) — 모듈 로드 때 굳히면 언어를 바꿔도 메뉴가 옛 언어로 남는다.
+//  `{ name: "…"` 리터럴 꼴은 `commands-have-handlers` 회귀가 소스에서 이름을 걷는 자리라 그대로 둔다.
 export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   // ★`/reset` 은 뺐다 (2026-08-20 사용자 결정) — `/clear` 와 거의 같은데 되돌릴 수 없이
   //  대화 이름·모델 설정·탭까지 지웠다. 치우고 싶으면 **보관**(archive)이 있다.
-  { name: "clear", description: "Clear the conversation context (name and settings are kept)" },
-  { name: "compact", description: "Compact the conversation — fold older messages into a summary (recent ones stay as is)" },
-  { name: "memo", description: "Add a memory" },
-  { name: "forget", description: "Delete a memory" },
-  { name: "memos", description: "List memories" },
-  { name: "plugins", description: "List installed and active plugins" },
-  { name: "agents", description: "Background tasks in progress (managers and subagents)" },
-  { name: "status", description: "System status" },
-  { name: "restart", description: "Restart the daemon" },
-  { name: "update", description: "Update tiguclaw to the latest version" },
-  { name: "cooldown", description: "Show or clear backend cooldowns (after signing in again or a limit reset)" },
-  { name: "sessions", description: "Pick, create or archive sessions (list, switch, new, archive)" },
-  { name: "model", description: "Show or set this session's main model" },
-  { name: "models", description: "List model profiles" },
-  { name: "providers", description: "Connected providers and the models they offer" },
-  { name: "schedule", description: "Manage schedules (list, delete, enable, disable)" },
-  { name: "stop", description: "Stop the turn in progress" },
+  { name: "clear", get description() { return translate("srv.cmd.desc.clear"); } },
+  { name: "compact", get description() { return translate("srv.cmd.desc.compact"); } },
+  { name: "memo", get description() { return translate("srv.cmd.desc.memo"); } },
+  { name: "forget", get description() { return translate("srv.cmd.desc.forget"); } },
+  { name: "memos", get description() { return translate("srv.cmd.desc.memos"); } },
+  { name: "plugins", get description() { return translate("srv.cmd.desc.plugins"); } },
+  { name: "agents", get description() { return translate("srv.cmd.desc.agents"); } },
+  { name: "status", get description() { return translate("srv.cmd.desc.status"); } },
+  { name: "restart", get description() { return translate("srv.cmd.desc.restart"); } },
+  { name: "update", get description() { return translate("srv.cmd.desc.update"); } },
+  { name: "cooldown", get description() { return translate("srv.cmd.desc.cooldown"); } },
+  { name: "sessions", get description() { return translate("srv.cmd.desc.sessions"); } },
+  { name: "model", get description() { return translate("srv.cmd.desc.model"); } },
+  { name: "models", get description() { return translate("srv.cmd.desc.models"); } },
+  { name: "providers", get description() { return translate("srv.cmd.desc.providers"); } },
+  { name: "schedule", get description() { return translate("srv.cmd.desc.schedule"); } },
+  { name: "stop", get description() { return translate("srv.cmd.desc.stop"); } },
 ] as const;
 
 /**

@@ -12,6 +12,7 @@
  * 도구 시작만 찍히고 완료 신호가 없어 "느림 vs 막힘" 구분이 안 돼 30분+ 헤맸다.
  */
 import { getEventBus } from "../eventbus.js";
+import { translate } from "../i18n.js";
 // ★도구 이름을 여기 열거하지 않는다 — 상류 SDK 가 개명하면(0.3 의 Task→Agent) 조용히
 //  죽는다. 판정은 subagent-tools 한 곳(2026-08-07 사고).
 import { isLongRunningByDesign } from "./subagent-tools.js";
@@ -144,17 +145,10 @@ export const formatToolSlowNotice = (input: {
   readonly jobLabel?: string;
 }): string => {
   const secs = Math.max(1, Math.round(input.secs));
-  const subject =
-    input.jobLabel === undefined
-      ? `Tool '${input.tool}'`
-      : `Tool '${input.tool}' in background task '${input.jobLabel}'`;
-  const stop = input.jobLabel === undefined ? "`/stop`" : "`cancel_worker`";
-  return (
-    `⏳ ${subject} has been running for ${secs}s. ` +
-    `If it's a long job, that's normal — you can leave it, and you'll hear back when it finishes. ` +
-    `If it seems stuck, check whether an OS permission dialog is open (or, for an external MCP tool, whether its app is running); ` +
-    `you can stop it with ${stop}.`
-  );
+  // 문장 하나가 키 하나 — 주어·중단 수단이 갈리는 두 경우를 따로 둔다(조각 이어붙이기는 어순이 다른 언어에서 깨진다).
+  return input.jobLabel === undefined
+    ? translate("srv.toolSlow.main", { tool: input.tool, secs })
+    : translate("srv.toolSlow.job", { tool: input.tool, secs, job: input.jobLabel });
 };
 
 /**

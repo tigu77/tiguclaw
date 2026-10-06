@@ -188,7 +188,8 @@ export const check: RegressionCheck = {
     // 헤더가 표본 크기를 속이지 않는다 — 자른 **뒤** 줄 수를 센다.
     const honest = await sourceHas("../../index.ts", [
       /const shownLines = shown === "" \? 0 : shown\.split\("\\n"\)\.length/,
-      /showing \$\{shownLines\} line/,
+      /translate\(shownLines === 1 \? "srv\.logs\.shown\.one" : "srv\.logs\.shown\.other", \{[^}]*count: shownLines/,
+      /showing \{count\} line/,
     ]);
     out.push(
       assert(

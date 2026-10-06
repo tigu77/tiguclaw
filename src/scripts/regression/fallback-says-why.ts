@@ -15,6 +15,7 @@
  *
  * 등급: 대조(조립부 소스) + **동작**(재액터를 실제로 실행해 토큰이 지워지는지 본다).
  */
+import { srvEn } from "./_srv-text.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,10 +41,11 @@ export const check: RegressionCheck = {
       .map((l) => l.replace(/\/\/.*$/, ""))
       .join("\n")
       .replace(/\/\*[\s\S]*?\*\//g, "");
-    const at = code.indexOf("The selected model \\`${requestedLabel}\\`");
+    // 문구는 카탈로그에 있다(2026-10-06) — 고지 블록은 그 키를 부르는 자리로 찾고, 사유 줄은 키 + 영어 값으로 본다.
+    const at = code.indexOf('translate("srv.model.fallback", { model: requestedLabel })');
     const block = at < 0 ? "" : code.slice(Math.max(0, at - 1200), at + 600);
 
-    const carries = /Reason: \$\{reason\}/.test(block);
+    const carries = /translate\("srv\.model\.fallbackReason", \{ reason \}\)/.test(block) && /Reason: \{reason\}/.test(srvEn("srv.model.fallbackReason"));
     // ★**조립을 실행해서 잰다** (2026-09-01). 종전엔 이 판정이 전부 소스 문자열이라
     //  `const note = upstreamLimitNote(...)` 를 `= ""` 한 줄로 바꾸면 P1 이 통째로 죽는데
     //  (해설이 다시 본문 뒤로 가 200자에 잘린다) 스위트가 초록이었다 — 부품만 실행하고

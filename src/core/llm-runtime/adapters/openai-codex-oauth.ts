@@ -89,6 +89,7 @@ import { claimToolNames, keepClaimed, probeBridgeTools } from "../tool-name-clai
 import { formatEnvContext, localTimeZone } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
+import { translate } from "../../i18n.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
 import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
@@ -271,17 +272,10 @@ export const codexFailureAdviceForTest = (userWhy: string, retryable: boolean): 
   codexFailureAdvice({ userWhy, retryable } as CodexBackendFailureError);
 
 const codexFailureAdvice = (e: CodexBackendFailureError): string => {
-  if (e.retryable) return "Please try again in a moment.";
-  if (e.userWhy.includes("max_output_tokens")) {
-    return (
-      "The model used up its output limit and was cut off — sending the same request again will stop at the same point. " +
-      "Please split the work into smaller pieces."
-    );
-  }
-  if (e.userWhy.includes("content_filter")) {
-    return "It was blocked by the content filter — the same request will keep being blocked, so please rephrase it.";
-  }
-  return "Sending the same request again would give the same result, so please change the request and try again.";
+  if (e.retryable) return translate("srv.codex.advice.retry");
+  if (e.userWhy.includes("max_output_tokens")) return translate("srv.codex.advice.outputLimit");
+  if (e.userWhy.includes("content_filter")) return translate("srv.codex.advice.contentFilter");
+  return translate("srv.codex.advice.changeRequest");
 };
 
 
@@ -2910,7 +2904,7 @@ export const runOpenAiCodex = async (
     if (sideEffectExecuted) {
       const ranList =
         executedToolNames.size > 0
-          ? `\n\nTools run in this turn: ${[...executedToolNames].join(", ")}.`
+          ? `\n\n${translate("srv.codex.toolsRan", { tools: [...executedToolNames].join(", ") })}`
           : "";
       // ★삼키기 전에 남긴다 (2026-08-08). 이 분기는 에러를 **답장 텍스트로 바꿔** 정상 종료
       //  시킨다(폴백 중복 실행 방지 = 옳은 설계). 그런데 바꾸면서 **아무것도 안 남겨서**,
@@ -2925,14 +2919,14 @@ export const runOpenAiCodex = async (
         // userWhy = raw 원문 제외판. why 를 쓰면 백엔드 JSON 400자가 그대로 답장에 실린다.
         //  안내는 retryable 로 갈린다 — `retryable=false` 의 근거가 "같은 요청은 같은 벽"
         //  이라, 거기에 "잠시 후 다시 시도" 를 권하면 자기모순이다.
-        notice = `The backend couldn't process the request — ${e.userWhy}${ranList}\n\n${codexFailureAdvice(e)}`;
+        notice = `${translate("srv.codex.backendFailed", { why: e.userWhy })}${ranList}\n\n${codexFailureAdvice(e)}`;
       } else if (e instanceof IdleTimeoutError) {
-        notice = `Stopped because the response was taking too long.${ranList}\n\nCheck the results, or ask again.`;
+        notice = `${translate("srv.codex.idleStopped")}${ranList}\n\n${translate("srv.codex.checkOrAskAgain")}`;
       } else {
         // HTTP 실패·전송 실패·그 밖의 일반 에러. 종전엔 이 갈래가 통째로 throw 로 빠져
         // 폴백이 부작용을 중복 실행했다.
         const detail = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
-        notice = `Something went wrong while handling the request — ${detail}${ranList}\n\nTo pick up where it left off, just say "continue".`;
+        notice = `${translate("srv.codex.requestFailed", { detail })}${ranList}\n\n${translate("srv.codex.sayContinue")}`;
       }
 
       // ★이미 화면에 흘러간 텍스트 **뒤에 붙인다** (2026-08-08).
@@ -3081,9 +3075,9 @@ export const runOpenAiCodex = async (
     //  응답에서 "방금 무엇이 처리됐는지" 즉시 인지 (이전엔 본문 0 = UX 깜깜).
     const ranList =
       executedToolNames.size > 0
-        ? `\n\nTools run in this turn: ${[...executedToolNames].join(", ")}.`
+        ? `\n\n${translate("srv.codex.toolsRan", { tools: [...executedToolNames].join(", ") })}`
         : "";
-    finalText = `The request was carried out, but no summary text could be produced.${ranList}\n\nCheck the results, or ask again.`;
+    finalText = `${translate("srv.codex.noSummary")}${ranList}\n\n${translate("srv.codex.checkOrAskAgain")}`;
   }
 
   return {

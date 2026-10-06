@@ -20,6 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { getPaths } from "../core/paths.js";
+import { translate } from "../core/i18n.js";
 import { getDb } from "./sessions.js";
 
 /** 보관 벌수 — 하루 증가가 원본의 1% 안팎이라 7벌이어도 원본 크기 정도. */
@@ -113,9 +114,9 @@ export type BackupResult =
  */
 export const backupNotice = (r: BackupResult): string | null => {
   if (!r.ran) return null; // 아직 때가 아님 — 아무 일도 안 했다.
-  if ("error" in r) return `Data backup failed — ${r.error.slice(0, 120)}`;
+  if ("error" in r) return translate("srv.backup.failed", { error: r.error.slice(0, 120) });
   if (r.first) {
-    return "From today, your data is backed up once a day (the latest 7 copies are kept in `<home>/data/backup/`). It runs quietly from now on — you'll only hear about it if it fails.";
+    return translate("srv.backup.first");
   }
   return null; // ★성공 = 침묵.
 };

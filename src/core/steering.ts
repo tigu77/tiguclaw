@@ -19,6 +19,7 @@
  */
 import type { Attachment, IncomingMessage } from "../channels/types.js";
 import { withReplyQuote } from "./reply-quote.js";
+import { translate } from "./i18n.js";
 
 /** 채널이 만드는 중립 steering 의도(채널·LLM 무관). telegram·대시보드·cli·http 동형. */
 export interface SteeringInput {
@@ -344,13 +345,17 @@ export const reinjectUnlessStopped = <M extends IncomingMessage>(
 /**
  * `/stop` 답 — 멈춘 것 · 함께 멈춘 백그라운드 작업 · **이 턴에 끼워 넣었던 메시지**를 알린다(2026-10-06).
  * ★끼워 넣은 메시지는 처리하지 않고 버린다 — 조용히 버리지 않는다(진짜 지시가 섞였을 수 있다). claude 는 SDK 가 그중 무엇을
- *  이미 소화했는지 우리가 모르므로 «처리하지 못한 것은» 으로 말한다. 서버 고정 문구라 영어다.
+ *  이미 소화했는지 우리가 모르므로 «처리하지 못한 것은» 으로 말한다. 문장은 카탈로그(`srv.stop.*`)에 있다.
  */
 export const stopReplyText = (stoppedJobs: number, steeredMessages: number): string => {
-  const jobs = stoppedJobs > 0 ? ` (including ${stoppedJobs} background task${stoppedJobs === 1 ? "" : "s"})` : "";
+  // 문장 단위로 고르고 잇는다 — 단수/복수는 키가 갈린다(카탈로그에 로직 없음).
+  const first =
+    stoppedJobs > 0
+      ? translate(stoppedJobs === 1 ? "srv.stop.stoppedWithJobs.one" : "srv.stop.stoppedWithJobs.other", { count: stoppedJobs })
+      : translate("srv.stop.stopped");
   const dropped =
     steeredMessages > 0
-      ? ` You sent ${steeredMessages} message${steeredMessages === 1 ? "" : "s"} while it was running — any it hadn't handled were dropped along with it, so send again whatever you still need.`
-      : "";
-  return `⏹️ Stopped the task in progress${jobs}.${dropped} Tell me what to do next and I'll go from there.`;
+      ? [translate(steeredMessages === 1 ? "srv.stop.dropped.one" : "srv.stop.dropped.other", { count: steeredMessages })]
+      : [];
+  return [first, ...dropped, translate("srv.stop.next")].join(" ");
 };

@@ -12,6 +12,7 @@ import type {
 } from "../../src/channels/types.js";
 import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
 import { getPaths } from "../../src/core/paths.js";
+import { translate } from "../../src/core/i18n.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { getEventBus } from "../../src/core/eventbus.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
@@ -719,8 +720,7 @@ export default class TelegramChannel implements Channel {
       staleInboundNotified = true;
       void ctx
         .reply(
-          `⏸️ Some messages arrived while I was offline (more than ${Math.round(INBOUND_STALE_MS / 60000)} min old). ` +
-            "They're stale, so they weren't processed automatically — send them again if you still need them.",
+          translate("srv.telegram.staleInbound", { mins: Math.round(INBOUND_STALE_MS / 60000) }),
         )
         .catch(() => {});
     };
@@ -986,7 +986,7 @@ export default class TelegramChannel implements Channel {
       await ctx.answerCallbackQuery().catch(() => {});
       if (value === undefined) {
         await ctx
-          .reply("These options have expired. Please try again.")
+          .reply(translate("srv.telegram.optionsExpired"))
           .catch(() => {});
         return;
       }

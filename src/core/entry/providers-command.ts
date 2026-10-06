@@ -27,6 +27,7 @@
  * 조달한다(`models-command.ts` 와 같은 배치). 채널·어댑터 분기 0.
  */
 import { capsLabel, type ModelCaps } from "./models-command.js";
+import { translate } from "../i18n.js";
 
 /** 한 provider 의 지금 상태 — 호출부가 카탈로그·인증에서 조립해 넘긴다. */
 export interface ProviderView {
@@ -66,12 +67,16 @@ const byVendor = (models: readonly string[]): Map<string, number> => {
   return out;
 };
 
+/** 모델 개수 낱말 — 단수/복수가 갈리는 언어가 있어 키를 둘로 둔다. */
+const modelCount = (n: number): string =>
+  translate(n === 1 ? "srv.providers.modelCount.one" : "srv.providers.modelCount.other", { n });
+
 const fmtCount = (v: ProviderView): string =>
   v.models.length > 0
-    ? `${String(v.models.length)} model${v.models.length === 1 ? "" : "s"}`
+    ? modelCount(v.models.length)
     : v.authed
-      ? "no model list (lookup failed or not supported)"
-      : "not signed in";
+      ? translate("srv.providers.noModelList")
+      : translate("srv.providers.notSignedIn");
 
 /** 이름·인자를 사람이 친 대로 비교한다(대소문자 무시). */
 const eq = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
@@ -90,9 +95,9 @@ export const renderProviders = (
 ): string => {
   if (views.length === 0) {
     return [
-      "🔌 Providers",
-      "No providers are connected.",
-      "Add one under `models.providers` in `<home>/settings.json` and it will show up here.",
+      translate("srv.providers.title"),
+      translate("srv.providers.none"),
+      translate("srv.providers.addHint"),
     ].join("\n\n");
   }
 
@@ -101,11 +106,10 @@ export const renderProviders = (
   if (parts.length === 0) {
     const lines = views.map((v) => `• **${v.name}** — ${fmtCount(v)}`);
     return [
-      "🔌 Providers",
+      translate("srv.providers.title"),
       lines.join("\n"),
-      "`/providers <name>` shows that provider's models. " +
-        "Narrow it down with `/providers <name> <search>`.",
-      "To use a model listed here, add it as `provider:model` to a profile (see `/models`).",
+      translate("srv.providers.listHint"),
+      translate("srv.providers.useHint"),
     ].join("\n\n");
   }
 
@@ -114,8 +118,8 @@ export const renderProviders = (
   const view = views.find((v) => eq(v.name, wanted!));
   if (view === undefined) {
     return [
-      `🔌 There's no provider called \`${wanted!}\`.`,
-      `Available: ${views.map((v) => `\`${v.name}\``).join(" · ")}`,
+      translate("srv.providers.notFound", { name: wanted! }),
+      translate("srv.providers.available", { names: views.map((v) => `\`${v.name}\``).join(" · ") }),
     ].join("\n\n");
   }
 
@@ -130,7 +134,7 @@ export const renderProviders = (
       `🔌 **${view.name}**`,
       needle === ""
         ? fmtCount(view)
-        : `No models match \`${needle}\` (${String(view.models.length)} in total).`,
+        : translate("srv.providers.noMatch", { needle, total: view.models.length }),
     ].join("\n\n");
   }
 
@@ -140,19 +144,26 @@ export const renderProviders = (
   if (vendors.size > 1) {
     const ranked = [...vendors.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     return [
-      `🔌 **${view.name}** — ${String(view.models.length)} models · ${String(ranked.length)} vendors`,
+      translate("srv.providers.vendorHead", {
+        name: view.name,
+        n: view.models.length,
+        vendors: ranked.length,
+      }),
       ranked.map(([v, n]) => `${v}(${String(n)})`).join(" · "),
-      `\`/providers ${view.name} <vendor>\` shows that vendor's models. ` +
-        `You can also search by part of a name (\`/providers ${view.name} sonnet\`).`,
+      translate("srv.providers.vendorHint", { name: view.name }),
     ].join("\n\n");
   }
 
   const shown = matched.slice(0, CAP);
   const head =
     needle === ""
-      ? `🔌 **${view.name}** — ${String(view.models.length)} model${view.models.length === 1 ? "" : "s"}`
-      : `🔌 **${view.name}** — ${String(matched.length)} matching \`${needle}\` ` +
-        `(${String(view.models.length)} in total)`;
+      ? `🔌 **${view.name}** — ${modelCount(view.models.length)}`
+      : translate("srv.providers.matchHead", {
+          name: view.name,
+          matched: matched.length,
+          needle,
+          total: view.models.length,
+        });
 
   const body = shown
     .map((m) => `• \`${view.name}:${m}\`${capsLabel(caps?.(`${view.name}:${m}`))}`)
@@ -162,10 +173,9 @@ export const renderProviders = (
   if (matched.length > shown.length) {
     // ★남은 것에 **닿을 길**을 같이 준다. 개수만 말하면 캡이 곧 벽이 된다.
     tail.push(
-      `…and ${String(matched.length - shown.length)} more. ` +
-        `Narrow it down with \`/providers ${view.name} <search>\`.`,
+      translate("srv.providers.more", { n: matched.length - shown.length, name: view.name }),
     );
   }
-  tail.push("Not every listed model is guaranteed to work — if one doesn't, you'll be told why.");
+  tail.push(translate("srv.providers.disclaimer"));
   return [head, body, ...tail].join("\n\n");
 };

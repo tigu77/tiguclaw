@@ -9,6 +9,7 @@
  * ★`formatResetAt`(rate-limit.ts) 과는 **다른 질문**이다: 저건 "언제 풀리나"(미래 시각),
  *  이건 "얼마나 지났나"(경과). 합치면 문구가 서로를 오염시킨다.
  */
+import { translate } from "./i18n.js";
 
 /**
  * 경과 ms → `"45초"` / `"3분"` / `"3분 20초"` / `"2시간 5분"`.
@@ -31,18 +32,24 @@ export const formatDurationKo = (ms: number): string => {
 };
 
 /**
- * 영어판 — 서버가 채널로 바로 내보내는 고정 문구용(2026-10-05 결정: 서버 고정 문구는 영어).
- * 같은 단위 규칙(초 → 분 → 시간)을 쓴다. 모델이 읽는 글(점검 보고 등)은 위 한국어판을 그대로 쓴다.
+ * 사용자 언어판 — 서버가 채널로 바로 내보내는 고정 문구용(단위가 문장 안에 들어가므로 언어를 따른다).
+ * 같은 단위 규칙(초 → 분 → 시간)을 쓰고, 단위 표기는 카탈로그(`srv.duration.*`)가 정한다. `locale` 을 주면 그 언어로.
+ * 모델이 읽는 글(점검 보고 등)은 위 한국어판을 그대로 쓴다.
  */
-export const formatDurationEn = (ms: number): string => {
+export const formatDuration = (ms: number, locale?: string): string => {
   const sec = Math.max(0, Math.round(ms / 1000));
-  if (sec < 60) return `${sec}s`;
+  if (sec < 60) return translate("srv.duration.sec", { s: sec }, locale);
   const totalMin = Math.floor(sec / 60);
   if (totalMin < 60) {
     const s = sec % 60;
-    return s === 0 ? `${totalMin} min` : `${totalMin} min ${s}s`;
+    return s === 0
+      ? translate("srv.duration.min", { m: totalMin }, locale)
+      : translate("srv.duration.minSec", { m: totalMin, s }, locale);
   }
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
-  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+  return m === 0
+    ? translate("srv.duration.hour", { h }, locale)
+    : translate("srv.duration.hourMin", { h, m }, locale);
 };
+

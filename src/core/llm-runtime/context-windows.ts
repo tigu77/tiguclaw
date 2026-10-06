@@ -23,6 +23,8 @@
  *
  * 어댑터 무관 상수 — types.ts(타입 전용)·index.ts(facade 전용) 와 분리.
  */
+import { translate } from "../i18n.js";
+
 /**
  * ★손으로 관리하는 목록이라 드리프트했다 (2026-07-30 검토 실측).
  *
@@ -124,9 +126,9 @@ export const contextWindowContradiction = (
 
 export const contextPressureLabel = (pct: number): string =>
   pct > 100
-    ? " ⚠️ computed as over the limit — this model's window size may be wrong (no need to `/clear`)"
+    ? ` ${translate("srv.status.pressureOver")}`
     : pct >= 85
-      ? " ⚠️ nearly full — consider `/clear`"
+      ? ` ${translate("srv.status.pressureNearlyFull")}`
       : pct >= 70
-        ? " ⚠️ getting full"
+        ? ` ${translate("srv.status.pressureGettingFull")}`
         : "";

@@ -25,6 +25,7 @@ import {
   type EventBusEvent,
 } from "../../../src/core/eventbus.js";
 import { deliverOutbound } from "../../../src/core/outbound.js";
+import { translate } from "../../../src/core/i18n.js";
 import { peekMemory } from "../../../src/store/memory.js";
 import { recordSkillInvocation } from "../../../src/store/skill-usage.js";
 import {
@@ -432,11 +433,7 @@ class SelfGrowthPlugin {
         void deliverOutbound({
           channel: "telegram",
           target: null,
-          text:
-            `🧠 Learned from a repeated failure and added a **behavior rule** automatically.\n\n` +
-            `• ${result.memoryName}\n\n` +
-            `It's saved in SELF_GROWTH.md and applies from the next turn. ` +
-            `If it's wrong, just say "delete that rule" (unless confirmed, it expires on its own).`,
+          text: translate("srv.growth.directiveLanded", { name: result.memoryName }),
           label: "self-growth:directive",
           notice: true, // 인프라 통지(자동 학습 반영 알림) — 비서 발화 아님.
         }).catch(() => {

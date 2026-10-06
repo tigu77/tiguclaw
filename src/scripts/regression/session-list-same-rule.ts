@@ -58,7 +58,8 @@ const run = async (): Promise<Assertion[]> => {
   {
     const w = await sourceHas("../../core/entry", [
       /const hiddenCount = allThreads\.length - threads\.length;/,
-      /\$\{hiddenCount\} unnamed session[\s\S]{0,60}?hidden — give/,
+      /"srv\.sessions\.hidden\.(one|other)", \{ n: hiddenCount \}/,
+      /\{n\} unnamed session[\s\S]{0,60}?hidden — give/,
     ]);
     out.push(
       assert(

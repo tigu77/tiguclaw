@@ -29,6 +29,7 @@
  * ★번역 문자열에 **로직을 넣지 않는다.** 복수형·조사 같은 것은 카탈로그가 아니라 호출부가
  *  이미 정한 문장 단위로 넘긴다 — 여기서 문법 엔진을 만들기 시작하면 그 자체가 새 시스템이다.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { appRoot, getPaths } from "./paths.js";
@@ -77,15 +78,78 @@ export const availableLocales = (): string[] => {
   return [...out].sort();
 };
 
-/** `settings.json` 의 `locale`. 없거나 설치 안 된 언어면 기본. */
-export const readLocale = (cwd: string = process.cwd()): string => {
-  let picked = BASE_LOCALE;
+/** 사용자가 `settings.json` 에 정한 언어. 없거나 설치 안 된 언어면 undefined. */
+export const configuredLocale = (cwd: string = process.cwd()): string | undefined => {
+  let picked: string | undefined;
   for (const layer of loadSettingsLayers(cwd)) {
     const v = (layer as { locale?: unknown }).locale;
     if (typeof v === "string" && v.trim() !== "") picked = v.trim();
   }
-  return availableLocales().includes(picked) ? picked : BASE_LOCALE;
+  return picked !== undefined && availableLocales().includes(picked) ? picked : undefined;
 };
+
+/**
+ * 브라우저가 원하는 언어(`Accept-Language`) 중 **설치된** 첫 언어 — q 값 순. 맞는 게 없으면 undefined.
+ * `ko-KR` 은 `ko-kr` 파일이 있으면 그것, 없으면 `ko`. 언어 목록은 파일이 정한다(코드에 언어 이름 없음).
+ */
+export const localeFromAcceptLanguage = (
+  header: string | undefined,
+  available: readonly string[] = availableLocales(),
+): string | undefined => {
+  if (header === undefined) return undefined;
+  const have = new Map(available.map((l) => [l.toLowerCase(), l]));
+  const wants = header
+    .split(",")
+    .map((part, i) => {
+      const [tag = "", ...params] = part.trim().split(";");
+      const q = params.map((x) => /^\s*q=([0-9.]+)\s*$/.exec(x)?.[1]).find((x) => x !== undefined);
+      return { tag: tag.trim().toLowerCase(), q: q === undefined ? 1 : Number(q), i };
+    })
+    .filter((w) => w.tag !== "" && w.tag !== "*" && w.q > 0)
+    .sort((a, b) => b.q - a.q || a.i - b.i);
+  for (const w of wants) {
+    const hit = have.get(w.tag) ?? have.get(w.tag.split("-")[0]!);
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
+};
+
+/**
+ * 보는 사람의 브라우저 언어에 맞는 게 없을 때 — **영어**. 공개 첫 화면(README)·서버 고정 문구가 영어라서다.
+ * 기본 언어(`BASE_LOCALE`)는 카탈로그 폴백의 바닥이고, «처음 보는 사람에게 보일 언어» 와는 다른 판단이다.
+ */
+export const VIEWER_FALLBACK_LOCALE = "en";
+
+/**
+ * 화면 언어 — **사용자가 정한 값이 이긴다.** 없으면 보는 사람의 브라우저 언어, 거기 맞는 게 없으면 영어 (2026-10-06).
+ * ★처음 설치하면 `locale` 이 없다 — 종전엔 그때 누구나 한국어 대시보드를 받았다(영어권 사용자는 영어 알림 + 한국어 화면).
+ * ★고른 값을 `settings.json` 에 **쓰지 않는다** — 쓰면 추측이 사용자 결정처럼 굳는다. 바꾸는 길은 설정 화면 하나다.
+ * ★보는 사람이 없으면(헤더 없음 — 텔레그램·스케줄·셸 요청) 종전 그대로 기본 언어다.
+ */
+export const localeForViewer = (acceptLanguage: string | undefined, cwd: string = process.cwd()): string => {
+  const set = configuredLocale(cwd);
+  if (set !== undefined) return set;
+  if (acceptLanguage === undefined || acceptLanguage.trim() === "") return BASE_LOCALE;
+  const available = availableLocales();
+  return (
+    localeFromAcceptLanguage(acceptLanguage, available) ??
+    (available.includes(VIEWER_FALLBACK_LOCALE) ? VIEWER_FALLBACK_LOCALE : BASE_LOCALE)
+  );
+};
+
+/** 지금 처리 중인 요청을 보낸 브라우저의 `Accept-Language` — 브리지가 요청마다 건다(`withViewerLanguage`). */
+const viewer = new AsyncLocalStorage<string>();
+
+/**
+ * 이 요청을 보낸 브라우저의 언어 안에서 `fn` 을 돈다 — 그 안의 `readLocale()` 이 보는 사람 기준이 된다.
+ * ★대시보드 화면만 브라우저를 따르면, 같은 화면에 뜨는 **플러그인 문구**(구독 인증 버튼 — 처음 설치하면 가장 먼저 누르는 것)는
+ *  데몬 쪽 `host.locale` 이라 한국어로 남는다. 요청에 언어를 실어 그 자리도 같은 판정을 따르게 한다.
+ */
+export const withViewerLanguage = <T>(acceptLanguage: string | string[] | undefined, fn: () => T): T =>
+  typeof acceptLanguage === "string" && acceptLanguage.trim() !== "" ? viewer.run(acceptLanguage, fn) : fn();
+
+/** 지금 쓸 언어 — 설정 → (요청 중이면) 보는 사람의 브라우저 → 기본. */
+export const readLocale = (cwd: string = process.cwd()): string => localeForViewer(viewer.getStore(), cwd);
 
 const cache = new Map<string, { stamp: string; catalog: Catalog }>();
 

@@ -46,6 +46,7 @@
  * 외부 의존 0 — node 표준 http/fs/path/url 만. Channel/Observer import 0 (외부 client).
  */
 import http from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { requestBridgeMessage } from "./bridge-message-request.js";
 import { createHash } from "node:crypto";
 import { assetFingerprintOf } from "../../src/core/asset-fingerprint.js";
@@ -138,6 +139,17 @@ const TOKEN: string = BRIDGE_TOKEN.trim();
 const bridgeUrl = (p: string): string =>
   `http://${BRIDGE_HOST}:${BRIDGE_PORT}${p}`;
 
+/**
+ * 이 요청을 보낸 브라우저의 `Accept-Language` — 브리지로 넘기는 요청에 그대로 싣는다 (2026-10-06).
+ * ★설정에 언어가 없으면 화면은 브라우저 언어를 따르는데(`localeForViewer`), 같은 화면의 플러그인 문구(구독 인증 버튼)는
+ *  데몬이 만든다 — 언어를 안 실으면 그 자리만 기본 언어로 남는다. 프록시 56곳에 인자를 달지 않고 요청 문맥으로 넘긴다.
+ */
+const viewerLanguage = new AsyncLocalStorage<string>();
+const viewerLanguageHeader = (): Record<string, string> => {
+  const v = viewerLanguage.getStore();
+  return v === undefined ? {} : { "Accept-Language": v };
+};
+
 const proxyJson = async (
   res: http.ServerResponse,
   bridgePath: string,
@@ -156,6 +168,7 @@ const proxyJson = async (
       ...init,
       headers: {
         ...(init?.headers ?? {}),
+        ...viewerLanguageHeader(),
         Authorization: `Bearer ${TOKEN}`,
       },
     });
@@ -263,7 +276,8 @@ const readBody = async (req: http.IncomingMessage): Promise<string> => {
 };
 
 const server = http.createServer((req, res) => {
-  void (async () => {
+  const lang = req.headers["accept-language"];
+  const handle = (): void => void (async () => {
     const url = new URL(
       req.url ?? "/",
       `http://localhost:${DASHBOARD_PORT}`,
@@ -406,8 +420,9 @@ const server = http.createServer((req, res) => {
         //  실패해도 화면은 뜬다(기본 자리표시자가 남고, 폴백이 키를 그대로 보여준다).
         let withI18n = withMode;
         try {
-          const { catalogForClient } = await import("../../src/core/i18n.js");
-          const cat = catalogForClient();
+          const { catalogForClient, localeForViewer } = await import("../../src/core/i18n.js");
+          // 설정에 언어가 있으면 그것, 없으면 이 브라우저의 언어(`localeForViewer` — 판정은 거기 한 곳).
+          const cat = catalogForClient(localeForViewer(viewerLanguage.getStore()));
           const payload = `<script id="tigu-i18n">window.__TIGU_I18N__ = ${JSON.stringify(cat).replace(/</g, "\\u003c")};</script>`;
           // ★치환자를 **함수로** 넘긴다 (2026-08-25 적대 검토 F2). 문자열로 넘기면 카탈로그
           //  값 안의 `$&`·`` $` ``·`$'`·`$$` 가 `String.replace` 의 특수문자로 해석돼,
@@ -1172,6 +1187,8 @@ const server = http.createServer((req, res) => {
     res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: "not found" }));
   })();
+  if (typeof lang === "string" && lang.trim() !== "") viewerLanguage.run(lang, handle);
+  else handle();
 });
 
 server.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {

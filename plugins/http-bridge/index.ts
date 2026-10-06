@@ -17,6 +17,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { writeJson } from "../../src/core/net/write-json.js";
+import { withViewerLanguage } from "../../src/core/i18n.js";
 import { callPluginDataRoute, isPluginMedia } from "../../src/core/plugins/data-routes.js";
 import { readHomeWidgets } from "../../src/core/home-widgets.js";
 import { listLivePlugins } from "../../src/core/plugins/manager.js";
@@ -376,7 +377,8 @@ class HttpBridge implements Channel, Observer {
       //   예외 전용 fallback(=가짜 견고함)이었고, 이건 **재현된** 유출을 닫는다.
       //  ★이미 응답했으면 아무것도 안 쓴다(이중 응답 금지 — `writeJson` 이 던지면 그게
       //   곧 `ERR_HTTP_HEADERS_SENT` 이고 같은 사고의 재발이다).
-      void this.handleRequest(req, res).catch((e: unknown) => {
+      // 요청을 보낸 브라우저의 언어 안에서 처리한다 — 설정에 언어가 없을 때 플러그인 문구가 화면과 같은 언어가 되게(`withViewerLanguage`).
+      void withViewerLanguage(req.headers["accept-language"], () => this.handleRequest(req, res)).catch((e: unknown) => {
         console.error(
           `http-bridge: 요청 처리 실패 ${req.method ?? "?"} ${req.url ?? "?"} — ` +
             `${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`,

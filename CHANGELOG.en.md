@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Conversations with OpenAI-compatible models sent run traces, including message content, to OpenAI whenever `OPENAI_API_KEY` was set** — even when the model ran on OpenRouter, Google or Ollama. Traces are no longer sent, and the warning logged on every turn when no key was set is gone.
+- **The Background button at the top right of the dashboard showed its label in Korean even on an English screen.**
 
 ## [0.66.0] - 2026-10-06
 

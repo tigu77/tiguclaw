@@ -277,7 +277,9 @@ export const catalogForClient = (
   //  브라우저 쪽이 다시 판단할 필요가 없다(가장자리는 판단하지 않는다).
   // ★폴백 순서는 `translate` 와 같다 — 그 언어 → 영어 → 기본 언어(2026-10-07 적대 검토 P3: 서버는 영어, 화면은 한국어로 갈렸다).
   //  아래 층부터 깔고 위 층이 덮는다.
-  const layers = [BASE_LOCALE, FALLBACK_LOCALE, lang].filter((l, i, a) => a.indexOf(l) === i);
+  // ★중복은 **뒤쪽을 남긴다** — 앞쪽을 남기면 `lang === "ko"` 일 때 `[ko, en]` 이 되어 영어가 한국어를 덮었다(2026-10-07 돌쇠
+  //  실사고: 한국어로 설정했는데 대시보드가 영어). 맨 위는 언제나 그 언어다.
+  const layers = [BASE_LOCALE, FALLBACK_LOCALE, lang].filter((l, i, a) => a.lastIndexOf(l) === i);
   // ★서버 문구(`srv.`)는 화면에 안 싣는다 — 서버가 문장으로 만들어 보내므로 브라우저가 쓸 일이 없고, 수백 개가 매 페이지에 실린다.
   const strings: Record<string, string> = {};
   for (const l of layers) {

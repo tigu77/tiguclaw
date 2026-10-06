@@ -1082,5 +1082,6 @@
   "srv.toolSlow.job": "⏳ Tool '{tool}' in background task '{job}' has been running for {secs}s. If it's a long job, that's normal — you can leave it, and you'll hear back when it finishes. If it seems stuck, check whether an OS permission dialog is open (or, for an external MCP tool, whether its app is running); you can stop it with `cancel_worker`.",
   "srv.toolSlow.main": "⏳ Tool '{tool}' has been running for {secs}s. If it's a long job, that's normal — you can leave it, and you'll hear back when it finishes. If it seems stuck, check whether an OS permission dialog is open (or, for an external MCP tool, whether its app is running); you can stop it with `/stop`.",
   "srv.resetAt.timeAmOnHour": "{h}:00 AM",
-  "srv.resetAt.timePmOnHour": "{h}:00 PM"
+  "srv.resetAt.timePmOnHour": "{h}:00 PM",
+  "bg.word": "Background"
 }

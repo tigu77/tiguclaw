@@ -53,6 +53,12 @@ export const check: RegressionCheck = {
       const keys = Object.keys(client);
       const diff = keys.filter((k) => client[k] !== translate(k, undefined, "zz"));
       const sample = { client: client["chat.send"], server: translate("chat.send", undefined, "zz") };
+      // ★실제 언어로도 본다 — 가상 언어(zz)만 보면 «그 언어가 기본 언어와 같을 때» 층이 접혀 영어가 덮는 결함이 안 보였다
+      //  (2026-10-07 돌쇠 실사고: locale=ko 인데 대시보드가 영어).
+      const real = (["ko", "en"] as const).map((l) => {
+        const c = catalogForClient(l).strings;
+        return { l, settings: c["nav.settings"], diff: Object.keys(c).filter((k) => c[k] !== translate(k, undefined, l)).length };
+      });
 
       return [
         assert(
@@ -64,6 +70,11 @@ export const check: RegressionCheck = {
           "★홈 덮어쓰기는 재시작 없이 다음 문장부터(사용자가 고친 문구)",
           homeLive === "mine" && homeLive2 === "mine2",
           `${String(homeLive)} → ${String(homeLive2)}`,
+        ),
+        assert(
+          "★설정 언어가 그대로 화면에 나온다 — ko 면 한국어(기본 언어와 같아도 영어가 덮지 않는다) · en 이면 영어 · 서버와 일치",
+          real[0]!.settings === "설정" && real[1]!.settings === "Settings" && real.every((r) => r.diff === 0),
+          JSON.stringify(real),
         ),
         assert(
           "★반쯤 번역한 언어에서 화면과 서버가 같은 문구를 낸다(폴백 순서 일치 — 그 언어 → 영어 → 기본)",

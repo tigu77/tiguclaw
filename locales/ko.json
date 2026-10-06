@@ -1082,5 +1082,6 @@
   "srv.toolSlow.job": "⏳ 백그라운드 작업 '{job}' 의 도구 '{tool}' 이(가) {secs}초째 실행 중입니다. 오래 걸리는 작업이면 정상이니 그대로 두셔도 됩니다 — 끝나면 알려드리겠습니다. 안 끝나는 것 같으면 OS 권한 요청 다이얼로그가 떠 있는지, 외부 MCP 도구면 대상 앱이 켜져 있는지 확인해 보시고, `cancel_worker` 로 중단하실 수 있습니다.",
   "srv.toolSlow.main": "⏳ 도구 '{tool}' 이(가) {secs}초째 실행 중입니다. 오래 걸리는 작업이면 정상이니 그대로 두셔도 됩니다 — 끝나면 알려드리겠습니다. 안 끝나는 것 같으면 OS 권한 요청 다이얼로그가 떠 있는지, 외부 MCP 도구면 대상 앱이 켜져 있는지 확인해 보시고, `/stop` 으로 중단하실 수 있습니다.",
   "srv.resetAt.timeAmOnHour": "오전 {h}시",
-  "srv.resetAt.timePmOnHour": "오후 {h}시"
+  "srv.resetAt.timePmOnHour": "오후 {h}시",
+  "bg.word": "백그라운드"
 }

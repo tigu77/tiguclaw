@@ -41,6 +41,7 @@ import { getContextBoundary } from "../../../store/sessions.js";
 import { FALLBACK_CHARS_PER_TOKEN as STORE_FALLBACK_CHARS_PER_TOKEN, tokenDensityOf } from "../../../store/token-density.js";
 import { lookupContextWindow } from "../context-windows.js";
 import { loadModelInputLimits } from "../../settings.js";
+import { isUserCancelled } from "../../steering.js";
 
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -903,7 +904,7 @@ const COMPACTION_STUCK_THRESHOLD = 3;
  *  있어 둘 다 본다(문자열 판정을 늘리지 않는다 — 늘리면 그게 손 목록이 된다).
  */
 export const isCancelled = (e: unknown): boolean => {
-  if (e instanceof Error && (e.name === "AbortError" || e.name === "UserCancelledError")) {
+  if ((e instanceof Error && e.name === "AbortError") || isUserCancelled(e)) {
     return true;
   }
   const m = e instanceof Error ? e.message : String(e);

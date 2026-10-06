@@ -85,7 +85,7 @@ export const check: RegressionCheck = {
       assert(
         "새 턴은 같은 인용 함수를, 재주입은 조립 함수를 쓴다 · 채널은 인용 원문을 상한 아래로 자르지 않는다(배선)",
         /effectiveText = withReplyQuote\(effectiveText, msg\.replyToText\)/.test(idx) &&
-          /const reinject = buildReinjectMessage\(msg, leftover\)/.test(idx) && /serializedHandler\(reinject\)/.test(idx) &&
+          /const reinject = reinjectUnlessStopped\(turnAc\.signal, msg, leftover\)/.test(idx) && /serializedHandler\(reinject\)/.test(idx) &&
           tgStmt !== "" && !/slice/.test(tgStmt) && brStmt !== "" && brCaps.every((n) => n >= 4096),
         `텔레그램=${tgStmt.slice(0, 60)} · 대시보드 상한=${JSON.stringify(brCaps)}`,
       ),

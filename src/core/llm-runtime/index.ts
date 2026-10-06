@@ -23,6 +23,7 @@
  */
 import { credentialAdapterOf, refreshHomeCredentials } from "../credential-env.js";
 import { turnSpend } from "./turn-spend.js";
+import { stoppedByUser } from "../steering.js";
 import { getRegisteredMcpServers } from "../mcp-registry.js";
 import {
   canReplay,
@@ -1600,14 +1601,9 @@ const runPool = async (
     } catch (e) {
       // 사용자 /stop 취소 = 실패 아님 → turn_error 미발행(self-growth 실패 학습 오염 방지) +
       // 폴백 단락(같은 abortSignal 이라 다음 모델도 즉시 죽음 = 무의미). abort reason 의 name 으로
-      // 판별 — index.ts UserCancelledError 를 레이어 결합(import) 없이 duck-typing. 핸들러가
+      // 판별 — 판정은 `stoppedByUser`(core/steering.ts) 한 곳. 핸들러가
       // turnAc.signal.reason 으로 조용히 종료(사용자엔 /stop 이 이미 안내).
-      const cancelReason = input.abortSignal?.reason;
-      if (
-        input.abortSignal?.aborted === true &&
-        cancelReason instanceof Error &&
-        cancelReason.name === "UserCancelledError"
-      ) {
+      if (stoppedByUser(input.abortSignal)) {
         throw e;
       }
       // 잡 취소(WorkerCancelledError) = 실패 아님 (U-I4 개정) — worker 취소, 그리고 claude
@@ -1875,13 +1871,8 @@ export const runRegionA = async (
       };
     } catch (e) {
       // 사용자 /stop 취소 = 실패 아님 → 폴백 없이 그대로 propagate(runPool 이 이미 rethrow).
-      // abort reason name 으로 duck-typing(레이어 결합 회피, 기존과 동일).
-      const cancelReason = input.abortSignal?.reason;
-      if (
-        input.abortSignal?.aborted === true &&
-        cancelReason instanceof Error &&
-        cancelReason.name === "UserCancelledError"
-      ) {
+      // 판정은 `stoppedByUser` 한 곳(위 runPool 과 같다).
+      if (stoppedByUser(input.abortSignal)) {
         throw e;
       }
       // 잡 취소(WorkerCancelledError) = 실패 아님 (U-I4 개정) — 프로파일 간 폴백 없이 그대로

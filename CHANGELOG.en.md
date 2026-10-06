@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Install scripts, the CLI, server notices, chat command replies and error messages are now in English.** The assistant's replies and the dashboard still follow your language setting.
 - **Long Codex conversations are summarized faster and keep earlier rules and facts better afterwards.** The assistant can reopen long tool results that were folded into a summary.
 - **Retry notices after a stalled response now tell this request's retries apart from the running total for the whole task.**
+- **`/stop` now drops the messages you sent while the task was running and tells you how many.** Send again whatever you still need.
 - **The default dashboard session now gets a name («Session 1») like the others.**
 - **When modified files block an update, the update names them.** Failure notices state only what was actually rolled back, and an update log is always kept.
 - **Windows: instance settings given in the shell at install time (ports, service name and so on) survive updates and re-registration.** Values in the home `.env` always win.

@@ -176,7 +176,14 @@ import {
 } from "./core/self-update.js";
 import { deliverOutbound } from "./core/outbound.js";
 import { withReplyQuote } from "./core/reply-quote.js";
-import { buildReinjectMessage, toSteeringInput } from "./core/steering.js";
+import {
+  closeWhenStopped,
+  reinjectUnlessStopped,
+  stopReplyText,
+  stoppedByUser,
+  toSteeringInput,
+  UserCancelledError,
+} from "./core/steering.js";
 import {
   shouldSuggestForThread,
   readSuggestionSettings,
@@ -592,14 +599,6 @@ const buildLogTail = async (argRaw: string): Promise<string> => {
 
 
 
-// 사용자 중단(/stop) — 진행 중 턴을 프로세스 안 죽이고 abort 할 때 turnAc.abort() 에 넣는 reason.
-// 핸들러가 이 reason 을 보면 에러가 아니라 사용자 취소로 인지해 조용히 종료(안내는 /stop 이 담당).
-class UserCancelledError extends Error {
-  constructor() {
-    super("user cancelled turn (/stop)");
-    this.name = "UserCancelledError";
-  }
-}
 // 진행 중 메인 채널 턴의 AbortController 레지스트리 (threadKey → turnAc). enqueueThreadTurn 이
 // thread 별 직렬화하므로 thread 당 최대 1개. /stop(아웃오브밴드)이 여기서 turnAc 를 찾아 abort =
 // 클로드코드식 인터럽트(옵션 c). 재시작 정직(메모리 레지스트리, 영속 0). 어댑터 분기 0(LLM-agnostic).
@@ -614,6 +613,8 @@ interface InflightTurn {
   readonly target: string | null;
   /** 슬래시 명령(`/compact`) — 잡을 띄우지 않으므로 `/stop` 이 이 세션의 잡까지 끊지 않는다. */
   readonly command?: true;
+  /** 이 턴에 끼워 넣은(steer) 사용자 메시지 수 — `/stop` 답이 «함께 버렸다» 고 알린다(2026-10-06). */
+  steered?: number;
 }
 const inflightTurns = new Map<string, InflightTurn>();
 
@@ -1280,6 +1281,8 @@ const handler: MessageHandler = async (msg) => {
   if (STEERING_ENABLED) {
     steeringCh = createSteeringChannel();
     steeringChannels.set(msg.threadKey, steeringCh);
+    // `/stop` 뒤에 온 메시지는 이 턴에 끼우지 않고 새 턴으로 — 위 await 사이에 이미 멈췄어도 같다(`closeWhenStopped`).
+    closeWhenStopped(steeringCh, turnAc.signal);
   }
   // 세션 정규화 지시(채널/세션 분리 ADR 2026-07-15) — 사용자 대면 채널이 msg.session 을
   // 채워 보내면 route 가 인입을 canonical 세션으로 정규화한다. 미지정(스케줄러·매니저 재주입·
@@ -1365,8 +1368,7 @@ const handler: MessageHandler = async (msg) => {
     // 사용자 /stop 으로 중단된 턴 — 에러 아님. /stop 이 이미 안내·out 발행했으므로 조용히 종료
     // (에러 메시지 이중 발신 방지). turnAc.signal.reason 으로 판별(어댑터가 뭘 throw 하든 무관).
     if (
-      turnAc.signal.aborted &&
-      turnAc.signal.reason instanceof UserCancelledError
+      stoppedByUser(turnAc.signal)
     ) {
       // egress 에도 알린다 — 활동 표시만 떴다 사라지고 아무 말이 없으면 유령이다.
       await fanOutEgress(egressTargets, STOPPED_NOTICE, bus, msg.threadKey);
@@ -1459,7 +1461,11 @@ const handler: MessageHandler = async (msg) => {
         //  모델에 들어갔다. framing 은 *진행 중 턴에 끼워넣을 때* 만 유효하다.
         // 조립은 `buildReinjectMessage`(core/steering.ts) 한 곳 — 메시지마다 자기 답글 원문, 그 턴을 연 메시지의 원문은
         //  비움, 재-echo 금지(synthetic: 끼워넣을 때 이미 화면에 떴다 — 사용자 지적 «같은 메시지가 두 번 보인다»).
-        const reinject = buildReinjectMessage(msg, leftover);
+        //  ★`/stop` 으로 끝났으면 다시 태우지 않는다(어댑터 무관하게 버린다 — 건수는 /stop 답이 알렸다).
+        const reinject = reinjectUnlessStopped(turnAc.signal, msg, leftover);
+        if (reinject === null && stoppedByUser(turnAc.signal)) {
+          console.log(`[steer] /stop — 이 턴에 남은 끼워넣기 ${leftover.length}건은 다시 태우지 않고 버린다 thread=${msg.threadKey}`);
+        }
         if (reinject !== null) {
           // serializedHandler 경유 = thread 직렬 큐 합류(이 턴 finally 종료 후 실행) + 정상 턴
           // 시맨틱. 재주입 시점엔 이 채널이 이미 close+삭제라 재-steer 안 됨(새 턴으로 처리).
@@ -1753,12 +1759,7 @@ const serializedHandler: MessageHandler = (msg) => {
         //  ★몇 개를 끊었는지 말한다 — 조용한 조치는 사용자가 확인할 방법이 없다.
         //  ★명령(`/compact`)을 멈출 땐 끊지 않는다 — 앞 턴이 띄워 둔 매니저 잡은 그 명령과 무관하다.
         const stopped = entry.command === true ? 0 : cancelJobsForThread(msg.threadKey);
-        await replyCommand(
-          msg,
-          stopped > 0
-            ? `⏹️ Stopped the task in progress (including ${stopped} background task${stopped === 1 ? "" : "s"}). Tell me what to do next and I'll go from there.`
-            : "⏹️ Stopped the task in progress. Tell me what to do next and I'll go from there.",
-        ).catch(() => {});
+        await replyCommand(msg, stopReplyText(stopped, entry.steered ?? 0)).catch(() => {});
       } else {
         await replyCommand(msg, "Nothing is in progress right now.").catch(() => {});
       }
@@ -1810,6 +1811,8 @@ const serializedHandler: MessageHandler = (msg) => {
       steeringChannels.get(msg.threadKey)?.push(toSteeringInput(msg)) === true;
     if (accepted) {
       console.log(inboundLine(msg, "steer"));
+      const turn = inflightTurns.get(msg.threadKey);
+      if (turn !== undefined) turn.steered = (turn.steered ?? 0) + 1;
       publishInboundEcho(msg); // 사용자 메시지 landed 표시(별도 턴 안 만듦).
       // enqueueThreadTurn 안 함 — 진행 턴이 경계에서 소비. ★단, 이 핸들러는 *즉시* resolve
       // 하므로 이를 await 하는 POST /messages 가 **원래 턴 종료 전에** 반환한다 → 대시보드 클라가

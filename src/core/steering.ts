@@ -288,3 +288,69 @@ export const buildReinjectMessage = <M extends IncomingMessage>(
     synthetic: true as const,
   } as IncomingMessage;
 };
+
+const USER_CANCELLED = "UserCancelledError";
+
+/**
+ * 사용자 중단(`/stop`) — 진행 중 턴을 프로세스 안 죽이고 abort 할 때 넣는 사유. 핸들러는 이 사유를 보면 에러가 아니라
+ * 사용자 취소로 알고 조용히 끝낸다(안내는 `/stop` 이 한다).
+ * ★판정은 `isUserCancelled` 한 곳이다 — 종전엔 이름 문자열이 index.ts·여기·llm-runtime facade 세 곳에 흩어져, 하나만 바뀌면
+ *  `/stop` 이 재주입·turn_error·폴백으로 새는데 회귀는 이름을 손으로 만들어 써서 초록이었다(적대 검토 2026-10-06).
+ */
+export class UserCancelledError extends Error {
+  constructor() {
+    super("user cancelled turn (/stop)");
+    this.name = USER_CANCELLED;
+  }
+}
+
+/** abort 사유가 `/stop` 인가 — 이름으로 본다(어댑터가 사유를 감싸 다시 던져도 같은 판정). */
+export const isUserCancelled = (reason: unknown): boolean => reason instanceof Error && reason.name === USER_CANCELLED;
+
+/** `/stop` 으로 끝난 턴인가. */
+export const stoppedByUser = (signal: AbortSignal | undefined): boolean =>
+  signal?.aborted === true && isUserCancelled(signal.reason);
+
+/**
+ * `/stop` 이 걸리는 **그 순간** 이 턴의 끼워넣기 통로를 닫는다 — 이미 멈췄으면 바로 닫는다 (2026-10-06).
+ * ★종전엔 통로가 턴의 finally 에서야 닫혔다. 그 사이(어댑터 정리 · 멈춤 안내 송신)에 사용자가 «아니, 이렇게 해 줘» 를 보내면
+ *  끼워넣기로 받혀(push=true) 새 턴이 안 열리고, finally 는 `/stop` 이라 그걸 버렸다 — 건수에도 안 잡힌 **조용한 유실**이다.
+ *  닫아 두면 push 가 false 를 받아 새 턴이 된다(«멈추고 방향 틀기»). 그 전에 쌓인 것은 finally 가 지금처럼 버리고 `/stop` 답이 센다.
+ * ★`/stop` 만 닫는다 — 무응답 시한 같은 다른 끝은 남은 것을 새 턴으로 다시 태우므로(`reinjectUnlessStopped`) 받아도 잃지 않는다.
+ */
+export const closeWhenStopped = (ch: SteeringChannel, signal: AbortSignal): void => {
+  if (stoppedByUser(signal)) {
+    ch.close();
+    return;
+  }
+  signal.addEventListener("abort", () => {
+    if (stoppedByUser(signal)) ch.close();
+  }, { once: true });
+};
+
+/**
+ * 턴이 끝날 때 남은 끼워넣기를 **새 턴으로 다시 태울 메시지** — `/stop` 으로 끝났으면 null(버린다) (2026-10-06).
+ * ★멈춘 동안 쌓인 메시지는 대개 «왜 답이 없어» · «??» 다 — 멈춘 직후 그걸로 새 턴을 열면 «Tell me what to do next» 라고 해 놓고
+ *  엉뚱한 답을 늘어놓는다. 그리고 어댑터마다 달랐다: claude 는 SDK 안쪽 대기열과 함께 조용히 사라지고, codex·openai 는 이
+ *  재주입으로 새 턴이 됐다. `/stop` 이면 어댑터와 무관하게 버리고, 몇 건이었는지는 `/stop` 답이 알린다(`stopReplyText`).
+ */
+export const reinjectUnlessStopped = <M extends IncomingMessage>(
+  signal: AbortSignal | undefined,
+  msg: M,
+  leftover: readonly SteeringInput[],
+  now: number = Date.now(),
+): IncomingMessage | null => (stoppedByUser(signal) ? null : buildReinjectMessage(msg, leftover, now));
+
+/**
+ * `/stop` 답 — 멈춘 것 · 함께 멈춘 백그라운드 작업 · **이 턴에 끼워 넣었던 메시지**를 알린다(2026-10-06).
+ * ★끼워 넣은 메시지는 처리하지 않고 버린다 — 조용히 버리지 않는다(진짜 지시가 섞였을 수 있다). claude 는 SDK 가 그중 무엇을
+ *  이미 소화했는지 우리가 모르므로 «처리하지 못한 것은» 으로 말한다. 서버 고정 문구라 영어다.
+ */
+export const stopReplyText = (stoppedJobs: number, steeredMessages: number): string => {
+  const jobs = stoppedJobs > 0 ? ` (including ${stoppedJobs} background task${stoppedJobs === 1 ? "" : "s"})` : "";
+  const dropped =
+    steeredMessages > 0
+      ? ` You sent ${steeredMessages} message${steeredMessages === 1 ? "" : "s"} while it was running — any it hadn't handled were dropped along with it, so send again whatever you still need.`
+      : "";
+  return `⏹️ Stopped the task in progress${jobs}.${dropped} Tell me what to do next and I'll go from there.`;
+};

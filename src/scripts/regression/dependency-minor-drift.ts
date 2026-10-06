@@ -76,22 +76,13 @@ interface Deferral {
   readonly why: string;
 }
 /**
- * ★**지금은 비어 있다** (2026-08-27). `@openai/agents` 를 0.14.2 → 0.17.0 으로 올리고
+ * ★**지금은 비어 있다** (2026-10-06 — 0.19.0 유예를 업그레이드로 닫음: 선택 의존성을 직접 의존성으로 올려 설치를 보증하고
+ *  `optional-dependency-imported-at-load` 가 그 부류를 지킨다 · e2e:openrouter 실제 왕복). 그전(2026-08-27)엔 `@openai/agents` 를 0.14.2 → 0.17.0 으로 올리고
  *  **실제 왕복으로 검증**해서 유예를 지웠다 — 세 번 밀린 뒤였다(0.15→0.16→0.17).
  *  ★다음에 여기 항목을 넣을 땐 기한을 **2주 이내**로 잡아라. 3주씩 주면 그 사이 새 마이너가
  *   나와 유예가 무효화되고, 그게 곧 "다음에" 가 무한히 밀리는 기제였다.
  */
-const DEFERRED: readonly Deferral[] = [
-  {
-    pkg: "@openai/agents",
-    latest: "0.19.0",
-    until: "2026-10-19",
-    why:
-      "0.19.0(2026-10-05 출시) 의 agents-core 가 **선택 의존성** `@modelcontextprotocol/client` 를 모듈 로드 때 곧바로 import 한다 — " +
-      "설치에서 빠지면(실측: 첫 `npm install` 이 실제로 빠뜨렸다) 이 패키지를 정적으로 부르는 openai 어댑터 때문에 데몬 부팅 전체가 깨질 수 있다. " +
-      "올리기 전에 ①빠져도 부팅이 되게(어댑터 지연 로드) 또는 설치 보증 ②e2e:openrouter 실제 왕복. 압축 수정 싱크와 섞지 않으려고 유예.",
-  },
-];
+const DEFERRED: readonly Deferral[] = [];
 /**
  * 유예가 이 버전에 적용되는가 — **마이너 라인**이 같으면 같은 판단이다.
  *

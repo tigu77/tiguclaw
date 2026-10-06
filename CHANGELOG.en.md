@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **On a fresh install, the dashboard follows your browser's language** — Korean for a Korean browser, English otherwise. A language you pick in Settings always wins.
 
+### Fixed
+
+- **Conversations with OpenAI-compatible models sent run traces, including message content, to OpenAI whenever `OPENAI_API_KEY` was set** — even when the model ran on OpenRouter, Google or Ollama. Traces are no longer sent, and the warning logged on every turn when no key was set is gone.
+
 ## [0.66.0] - 2026-10-06
 
 ### Changed

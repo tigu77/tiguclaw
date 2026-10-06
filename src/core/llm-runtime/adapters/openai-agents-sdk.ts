@@ -24,7 +24,7 @@
  */
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import { Agent, run, tool, OpenAIProvider } from "@openai/agents";
+import { Agent, run, tool, OpenAIProvider, setTracingDisabled } from "@openai/agents";
 import type {
   MCPServer,
   AgentInputItem,
@@ -363,6 +363,12 @@ import { assertLiveModelAllowed } from "../regression-model-guard.js";
 import { publishTurnMeta } from "../turn-meta.js";
 import { beginSummaryUsage } from "../auxiliary-usage.js";
 import { ProviderUnavailableError } from "../rate-limit.js";
+
+// ★SDK 실행 추적을 끈다 (2026-10-06). 기본값이 «켜짐» 이라 프로세스 환경에 `OPENAI_API_KEY` 가 있으면 매 턴의 추적을
+//  **입력·출력 내용까지** `api.openai.com/v1/traces/ingest` 로 올렸다 — 그 턴이 OpenRouter·Google·Ollama 로 돌았어도.
+//  키가 없으면 대신 «No API key provided for OpenAI tracing exporter» 가 매 턴 로그에 찍혔다(6월부터 21일치).
+//  우리는 이 추적을 쓰지 않는다(관측은 우리 이벤트·로그가 한다). 모듈이 로드될 때 한 번이면 전역이다.
+setTracingDisabled(true);
 
 /**
  * SDK 도구 결과(`rawItem.output`)의 글 — string / `{text}` 노드 / **text 노드 배열**(MCP CallToolResult). 활동 미리보기와 기록이 같은 글을 쓴다.

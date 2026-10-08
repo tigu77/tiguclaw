@@ -65,12 +65,24 @@ const isRecord = (f: string): boolean =>
  * ★순수 함수로 뺀 이유: 예외 판정을 **실제 문서 상태와 무관하게** 픽스처로 고정하려고(재검토 F-E —
  *  수정 자신을 되돌려도 그날 문서엔 걸릴 줄이 없어 초록이었다).
  */
-export const wrongPortsInLine = (l: string, env: string, want: string, truth: ReadonlyMap<string, string>): string[] => {
+export const wrongPortsInLine = (
+  l: string,
+  env: string,
+  want: string,
+  truth: ReadonlyMap<string, string>,
+  legacy: ReadonlyMap<string, string> = new Map(),
+): string[] => {
+    // ★옛 기본값 **선언** 한 줄만 면제한다 (2026-10-08 기본 포트 이동) — 기존 설치를 지키는 상수
+    //  (`legacy-ports.ts`·`bin/daemon.mjs` 의 `["HTTP_BRIDGE_PORT", "7011"]`)는 일부러 다른 값이다. 값은 정의점에서 읽고
+    //  (`legacy`), 바로 그 선언 모양일 때만 — 문서가 옛 숫자를 기본값처럼 말하면 계속 걸린다.
+    const decl = /^\s*\["(\w+)", "(\d+)"\],?\s*$/.exec(l);
+    if (decl !== null && decl[1] === env && legacy.get(env) === decl[2]) return [];
     // ★같은 줄에 env 이름이 없어도 **URL 형태의 포트**는 본다 — 실제로 놓쳤다:
     //  `app-ai-wiring` 은 `HTTP_BRIDGE_PORT` 를 두 번 언급하는데, 예제 줄은
     //  `OPENAI_BASE_URL=http://127.0.0.1:3000/v1` 이라 env 이름이 없어 스캔 밖이었다
     //  (그래서 배포 스킬이 사용자에게 틀린 포트를 알려주고 있었다, 2026-08-02).
     //  `127.0.0.1:<4자리>` 는 다른 뜻일 수 없으므로 오탐 위험이 낮다.
+    // ★이름 없는 URL 은 4자리만 — 5자리는 다른 서비스(Ollama 11434 등)라 귀속할 수 없다. 옛 기본값(7010·3000…)은 전부 4자리라 그대로 걸린다.
     const urlPort = /(?:127\.0\.0\.1|localhost):(\d{4})\b/.exec(l);
     if (!l.includes(env) && urlPort === null) return [];
     // ★한 줄이 **두 포트를 같이** 말하는 경우가 있다(예: "DASHBOARD_PORT(기본 X)·
@@ -83,7 +95,8 @@ export const wrongPortsInLine = (l: string, env: string, want: string, truth: Re
     //   통과 — 낡은 숫자(3000·3101·3002)는 어느 쪽도 아니라 그대로 걸린다.
     //   첫 판에서 이걸 안 해 정상 문서 6건을 오탐했다.
     const named = l.includes(env);
-    const nums = named ? (l.match(/\b\d{4}\b/g) ?? []) : urlPort !== null ? [urlPort[1]] : [];
+    // ★4~5자리 — 기본값이 17010·17011(5자리)로 옮긴 뒤 4자리만 세면 새 기본값을 말하는 줄이 통째로 검사 밖이 된다.
+    const nums = named ? (l.match(/\b\d{4,5}\b/g) ?? []) : urlPort !== null ? [urlPort[1]] : [];
     // ★예시 대입의 값 **하나만** 면제한다 (2026-10-03) — 두 번째 인스턴스 안내의
     //  `HTTP_BRIDGE_PORT=7021   # 기본 7011 과 겹치지 않게`. 조건 셋: 줄 머리에서 대입한다 · 같은 줄이
     //  «기본 N»/«default N» 으로 **현재 기본값을 밝힌다** · 대입값이 **어느 포트의 기본값도 아니다**
@@ -91,7 +104,7 @@ export const wrongPortsInLine = (l: string, env: string, want: string, truth: Re
     //  ★첫 판은 줄 전체를 건너뛰었고(적대 검토 F1), 둘째 판은 «기본값 숫자가 어딘가 있으면» 이라
     //   «3101 이 기본값입니다 (7010 은 옛 값)» 이 통과했다(재검토 F-D). 판정은 아래 픽스처가 고정한다.
     const assigned = named && !both
-      ? new RegExp(`^\\s*(?:#\\s*)?(?:export\\s+)?${env}\\s*=\\s*(\\d{4})\\b`).exec(l)?.[1]
+      ? new RegExp(`^\\s*(?:#\\s*)?(?:export\\s+)?${env}\\s*=\\s*(\\d{4,5})\\b`).exec(l)?.[1]
       : undefined;
     const statesDefault = new RegExp(`(?:기본|default)\\s*${want}\\b`, "i").test(l);
     if (assigned !== undefined && statesDefault && ![...truth.values()].includes(assigned)) {
@@ -147,7 +160,12 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★env 이름을 **말하는 모든 추적 파일**에서, 같은 줄의 4자리 숫자는 정본과 같아야 한다.
+    // ★옛 기본값 — 정의점(`legacy-ports.ts`)에서 읽는다(선언 줄 면제용).
+    const legacy = new Map(
+      [...read("src/core/legacy-ports.ts").matchAll(/\["(\w+)", "(\d+)"\]/g)].map((m) => [m[1]!, m[2]!] as const),
+    );
+    out.push(assert("옛 기본 포트 정의를 읽는다(검사 전제)", legacy.size === PORTS.length, [...legacy]));
+    // ★env 이름을 **말하는 모든 추적 파일**에서, 같은 줄의 4~5자리 숫자는 정본과 같아야 한다.
     for (const p of PORTS) {
       const want = truth.get(p.env) as string;
       // git grep 은 **매치 0 이면 exit 1** 로 던진다(레포가 아닐 때도). 검사가 통째로
@@ -166,7 +184,9 @@ export const check: RegressionCheck = {
         //  **옛 숫자가 남아 있는 게 정상**이다(현재값으로 고치면 기록이 거짓이 된다).
         //  docs/decisions 를 빼는 것과 같은 이유: 검사 대상은 "지금 동작을 말하는 곳" 이지
         //  "그때를 적은 곳" 이 아니다.
-        .filter((f) => !f.startsWith("src/scripts/regression/"));
+        .filter((f) => !f.startsWith("src/scripts/regression/"))
+        // 개발 검증 스크립트(배포 안 됨)는 격리 포트를 일부러 쓴다 — 기본값을 말하는 곳이 아니다.
+        .filter((f) => !/^src\/scripts\/(verify-|e2e-|probe-)/.test(f));
       out.push(
         assert(
           `${p.env} 를 말하는 파일을 찾는다(검사 전제 — 0이면 공짜 통과)`,
@@ -179,7 +199,7 @@ export const check: RegressionCheck = {
         read(f)
           .split("\n")
           .forEach((l, i) => {
-            for (const n of wrongPortsInLine(l, p.env, want, truth)) wrong.push(`${f}:${i + 1} ${n}`);
+            for (const n of wrongPortsInLine(l, p.env, want, truth, legacy)) wrong.push(`${f}:${i + 1} ${n}`);
           });
       }
       out.push(

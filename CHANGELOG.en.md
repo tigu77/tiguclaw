@@ -16,10 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **New installs now use ports 17010 (dashboard) and 17011 (bridge).** On Windows, 7010/7011 could fall into a system-reserved range and the dashboard would suddenly stop opening. Existing installs keep the ports they already use after updating.
 - **Projects no longer appear among the context tags above the input.** Link them to the conversation from the row just below instead. Typing `#name` yourself still works.
 
 ### Fixed
 
+- **Claude subscription limits kept showing "try again shortly".** If Claude Code isn't signed in on that machine, it now says so and tells you to sign in, and a refresh picks it up right after you do.
+- **The daemon reported "ready" even when the dashboard or bridge could not open its port.** It now says why (a Windows reserved range or another program) and which setting to change, in the log and as a notification, and `tiguclaw doctor` warns about ports inside a Windows reserved range.
 - **On Windows, stopping, restarting or updating the daemon could force-kill other programs** — one listening on a port that starts with the same digits (30000 for 3000), or another app holding that port. Only this instance's processes are stopped now.
 - **A Windows update went ahead with installing even when the daemon failed to stop.** It now stops before installing and leaves the running version in place.
 - **File watches with a name filter (such as `.txt`) never detected any change.**

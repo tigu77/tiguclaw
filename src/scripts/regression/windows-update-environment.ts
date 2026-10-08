@@ -267,8 +267,8 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       fs.writeFileSync(path.join(h, "win-service-env.json"), JSON.stringify({ DASHBOARD_PORT: "7020" }));
       const bc = source.slice(source.indexOf("const buildCtx = () => {"), source.indexOf("\n};\n", source.indexOf("const buildCtx = () => {")) + 3);
       const fakeProcess = { platform: "win32", execPath: process.execPath, cwd: () => repo, env: { TIGUCLAW_HOME: h, PATH: "C:\\Windows" } as Record<string, string> };
-      const ctx = new Function("process", "path", "os", "expandHome", "runtimeMode", "resolveLabel", "applyWinServiceEnv", bc + "; return buildCtx();")(
-        fakeProcess, path, os, (x: string) => x, () => "built", () => "label",
+      const ctx = new Function("process", "path", "os", "expandHome", "runtimeMode", "resolveLabel", "settleLegacyPorts", "applyWinServiceEnv", bc + "; return buildCtx();")(
+        fakeProcess, path, os, (x: string) => x, () => "built", () => "label", () => [], // 포트 고정은 이 검사의 대상이 아니다(legacy-ports-settled)
         // 기본 인자는 모듈의 진짜 process.env 다 — 가짜 환경을 명시해 스위트 프로세스를 오염시키지 않는다.
         (homeAbs: string) => d.applyWinServiceEnv(homeAbs, fakeProcess.env));
       assert.equal(fakeProcess.env.DASHBOARD_PORT, "7020", "CLI 자신에겐 채운다(라벨·포트 판정)");

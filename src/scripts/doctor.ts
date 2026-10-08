@@ -11,6 +11,8 @@
 import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
 import { subscriptionAuthAvailable } from "../core/auth-plugin-presence.js";
 import process from "node:process";
+import { spawnSync } from "node:child_process";
+import { excludedRangeOf, parseExcludedPortRanges } from "../core/port-hint.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 // ★store 계열은 **동적** import 다 (2026-08-20). 정적으로 두면 `better-sqlite3` 가 안 열릴 때
@@ -457,7 +459,7 @@ const main = async (): Promise<void> => {
   // [daemon] — ★ "작동하나" 핵심. 이미 떠있는 데몬에 read-only health 핑.
   console.log("[daemon]");
   const bridgePort =
-    (process.env.HTTP_BRIDGE_PORT ?? "7011").trim() || "7011";
+    (process.env.HTTP_BRIDGE_PORT ?? "17011").trim() || "17011";
   const health = await daemonHealth(bridgePort);
   if (health.up) {
     console.log(
@@ -474,6 +476,22 @@ const main = async (): Promise<void> => {
     issues.push(
       `The daemon is not responding (port ${bridgePort}) — it is not running or the port doesn't match. Check 'npm run daemon:status'; if it isn't there, run 'npm run daemon:install' or 'npm run dev'`,
     );
+  }
+
+  // ★윈도우 예약 포트 범위 (2026-10-08) — WSL2·Docker·Hyper-V 가 동적 범위에서 포트를 예약하면 그 포트는 아무도 못 연다.
+  //  잘 되던 대시보드가 재시작 뒤 갑자기 안 뜨는 원인이었다(집 윈도우: 6917~7016 에 7010·7011).
+  if (process.platform === "win32") {
+    const r = spawnSync("netsh", ["interface", "ipv4", "show", "excludedportrange", "protocol=tcp"], { encoding: "utf8" });
+    const ranges = r.status === 0 ? parseExcludedPortRanges(r.stdout ?? "") : [];
+    const dashboardPort = (process.env.DASHBOARD_PORT ?? "17010").trim() || "17010";
+    for (const [key, port] of [["HTTP_BRIDGE_PORT", bridgePort], ["DASHBOARD_PORT", dashboardPort]] as const) {
+      const hit = excludedRangeOf(Number(port), ranges);
+      if (hit === undefined) continue;
+      console.log(line(key, `${port} is inside a Windows excluded port range (${hit[0]}-${hit[1]}) ❌`));
+      issues.push(
+        `${key} ${port} is reserved by Windows (excluded range ${hit[0]}-${hit[1]}, usually Hyper-V/WSL/Docker) — set ${key} in the home .env to a free port between 15001 and 32767 and restart`,
+      );
+    }
   }
 
   console.log("");

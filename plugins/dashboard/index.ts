@@ -17,7 +17,7 @@
  *   둘 다 부재 시에만 graceful skip + 안내 로그. (이전엔 built 에서 소스·tsx 부재로 항상 skip →
  *   신규 설치자가 대시보드를 못 썼다. build:prod 가 dist/packages/dashboard 로 컴파일+정적복사.)
  *
- * 포트: DASHBOARD_PORT(기본 7010)·HTTP_BRIDGE_PORT 는 child 가 env 에서 직접 읽음(상속).
+ * 포트: DASHBOARD_PORT(기본 17010)·HTTP_BRIDGE_PORT 는 child 가 env 에서 직접 읽음(상속).
  *   HTTP_BRIDGE_TOKEN 부재 시 child 가 즉시 exit(1) → 미리 감지해 안내 후 skip.
  *
  * 격리: spawn/health-check 실패가 데몬 부팅을 죽이지 않음(loader 가 try/catch + plugin.error).
@@ -28,8 +28,9 @@ import path from "node:path";
 import { appRoot, getPaths } from "../../src/core/paths.js";
 import { probeLocalPort } from "../../src/core/local-port-probe.js";
 import type { EventBus } from "../../src/core/eventbus.js";
+import { PORT_UNAVAILABLE_TAG } from "../../src/core/port-hint.js";
 
-const DEFAULT_DASHBOARD_PORT = "7010";
+const DEFAULT_DASHBOARD_PORT = "17010";
 const HEALTH_TIMEOUT_MS = 800;
 
 /**
@@ -112,7 +113,7 @@ class DashboardService {
     }
 
     // child 는 부모(데몬) env 를 그대로 상속 — DASHBOARD_PORT/HTTP_BRIDGE_PORT/TOKEN 전파.
-    // DASHBOARD_PORT 미설정 시에만 기본 7010 주입(설정돼 있으면 .env 값 존중).
+    // DASHBOARD_PORT 미설정 시에만 기본 17010 주입(설정돼 있으면 .env 값 존중).
     const childEnv = { ...process.env };
     // ★홈을 **절대경로로** 넘긴다 (2026-08-25). `TIGUCLAW_HOME` 은 상대경로일 수 있고
     //  (`./tiguclaw-dev`), `resolveHome()` 은 `path.resolve` 라 **cwd 기준**으로 푼다.
@@ -137,6 +138,11 @@ class DashboardService {
     });
     this.child = child;
 
+    // 자식이 포트를 못 열면 남기는 안내 줄(`[port-unavailable:…]`) — 종료 이유로 실어 자기 점검이 사용자에게 알리게 한다.
+    let portLine: string | undefined;
+    child.stderr?.on("data", (buf: Buffer) => {
+      for (const line of buf.toString("utf8").split("\n")) if (line.includes(PORT_UNAVAILABLE_TAG)) portLine = line.trim();
+    });
     pipePrefixed(child, "dashboard");
 
     child.on("exit", (code, signal) => {
@@ -153,7 +159,7 @@ class DashboardService {
             payload: {
               pluginName: "dashboard",
               phase: "runtime",
-              error: `child exited code=${code ?? "?"} signal=${signal ?? "?"}`,
+              error: portLine ?? `child exited code=${code ?? "?"} signal=${signal ?? "?"}`,
             },
           });
         } catch {

@@ -72,7 +72,8 @@ function usagePendingLine(usage, now) {
   if (!usage || (Array.isArray(usage.windows) && usage.windows.length > 0)) return "";
   // ★«기다려도 안 된다» 가 «잠시 뒤 다시» 보다 **먼저**다 — 둘이 겹치면 「N분 뒤 다시 시도」가
   //  영원히 떠 있게 되고, 그건 모름이 아니라 거짓 약속이다(2026-09-07 claude 실측).
-  if (usage.unavailable === true) return i18n("plugins.auth.usage.unavailable");
+  // 제공자가 이유와 할 일을 말해 주면 그걸 — 없으면 일반 문장.
+  if (usage.unavailable === true) return typeof usage.reason === "string" && usage.reason !== "" ? usage.reason : i18n("plugins.auth.usage.unavailable");
   const at = typeof usage.retryAt === "number" ? usage.retryAt : null;
   if (at === null) return "";
   const when = usageUntilLabel(at, typeof now === "number" ? now : Date.now());

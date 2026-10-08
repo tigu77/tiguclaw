@@ -61,6 +61,7 @@ import {
   rebindRejectionMessage,
 } from "../../src/core/net/host-guard.js";
 import { appRoot, getPaths, sourceRoot } from "../../src/core/paths.js";
+import { portListenFailure } from "../../src/core/port-hint.js";
 import {
   PLUGIN_ASSET_PREFIX,
   resolvePluginAssetIn,
@@ -110,7 +111,7 @@ try {
 
 import { describeFetchFailure, bridgeFailureLog } from "./bridge-error.js";
 
-const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT ?? "7011", 10);
+const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT ?? "17011", 10);
 // ★**브리지와 같은 기본값이어야 한다** (2026-09-18, 회사돌쇠 조사). 종전엔 여기만
 // `localhost` 였고 브리지는 `127.0.0.1` 을 듣는다 — 같은 환경변수 이름인데 **기본값이 달랐다.**
 // Windows 에서 `localhost` 는 `::1`(IPv6) 을 먼저 가리키는데 브리지는 거기 안 듣는다.
@@ -118,7 +119,7 @@ const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT ?? "7011", 10);
 // ([[project_telegram_ipv6_blackhole_etimedout]] 과 같은 부류).
 const BRIDGE_HOST = process.env.HTTP_BRIDGE_HOST ?? "127.0.0.1";
 const BRIDGE_TOKEN = process.env.HTTP_BRIDGE_TOKEN;
-const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? "7010", 10);
+const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? "17010", 10);
 // loopback 바인딩 기본 — 원격 노출은 tailscale serve(→127.0.0.1:<port> 프록시)가 담당.
 // 와일드카드(::)로 바인딩하면 tailscaled 가 잡은 tailnet-IP:<port> 와 EADDRINUSE 충돌 →
 // 대시보드가 못 떠 tailscale 프록시가 502 를 낸다. LAN 직접노출 필요 시 env 로 override.
@@ -1201,6 +1202,13 @@ const server = http.createServer((req, res) => {
   else handle();
 });
 
+// 포트를 못 열면 이유와 고칠 길을 한 줄로 남기고 끝낸다 — 데몬(plugins/dashboard)이 이 줄을 받아 자기 점검으로 사용자에게 알린다.
+server.on("error", (err) => {
+  const hint = portListenFailure(err, "DASHBOARD_PORT", DASHBOARD_PORT);
+  if (hint === undefined) throw err;
+  console.error(hint);
+  process.exit(1);
+});
 server.listen(DASHBOARD_PORT, DASHBOARD_HOST, () => {
   console.log(
     `tiguclaw-dashboard listening on http://${DASHBOARD_HOST}:${DASHBOARD_PORT}`,

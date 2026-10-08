@@ -193,8 +193,8 @@ running. Use `onboard` for the first install only and follow the steps below for
 2. **Create a `.env` in the new home.** Any folder other than the existing home works (e.g. `~/.tiguclaw-test`).
    ```bash
    # ~/.tiguclaw-test/.env
-   HTTP_BRIDGE_PORT=7021   # default 7011 — pick another
-   DASHBOARD_PORT=7020     # default 7010 — pick another
+   HTTP_BRIDGE_PORT=17021   # default 17011 — pick another
+   DASHBOARD_PORT=17020     # default 17010 — pick another
    TIGUCLAW_SERVICE_LABEL=com.tiguclaw.test
    # plus your LLM keys, and a bot token if you use Telegram
    ```

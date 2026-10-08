@@ -10,10 +10,10 @@ It's **off until you give it a token**. Add one to `<home>/.env`:
 LLM_GATEWAY_TOKEN=<a long random string>
 ```
 
-Then point any OpenAI client at the http-bridge port (`7011` by default, bound to `127.0.0.1`):
+Then point any OpenAI client at the http-bridge port (`17011` by default, bound to `127.0.0.1`):
 
 ```bash
-curl http://127.0.0.1:7011/v1/chat/completions \
+curl http://127.0.0.1:17011/v1/chat/completions \
   -H "Authorization: Bearer $LLM_GATEWAY_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

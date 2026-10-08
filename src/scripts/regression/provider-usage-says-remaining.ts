@@ -569,6 +569,24 @@ export const check: RegressionCheck = {
         both2,
       ),
     );
+    // ── ★«로그인하면 된다» 는 이유를 말한다 (2026-10-08 집 윈도우: CLI 로그인이 풀려 «잠시 뒤 다시» 가 영원히 떴다) ──
+    const cliVerdictMod = (await import(new URL("../../../plugins/claude-subscription-auth/usage-cli.mjs", import.meta.url).href)) as {
+      cliUsageVerdict: (t: string, now: number) => { windows?: unknown[]; needsLogin?: boolean };
+    };
+    const costText = "Total cost:            $0.0000\nTotal duration (API):  0s\nUsage:                 0 input, 0 output";
+    const usageText = "You are currently using your subscription\n\nCurrent session: 13% used · resets Oct 9 at 12:59am (Asia/Seoul)\nCurrent week (all models): 9% used · resets Oct 14 at 7:59pm (Asia/Seoul)";
+    const vCost = cliVerdictMod.cliUsageVerdict(costText, now);
+    const vUse = cliVerdictMod.cliUsageVerdict(usageText, now);
+    const vOther = cliVerdictMod.cliUsageVerdict("Something unexpected", now);
+    const withReason = usagePendingLine({ windows: [], measuredAt: now, unavailable: true, reason: "LOGIN-HINT" }, now);
+    out.push(
+      assert(
+        "★CLI 가 비용 요약을 주면 «로그인 필요» 로 가른다(모름과 다르다) · 한도 줄은 창으로 · 모르는 모양은 모름 · 화면은 이유 문장을 그대로 · 라우트가 이유를 실어 나른다",
+        vCost.needsLogin === true && vUse.windows?.length === 2 && vUse.needsLogin !== true && vOther.needsLogin !== true &&
+          (vOther.windows ?? []).length === 0 && withReason === "LOGIN-HINT" && /reason: u\.reason/.test(routeSrc),
+        { vCost, vUse: vUse.windows?.length, vOther, withReason },
+      ),
+    );
     const routeCarries = /\bunavailable\b/.test(routeSrc);
     out.push(
       assert(

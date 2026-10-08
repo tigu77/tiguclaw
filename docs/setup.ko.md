@@ -189,8 +189,8 @@ TIGUCLAW_RUNTIME=source npm run onboard
 2. **새 홈에 `.env` 를 만듭니다.** 기존 홈과 다른 폴더면 됩니다(예: `~/.tiguclaw-test`).
    ```bash
    # ~/.tiguclaw-test/.env
-   HTTP_BRIDGE_PORT=7021   # 기본 7011 과 겹치지 않게
-   DASHBOARD_PORT=7020     # 기본 7010 과 겹치지 않게
+   HTTP_BRIDGE_PORT=17021   # 기본 17011 과 겹치지 않게
+   DASHBOARD_PORT=17020     # 기본 17010 과 겹치지 않게
    TIGUCLAW_SERVICE_LABEL=com.tiguclaw.test
    # 여기에 LLM 키, 텔레그램을 쓴다면 봇 토큰도
    ```

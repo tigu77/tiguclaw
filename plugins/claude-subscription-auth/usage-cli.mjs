@@ -63,6 +63,18 @@ export const parseUsageText = (text, now) => {
   return windows;
 };
 
+/**
+ * CLI `/usage` 출력 판정 — 한도 창이 있나 · **이 기계 CLI 가 구독 로그인이 아닌가** · 모름.
+ * ★한도 대신 «Total cost» 비용 요약 = 이 기계의 Claude Code 가 구독으로 로그인돼 있지 않다(2026-10-08 집 윈도우 실측:
+ *  `auth status` → loggedIn:false). 기다려도 안 바뀐다 — 사용자가 로그인해야 한다. 그래서 «모름» 과 따로 돌려준다.
+ */
+export const cliUsageVerdict = (text, now) => {
+  const windows = parseUsageText(text, now);
+  if (windows.length > 0) return { windows };
+  if (/^\s*Total cost:/m.test(String(text ?? ""))) return { needsLogin: true };
+  return {};
+};
+
 /** 하위 프로세스를 띄워 stdout 을 받는다. 실패·시한초과는 `undefined`. */
 const run = async (cmd, args, ms) => {
   const { spawn } = await import("node:child_process");
@@ -185,7 +197,12 @@ export const fetchUsageViaCli = async (log) => {
     log?.(`CLI 응답이 JSON 이 아니다 — ${raw.slice(0, 80)}`);
     return undefined;
   }
-  const windows = parseUsageText(text, now);
+  const verdict = cliUsageVerdict(text, now);
+  if (verdict.needsLogin === true) {
+    log?.("CLI 가 구독으로 로그인돼 있지 않다 — 한도 대신 비용 요약(Total cost)을 줬다. 그 기계에서 `claude` → `/login` 이 필요하다");
+    return { needsLogin: true };
+  }
+  const windows = verdict.windows ?? [];
   if (windows.length === 0) {
     // ★못 읽었으면 **원문 첫 줄**을 남긴다 — 모양이 바뀐 것을 로그만으로 알 수 있게.
     log?.(`CLI 출력에서 한도 줄을 못 찾음 — 첫 줄: ${String(text ?? "").split("\n")[0]?.slice(0, 100)}`);

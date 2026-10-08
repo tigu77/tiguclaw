@@ -22,6 +22,7 @@
 import { getEventBus, type EventBus, type EventBusEvent } from "./eventbus.js";
 import { ownerPushChannel } from "./channel-outbound.js";
 import { deliverOutbound } from "./outbound.js";
+import { PORT_UNAVAILABLE_TAG } from "./port-hint.js";
 import { runBackupIfDue, backupNotice } from "../store/backup.js";
 import { runHealthSweep, type HealthFinding } from "./health-sweep.js";
 import { refreshModelCatalog } from "./llm-runtime/model-catalog.js";
@@ -128,10 +129,24 @@ export const runSelfMaintenanceTick = (bus: EventBus | null = null): void => {
   });
 };
 
-/** 이벤트로 깨우기 — 디바운스. 주기 틱은 백스톱으로 남는다. */
+/**
+ * 이벤트로 깨우기 — 디바운스. 주기 틱은 백스톱으로 남는다.
+ * ★너무 이르면 **버리지 않고 미룬다** (2026-10-08) — 종전엔 버려서, 부팅 틱 직후에 난 실패(대시보드 자식이 포트를 못 열고 1초 뒤
+ *  종료)는 다음 주기(최대 1시간) 뒤에야 알려졌다. 스윕이 증분이라 미룬 한 번이 그 사이 것을 다 담는다.
+ */
+let deferredWake: NodeJS.Timeout | null = null;
 const wakeDebounced = (bus: EventBus): void => {
-  if (Date.now() - lastSweepTs < EVENT_WAKE_MIN_INTERVAL_MS) return;
-  runSelfMaintenanceTick(bus);
+  const wait = EVENT_WAKE_MIN_INTERVAL_MS - (Date.now() - lastSweepTs);
+  if (wait <= 0) {
+    runSelfMaintenanceTick(bus);
+    return;
+  }
+  if (deferredWake !== null) return;
+  deferredWake = setTimeout(() => {
+    deferredWake = null;
+    runSelfMaintenanceTick(bus);
+  }, wait);
+  deferredWake.unref?.();
 };
 
 /**
@@ -150,6 +165,12 @@ export const startSelfMaintenance = (bus: EventBus = getEventBus()): void => {
   unsubscribe = bus.subscribe((event: EventBusEvent) => {
     if (event.type === "llm.turn_error") {
       wakeDebounced(bus);
+      return;
+    }
+    // 포트를 못 열었다(대시보드·브리지) — 사용자는 화면이 안 열리는 것밖에 모른다. 표식이 있는 것만.
+    if (event.type === "plugin.error") {
+      const err = (event.payload as { error?: unknown } | null)?.error;
+      if (typeof err === "string" && err.includes(PORT_UNAVAILABLE_TAG)) wakeDebounced(bus);
       return;
     }
     if (event.type === "scheduler.error") {
@@ -171,6 +192,10 @@ export const stopSelfMaintenance = (): void => {
   if (timer !== null) {
     clearInterval(timer);
     timer = null;
+  }
+  if (deferredWake !== null) {
+    clearTimeout(deferredWake);
+    deferredWake = null;
   }
   if (unsubscribe !== null) {
     try {

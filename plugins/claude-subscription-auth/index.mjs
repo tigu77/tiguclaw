@@ -224,6 +224,19 @@ const pending = (now, at) =>
  *  그때 아래 엔드포인트가 여전히 시도한다(다른 계정에선 열릴 수도 있다).
  */
 let cliDead = false; // CLI 가 없다고 판명되면 매번 2초를 태우지 않는다.
+/**
+ * 이 기계의 Claude Code 가 구독으로 로그인돼 있지 않다(CLI 가 한도 대신 비용 요약을 줬다) — 2026-10-08.
+ * ★그때 엔드포인트도 이 설치의 토큰으론 안 열린다(구독 자격이 아니다). 그래서 «잠시 뒤 다시» 가 아니라 «로그인하면 된다» 고
+ *  말한다 — 안 그러면 「N분 뒤 다시 시도」가 영원히 뜬다(오지 않을 약속).
+ */
+let cliNeedsLogin = false;
+let textLocale = ""; // 사용자에게 보일 문장의 언어 — startService 가 넣는다(host.locale).
+const needsLoginUsage = (now) => ({
+  windows: [],
+  measuredAt: now,
+  unavailable: true,
+  reason: (textLocale.toLowerCase().startsWith("ko") ? TEXT.ko : TEXT.en).needsLogin,
+});
 
 /**
  * **진행 중인 조회 하나를 나눠 쓴다** (2026-09-09, 적대 검토 P1).
@@ -249,10 +262,13 @@ const fetchClaudeUsageInner = async (force = false) => {
   // ★중복 접기만 한다(30초). 새로고침을 눌렀으면 연타 하한만 남긴다.
   const gap = force ? FORCE_MIN_GAP_MS : DEDUP_MS;
   if (lastOk !== undefined && now - lastOk.at < gap) return lastOk.value;
+  // ★새로고침이면 CLI 를 다시 묻는다 — 로그인한 뒤 🔄 를 눌렀는데 재시작 전까지 안 바뀌면 «했는데 안 된다» 가 된다.
+  if (force) cliDead = false;
   if (!cliDead) {
     const { fetchUsageViaCli } = await import("./usage-cli.mjs");
     const viaCli = await fetchUsageViaCli(noteUsage);
-    if (viaCli !== undefined) {
+    cliNeedsLogin = viaCli?.needsLogin === true;
+    if (viaCli !== undefined && viaCli.needsLogin !== true) {
       noteUsage(describeWindows(viaCli.windows ?? [], "CLI"));
       lastOk = { at: now, value: viaCli };
       refusedAfterWaiting = 0;
@@ -304,7 +320,9 @@ const fetchClaudeUsageInner = async (force = false) => {
     }
     if (!res.ok) {
       noteUsage(`HTTP ${res.status} — 마지막 성공값(${lastOk === undefined ? "없음" : "있음"})으로 답한다`);
-      return lastOk?.value ?? pending(now, now + MIN_GAP_MS);
+      // ★CLI 도 «로그인 안 됨» 이었으면 기다려도 안 바뀐다 — 「잠시 뒤 다시」 대신 로그인 안내(집 윈도우 실측: CLI 비용 요약 + 403).
+      //  429(조회 제한)는 위에서 서버 시계를 따르므로 여기 오지 않는다.
+      return lastOk?.value ?? (cliNeedsLogin ? needsLoginUsage(now) : pending(now, now + MIN_GAP_MS));
     }
     const j = await res.json();
     const windows = [
@@ -333,6 +351,7 @@ const fetchClaudeUsageInner = async (force = false) => {
  */
 const TEXT = {
   ko: {
+    needsLogin: "이 기계의 Claude Code 로그인이 필요합니다 — 터미널에서 claude 를 실행해 /login 하면 표시됩니다.",
     label: "구독 토큰 발급",
     summaryWeb: "새 탭에서 Claude 에 로그인하면 코드가 나옵니다. 그 코드를 아래에 붙여넣으면 발급·저장까지 끝납니다(재시작 없음).",
     hintWeb: "로그인 뒤 나온 코드 (이미 받은 토큰도 됩니다)",
@@ -340,6 +359,7 @@ const TEXT = {
     hintTerminal: "발급된 토큰 (sk-ant- 로 시작합니다)",
   },
   en: {
+    needsLogin: "Claude Code isn't signed in on this machine — run claude in a terminal and use /login to show the limits.",
     label: "Get subscription token",
     summaryWeb: "Sign in to Claude in the new tab and you'll get a code. Paste that code below to issue and save the token (no restart).",
     hintWeb: "Code shown after sign-in (an existing token works too)",
@@ -353,6 +373,7 @@ export default class ClaudeSubscriptionAuth {
   async startService(_bus, host) {
     if (host === undefined) return; // 옛 런타임(호스트 미전달)에선 조용히 아무것도 안 한다.
     logSink = (m) => host.log(m); // 왜 사용량이 비었는지는 **로그에만** 남는다(위 noteUsage).
+    textLocale = String(host.locale ?? "");
     // ★조회 시계를 재시작 너머로 — 안 그러면 배포할 때마다 한 시간을 새로 태운다.
     cachePath = `${host.dataDir}/usage-cache.json`;
     await loadCache();

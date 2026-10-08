@@ -47,6 +47,7 @@ import { getPaths, appRoot } from "../../src/core/paths.js";
 import { getChannelPresence } from "../../src/core/channel-registry.js";
 import type { Observer } from "../../src/core/observers/types.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
+import { portListenFailure } from "../../src/core/port-hint.js";
 import { publishPromptOptions } from "./prompt-options-publish.js";
 import {
   collectInventory,
@@ -291,7 +292,7 @@ class HttpBridge implements Channel, Observer {
         `HTTP_BRIDGE_TOKEN not set, using ephemeral token: ${this.ephemeralToken}`,
       );
     }
-    this.port = parseInt(process.env.HTTP_BRIDGE_PORT ?? "7011", 10);
+    this.port = parseInt(process.env.HTTP_BRIDGE_PORT ?? "17011", 10);
     this.host = process.env.HTTP_BRIDGE_HOST?.trim() || "127.0.0.1";
     this.allowedHosts = parseAllowedHosts(process.env.HTTP_BRIDGE_ALLOWED_HOSTS);
   }
@@ -393,7 +394,9 @@ class HttpBridge implements Channel, Observer {
 
     await new Promise<void>((resolve, reject) => {
       const onError = (err: Error): void => {
-        reject(err);
+        // 포트를 못 연 이유(윈도우 예약 범위·다른 프로그램)와 고칠 길을 말한다 — 자기 점검이 이 표식으로 사용자에게 알린다.
+        const hint = portListenFailure(err, "HTTP_BRIDGE_PORT", this.port);
+        reject(hint === undefined ? err : new Error(hint));
       };
       this.server!.once("error", onError);
       this.server!.listen(this.port, this.host, () => {

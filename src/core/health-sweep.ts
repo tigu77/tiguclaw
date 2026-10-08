@@ -28,6 +28,7 @@
  */
 import { listSchedules } from "../store/schedules.js";
 import { listEvents } from "../store/events.js";
+import { parsePortUnavailable } from "./port-hint.js";
 import { isDerivedThread } from "./threadkey.js";
 import { getRecentChatLog } from "../store/chat-log.js";
 import { backupInfo } from "../store/backup.js";
@@ -44,7 +45,7 @@ import path from "node:path";
 /** 스윕 1건 — 사람이 읽는 한 줄 요약 + 필요 시 상세. */
 export interface HealthFinding {
   /** 지표 종류(로그·이벤트 분류용). */
-  kind: "schedule_failure" | "turn_errors" | "repetition" | "backup_stale" | "memory_index_truncated" | "project_doc_oversized";
+  kind: "schedule_failure" | "port_unavailable" | "turn_errors" | "repetition" | "backup_stale" | "memory_index_truncated" | "project_doc_oversized";
   /** 사용자에게 그대로 보여줄 한 줄. */
   summary: string;
 }
@@ -262,6 +263,23 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
           reason === ""
             ? translate("srv.health.scheduleFailedNoReason", { label: s.label })
             : translate("srv.health.scheduleFailed", { label: s.label, reason }),
+      });
+    }
+  } catch {
+    /* 이 지표만 스킵 */
+  }
+
+  // ② 포트를 못 열었다 — 대시보드·브리지가 안 떴는데 데몬은 «ready» 라 아무도 모른다(2026-10-08 집 윈도우: 윈도우 예약 범위).
+  //    텔레그램은 포트를 안 써서 살아 있으니 거기로 알린다. 표식(`[port-unavailable:…]`)은 port-hint.ts 가 정한다.
+  try {
+    const seen = new Set<string>();
+    for (const e of listEvents({ types: ["plugin.error"], sinceTs, limit: 50 })) {
+      const p = parsePortUnavailable(String(e.payload ?? "")); // 저장된 payload 는 JSON 문자열 — 표식은 그 안에서 바로 찾는다
+      if (p === undefined || seen.has(p.key)) continue;
+      seen.add(p.key);
+      out.push({
+        kind: "port_unavailable",
+        summary: translate(p.code === "EACCES" ? "srv.health.portExcluded" : "srv.health.portInUse", { key: p.key, port: p.port }),
       });
     }
   } catch {

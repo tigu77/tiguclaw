@@ -10,10 +10,10 @@
 LLM_GATEWAY_TOKEN=<충분히 긴 랜덤 문자열>
 ```
 
-그다음 OpenAI 클라이언트를 http-bridge 포트(기본 `7011`, `127.0.0.1` 바인드)로 향하게 하세요:
+그다음 OpenAI 클라이언트를 http-bridge 포트(기본 `17011`, `127.0.0.1` 바인드)로 향하게 하세요:
 
 ```bash
-curl http://127.0.0.1:7011/v1/chat/completions \
+curl http://127.0.0.1:17011/v1/chat/completions \
   -H "Authorization: Bearer $LLM_GATEWAY_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

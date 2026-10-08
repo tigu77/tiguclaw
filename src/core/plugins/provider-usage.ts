@@ -64,4 +64,9 @@ export interface ProviderUsage {
    *  «몇 회 실패» 같은 손으로 고른 숫자가 아니라, «시키는 대로 했는데도 안 됐다» 다.
    */
   readonly unavailable?: boolean;
+  /**
+   * 못 재는 **이유와 할 일** 한 줄 — 제공자가 사용자 언어로 고른다(예: «이 기계의 Claude Code 로그인이 필요합니다 — …»).
+   * ★`unavailable` 과 짝이다. 없으면 화면은 일반 문장(«이 계정에선 한도 조회가 안 됩니다»)을 쓴다.
+   */
+  readonly reason?: string;
 }

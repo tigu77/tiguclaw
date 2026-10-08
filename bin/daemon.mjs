@@ -89,8 +89,84 @@ export const readHomeEnvValue = (homeAbs, key) => {
   const v =
     typeof parse === "function"
       ? parse(text)[key] // 데몬과 같은 값 — 따옴표 안 공백까지 그대로(덧 trim 하면 갈린다, 재검토 6)
-      : text.match(new RegExp(`^${key}=(.*)$`, "m"))?.[1]?.trim().replace(/^["']|["']$/g, "");
+      // 따옴표는 `\x22`·`\x27` 로 적는다 — 회귀의 주석 제거기는 정규식 리터럴을 몰라, 맨 따옴표가 있으면 짝이 어긋나 아래 주석이 안 지워진다.
+      : text.match(new RegExp(`^${key}=(.*)$`, "m"))?.[1]?.trim().replace(/^[\x22\x27]|[\x22\x27]$/g, "");
   return v === undefined || v === "" ? undefined : v;
+};
+
+/** 기본 포트 이동 전의 값 — `src/core/legacy-ports.ts` 의 `LEGACY_PORTS` 와 같다(회귀 `legacy-ports-settled` 가 대조). */
+const LEGACY_PORTS = [
+  ["HTTP_BRIDGE_PORT", "7011"],
+  ["DASHBOARD_PORT", "7010"],
+];
+
+/**
+ * **기본 포트를 옮긴 뒤(17010·17011) 기존 설치는 쓰던 포트를 지킨다** (2026-10-08) — `src/core/legacy-ports.ts` 와 **같은 판단**.
+ * ★여기에도 있어야 하는 이유: 윈도우는 이 스크립트가 옛 데몬을 **포트로** 찾아 멈춘다. 업데이트 직후 새 기본값으로 찾으면 옛 데몬
+ *  (7011)을 못 찾아 «멈추지 못함» 으로 업데이트가 멈춘다. 의존성 없이 돌아야 해서 코드를 나눌 수 없고, 두 구현이 같은 결과를
+ *  내는지는 회귀가 같은 입력으로 대조한다. 실패는 던지지 않는다.
+ * @param {string} homeAbs
+ * @param {string} repoEnvPath
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string[]}
+ */
+export const settleLegacyPorts = (homeAbs, repoEnvPath, env = process.env) => {
+  try {
+    const dataDir = path.join(homeAbs, "data");
+    const marker = path.join(dataDir, "ports-settled");
+    if (existsSync(marker)) return [];
+    /** @type {string[]} */
+    const wrote = [];
+    if (existsSync(path.join(dataDir, "tiguclaw.db"))) {
+      const envPath = path.join(homeAbs, ".env");
+      let text = "";
+      try {
+        text = readFileSync(envPath, "utf8");
+      } catch {
+        /* .env 없음 — 새로 만든다 */
+      }
+      const parseFn = /** @type {((s: string) => Record<string, string>) | undefined} */ (nodeUtil.parseEnv);
+      /** @param {string} t */
+      const parse = (t) => (typeof parseFn === "function" ? parseFn(t) : {});
+      const fromFile = parse(text);
+      /** @type {Record<string, string>} */
+      let fromRepo = {};
+      try {
+        if (path.resolve(repoEnvPath) !== path.resolve(envPath)) fromRepo = parse(readFileSync(repoEnvPath, "utf8"));
+      } catch {
+        /* 레포 .env 없음 */
+      }
+      /** @type {string[]} */
+      const lines = [];
+      for (const [key, port] of LEGACY_PORTS) {
+        if ((fromFile[key] ?? "") !== "" || (fromRepo[key] ?? "") !== "" || (env[key]?.trim() ?? "") !== "") continue;
+        lines.push(`${key}=${port}`);
+        wrote.push(key);
+      }
+      if (lines.length > 0) {
+        const nl = text.includes("\r\n") ? "\r\n" : "\n";
+        const head = text === "" || text.endsWith("\n") ? "" : nl;
+        appendFileSync(
+          envPath,
+          head +
+            [
+              "# The default ports moved to 17010 (dashboard) / 17011 (bridge) — 7010/7011 can fall into a Windows excluded port range.",
+              "# This install keeps the ports it was already using. Delete these lines to switch to the new defaults.",
+              ...lines,
+            ].join(nl) +
+            nl,
+          "utf8",
+        );
+      }
+    }
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(marker, `${new Date().toISOString()}\n`, "utf8");
+    if (wrote.length > 0) console.log(`[ports] kept this install's ports in ${path.join(homeAbs, ".env")}: ${wrote.join(", ")}`);
+    return wrote;
+  } catch (e) {
+    console.error(`[ports] could not settle the legacy ports: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
 };
 
 /**
@@ -303,6 +379,8 @@ const buildCtx = () => {
   const homeRaw =
     process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw");
   const homeAbs = path.resolve(repoRoot, expandHome(homeRaw));
+  // 포트를 읽기 **전에** — 기존 설치는 옛 기본 포트를 홈 .env 에 고정한다(위 주석).
+  settleLegacyPorts(homeAbs, path.join(repoRoot, ".env"));
   /** @type {string | undefined} */
   let winEnvError;
   if (process.platform === "win32") {
@@ -860,7 +938,7 @@ const listeningOnBridge = (c) => {
  * @returns {string}
  */
 const winPort = (c) =>
-  readHomeEnvValue(c.homeAbs, "HTTP_BRIDGE_PORT") ?? (process.env.HTTP_BRIDGE_PORT?.trim() || "7011");
+  readHomeEnvValue(c.homeAbs, "HTTP_BRIDGE_PORT") ?? (process.env.HTTP_BRIDGE_PORT?.trim() || "17011");
 
 /**
  * VBS 파일 내용(바이트) — **UTF-16LE + BOM** (2026-10-03 적대 검토 C, 집 윈도우 실측). WSH 는 BOM 없는 파일을

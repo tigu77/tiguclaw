@@ -109,14 +109,14 @@ That's it. `onboard` walks you through everything: pick an LLM, paste a key (or 
 
 The daemon starts the web dashboard for you — there's nothing extra to run. While it's up:
 
-**http://127.0.0.1:7010**
+**http://127.0.0.1:17010**
 
 That's the full chat UI: tool steps live, streaming answers, session tabs, background work panel.
-If 7010 is taken, change `DASHBOARD_PORT` in `.env`.
+If 17010 is taken, change `DASHBOARD_PORT` in `.env`.
 
 > **Local-only on purpose.** The dashboard binds to `127.0.0.1` and has no browser login — the bridge
 > token is injected server-side and never reaches the page, so **reaching this port is the permission**.
-> To use it from your phone, don't open the port; tunnel over a private network (e.g. `tailscale serve 7010`).
+> To use it from your phone, don't open the port; tunnel over a private network (e.g. `tailscale serve 17010`).
 > `DASHBOARD_HOST=0.0.0.0` only if you know the trade.
 >
 > If you reach it remotely by **name** (e.g. MagicDNS `*.ts.net`), add that name to

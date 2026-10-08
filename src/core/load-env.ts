@@ -21,6 +21,7 @@
 import os from "node:os";
 import path from "node:path";
 import { startHomeCredentialWatch } from "./credential-env.js";
+import { settleLegacyPorts } from "./legacy-ports.js";
 
 let loaded = false;
 
@@ -86,6 +87,8 @@ export const loadHomeEnv = (): void => {
   //   env(벤치가 in-process 로 심는 것·셸이 준 것)는 그대로 둔다.
   const seamBefore = process.env.TIGUCLAW_SYSTEM_MD;
 
+  // 기본 포트를 옮긴 뒤(17010·17011) 기존 설치는 쓰던 포트를 지킨다 — 로드 **전에**(적은 줄이 아래 로드로 들어간다).
+  settleLegacyPorts(path.dirname(homeEnv), repoEnv);
   const home_ok = tryLoad(homeEnv); // 홈 우선.
   // 인증 키는 재시작 없이 따라가게 **지금 본 값**을 기록한다(레포 폴백은 대상 아님 — 쓰는 곳이 홈이다).
   startHomeCredentialWatch(homeEnv);

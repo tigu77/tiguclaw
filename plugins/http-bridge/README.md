@@ -11,7 +11,7 @@
 
 ## 환경변수
 
-- `HTTP_BRIDGE_PORT` (default `7011`) — dashboard 의 `DASHBOARD_PORT`(기본 `7010`)와 분리.
+- `HTTP_BRIDGE_PORT` (default `17011`) — dashboard 의 `DASHBOARD_PORT`(기본 `17010`)와 분리.
 - `HTTP_BRIDGE_TOKEN` — 부재 시 부팅 시 random 16-byte hex 발급, console 1줄 로그.
 
 ## 인증
@@ -19,9 +19,9 @@
 `Authorization: Bearer <TOKEN>` 헤더 또는 `?token=<TOKEN>` query.
 
 ```
-curl -H "Authorization: Bearer $TOKEN" http://localhost:7011/events
+curl -H "Authorization: Bearer $TOKEN" http://localhost:17011/events
 curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-     -d '{"text":"안녕"}' http://localhost:7011/messages
+     -d '{"text":"안녕"}' http://localhost:17011/messages
 ```
 
 ## role

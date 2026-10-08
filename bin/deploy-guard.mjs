@@ -36,7 +36,7 @@ const resolvePort = () => {
       /* 다음 후보 */
     }
   }
-  return "7011"; // 코드 기본값(default-port-truth 가 지킨다).
+  return "17011"; // 코드 기본값(default-port-truth 가 지킨다).
 };
 const port = resolvePort();
 

@@ -86,6 +86,7 @@ export const handleAuthUsage = async (ctx: RouteCtx): Promise<void> => {
               measuredAt: u.measuredAt,
               ...(u.retryAt === undefined ? {} : { retryAt: u.retryAt }),
               ...(u.unavailable === undefined ? {} : { unavailable: u.unavailable }),
+              ...(typeof u.reason === "string" && u.reason !== "" ? { reason: u.reason.slice(0, 300) } : {}),
               ...(u.limitReached === undefined ? {} : { limitReached: u.limitReached }),
             },
   });

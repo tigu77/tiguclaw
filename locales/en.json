@@ -1127,5 +1127,6 @@
   "srv.project.runAlready": "/{command} is already running in {project}. Wait for it to finish, or /stop it first.",
   "srv.project.noneRegistered": "No projects registered yet. Tell {name} \"register ~/work/myapp as a project\" (a folder you have) or \"let's start a project like this\" (creates the folder too).",
   "srv.health.portExcluded": "{key} {port} could not be opened, so it is off — Windows has reserved that port in an excluded range (Hyper-V/WSL/Docker). Set {key} in the home .env to a free port between 15001 and 32767 (defaults 17010/17011) and restart.",
-  "srv.health.portInUse": "{key} {port} is in use by another program, so it is off. Set {key} in the home .env to a free port and restart."
+  "srv.health.portInUse": "{key} {port} is in use by another program, so it is off. Set {key} in the home .env to a free port and restart.",
+  "plugins.auth.usage.refreshAfter": "You can check again {when}"
 }

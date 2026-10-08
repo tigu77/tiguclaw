@@ -69,4 +69,9 @@ export interface ProviderUsage {
    * ★`unavailable` 과 짝이다. 없으면 화면은 일반 문장(«이 계정에선 한도 조회가 안 됩니다»)을 쓴다.
    */
   readonly reason?: string;
+  /**
+   * **이 시각 전엔 새로고침해도 새로 안 묻는다**(epoch ms) — 화면이 그때까지 🔄 를 막는다(2026-10-09 정태님).
+   * ★제공자가 정한다 — 연타 하한·서버가 정한 대기 시각처럼 «누르면 새로 묻는가» 는 제공자만 안다. 없으면 언제든 누를 수 있다.
+   */
+  readonly refreshAfter?: number;
 }

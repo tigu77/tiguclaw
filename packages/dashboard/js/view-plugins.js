@@ -151,6 +151,8 @@ function formatUsageLine(usage, now) {
        *  «묻는 중» 과 «모름» 을 구분해야 화면이 «모름» 을 성급히 단정하지 않는다.
        */
       const usageState = new Map();
+      /** 🔄 를 다시 켤 타이머 — provider 마다 하나(재렌더마다 쌓이지 않게). */
+      const refreshUnlockTimers = new Map();
       const loadUsage = async (provider, force) => {
         if (!force && usageState.has(provider)) return; // 한 번만 — 재렌더로 다시 안 묻는다
         usageState.set(provider, "loading");
@@ -702,6 +704,25 @@ function formatUsageLine(usage, now) {
             rf.setAttribute("aria-label", i18n("plugins.auth.usage.refresh"));
             rf.title = i18n("plugins.auth.usage.refresh");
             rf.disabled = loading;
+            // ★눌러도 새로 안 묻는 동안은 막는다 (2026-10-09 정태님) — 그 시각은 제공자가 안다(`refreshAfter`). 시각이 되면 저절로 풀린다.
+            const ra = !loading && usage && typeof usage.refreshAfter === "number" ? usage.refreshAfter : 0;
+            const waitMs = ra - Date.now();
+            if (waitMs > 0) {
+              rf.disabled = true;
+              // 1분 안이면 «곧» — 분 단위 표시는 올림이라 5초 대기가 «1분 뒤» 로 읽힌다.
+              const when = waitMs < 60_000 ? i18n("plugins.auth.usage.until.soon") : usageUntilLabel(ra, Date.now()) || i18n("plugins.auth.usage.until.soon");
+              rf.title = i18n("plugins.auth.usage.refreshAfter", { when });
+              rf.setAttribute("aria-label", rf.title);
+              if (!refreshUnlockTimers.has(id)) {
+                refreshUnlockTimers.set(
+                  id,
+                  setTimeout(() => {
+                    refreshUnlockTimers.delete(id);
+                    renderPluginsView();
+                  }, Math.min(waitMs + 100, 24 * 3600_000)),
+                );
+              }
+            }
             // ★**누른 즉시 그린다** (2026-09-09, 코드 리뷰). `loadUsage` 는 렌더 재진입(P2)
             //  때문에 앞쪽 `renderPluginsView()` 를 없앴는데, 그 제약은 «렌더 안에서 불릴
             //  때» 의 것이다. 클릭 핸들러는 **렌더 밖**이라 그리는 사람이 아무도 없어,

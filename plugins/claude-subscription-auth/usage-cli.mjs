@@ -156,6 +156,8 @@ const run = async (cmd, args, ms) => {
  *  없는 것이다. 결함이 아니라 그냥 조회를 못 하는 것 — 화면은 「모름」으로 말한다.
  */
 let resolvedCmd;
+/** 이 기계에서 CLI 경로가 있나 — 아직 안 찾았으면(첫 조회 전) 있다고 본다. 새로고침이 CLI 에 다시 묻는지 판단에 쓴다. */
+export const cliAvailable = () => resolvedCmd !== null;
 const resolveClaude = async (log) => {
   if (resolvedCmd !== undefined) return resolvedCmd;
   try {

@@ -249,11 +249,27 @@ const needsLoginUsage = (now) => ({
  */
 let inflight;
 
+/**
+ * **새로고침이 실제로 새로 묻는 시각** (2026-10-09 정태님: «그동안은 안 눌리게 막는 게 낫겠다»).
+ * ★CLI 가 있으면 누를 때마다 CLI 에 다시 묻는다(로그인 직후에도 바로) — 연타 하한만. CLI 가 없으면 남는 건 조여 있는
+ *  엔드포인트뿐이라, 서버가 정한 대기 시각과 5분 간격까지는 눌러도 같은 값이다.
+ */
+let lastAttemptAt = 0;
+let cliModRef;
+const refreshAfterNow = () => {
+  const floor = lastAttemptAt + FORCE_MIN_GAP_MS;
+  if (cliModRef?.cliAvailable?.() ?? true) return floor;
+  return Math.max(floor, notBefore, lastOk !== undefined ? lastOk.at + MIN_GAP_MS : 0);
+};
+const withRefreshAfter = (v) => (v === undefined ? v : { ...v, refreshAfter: refreshAfterNow() });
+
 const fetchClaudeUsage = async (force = false) => {
   if (inflight !== undefined) return inflight;
-  inflight = fetchClaudeUsageInner(force).finally(() => {
-    inflight = undefined;
-  });
+  inflight = fetchClaudeUsageInner(force)
+    .then(withRefreshAfter)
+    .finally(() => {
+      inflight = undefined;
+    });
   return inflight;
 };
 
@@ -265,8 +281,9 @@ const fetchClaudeUsageInner = async (force = false) => {
   // ★새로고침이면 CLI 를 다시 묻는다 — 로그인한 뒤 🔄 를 눌렀는데 재시작 전까지 안 바뀌면 «했는데 안 된다» 가 된다.
   if (force) cliDead = false;
   if (!cliDead) {
-    const { fetchUsageViaCli } = await import("./usage-cli.mjs");
-    const viaCli = await fetchUsageViaCli(noteUsage);
+    cliModRef = await import("./usage-cli.mjs");
+    lastAttemptAt = now;
+    const viaCli = await cliModRef.fetchUsageViaCli(noteUsage);
     cliNeedsLogin = viaCli?.needsLogin === true;
     if (viaCli !== undefined && viaCli.needsLogin !== true) {
       noteUsage(describeWindows(viaCli.windows ?? [], "CLI"));
@@ -291,6 +308,7 @@ const fetchClaudeUsageInner = async (force = false) => {
       noteUsage("토큰 없음 — 조회 안 함");
       return undefined;
     }
+    lastAttemptAt = now;
     const res = await fetch(USAGE_URL, {
       method: "GET",
       headers: {

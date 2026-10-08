@@ -587,6 +587,16 @@ export const check: RegressionCheck = {
         { vCost, vUse: vUse.windows?.length, vOther, withReason },
       ),
     );
+    // ── ★새로고침이 새로 안 묻는 동안은 화면이 🔄 를 막는다 — 그 시각은 제공자가 싣는다 (2026-10-09) ──
+    const codexOk = okValue as { measuredAt?: number; refreshAfter?: number } | undefined;
+    out.push(
+      assert(
+        "★codex 사용량이 «다시 확인 가능 시각»(마지막 조회 + 연타 하한)을 싣는다 · 라우트가 그걸 실어 나른다",
+        typeof codexOk?.refreshAfter === "number" && codexOk.refreshAfter - (codexOk.measuredAt ?? 0) === 5_000 &&
+          /refreshAfter: u\.refreshAfter/.test(routeSrc),
+        codexOk,
+      ),
+    );
     const routeCarries = /\bunavailable\b/.test(routeSrc);
     out.push(
       assert(

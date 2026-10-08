@@ -123,7 +123,7 @@ const fetchCodexUsageInner = async (
   const now = Date.now();
   // ★새로고침을 눌렀으면 캐시를 지난다 — 다만 연타 하한은 지킨다(비공식 경로).
   const gap = force ? FORCE_MIN_GAP_MS : CACHE_MS;
-  if (cached !== undefined && now - cached.at < gap) return cached.value;
+  if (cached !== undefined && now - cached.at < gap) return withRefreshAfter(cached.value, cached.at);
   let value: ProviderUsage | undefined;
   // 못 쟀을 때도 «언제 다시 잰다» 는 말해준다 — 빈 자리는 «원래 안 준다» 로 읽힌다.
   const pending: ProviderUsage = { windows: [], measuredAt: now, retryAt: now + CACHE_MS };
@@ -184,5 +184,9 @@ const fetchCodexUsageInner = async (
   //   덤으로 `retryAt` 이 «최초 실패 시각 + 캐시» 로 고정돼 더 정직하다(열 때마다 안 밀린다).
   const answer = value ?? pending;
   cached = { at: now, value: answer };
-  return answer;
+  return withRefreshAfter(answer, now);
 };
+
+/** 새로고침이 실제로 새로 묻는 시각 — 연타 하한만큼(화면이 그때까지 🔄 를 막는다). */
+const withRefreshAfter = (v: ProviderUsage | undefined, at: number): ProviderUsage | undefined =>
+  v === undefined ? v : { ...v, refreshAfter: at + FORCE_MIN_GAP_MS };

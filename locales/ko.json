@@ -1127,5 +1127,6 @@
   "srv.project.runAlready": "{project} 의 /{command} 가 이미 실행 중입니다. 끝나기를 기다리거나 먼저 /stop 해 주십시오.",
   "srv.project.noneRegistered": "등록된 프로젝트가 없습니다. {name} 에게 \"~/work/myapp 프로젝트로 등록해줘\"(있는 폴더) 또는 \"이런 프로젝트 하나 해보자\"(폴더까지 새로)라고 말해 보십시오.",
   "srv.health.portExcluded": "{key} {port} 포트를 열지 못해 꺼져 있습니다 — 윈도우가 그 포트를 예약 범위로 잡았습니다(Hyper-V·WSL·Docker). 홈 .env 의 {key} 를 15001~32767 사이 빈 포트(기본 17010·17011)로 바꾸고 재시작해 주십시오.",
-  "srv.health.portInUse": "{key} {port} 포트를 다른 프로그램이 쓰고 있어 꺼져 있습니다. 홈 .env 의 {key} 를 빈 포트로 바꾸고 재시작해 주십시오."
+  "srv.health.portInUse": "{key} {port} 포트를 다른 프로그램이 쓰고 있어 꺼져 있습니다. 홈 .env 의 {key} 를 빈 포트로 바꾸고 재시작해 주십시오.",
+  "plugins.auth.usage.refreshAfter": "{when} 다시 확인할 수 있습니다"
 }

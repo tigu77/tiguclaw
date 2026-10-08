@@ -15,6 +15,7 @@
  * 등급: **동작** — 격리 홈의 실제 DB·임시 프로젝트 폴더·실제 셸. 채널은 가짜 msg(답·선택지 클로저)로 받는다.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -179,7 +180,14 @@ export const check: RegressionCheck = {
         return sid !== "" && /SLEEPING \d+/.test(tailShell(sid)?.stdout ?? "");
       }, 8_000);
       const pid = Number(/SLEEPING (\d+)/.exec(tailShell(sid)?.stdout ?? "")?.[1] ?? "0");
-      if (pid > 1) process.kill(pid, "SIGKILL");
+      // ★셸의 **프로세스 그룹**을 신호로 죽인다 — node 하나만 죽이면 셸이 exec 하는 mac 에선 «신호 종료» 지만, 셸이
+      //  자식으로 띄우는 리눅스(sh)에선 셸이 «종료 코드 137» 로 정상 종료한다(공개 CI 가 잡았다). 그룹째가 «밖에서 끊긴 실행» 그대로다.
+      const pgidOf = (p: number): number => Number(execFileSync("ps", ["-o", "pgid=", "-p", String(p)]).toString().trim());
+      const isWin = process.platform === "win32";
+      if (!isWin && pid > 1) {
+        const pgid = pgidOf(pid);
+        if (pgid > 1 && pgid !== pgidOf(process.pid)) process.kill(-pgid, "SIGKILL");
+      }
       await until(() => listShells().find((x) => x.shellId === sid)?.status !== "running", 8_000);
       const extShell = listShells().find((x) => x.shellId === sid);
       await until(() => replies.some((r) => r.includes("sleepy") && (r.includes("⏹") || r.includes("❌"))), 8_000);
@@ -300,7 +308,7 @@ export const check: RegressionCheck = {
         assert("같은 프로젝트의 같은 커맨드가 돌고 있으면 또 띄우지 않는다 · 셸 카드는 이 대화 소유", dupRefused && owned, { dupRefused, owned }),
         assert(
           "★공용 셸 기록: 밖에서 신호로 죽인 셸은 killed(종료 코드 없음)이지 «정상 종료 0» 이 아니다",
-          extShell !== undefined && extShell.status === "killed" && extShell.exitCode === null,
+          isWin || (extShell !== undefined && extShell.status === "killed" && extShell.exitCode === null), // 윈도우엔 프로세스 그룹 신호가 없다(taskkill 경로는 /stop 검사가 본다)
           extShell,
         ),
         assert(

@@ -22,6 +22,7 @@ const VERSION: string = (() => {
 })();
 
 import { getInflightTurns } from "../../src/core/inflight-turns.js";
+import { listProjectRuns } from "../../src/core/entry/project-command.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { appRoot } from "../../src/core/paths.js";
 import fs from "node:fs/promises";
@@ -51,6 +52,9 @@ export const handleHealth = async (ctx: RouteCtx): Promise<void> => {
     channel_handler: ctx.channelHandler !== null,
     active_turns: inflight === null ? null : inflight.count,
     active_turn_threads: inflight === null ? null : inflight.keys,
+    // ★실행형 커맨드(`run:`)는 턴이 아니라 따로 센다 (2026-10-08). 턴에 섞으면 `run: npm run deploy:dev` 처럼 **자기
+    //  인스턴스를 배포하는 실행**이 배포 가드에 자기 자신으로 걸려 영영 못 지나간다. 가드는 막지 않고 경고만 한다.
+    active_runs: listProjectRuns(),
     // ★**첨부 상한을 화면에 알려준다** (2026-09-15 정태님 신고: 대시보드에서 10MB 넘는
     //  파일이 안 올라갔다). 바로 위 `version` 과 같은 이유다 — 주석이 "하드코딩 stale
     //  방지" 라고 적어놓은 그 기제인데, 첨부 상한엔 안 적용돼 있었다.

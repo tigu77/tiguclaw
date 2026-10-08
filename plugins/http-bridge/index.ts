@@ -205,6 +205,7 @@ import { handleHealth, handleLogStatus, handleLogClear, handleUpdateAvailability
 import { handleEvents, handleEndpointCalls, handleAllActivity } from "./routes-activity.js";
 import { handleProjects, handleProjectCapability, handleProjectDetail, handleProjectForget, handleProjectRename } from "./routes-projects.js";
 import { handleWorkerJobs, handleShells, handleShellOutput, handleCancelQueued, handleCancelWorker, handleKillShell } from "./routes-work.js";
+import { handleGetSessionProjects, handlePostSessionProjects } from "./routes-session-projects.js";
 import { handleMessages, handleChatHistory, handleChatSearch } from "./routes-chat.js";
 import { handlePluginIcon, handleAttachmentServe, handleTranscribe, handleOpenPath } from "./routes-files.js";
 import { handleInventory, handleInventoryItem, handleContextMenuItems, handleCommands, handleMcpTools, handleHomeWidgets, handleHomeWidgetToggle, handlePluginData, handlePlugins, handlePluginsAction } from "./routes-inventory.js";
@@ -509,6 +510,8 @@ class HttpBridge implements Channel, Observer {
               ? "read"
               : pathname === "/projects" && method === "GET"
                 ? "read"
+              : pathname === "/session-projects" && method === "GET"
+                ? "read"
               : pathname === "/worker-jobs" && method === "GET"
                 ? "read"
                 : pathname === "/mcp-tools" && method === "GET"
@@ -543,6 +546,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write"
               : pathname === "/set-default-profile" && method === "POST"
                 ? "write"
+              : pathname === "/session-projects" && method === "POST"
+                ? "write" // 세션 설정(연결·해제)을 바꾼다 — set-session-profile 과 같은 등급.
               : pathname === "/set-session-profile" && method === "POST"
                 ? "write" // ★누락돼 있었다(2026-07-28) — required=null 로 게이트를 통과해 **read 토큰이 세션 프로파일을 변경**할 수 있었다.
               : pathname === "/set-egress" && method === "POST"
@@ -842,6 +847,16 @@ class HttpBridge implements Channel, Observer {
     // body { threadKey, profile } — profile 은 실존 프로파일 이름(loadModelProfiles 검증) 또는
     // "default"/"" (= 상속으로 되돌림 → clearSessionModelProfile). 미지 이름 → 400(constraint 2).
     // 저장 키 = (SESSION_STORAGE_CHANNEL, resolveSessionId(...)) — /messages·router 와 동일 정규화.
+    // /session-projects — 이 세션에 연결한 프로젝트(조회 read · 연결·해제 write). 판단은 core/session-projects.
+    if (pathname === "/session-projects" && method === "GET") {
+      await handleGetSessionProjects(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/session-projects" && method === "POST") {
+      await handlePostSessionProjects(this.routeCtx(req, res, url));
+      return;
+    }
+
     if (pathname === "/set-session-profile" && method === "POST") {
       await handleSetSessionProfile(this.routeCtx(req, res, url));
       return;

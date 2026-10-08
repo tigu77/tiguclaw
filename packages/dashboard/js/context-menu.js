@@ -144,7 +144,8 @@
 
       const runMenuItem = async (item, ctx) => {
         if (item.enabled === false) return;
-        if (item.danger && !window.confirm(i18n("ctx.confirm", { what: item.label || i18n("ctx.thisAction") }))) return;
+        // `confirm` = 항목이 자기 확인 문구를 준다(일반 문구로는 무엇을 하는지 안 보일 때).
+        if (item.danger && !window.confirm(item.confirm || i18n("ctx.confirm", { what: item.label || i18n("ctx.thisAction") }))) return;
         closeMenu(); // §1.3 — 실행 시 항상 닫음(성공/실패 무관, 에러는 메뉴 밖 토스트/로컬챗에 표기).
         await executeMenuAction(item, ctx);
       };
@@ -172,6 +173,11 @@
             el.appendChild(sep);
           }
           for (const it of groups.get(g)) {
+            if (it.header) { // 제목·안내 줄 — 누를 수 없고 포커스도 안 받는다.
+              const h = document.createElement("div"); h.className = "cm-header"; h.textContent = it.label || "";
+              el.appendChild(h);
+              continue;
+            }
             const enabled = it.enabled !== false;
             const row = document.createElement("div");
             row.className = "cm-item" + (it.danger ? " cm-danger" : "") + (enabled ? "" : " cm-disabled");

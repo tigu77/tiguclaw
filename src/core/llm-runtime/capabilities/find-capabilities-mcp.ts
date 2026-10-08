@@ -154,15 +154,17 @@ const BUILTIN_CAPABILITY_CATALOG: Record<string, BuiltinCapabilityMeta> = {
     tools: ["reply_to_current_message"],
   },
   projects: {
-    summary: "폴더를 프로젝트로 등록·조회·갱신 — PROJECT.md 기반, 대시보드에 노출.",
+    summary: "폴더를 프로젝트로 등록·조회·갱신 — PROJECT.md 기반, 대시보드에 노출. 등록된 프로젝트를 이 대화에 연결·해제.",
     whenToUse:
-      "작업 폴더를 프로젝트로 등록하거나, 등록된 프로젝트 목록·그 폴더 전용 에이전트/스킬을 확인할 때.",
+      "작업 폴더를 프로젝트로 등록하거나, 등록된 프로젝트 목록·그 폴더 전용 에이전트/스킬을 확인할 때. 사용자가 «이 대화에 X 연결해 줘»·«연결 끊어 줘» 라고 할 때(연결하면 대화 내내 그 프로젝트가 맥락에 실리고 사용자 화면에 그 프로젝트 메뉴가 생긴다).",
     tools: [
       "project_register",
       "project_update",
       "project_list",
       "project_forget",
       "project_capabilities",
+      "link_project",
+      "unlink_project",
     ],
   },
   todo: {

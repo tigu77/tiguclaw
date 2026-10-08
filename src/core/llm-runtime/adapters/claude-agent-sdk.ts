@@ -661,7 +661,7 @@ export const runClaude = async (
         memory: createMemoryMcpServer(),
         // 프로젝트 레지스트리 (register/list/update/forget) — codex 와 parity(#2). 진실은
         // 폴더 PROJECT.md, 도구는 파싱→얇은 store 인덱스 upsert(단방향, 코어 무참조).
-        projects: createProjectRegistryMcpServer(),
+        projects: createProjectRegistryMcpServer(input.threadKey),
         // 런타임 유지보수 detect (2026-07-12, P1 runtime-maintenance) — maintenance_status.
         // 읽기전용·저위험 = find_capabilities/skills 류 게이트(depth·workerDepth 무관,
         // lean(toolsNone) 만 게이트) — update-self(depth0&&workerDepth0)와 다르다(계약서 §3.1).

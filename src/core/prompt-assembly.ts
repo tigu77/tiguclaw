@@ -8,6 +8,7 @@
  *  - `formatAttachments`: 첨부 placeholder 블록 prepend.
  *  - `assembleUserPrompt`: system-reminder 래핑 (Claude Code 컨벤션).
  */
+import { linkedProjectsContextLines } from "./session-projects.js";
 import type { Attachment } from "../channels/types.js";
 import { agentPathHint } from "./identity.js";
 import { extractTelegramChatId } from "./threadkey.js";
@@ -15,7 +16,7 @@ import { listMemoriesForIndex } from "../store/memory.js";
 import type { RetrievedContext } from "./memory.js";
 import { readMemoryIndexCapBytes } from "./settings.js";
 import { loadModelProfiles, poolSpecs, type ModelProfile } from "./settings.js";
-import { listLiveChildJobs } from "./worker-jobs.js";
+import { listLiveChildJobs, resolveOwnerThreadKey } from "./worker-jobs.js";
 import { pendingOptionsLine } from "./pending-options.js";
 import { scopeConstitution } from "./constitution-scope.js";
 import { turnKindOf } from "./llm-runtime/capability-reach.js";
@@ -325,13 +326,31 @@ export const formatConversationContext = ({
   //  그래서 «원인 확인만» 같은 답이 **새 지시**로 읽혀 «무엇을 확인할까요» 가 나왔다.
   //  한 턴만 살고 읽으면 지운다 — 옛 질문이 따라다니면 그게 오염이다.
   const asked = pendingOptionsLine(threadKey);
+  // 이 대화에 연결한 프로젝트(2026-10-08) — 이름·경로·한 줄 설명만. 없으면 0줄.
+  const linked = linkedProjectsLinesSafe(threadKey);
   return [
     "## 현재 대화 컨텍스트",
     ...lines,
+    ...linked,
     ...(live !== "" ? [live] : []),
     ...(asked !== "" ? [asked] : []),
     '스케줄·알림 등을 "지금 이 대화로" 보낼 때 위 dest_channel/dest_target 를 사용하세요.',
   ].join("\n");
+};
+
+/**
+ * 연결된 프로젝트 줄 — 저장소를 읽는 경계라 실패하면 0줄(맥락 조립이 대화를 막지 않는다).
+ * ★매니저·서브에이전트(잡 좌표)는 **원 대화**의 연결을 물려받는다(2026-10-08) — 연결은 사람과의 대화에만 걸리므로 잡 자기 좌표엔
+ *  아무것도 없어, 연결한 대화에서 맡긴 일이 그 프로젝트를 몰랐다. 스케줄처럼 원 대화가 없는 파생 턴은 0줄.
+ */
+const linkedProjectsLinesSafe = (threadKey: string): string[] => {
+  try {
+    const owner = resolveOwnerThreadKey(threadKey);
+    if (owner === "") return [];
+    return linkedProjectsContextLines(owner, { inherited: owner !== threadKey });
+  } catch {
+    return [];
+  }
 };
 
 /**

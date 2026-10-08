@@ -544,7 +544,7 @@ export const runOpenAi = async (
               ),
             ]
           : []),
-        await adaptClaudeMcpServer(createProjectRegistryMcpServer(), "projects"),
+        await adaptClaudeMcpServer(createProjectRegistryMcpServer(input.threadKey), "projects"),
         // 런타임 유지보수 detect (2026-07-12, P1) — maintenance_status. 읽기전용·저위험 =
         // memory/projects/skills 와 동일 무조건 등록(claude/codex 와 parity, 계약서 §3.1).
         await adaptClaudeMcpServer(createMaintenanceMcpServer(), "maintenance"),

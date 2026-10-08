@@ -37,7 +37,8 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { getPaths } from "../../paths.js";
+import { getPaths, projectScope } from "../../paths.js";
+import { findRegisteredProject } from "../../session-projects.js";
 import { getEventBus } from "../../eventbus.js";
 import {
   discoverCommands,
@@ -93,12 +94,31 @@ const fmValue = (raw: string): string => {
   return `"${oneLine.replace(/"/g, "'")}"`;
 };
 
+/**
+ * 커맨드 파일을 둘 폴더 — 전역(`<home>/commands`) 또는 등록 프로젝트의 `.tiguclaw/commands`(대화에 연결하면 그 대화의
+ * 📁 메뉴·`/` 목록에 뜬다). 프로젝트를 못 찾으면 이유 문장.
+ */
+const commandsDirFor = (project: string | undefined): { dir: string; label: string } | { error: string } => {
+  if (project === undefined || project.trim() === "") return { dir: getPaths().commonCommands, label: "전역" };
+  const found = findRegisteredProject(project);
+  if (found.project === undefined) {
+    return {
+      error:
+        found.candidates.length > 1
+          ? `'${project}' 이라는 프로젝트가 여럿입니다 — 경로로 지정하세요: ${found.candidates.map((p) => p.path).join(" · ")}`
+          : `'${project}' 은(는) 등록된 프로젝트가 아닙니다 — project_list 로 확인하세요.`,
+    };
+  }
+  return { dir: projectScope(found.project.path).commands, label: `프로젝트 ${found.project.name}` };
+};
+
 export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance => {
   const registerCommand = tool(
     "register_command",
-    "커스텀 슬래시 명령을 만듭니다(재사용 prompt 매크로의 슬래시 판). " +
-      "<home>/commands/<name>.md 정의 파일을 작성하면 채널 입구가 매-입력 발견해 확장합니다(재시작 불요). " +
-      "prompt 는 '/name' 으로 호출될 때 영역 A 에 전달할 프롬프트 템플릿이며, 본문에 $ARGUMENTS placeholder 로 호출 인자를 받을 수 있습니다. " +
+    "커스텀 슬래시 명령을 만듭니다. 두 종류: ①프롬프트형(prompt) — '/name' 이 비서에게 그 글을 보낸다($ARGUMENTS 로 인자). " +
+      "②실행형(run, project 필수) — 비서 턴 없이 그 프로젝트 폴더에서 셸 한 줄을 돌리고 결과를 보낸다(배포·빌드·테스트). " +
+      "project 를 주면 그 프로젝트의 .tiguclaw/commands 에, 없으면 전역(<home>/commands)에 만든다. 재시작 불요. " +
+      "실행형을 만들 땐 project-commands 스킬의 요령을 따른다(저장 전에 내용을 보여 주고 확인). " +
       `빌트인 네이티브 명령(${RESERVED_NAMES})과 같은 이름은 만들 수 없습니다.`,
     {
       name: z
@@ -107,8 +127,20 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         .describe(`슬래시 명령 이름(예 'daily'). 선행 슬래시는 자동 제거·소문자화. 빌트인(${RESERVED_NAMES}) 금지.`),
       prompt: z
         .string()
-        .min(1)
-        .describe("'/name' 호출 시 영역 A 에 전달할 프롬프트 템플릿(본문). $ARGUMENTS placeholder 로 호출 인자 치환 가능."),
+        .optional()
+        .describe("프롬프트형: '/name' 호출 시 비서에게 보낼 글(본문). $ARGUMENTS 로 호출 인자 치환. run 과 둘 중 하나만."),
+      run: z
+        .string()
+        .optional()
+        .describe("실행형: 프로젝트 폴더에서 돌릴 셸 **한 줄**(예 'npm run deploy'). 여러 단계는 npm 스크립트나 스크립트 파일로 묶고 이 줄이 부른다. project 필수. $ARGUMENTS 치환."),
+      confirm: z
+        .boolean()
+        .optional()
+        .describe("실행형만: true 면 돌리기 전에 사용자에게 한 번 묻는다(배포처럼 되돌리기 어려운 일)."),
+      project: z
+        .string()
+        .optional()
+        .describe("등록된 프로젝트 이름 또는 경로 — 주면 그 프로젝트의 커맨드로 만든다(대화에 연결하면 메뉴에 뜬다)."),
       description: z
         .string()
         .optional()
@@ -139,8 +171,23 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
           );
         }
 
+        // 2b) 종류 — 프롬프트형·실행형 중 하나. 실행형은 프로젝트에서만(어느 폴더에서 돌지가 곧 프로젝트다).
+        const prompt = (args.prompt ?? "").trim();
+        const run = (args.run ?? "").trim();
+        if ((prompt === "") === (run === "")) {
+          return errText("prompt(프롬프트형)와 run(실행형) 중 **하나만** 주세요.");
+        }
+        if (run !== "" && (args.project ?? "").trim() === "") {
+          return errText("실행형(run)은 project 가 필요합니다 — 그 프로젝트 폴더에서 돈다.");
+        }
+        if (/[\r\n]/.test(run)) {
+          return errText("run 은 한 줄입니다 — 여러 단계는 npm 스크립트나 스크립트 파일로 묶고 run 이 그걸 부르게 하세요.");
+        }
+        const where = commandsDirFor(args.project);
+        if ("error" in where) return errText(where.error);
+
         // 3) 기존 name 충돌 거부(overwrite 명시 시에만 덮어쓰기).
-        const commandsDir = getPaths().commonCommands;
+        const commandsDir = where.dir;
         const filePath = path.join(commandsDir, `${name}.md`);
         if (args.overwrite !== true) {
           let exists = false;
@@ -160,10 +207,16 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         // 4) frontmatter(description optional) + 본문=prompt 조립. parseFrontmatter 가
         //    읽을 단순 key:value. frontmatter 없어도 유효하나, description 있으면 기록.
         const desc = (args.description ?? "").trim();
-        const fileBody =
-          desc !== ""
-            ? `---\ndescription: ${fmValue(desc)}\n---\n${args.prompt.trim()}\n`
-            : `${args.prompt.trim()}\n`;
+        // ★run 은 작은따옴표로 감싸 그대로 둔다 — 파서가 바깥 한 쌍만 벗기므로 안의 따옴표·콜론이 보존된다
+        //  (fmValue 는 큰따옴표를 작은따옴표로 바꿔 셸 명령의 뜻을 바꾼다).
+        const fm = [
+          ...(desc !== "" ? [`description: ${fmValue(desc)}`] : []),
+          ...(run !== "" ? [`run: '${run}'`] : []),
+          ...(run !== "" && args.confirm === true ? ["confirm: true"] : []),
+        ];
+        // ★머리 블록을 **항상** 쓴다 — 없으면 prompt 가 `---` 로 시작할 때 그게 머리로 읽혀, 프롬프트형으로 만든 것이
+        //  `run:` 실행형이 됐다(적대 검토: 도구 응답엔 «실행형» 표시도 없었다).
+        const fileBody = `---\n${fm.length > 0 ? `${fm.join("\n")}\n` : ""}---\n${prompt !== "" ? `${prompt}\n` : ""}`;
 
         // 5) 디렉터리 ensure(백스톱 — ensureHome 이 이미 만들지만 멱등) + 쓰기.
         await fs.mkdir(commandsDir, { recursive: true });
@@ -178,10 +231,13 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         });
 
         return okText(
-          `슬래시 명령 '/${name}' 를 등록했습니다.\n` +
+          `슬래시 명령 '/${name}' 를 등록했습니다(${where.label}${run !== "" ? " · 실행형" : ""}).\n` +
             `- 파일: ${filePath}\n` +
             (desc !== "" ? `- 설명: ${desc}\n` : "") +
-            `동작은 즉시 적용됩니다('/${name}' 호출 가능). 텔레그램 명령 메뉴는 곧 반영됩니다.`,
+            (run !== "" ? `- 실행: ${run}${args.confirm === true ? " (실행 전 확인)" : ""}\n` : "") +
+            (args.project !== undefined && args.project.trim() !== ""
+              ? `이 프로젝트를 대화에 연결하면 📁 메뉴와 '/' 목록에 뜹니다(텔레그램은 /project).`
+              : `동작은 즉시 적용됩니다('/${name}' 호출 가능). 텔레그램 명령 메뉴는 곧 반영됩니다.`),
         );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
@@ -209,12 +265,13 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
 
   const deleteCommand = tool(
     "delete_command",
-    "등록된 커스텀 슬래시 명령을 삭제합니다(<home>/commands/<name>.md 삭제).",
+    "등록된 커스텀 슬래시 명령을 삭제합니다(전역 <home>/commands, 또는 project 를 주면 그 프로젝트의 .tiguclaw/commands).",
     {
       name: z
         .string()
         .min(1)
         .describe("삭제할 슬래시 명령 이름(예 'daily'). 선행 슬래시는 자동 제거."),
+      project: z.string().optional().describe("프로젝트 커맨드면 그 프로젝트 이름 또는 경로."),
     },
     async (args) => {
       try {
@@ -226,8 +283,9 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
           return errText(`'${name}' 는 유효한 슬래시 명령 이름이 아닙니다.`);
         }
 
-        const commandsDir = getPaths().commonCommands;
-        const filePath = path.join(commandsDir, `${name}.md`);
+        const where = commandsDirFor(args.project);
+        if ("error" in where) return errText(where.error);
+        const filePath = path.join(where.dir, `${name}.md`);
         try {
           await fs.unlink(filePath);
         } catch {

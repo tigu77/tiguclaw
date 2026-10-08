@@ -8,6 +8,7 @@
  * 양 어댑터(codex·claude) 동일 등록 = LLM-agnostic(#2, 어댑터 분기 0). send-file/todo 동형
  * in-process MCP factory. enter_project(진입=cwd)은 P2 항목이라 여기 미포함(register 계열만).
  */
+import { linkProject, unlinkProject } from "../../session-projects.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -128,8 +129,11 @@ const registerFromDisk = async (
 };
 
 // ─── MCP factory ─────────────────────────────────────────────────────────────
+/**
+ * @param threadKey 지금 대화(세션) — `link_project`·`unlink_project` 가 이 세션에 건다. 없으면(세션 밖 호출) 두 도구는 거절한다.
+ */
 export const createProjectRegistryMcpServer =
-  (): McpSdkServerConfigWithInstance =>
+  (threadKey?: string): McpSdkServerConfigWithInstance =>
     createSdkMcpServer({
       name: "projects",
       version: "1.0.0",
@@ -179,6 +183,35 @@ export const createProjectRegistryMcpServer =
               return `- ${p.name} [${p.status}]${desc}\n    ${p.path}`;
             });
             return okText(`등록된 프로젝트 ${rows.length}개:\n${lines.join("\n")}`);
+          },
+        ),
+        tool(
+          "link_project",
+          "등록된 프로젝트를 **이 대화(세션)에 연결**합니다 — 대화 내내 유지되고, 다음 메시지부터 그 프로젝트가 맥락에 실리며 사용자 화면(대시보드 📁 칩·텔레그램 /project)에 그 프로젝트 메뉴(커맨드·PROJECT.md)가 생깁니다. 사용자가 «이 대화에 X 연결해 줘»·«이 대화는 X 프로젝트 얘기야» 라고 할 때. 등록된 프로젝트만 — 등록 안 된 폴더면 먼저 project_register. 여러 개를 연결할 수 있습니다.",
+          { project: z.string().min(1).describe("프로젝트 이름 또는 경로(project_list 로 확인)") },
+          async (args) => {
+            if (threadKey === undefined) return errText("이 호출에는 대화(세션)가 없어 연결할 수 없습니다.");
+            const r = linkProject(threadKey, args.project);
+            if (r.ok) return okText(r.already ? `'${r.project.name}' 은(는) 이미 이 대화에 연결돼 있습니다.` : `'${r.project.name}' 을(를) 이 대화에 연결했습니다 (${r.project.path}).`);
+            return errText(
+              r.reason === "ambiguous"
+                ? `'${args.project}' 이라는 프로젝트가 여럿입니다 — 경로로 지정하세요: ${r.candidates.map((p) => p.path).join(" · ")}`
+                : r.reason === "name-taken"
+                  ? `이 대화에는 이미 같은 이름의 다른 프로젝트가 연결돼 있습니다 — 한 대화 안에서 이름은 하나여야 합니다(메뉴·커맨드가 이름으로 가리킨다). 둘 중 하나의 이름을 바꾸거나(그 PROJECT.md 제목을 고친 뒤 project_update) 기존 연결을 해제하세요.`
+                  : r.reason === "not-a-conversation"
+                    ? "지금은 사용자와의 대화가 아니라(매니저·스케줄 같은 내부 작업) 연결할 수 없습니다 — 연결은 사용자 대화에서 합니다."
+                    : `'${args.project}' 은(는) 등록된 프로젝트가 아닙니다 — project_list 로 확인하거나, 그 폴더를 먼저 project_register 하세요.`,
+            );
+          },
+        ),
+        tool(
+          "unlink_project",
+          "이 대화(세션)에 연결한 프로젝트를 해제합니다 — 다음 메시지부터 맥락과 메뉴에서 빠집니다. 사용자가 해제를 요청했을 때만(그 요청이 곧 확인이다 — 다시 묻지 않는다).",
+          { project: z.string().min(1).describe("연결된 프로젝트 이름 또는 경로") },
+          async (args) => {
+            if (threadKey === undefined) return errText("이 호출에는 대화(세션)가 없어 해제할 수 없습니다.");
+            const r = unlinkProject(threadKey, args.project);
+            return r.ok ? okText(`'${r.project.name}' 연결을 해제했습니다.`) : errText(`'${args.project}' 은(는) 이 대화에 연결돼 있지 않습니다.`);
           },
         ),
         tool(

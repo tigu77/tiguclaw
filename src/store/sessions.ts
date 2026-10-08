@@ -754,6 +754,16 @@ export const initStore = (): void => {
       PRIMARY KEY (channel, thread_key)
     );
 
+    -- ─── 세션에 연결한 프로젝트 (2026-10-08, docs/decisions/2026-10-08-session-project-links.md) ──
+    -- 키는 세션 id 하나 — 채널 무관(대시보드에서 연결하면 텔레그램에서 이어가도 같다). 여러 개.
+    -- 대화 리셋(/clear)과 무관하게 남는다(프로파일과 같은 성격의 세션 설정).
+    CREATE TABLE IF NOT EXISTS session_projects (
+      thread_key   TEXT NOT NULL,
+      project_path TEXT NOT NULL,
+      linked_at    INTEGER NOT NULL,
+      PRIMARY KEY (thread_key, project_path)
+    );
+
     -- ─── 채널→세션 바인딩 (2026-07-28, ADR channel-session-decoupling §D5 확장점 (b)) ──
     -- 세션 셀렉터가 없는 채널(텔레그램·CLI)이 "이 대화방은 이 세션" 을 **영속**으로 기억한다.
     -- 대시보드 탭은 브라우저 localStorage 라 그 브라우저에서만 유지되는데, 이쪽은 서버라

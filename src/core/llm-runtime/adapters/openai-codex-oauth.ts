@@ -768,7 +768,7 @@ export const runOpenAiCodex = async (
   // 프로젝트 레지스트리 (register/list/update/forget) — 양 어댑터 공통(#2). 진실은
   // 각 폴더 PROJECT.md, 이 도구는 파싱→얇은 store 인덱스 upsert(단방향, 코어 무참조).
   const projectBridge = await adaptClaudeMcpServer(
-    createProjectRegistryMcpServer(),
+    createProjectRegistryMcpServer(input.threadKey),
     "projects",
   );
   // V7.8 — invoke_skill 단일 정의(skill-registry) bridge. claude 어댑터도 동일

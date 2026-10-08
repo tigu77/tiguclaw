@@ -17,7 +17,14 @@
       const slashRender = () => {
         if (!slashPopup) return;
         slashPopup.innerHTML = "";
+        let group;
         slashMatches.forEach((c, i) => {
+          // 이 대화에 연결된 프로젝트의 커맨드는 프로젝트별 구획(제목 줄은 고를 수 없다 — 인덱스 밖).
+          if (c.group && c.group !== group) {
+            const h = document.createElement("div"); h.className = "slash-group"; h.textContent = c.group;
+            slashPopup.appendChild(h);
+          }
+          group = c.group;
           const item = document.createElement("div");
           item.className = "slash-item" + (i === slashActive ? " active" : "");
           const n = document.createElement("span"); n.className = "slash-name"; n.textContent = "/" + c.name;
@@ -37,9 +44,12 @@
       const slashSync = () => {
         if (!slashPopup) return;
         const m = input.value.match(/^\/(\w*)$/);
-        if (!m || slashCommands.length === 0) { slashClose(); return; }
+        if (!m) { slashClose(); return; }
         const prefix = m[1].toLowerCase();
-        slashMatches = slashCommands.filter((c) => String(c.name).toLowerCase().startsWith(prefix));
+        const project = typeof window.sessionProjectSlashItems === "function"
+          ? window.sessionProjectSlashItems(prefix, new Set(slashCommands.map((c) => c.name)))
+          : [];
+        slashMatches = slashCommands.filter((c) => String(c.name).toLowerCase().startsWith(prefix)).concat(project);
         if (slashMatches.length === 0) { slashClose(); return; }
         if (slashActive < 0 || slashActive >= slashMatches.length) slashActive = 0;
         slashRender();
@@ -48,7 +58,7 @@
       const slashAccept = (i) => {
         const c = slashMatches[i];
         if (!c) { slashClose(); return; }
-        const text = "/" + c.name + " ";
+        const text = c.insert || "/" + c.name + " ";
         input.value = text;
         focusChatInput();
         input.setSelectionRange(text.length, text.length);

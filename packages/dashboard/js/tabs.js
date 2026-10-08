@@ -389,6 +389,7 @@
         void lastHistoryLoad;
         if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
         if (window.hydrateModelSelect) window.hydrateModelSelect(); // 모델 프로파일 드롭다운 = 이 탭 상태로.
+        if (window.refreshSessionProjects) window.refreshSessionProjects(); // 📁 연결 칩 = 이 탭 세션 것으로.
         // 세션탭 *이동* 시엔 입력 포커스 안 줌 — 모바일에서 전환 때마다 가상키보드가 올라오는 문제.
         // (새 탭 생성 newTab 은 타이핑 의도라 포커스 유지.)
       };
@@ -441,6 +442,7 @@
         void loadThreadHistory(tk); // 빈 스트림(새 세션 = 이력 없음) 즉시.
         if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
         if (window.hydrateModelSelect) window.hydrateModelSelect(); // 새 세션 = 드롭다운 기본으로.
+        if (window.refreshSessionProjects) window.refreshSessionProjects(); // 새 세션 = 연결 없음.
         focusChatInput();
       };
 
@@ -460,6 +462,7 @@
           persistTabs();
           void loadThreadHistory(activeThreadKey);
           if (typeof refreshBgScope === "function") refreshBgScope(); // 백그라운드 드로어 세션 스코프 재적용.
+          if (window.refreshSessionProjects) window.refreshSessionProjects();
         } else {
           renderTabBar();
           persistTabs();

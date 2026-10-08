@@ -63,6 +63,11 @@ if (typeof n !== "number") {
   );
   process.exit(force ? 0 : 1);
 }
+// 실행형 커맨드는 막지 않는다 — 그 실행이 이 배포 자체일 수 있다(자기 인스턴스 배포). 함께 멈춘다는 것만 알린다.
+const runs = Array.isArray(health?.active_runs) ? health.active_runs : [];
+if (runs.length > 0) {
+  console.log(`deploy-guard: 실행 중인 커맨드 ${runs.length}건은 재시작과 함께 멈춥니다 — ${runs.join(", ")}`);
+}
 if (n === 0) {
   console.log("deploy-guard: 진행 중 턴 0건 — 재시작 안전.");
   process.exit(0);

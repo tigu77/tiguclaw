@@ -127,6 +127,8 @@ export const check: RegressionCheck = {
       //  되돌릴 수 있다는 건 승인 문턱을 낮출 뿐, 읽기전용으로 분류할 근거가 아니다.
       "archive_memory",
       "add_mcp_server", "add_memory", "add_schedule", "add_watch",
+      // 이 대화(세션)에 프로젝트 연결·해제 — 세션 설정을 바꾼다(2026-10-08).
+      "link_project", "unlink_project",
       "cancel_worker", "delete_command", "delete_endpoint", "delete_memory",
       "delete_schedule", "delete_watch", "invoke_skill",
       // ★지금 실행 — 루틴을 실제로 돌리고 결과를 목적지로 보낸다. 폴백이 되부르면 리포트가 두 번 간다.

@@ -32,7 +32,12 @@ export const check: RegressionCheck = {
     let entry: string;
     try {
       registry = readFileSync(path.join(REPO, "src/core/entry/command-registry.ts"), "utf8");
-      entry = readFileSync(path.join(REPO, "src/index.ts"), "utf8");
+      // ★`/project` 와 커맨드 파일은 채널 입구가 `dispatchCommandSlash`(project-command.ts)로 넘긴다(2026-10-08) —
+      //  그 파일도 입구의 일부로 본다. index.ts 가 실제로 그걸 부르는지는 `project-run-commands` 가 지킨다.
+      entry =
+        readFileSync(path.join(REPO, "src/index.ts"), "utf8") +
+        "\n" +
+        readFileSync(path.join(REPO, "src/core/entry/project-command.ts"), "utf8");
     } catch {
       return [assert("소스 없음(배포 레포 아님)", true, "건너뜀")];
     }

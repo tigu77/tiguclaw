@@ -1029,6 +1029,16 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/projects");
       return;
     }
+    // 이 세션에 연결한 프로젝트 — 조회(read)·연결·해제(write). 판단은 코어, 여기는 배관(2026-10-08).
+    if (pathname === "/api/session-projects" && method === "GET") {
+      await proxyJson(res, `/session-projects${url.search}`);
+      return;
+    }
+    if (pathname === "/api/session-projects" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/session-projects", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      return;
+    }
     // 프로젝트 전용 능력 본문 — bridge GET /projects/capability?path=&kind=&name= (read).
     // 프로젝트 상세에서 스킬·에이전트 행을 **누를 때만** 부른다(목록엔 본문을 안 싣는다).
     if (pathname === "/api/projects/capability" && method === "GET") {

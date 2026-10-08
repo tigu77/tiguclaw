@@ -1,4 +1,4 @@
-import { EVENT_TEXT_MAX, presentAndClose, replyCommand } from "./core/entry/reply-command.js";
+import { EVENT_TEXT_MAX, replyCommand } from "./core/entry/reply-command.js";
 import { migrateLegacyModelEnv } from "./core/legacy-model-env.js";
 import { turnSpend } from "./core/llm-runtime/turn-spend.js";
 import {
@@ -45,10 +45,10 @@ import {
   type ChannelPresence,
 } from "./core/channel-registry.js";
 import {
-  expandCommand,
   isEphemeralCommandText,
   parseSlashCommand,
 } from "./core/entry/command-registry.js";
+import { dispatchCommandSlash, stopProjectRuns } from "./core/entry/project-command.js";
 import {
   runStopFailureHooks,
   runStopHooks,
@@ -1133,14 +1133,13 @@ const handler: MessageHandler = async (msg) => {
       await handleStatus(slashCtx);
       return;
     }
-    // V7.3 — 하드코딩 데몬 명령 미매치 시 사용자 정의 슬래시 (.claude/commands/
-    // + plugins/<name>/commands/) 조회. 발견되면 본문 prompt 확장 ($ARGUMENTS
-    // 치환) → effectiveText 교체 → 아래 route 가 LLM 에 전달 (codex/claude 동등).
-    // 미발견이면 effectiveText = 원본 → /foo 그대로 fall-through (기존 동작).
-    const expanded = await expandCommand(cmd.slice(1), args);
-    if (expanded !== undefined) {
-      effectiveText = expanded;
-    }
+
+    // `/project …` 과 사용자 정의 슬래시(전역 커맨드 파일 · 이 대화에 연결한 프로젝트의 커맨드) — 판단·응답은
+    // `dispatchCommandSlash` 한 곳(동작 검사가 닿는 자리). 프롬프트형은 펼친 글로 아래 비서 턴에, 실행형은 셸로.
+    // 미발견이면 원문 그대로 fall-through (기존 동작).
+    const dispatched = await dispatchCommandSlash(slashCtx, cmd);
+    if (dispatched.kind === "handled") return;
+    if (dispatched.kind === "prompt") effectiveText = dispatched.text;
   }
   // V7.4.a — UserPromptSubmit 훅 (데몬에서 강제, 채널 입구 단일 지점 = LLM-agnostic).
   // 슬래시 확장 후의 실효 prompt 기준. exit 2 → 차단, exit 0 stdout → 컨텍스트 prepend.
@@ -1729,9 +1728,13 @@ const serializedHandler: MessageHandler = (msg) => {
         //  ★몇 개를 끊었는지 말한다 — 조용한 조치는 사용자가 확인할 방법이 없다.
         //  ★명령(`/compact`)을 멈출 땐 끊지 않는다 — 앞 턴이 띄워 둔 매니저 잡은 그 명령과 무관하다.
         const stopped = entry.command === true ? 0 : cancelJobsForThread(msg.threadKey);
-        await replyCommand(msg, stopReplyText(stopped, entry.steered ?? 0)).catch(() => {});
+        const runs = await stopProjectRuns(msg.threadKey);
+        const text = stopReplyText(stopped, entry.steered ?? 0);
+        await replyCommand(msg, runs > 0 ? `${text}\n${translate("srv.project.runsStopped", { n: runs })}` : text).catch(() => {});
       } else {
-        await replyCommand(msg, translate("srv.stop.idle")).catch(() => {});
+        // 비서 턴은 없어도 이 대화에서 띄운 실행형 커맨드(`run:`)가 돌고 있을 수 있다 — 그것도 `/stop` 의 대상이다.
+        const runs = await stopProjectRuns(msg.threadKey);
+        await replyCommand(msg, runs > 0 ? translate("srv.project.runsStopped", { n: runs }) : translate("srv.stop.idle")).catch(() => {});
       }
     })();
     return Promise.resolve();

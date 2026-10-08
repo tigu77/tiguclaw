@@ -25,7 +25,7 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { parseFrontmatter } from "../llm-runtime/capabilities/skill-registry.js";
+import { parseBool, parseFrontmatter } from "../llm-runtime/capabilities/skill-registry.js";
 import { dedupeWithShadows, warnShadowed } from "../llm-runtime/capabilities/dedup-by-source.js";
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../paths.js";
 import { translate } from "../i18n.js";
@@ -68,6 +68,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "update", get description() { return translate("srv.cmd.desc.update"); } },
   { name: "cooldown", get description() { return translate("srv.cmd.desc.cooldown"); } },
   { name: "sessions", get description() { return translate("srv.cmd.desc.sessions"); } },
+  { name: "project", get description() { return translate("srv.cmd.desc.project"); } },
   { name: "model", get description() { return translate("srv.cmd.desc.model"); } },
   { name: "models", get description() { return translate("srv.cmd.desc.models"); } },
   { name: "providers", get description() { return translate("srv.cmd.desc.providers"); } },
@@ -112,10 +113,33 @@ export const parseSlashCommand = (
   return { cmd, args, sub, rest };
 };
 
+/**
+ * `"SMGS Android" deploy 나머지` → 첫 낱말(따옴표 가능)과 나머지. `/project` 인자 파서 — 프로젝트 이름에 공백이 있어 따옴표를 쓴다.
+ * ★`/project` 의 실행 분기(index.ts·project-command.ts)와 휘발 판정(아래)이 **이 하나**를 쓴다 — 파서가 둘이면
+ *  `/project "run" …` 을 한쪽은 실행, 한쪽은 조회로 읽어 사용자 메시지만 기록에서 빠진다(2026-10-08 적대 검토).
+ */
+export const splitFirstToken = (s: string): { first: string; rest: string } => {
+  const t = s.trimStart();
+  const close = t.startsWith('"') ? t.indexOf('"', 1) : -1;
+  if (close > 0) return { first: t.slice(1, close), rest: t.slice(close + 1).trimStart() };
+  const m = /^(\S+)\s*([\s\S]*)$/.exec(t); // 닫는 따옴표가 없으면 그냥 낱말로
+  return m === null ? { first: "", rest: "" } : { first: m[1] ?? "", rest: m[2] ?? "" };
+};
+
 /** 이 입력이 휘발성 명령인가 — 입구(에코 스킵)와 응답(관측 스킵)이 같은 답을 쓰게. */
 export const isEphemeralCommandText = (text: string): boolean => {
-  const { cmd, sub, rest } = parseSlashCommand(text);
+  const { cmd, args } = parseSlashCommand(text);
+  // `/project` 도 같은 규칙 — 목록·메뉴·보기는 휘발, **상태 변경(연결·해제 확정)과 실행(비서 턴)은 기록** (2026-10-08).
+  //  ★`run` 을 휘발로 두면 사용자 메시지가 기록에서 빠진 채 비서가 답한다.
+  if (cmd === "/project") {
+    const { first: sub, rest } = splitFirstToken(args);
+    if (sub === "run") return false;
+    if (sub === "link" && rest !== "") return false;
+    if (sub === "unlink" && /(^|\s)confirm$/.test(rest.trim())) return false;
+    return true;
+  }
   if (cmd !== "/sessions") return false;
+  const { sub, rest } = parseSlashCommand(text);
   // ★**선택지를 띄우는 호출은 휘발**이다 (2026-08-23 4라운드). 인자 없는 `/sessions` 와
   //  인자 없는 `archive|unarchive` 는 목록/선택 UI 이지 대화가 아니다. 그런데 그 응답은
   //  **어느 채널에서도 기록되지 않는다** — `presentOptions` 는 cli=stdout, telegram=
@@ -147,6 +171,13 @@ export interface Command {
   source: "user" | "project" | "plugin";
   /** source === "plugin" 시 plugin id. */
   pluginId?: string;
+  /**
+   * frontmatter `run:` — 있으면 **실행형**: 비서 턴 없이 이 한 줄을 셸로 돌린다(연결한 프로젝트 폴더에서, 2026-10-08
+   * docs/decisions/2026-10-08-session-project-links.md). 여러 단계는 스크립트 파일·npm 스크립트로 묶어 이 줄이 부른다.
+   */
+  run?: string;
+  /** frontmatter `confirm: true` — 실행형을 돌리기 전에 한 번 묻는다(배포처럼 되돌리기 어려운 일). */
+  confirm: boolean;
 }
 
 /**
@@ -190,6 +221,14 @@ export const discoverCommands = async (
   warnShadowed("command", _d.shadowed);
   return _d.kept;
 };
+
+/**
+ * 한 프로젝트 폴더의 커맨드만 — 세션에 연결한 프로젝트용(2026-10-08, docs/decisions/2026-10-08-session-project-links.md).
+ * ★`.tiguclaw/commands` 만 본다. 옛 평면 폴더(`<프로젝트>/commands`)까지 보면 코드 레포의 `commands/` **소스 폴더**에 있는
+ *  `.md` 문서를 커맨드로 올린다(연결은 남의 레포에도 걸 수 있다 — 데몬 cwd 와 달리 우리가 고른 자리가 아니다).
+ */
+export const discoverProjectCommands = async (projectPath: string): Promise<Command[]> =>
+  walkCommandsDir(projectScope(projectPath).commands, "project");
 
 /**
  * 단일 commands 디렉터리 walk — 안의 `*.md` 파일 직접 순회 (agent-registry 동형).
@@ -272,12 +311,15 @@ const loadSingleCommand = async (
   // frontmatter 는 optional — 있으면 description 추출, 없으면 "".
   const frontmatter = parseFrontmatter(raw);
   const description = (frontmatter?.description ?? "").trim();
+  const run = (frontmatter?.run ?? "").trim();
 
   return {
     name,
     description,
     filePath: path.resolve(filePath),
     source,
+    ...(run !== "" ? { run } : {}),
+    confirm: parseBool(frontmatter?.confirm, false),
   };
 };
 
@@ -310,20 +352,25 @@ export const expandCommand = async (
   args: string,
   cwd: string = process.cwd(),
 ): Promise<string | undefined> => {
-  const commands = await discoverCommands(cwd);
-  const candidates = commands.filter((c) => c.name === name);
-  if (candidates.length === 0) return undefined;
-  const project = candidates.find((c) => c.source === "project");
-  const plugin = candidates.find((c) => c.source === "plugin");
-  const chosen = project ?? plugin ?? candidates[0]!;
+  const chosen = await resolveCommand(name, cwd);
+  return chosen === undefined ? undefined : expandCommandFile(chosen, args);
+};
 
+/** 전역 커맨드 하나를 고른다(우선순위 project > plugin > user) — 펼치기 전에 그 정의(`run:` 등)를 봐야 하는 호출용. */
+export const resolveCommand = async (name: string, cwd: string = process.cwd()): Promise<Command | undefined> => {
+  const candidates = (await discoverCommands(cwd)).filter((c) => c.name === name);
+  if (candidates.length === 0) return undefined;
+  return candidates.find((c) => c.source === "project") ?? candidates.find((c) => c.source === "plugin") ?? candidates[0]!;
+};
+
+/** 고른 커맨드 하나를 펼친다 — 본문(frontmatter 제외)의 `$ARGUMENTS` 를 인자로. 파일을 못 읽으면 undefined. */
+export const expandCommandFile = async (command: Pick<Command, "filePath">, args: string): Promise<string | undefined> => {
   let raw: string;
   try {
-    raw = await fs.readFile(chosen.filePath, "utf8");
+    raw = await fs.readFile(command.filePath, "utf8");
   } catch {
     return undefined;
   }
-
   const body = stripFrontmatter(raw).trim();
   // $ARGUMENTS 치환 — 전역. args 빈 문자열이면 빈 치환.
   return body.replaceAll("$ARGUMENTS", args);

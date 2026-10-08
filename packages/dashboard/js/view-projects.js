@@ -112,8 +112,9 @@
       };
 
       // ── 컨텍스트 태그 바 ─────────────────────────────────────────────────
-      // 등록 프로젝트를 칩으로. 클릭 시 `#<이름>` 태그를 입력창에 껴넣어 "그 프로젝트 얘기"임을
+      // 배운 태그(스킬·에이전트·주제)를 칩으로. 클릭 시 `#<이름>` 태그를 입력창에 껴넣어 "그 얘기"임을
       // 티구클로가 바로 알게 한다(SYSTEM.md 텍스트 컨벤션 — 채널·LLM 무관). 최근 클릭 순 정렬.
+      // 프로젝트는 여기 두지 않는다 — 대화에 연결한다(session-projects.js, 이 줄 바로 아래).
       const CTX_RECENT_KEY = "tgctx_recent";
       const ctxRecent = () => { try { return JSON.parse(localStorage.getItem(CTX_RECENT_KEY) || "[]"); } catch { return []; } };
       const ctxBumpRecent = (name) => {
@@ -233,14 +234,14 @@
         const bar = document.getElementById("chat-context");
         if (!bar) return;
         bar.innerHTML = "";
-        const projs = Array.isArray(projectsCache) ? projectsCache.filter((p) => p && p.name) : [];
-        const projByName = new Map(projs.map((p) => [p.name, p]));
+        // ★프로젝트는 태그 후보에 두지 않는다(2026-10-08) — 대화에 «연결»하는 줄(session-projects.js)이 맡는다.
+        //  예전에 배운 프로젝트 이름도 빼고, 손으로 `#이름` 을 치는 것은 그대로 된다.
+        const projectNames = new Set((Array.isArray(projectsCache) ? projectsCache : []).filter((p) => p && p.name).map((p) => p.name));
         const resolvable = resolvableNames();
-        // 후보 = 최근 사용 태그 ∪ 등록 프로젝트(시드). 최근 먼저.
-        const names = []; const seen = new Set();
+        // 후보 = 최근 사용 태그(스킬·에이전트·주제). 최근 먼저.
+        const names = []; const seen = new Set(projectNames);
         for (const n of ctxRecent()) { if (n && !seen.has(n)) { seen.add(n); names.push(n); } }
-        for (const p of projs) { if (!seen.has(p.name)) { seen.add(p.name); names.push(p.name); } }
-        if (names.length === 0) { bar.classList.remove("expanded"); return; } // 없으면 바 숨김(:empty).
+        // ★후보가 없어도 줄은 그린다 — «＋ 새 태그» 가 첫 태그를 만드는 입구다(예전엔 프로젝트가 늘 후보라 빈 적이 없었다).
         const expanded = ctxBarExpanded();
         bar.classList.toggle("expanded", expanded);
         // 토글 — 접힘 1줄 / 펼침 다줄+스크롤. caret + "컨텍스트" + 개수.
@@ -252,29 +253,27 @@
         toggle.appendChild(caret); toggle.appendChild(document.createTextNode(i18n("proj.ctx.toggle")));
         const cnt = document.createElement("span");
         cnt.className = "ctx-count"; cnt.textContent = String(names.length);
-        toggle.appendChild(cnt);
+        if (names.length > 0) toggle.appendChild(cnt);
         toggle.addEventListener("click", () => setCtxBarExpanded(!expanded));
         bar.appendChild(toggle);
         // 칩 컨테이너
         const chipWrap = document.createElement("div");
         chipWrap.className = "ctx-chips";
         for (const name of names.slice(0, 50)) {
-          const p = projByName.get(name);
-          const status = p && ["active", "paused", "done"].includes(p.status) ? p.status : null;
-          const isResolved = p || resolvable.has(name);
+          const isResolved = resolvable.has(name);
           const chip = document.createElement("span");
-          chip.className = "ctx-chip" + (p ? " s-" + status : " ctx-generic") + (isResolved ? "" : " ctx-unresolved");
+          chip.className = "ctx-chip ctx-generic" + (isResolved ? "" : " ctx-unresolved");
           chip.dataset.tag = name;
           chip.title = i18n("proj.tag.chipTitle", {
-            kind: p ? i18n("proj.title") : isResolved ? i18n("proj.assets.head") : i18n("proj.tag.unresolved"),
+            kind: isResolved ? i18n("proj.assets.head") : i18n("proj.tag.unresolved"),
             name,
           });
           const hash = document.createElement("span");
           hash.className = "ctx-hash"; hash.textContent = "#";
           chip.appendChild(hash); chip.appendChild(document.createTextNode(name));
           chip.addEventListener("click", () => insertContextTag(name));
-          // 학습 칩(프로젝트 시드 아님)은 × 로 제거 가능. 프로젝트는 registry 관리라 × 없음.
-          if (!p) {
+          // 학습 칩은 × 로 제거 가능.
+          {
             const x = document.createElement("span");
             x.className = "ctx-x"; x.textContent = "×"; x.title = i18n("proj.tag.removeTitle");
             x.addEventListener("click", (e) => { e.stopPropagation(); ctxUnlearn(name); });

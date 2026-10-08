@@ -71,6 +71,7 @@ import { toolSlowWarnMs } from "../tool-watchdog.js";
 // 셸의 원 세션 환원 — 매니저·서브가 띄운 셸은 threadKey 가 잡 좌표(worker:/agent:)라 세션 키가
 // 아니다. 잡 레지스트리를 보는 코어가 환원해서 관측면에 실어 준다(대시보드 추측 제거).
 import { resolveOwnerThreadKey } from "../../worker-jobs.js";
+import { buildChildEnv } from "../../external-mcp.js";
 import {
   insertBgShell as insertBgShellDb,
   markBgShellStatus as markBgShellStatusDb,
@@ -439,6 +440,7 @@ const launchBgShell = async (
   command: string,
   cwd: string,
   threadKey: string,
+  env?: NodeJS.ProcessEnv,
 ): Promise<string> => {
   // 끝난 셸 하나 정리해 상한 압박 완화(전부 running 이면 그대로 진행 — 20 이면 충분).
   if (BG_SHELLS.size >= BG_MAX) {
@@ -454,7 +456,7 @@ const launchBgShell = async (
   // 않는다: 데몬이 child 핸들을 계속 들고 stdout/stderr/close 를 추적해야 BashOutput/
   // KillShell 이 정상 동작(unref 는 이벤트루프 이탈만 막을 뿐 추적엔 무관하나, 명시로
   // "추적 유지 의도"를 박아둔다 — ADR §3-1).
-  const child = spawn(SHELL.bin, SHELL.argsFor(command), shellSpawnOptions(SHELL, { cwd }, { processGroup: true }));
+  const child = spawn(SHELL.bin, SHELL.argsFor(command), shellSpawnOptions(SHELL, env === undefined ? { cwd } : { cwd, env }, { processGroup: true }));
   const pgid = child.pid ?? -1;
   const startedAt = Date.now();
   const shell: BgShell = {
@@ -487,12 +489,12 @@ const launchBgShell = async (
   // shell.exited 페이로드 — close/error(자연종료) 공용 빌더. status="exited"(kill 경로는
   // killShellById/killAllBgShells 가 별도로 "killed" 를 발행 — 이 핸들러는 status==="running"
   // 가드 덕에 kill 이후엔 실행돼도 no-op 이라 이중발행 0).
-  const publishExited = (): void => {
+  const publishExited = (status: "exited" | "killed" = "exited"): void => {
     publishShellEventSafe("shell.exited", {
       shellId: id,
       command: shell.command,
       cwd: shell.cwd,
-      status: "exited",
+      status,
       exitCode: shell.exitCode,
       startedAt: shell.startedAt,
       threadKey: shell.threadKey,
@@ -509,14 +511,17 @@ const launchBgShell = async (
       publishExited();
     }
   });
-  child.on("close", (code) => {
+  child.on("close", (code, signal) => {
     if (shell.status === "running") {
-      shell.status = "completed";
-      shell.exitCode = code ?? 0;
+      // ★신호로 죽은 것은 «성공(0)» 이 아니다 (2026-10-08 적대 검토). 종전엔 `code ?? 0` 이라 OOM·밖에서 보낸 kill·
+      //  재시작 정리가 exit 0 으로 기록됐고, 그 결과를 그대로 알리는 실행형 커맨드가 중단된 배포를 «✅ 끝났습니다» 로 보고했다.
+      const bySignal = code === null && signal !== null;
+      shell.status = bySignal ? "killed" : "completed";
+      shell.exitCode = code;
       persistBgShellSafe("close", () =>
-        markShellTerminalDb(id, "completed", shell.exitCode),
+        markShellTerminalDb(id, shell.status === "killed" ? "killed" : "completed", shell.exitCode),
       );
-      publishExited();
+      publishExited(bySignal ? "killed" : "exited");
     }
   });
   BG_SHELLS.set(id, shell);
@@ -563,6 +568,44 @@ const launchBgShell = async (
   return id;
 };
 
+/** 백그라운드 셸이 끝났을 때 — 상태·종료 코드·최근 출력 꼬리(두 스트림 도착 순, 최대 4,000자). */
+export interface BgShellResult {
+  status: "completed" | "killed";
+  exitCode: number | null;
+  recent: string;
+}
+
+/**
+ * 백그라운드 셸을 띄우고 **끝을 기다릴 수 있게** 돌려준다 — 대화의 실행형 커맨드(`run:`, 2026-10-08)용.
+ * ★Bash 도구의 백그라운드 셸과 **같은 셸**이다(새 실행기를 만들지 않는다): 셸 카드(`shell.*`)·대시보드 중지
+ *  (`/api/kill-shell`)·재시작 정리·부팅 리퍼·환경 변수 정리가 그대로 따라온다.
+ */
+export const startBackgroundShell = async (
+  command: string,
+  cwd: string,
+  threadKey: string,
+): Promise<{ shellId: string; done: Promise<BgShellResult> }> => {
+  // ★데몬의 시크릿은 물려주지 않는다 (2026-10-08 적대 검토) — 연결한 프로젝트의 스크립트(남의 레포일 수 있다)가 봇 토큰·
+  //  API 키를 받던 것. 판정은 외부 MCP 자식과 같은 `buildChildEnv`(이름으로 시크릿을 가른다).
+  const shellId = await launchBgShell(command, cwd, threadKey, buildChildEnv());
+  const s = BG_SHELLS.get(shellId)!;
+  const done = new Promise<BgShellResult>((resolve) => {
+    let settled = false;
+    const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (settled) return;
+      settled = true;
+      const killed = s.status === "killed" || (code === null && signal !== null);
+      resolve({ status: killed ? "killed" : "completed", exitCode: code, recent: s.recent });
+    };
+    // ★`close` 만 기다리지 않는다 — 스크립트가 서버를 띄우고 끝나면 그 손자가 출력 파이프를 쥐어 `close` 가 영영 안 온다
+    //  (적대 검토: 결과가 늦거나 안 왔다). 셸이 끝나면(`exit`) 남은 출력이 흘러들 짧은 틈을 두고 결과를 낸다.
+    s.child.once("exit", (code, signal) => setTimeout(() => finish(code, signal), 200));
+    s.child.once("close", (code, signal) => finish(code, signal));
+    s.child.once("error", () => finish(-1, null));
+  });
+  return { shellId, done };
+};
+
 // ─── bg_shells DB 접근 — worker-jobs.ts 정적 import 패턴 동형(store/bg-shells.js,
 // 상단 import 블록). 순환 없음(store→core 참조 0, 단방향). ─────────────────────────
 
@@ -607,6 +650,8 @@ export const killAllBgShells = async (): Promise<void> => {
   await Promise.all(
     entries.map(async ([id, s]) => {
       if (s.status === "running") {
+        // ★죽이기 **전에** 표시한다 — 자식의 close 가 먼저 오면 «정상 종료» 로 굳는다(아래 killShellById 와 같은 이유).
+        s.status = "killed";
         await killTree(s.pgid, "SIGTERM");
         persistBgShellSafe("killAllBgShells", () => {
           markBgShellStatusDb(id, "killed", {
@@ -717,8 +762,10 @@ export const killShellById = async (shellId: string): Promise<boolean> => {
   const s = BG_SHELLS.get(shellId);
   if (s === undefined) return false;
   if (s.status === "running") {
-    await killTree(s.pgid, "SIGKILL");
+    // ★죽이기 **전에** 표시한다 (2026-10-08 적대 검토). 종전엔 `await killTree` 뒤에 세웠는데, Windows `taskkill` 을
+    //  기다리는 사이 자식의 close 가 먼저 와 «completed · 1» 로 굳고 shell.exited 가 두 번(exited·killed) 나갔다.
     s.status = "killed";
+    await killTree(s.pgid, "SIGKILL");
     persistBgShellSafe("killShellById", () => {
       markBgShellStatusDb(shellId, "killed", {
         finishedAt: Date.now(),

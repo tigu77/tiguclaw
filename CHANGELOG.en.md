@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Link projects to a conversation.** Attach registered projects from `+ Project` above the dashboard input, with `/project` on Telegram, or just by asking ("link ○○ to this conversation"). You can link several, and the assistant keeps them in mind for the whole conversation. It also uses each project's own skills, agents and MCP servers by handing work to that folder (managers it starts inherit the links).
+- **Use a linked project's commands right in that conversation.** Click its 📁 chip for its commands, `PROJECT.md` and Unlink; the dashboard `/` list also shows them per project.
+- **Runnable commands.** Add `run:` to a command file and it runs directly in the project folder, without going through the assistant, and posts the result to the conversation (deploy, build and test buttons). With `confirm: true` it asks first, and `/stop` stops it. Ask "make a deploy command" and the assistant shows you what it will save before creating it.
+
+### Changed
+
+- **Projects no longer appear among the context tags above the input.** Link them to the conversation from the row just below instead. Typing `#name` yourself still works.
+
+### Fixed
+
+- **On Windows, stopping, restarting or updating the daemon could force-kill other programs** — one listening on a port that starts with the same digits (30000 for 3000), or another app holding that port. Only this instance's processes are stopped now.
+- **A Windows update went ahead with installing even when the daemon failed to stop.** It now stops before installing and leaves the running version in place.
+- **File watches with a name filter (such as `.txt`) never detected any change.**
+- **Adding several external MCP servers at once could drop some of them from the settings.** A broken settings file is now reported instead of overwritten.
+- **Fetching a web page kept downloading past the 5MB limit and didn't stop on `/stop`.**
+- **Live dashboard state (background tasks and similar) could occasionally jump back to an older value.**
+
 ## [0.67.0] - 2026-10-07
 
 ### Added

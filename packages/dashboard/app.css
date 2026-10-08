@@ -1559,6 +1559,7 @@
       .bg-jump:hover { border-color:rgb(var(--accent-rgb) / .55); color:var(--accent); }
       .slash-item { display:flex; align-items:baseline; gap:9px; padding:7px 10px; border-radius:9px; cursor:pointer; user-select:none; }
       .slash-item.active { background:rgb(var(--accent-rgb) / .14); }
+      .slash-group { padding:8px 10px 3px; font-size:0.65625rem; font-weight:650; color:var(--text-mute); border-top:1px solid var(--border); margin-top:4px; }
       .slash-name { color:var(--accent); font-weight:750; font-size:0.75rem; white-space:nowrap; }
       .slash-desc { color:var(--text-mute); font-size:0.6875rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       #chat-form { display:flex; gap:8px; align-items:flex-end; }
@@ -1674,6 +1675,11 @@
       /* 칩 영역 — 접힘: 1줄 클립 / 펼침: max-height + 세로 스크롤(너무 길어도 화면 안 넘침). */
       .ctx-chips { display:flex; flex-wrap:wrap; gap:6px; flex:1; min-width:0; max-height:27px; overflow:hidden; }
       .chat-context.expanded .ctx-chips { max-height:min(150px, 30vh); overflow-y:auto; padding-bottom:2px; }
+      /* 이 대화에 연결된 프로젝트 줄 — 컨텍스트 태그 줄 바로 아래. 📁 칩(누르면 그 프로젝트 메뉴) + [+ 프로젝트]. */
+      .chat-projects { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:8px; }
+      .chat-projects:empty { display:none; }
+      button.ctx-chip { font-family:inherit; }
+      .ctx-chip.ctx-missing { opacity:.6; border-style:dashed; }
       .ctx-chip { display:inline-flex; align-items:center; gap:4px; font-size:0.6875rem; font-weight:600; padding:3px 9px; border-radius:999px; cursor:pointer; user-select:none;
         background:rgb(var(--accent-rgb) / .10); color:var(--accent); border:1px solid rgb(var(--accent-rgb) / .28); }
       .ctx-chip:hover { background:rgb(var(--accent-rgb) / .20); border-color:rgb(var(--accent-rgb) / .55); }
@@ -1681,8 +1687,6 @@
       .ctx-chip.ctx-add { border-style:dashed; opacity:.8; }
       .ctx-chip.ctx-add:hover { opacity:1; }
       .ctx-chip .ctx-hash { opacity:.6; }
-      .ctx-chip.s-paused { background:rgb(var(--fg-rgb) / .05); color:var(--text-mute); border-color:var(--border); }
-      .ctx-chip.s-done { opacity:.6; }
       /* 프로젝트 아닌 일반 태그(스킬·주제) — 보라 계열로 프로젝트(하늘색)와 구분. */
       .ctx-chip.ctx-generic { background:rgb(var(--accent-2-rgb) / .18); color:var(--agent-fg); border-color:rgb(var(--accent-2-rgb) / .45); }
       .ctx-chip.ctx-generic:hover { background:rgb(var(--accent-2-rgb) / .28); border-color:rgb(var(--accent-2-rgb) / .7); }
@@ -1851,6 +1855,7 @@
       .cm-item .cm-icon { flex:none; font-size:0.8125rem; width:16px; text-align:center; }
       .cm-item .cm-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .cm-sep { height:1px; margin:5px 4px; background:var(--border); flex:none; }
+      .cm-header { padding:6px 10px 4px; font-size:0.6875rem; font-weight:650; color:var(--text-mute); }
       @media (max-width: 900px) {
         .ctx-menu { min-width:180px; max-width:min(320px, 92vw); }
         .cm-item { padding:11px 12px; font-size:0.84375rem; } /* 터치 타깃 확대. */

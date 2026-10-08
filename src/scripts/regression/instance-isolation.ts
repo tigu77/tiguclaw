@@ -238,7 +238,7 @@ export const check: RegressionCheck = {
       psExact: d.PS_UTF8_OUTPUT === "[Console]::OutputEncoding = [Text.Encoding]::UTF8; ",
       psArgs: psDecoded === d.PS_UTF8_OUTPUT + "X" && (d.winProcQueryArgs()[2] ?? "").startsWith(d.PS_UTF8_OUTPUT),
       psWired: /spawnSync\(\s*"powershell",\s*winPsArgs\(script\)/.test(body("winPs")) &&
-        /spawnSync\("powershell", winProcQueryArgs\(\)/.test(body("winDaemonPids")),
+        /spawnSync\("powershell", winProcQueryArgs\(\)/.test(body("winScan")),
       // install·start·restart 가 같은 «켜고 띄우기» 를 쓰고, Enable 이 Start 보다 앞이다(재검토 M3·M7).
       enableFirst: enableStart.includes("Enable-ScheduledTask") &&
         enableStart.indexOf("Enable-ScheduledTask") < enableStart.indexOf("Start-ScheduledTask"),
@@ -248,8 +248,9 @@ export const check: RegressionCheck = {
 
     // 실제 프로세스 선택 자리가 경계 판정을 쓰는가(이 기계엔 PowerShell 이 없어 실행으로는 못 잰다 — 배선만).
     const daemonSrc = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
-    const pidsFn = daemonSrc.slice(daemonSrc.indexOf("const winDaemonPids"), daemonSrc.indexOf("const winKillRunning"));
-    const wired = /cmdlineHasHome\(l, home\)/.test(pidsFn) && !/\.includes\(home\)/.test(pidsFn);
+    // 판정은 `selectWinKillTargets` 한 곳(2026-10-08 — 포트 리스너 소유 확인과 합쳤다. 동작은 `windows-stop-owns-its-pids` 가 실행해 본다).
+    const pidsFn = daemonSrc.slice(daemonSrc.indexOf("export const selectWinKillTargets"), daemonSrc.indexOf("export const winPortDaemonPids"));
+    const wired = /cmdlineHasHome\(p\.cmd, h\)/.test(pidsFn) && !/\.includes\(h\)/.test(pidsFn);
     return [
       assert(
         "★예약작업 명령줄: 실제 런처 VBS 를 왕복해도 끝 역슬래시·공백·한글 경로가 같은 인자로 간다 · VBS 는 UTF-16LE+BOM(쓰는 자리 하나) · PowerShell 출력은 UTF-8(두 호출 모두) · 작업은 켜고 나서 띄운다",
@@ -266,7 +267,7 @@ export const check: RegressionCheck = {
         { flags, rejectedStatus: rejected.status, rejectedErr: rejected.stderr.trim() },
       ),
       assert("★홈 .env 를 CLI 와 데몬이 같은 값으로 읽는다 — 띄어쓰기·export·같은 키 두 번·줄 끝 주석", parity.every((p) => p.cli === p.daemon) && parity.slice(0, 4).every((p) => p.cli === "com.tiguclaw.inspection"), parity),
-      assert("Windows 프로세스 선택(winDaemonPids)이 경계 판정을 쓴다 — 부분 문자열 비교가 남아 있지 않다", wired, { wired }),
+      assert("Windows 프로세스 선택(selectWinKillTargets)이 경계 판정을 쓴다 — 부분 문자열 비교가 남아 있지 않다", wired, { wired }),
       assert(
         "★다른 홈(앞부분만 같은 이웃)의 감독자·데몬은 이 홈 것이 아니다 — 따옴표 겹친 CSV·홈 아래 클론까지",
         !cases.sibling && !cases.siblingCsv && !cases.siblingClone,

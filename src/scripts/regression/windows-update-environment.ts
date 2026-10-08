@@ -106,7 +106,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     const source = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     const body = source.slice(source.indexOf("const runUpdate = (c) => {"), source.indexOf("\n/**\n * @param {Ctx} c\n * @param {string} cmd", source.indexOf("const runUpdate = (c) => {")));
     type Scenario = "success" | "npm-fail" | "dirty" | "lock-only" | "rollback-dirty" | "corrupt-env" | "pull-fail";
-    const simulate = (scenario: Scenario, opts: { notify?: boolean; handoff?: string; resetFails?: boolean } = {}) => {
+    const simulate = (scenario: Scenario, opts: { notify?: boolean; handoff?: string; resetFails?: boolean; stopFails?: boolean } = {}) => {
       const h = fs.mkdtempSync(path.join(home, "case-")); fs.writeFileSync(path.join(h, "dist.js"), "ok");
       const context = { ...c, homeAbs: h, logsDir: path.join(h, "logs"), distEntry: path.join(h, "dist.js"),
         ...(scenario === "corrupt-env" ? { winEnvError: "win-service-env.json is unreadable (fixture)" } : {}) };
@@ -138,7 +138,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const startMark = (what: string) => () => calls.push(`${what}:${fs.existsSync(marker) ? "marker" : "no-marker"}`);
       const invoke = new Function(...names, body + "; return runUpdate;")(...[
         processFake, fakeConsole, path, fs.existsSync, fs.mkdirSync, (p: string, flags: string) => { const fd = fs.openSync(p, flags); fds.push(fd); return fd; }, fs.writeSync, fs.writeFileSync, spawnSync, () => true, () => true,
-        { win32: { stop: () => calls.push("STOP"), start: startMark("START"), restart: startMark("RESTART") } }, () => {}, () => calls.push("SAVE_ENV"), (text: string) => d.redactUpdateLog(text, processFake.env),
+        { win32: { stop: () => { calls.push("STOP"); return opts.stopFails === true ? false : true; }, reenable: () => calls.push("REENABLE"), start: startMark("START"), restart: startMark("RESTART") } }, () => {}, () => calls.push("SAVE_ENV"), (text: string) => d.redactUpdateLog(text, processFake.env),
       ]);
       try { invoke(context); } finally { for (const fd of fds) fs.closeSync(fd); }
       const log = fs.readdirSync(path.join(h, "logs")).find((x) => x.startsWith("update-")); assert(log);
@@ -153,6 +153,16 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       // ★롤백은 이전 판을 **다시 빌드**한다 — 실패한 빌드가 새 코드 .js 를 dist 에 남겼을 수 있다(재검토 P2).
       assert(r.calls.indexOf("npm run build:prod", r.calls.indexOf("git reset --keep 1111111")) > 0, r.calls.join(" | "));
       return `outcome=${r.marker?.outcome}`;
+    });
+    test("★데몬이 안 멈추면 설치 전에 그만둔다 — npm ci 0 · 받은 코드는 돌고 있는 빌드로 되돌림 · «unchanged» 마커 · 띄우지는 않되 예약작업은 다시 켠다", () => {
+      // 2026-10-08 외부 검토 F2: 종전엔 stop 반환을 안 봐서 Windows 에서 데몬이 살아 있는 채로 npm ci 가 돌았다(파일 잠금).
+      const r = simulate("success", { notify: true, stopFails: true });
+      assert.equal(r.exitCode, 1); assert(r.calls.includes("STOP"));
+      assert(!has(r.calls, /^npm /), r.calls.join(" | ")); assert(r.calls.includes("git reset --keep 1111111"), r.calls.join(" | "));
+      assert(!has(r.calls, /^(START|RESTART)/), r.calls.join(" | ")); assert.equal(r.marker?.outcome, "unchanged");
+      // ★stop 이 먼저 작업을 껐다 — 다시 안 켜면 남은 데몬이 죽은 뒤 영영 안 뜬다(2026-10-08 적대 검토 P1).
+      assert(r.calls.includes("REENABLE"), r.calls.join(" | "));
+      return `npm 0 · outcome=${r.marker?.outcome} · 작업 다시 켬`;
     });
     test("성공: lock 정리→pull→stop→npm→build→start, 완료 마커", () => {
       const r = simulate("success", { notify: true }); assert.equal(r.exitCode, 0); assert(r.calls.includes("npm run build:prod")); assert(has(r.calls, /^START/));

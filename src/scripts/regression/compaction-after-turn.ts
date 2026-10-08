@@ -613,7 +613,7 @@ export const check: RegressionCheck = {
         // 통지 좌표(재시작 알림이 텔레그램에 닿는다) · 끝나면 **자기 항목만** 치운다(새면 /health·작업표시가 굳는다).
         registered: /cmd === "\/compact"\) \{[\s\S]{0,600}target: msg\.channelAddress \?\? null,\s*command: true,[\s\S]{0,100}inflightTurns\.set\(msg\.threadKey, compactEntry\);[\s\S]{0,200}handleCompact\(\{ \.\.\.slashCtx, signal: compactEntry\.ac\.signal \}\);\s*\} finally \{\s*if \(inflightTurns\.get\(msg\.threadKey\) === compactEntry\) inflightTurns\.delete\(msg\.threadKey\);/.test(entry),
         handler: /compactThreadNow\([\s\S]{0,300}resolveReasoningEffort\("codex", codexModel\),\s*signal,\s*\)/.test(slash),
-        summarizer: /const compactThreadNowUnlocked = [\s\S]{0,4000}runSummarizer\([\s\S]{0,200}turnReasoning,\s*signal,\s*threadKey,/.test(codexSrc),
+        summarizer: /const compactThreadNowUnlocked = [\s\S]{0,4000}runSummarizer\([\s\S]{0,200}turnReasoning,\s*anySignal\(signal, batch\),\s*threadKey,/.test(codexSrc),
         keepsJobs: /const stopped = entry\.command === true \? 0 : cancelJobsForThread\(msg\.threadKey\);/.test(entry),
         lock: /withThreadCompactionLock\(a\[1\], \(\) => compactThreadNowUnlocked\(\.\.\.a\), a\[6\]\)/.test(codexSrc),
       };

@@ -508,6 +508,7 @@ const darwinStop = (c) => {
     /* 미로드 — 이미 정지 상태로 간주 */
   }
   console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
+  return true;
 };
 
 // start = plist 재작성 없이 재적재(재실행). 등록 파일은 이미 디스크에 있어야 한다.
@@ -661,8 +662,15 @@ const linuxRestart = (c) => {
 // stop = 실행만 중지, 유닛 enable(등록) 유지 (D3).
 /** @param {Ctx} c */
 const linuxStop = (c) => {
-  systemctlUser(["stop", c.label]);
+  try {
+    systemctlUser(["stop", c.label]);
+  } catch (e) {
+    console.error(`🔴 stop failed — systemctl --user stop ${c.label}: ${e instanceof Error ? e.message : String(e)}`);
+    process.exitCode = 1;
+    return false;
+  }
   console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
+  return true;
 };
 
 // start = 재실행. 유닛은 이미 디스크에 있어야 한다.
@@ -1126,23 +1134,76 @@ const buildWinTaskScript = (c) => {
   ].join("\n");
 };
 
-// bridge 포트를 LISTEN 중인 PID(실행 중 데몬 추정).
 /**
- * @param {Ctx} c
+ * `netstat -ano` 출력에서 **정확히 이 포트**를 LISTEN 중인 PID (2026-10-08 외부 검토 F1).
+ * ★종전엔 `l.includes(":3000")` 이라 `:30000` 도 걸렸다. 로컬 주소 칸(`0.0.0.0:3000`·`[::]:3000`)의 **마지막 `:` 뒤**를 비교한다.
+ * @param {string} stdout
+ * @param {number | string} port
  * @returns {string[]}
  */
-const winListeningPids = (c) => {
-  const ns = spawnSync("netstat", ["-ano"], { encoding: "utf8" });
+export const parseNetstatListenerPids = (stdout, port) => {
   /** @type {Set<string>} */
   const pids = new Set();
-  const needle = `:${winPort(c)}`;
-  for (const l of (ns.stdout ?? "").split(/\r?\n/)) {
-    if (l.includes(needle) && /LISTENING/i.test(l)) {
-      const pid = l.trim().split(/\s+/).pop();
-      if (pid !== undefined && pid !== "0") pids.add(pid);
-    }
+  for (const l of String(stdout ?? "").split(/\r?\n/)) {
+    const cols = l.trim().split(/\s+/);
+    // TCP  <로컬>  <원격>  LISTENING  <PID>
+    if (cols.length < 5 || !/^TCP/i.test(cols[0] ?? "") || !/^LISTENING$/i.test(cols[3] ?? "")) continue;
+    const local = cols[1] ?? "";
+    if (local.slice(local.lastIndexOf(":") + 1) !== String(port)) continue;
+    const pid = cols[4] ?? "";
+    if (/^\d+$/.test(pid) && pid !== "0") pids.add(pid);
   }
   return [...pids];
+};
+
+/** bridge 포트를 정확히 LISTEN 중인 PID — **상태 표시·실행 여부 판정용**(종료 대상은 `selectWinKillTargets` 가 소유까지 본다). @param {Ctx} c */
+const winListeningPids = (c) =>
+  parseNetstatListenerPids(spawnSync("netstat", ["-ano"], { encoding: "utf8" }).stdout ?? "", winPort(c));
+
+/**
+ * `Get-CimInstance Win32_Process … | ConvertTo-Csv` 출력 → `{ pid, cmd }`.
+ * @param {string} csv
+ * @returns {{ pid: string, cmd: string }[]}
+ */
+export const parseWinProcCsv = (csv) => {
+  /** @type {{ pid: string, cmd: string }[]} */
+  const out = [];
+  for (const l of String(csv ?? "").split(/\r?\n/)) {
+    const m = /^"?(\d+)"?,(.*)$/.exec(l.trim());
+    if (m) out.push({ pid: m[1] ?? "", cmd: m[2] ?? "" });
+  }
+  return out;
+};
+
+/**
+ * 멈출 PID — **이 인스턴스 것이라고 확인된 node 프로세스만** (2026-10-08 외부 검토 F1).
+ *  ① 명령줄에 이 홈이 있는 데몬·감독자(`index.js`·`supervise`) — 한 기계의 여러 인스턴스를 가른다.
+ *  ② bridge 포트를 정확히 LISTEN 중인 PID 중 **이 레포의 데몬 진입점을 실행하는 node** — 데몬 명령줄엔 홈이 없어(감독자가 env 로 넘긴다)
+ *     포트로 찾는데, ★종전엔 포트만 보고 소유를 확인하지 않아 그 포트를 잡은 **다른 앱**(실측: Steam 이 3000)까지 `taskkill /F /T` 했다.
+ * @param {{ netstat: string, procsCsv: string, port: number | string, home: string, repoRoot: string }} input
+ * @returns {string[]}
+ */
+export const selectWinKillTargets = ({ netstat, procsCsv, port, home, repoRoot }) => {
+  const procs = parseWinProcCsv(procsCsv);
+  /** @type {Set<string>} */
+  const out = new Set();
+  const h = String(home ?? "").toLowerCase();
+  for (const p of procs) {
+    const low = p.cmd.toLowerCase();
+    // ★**감독자도 센다** (2026-08-22). 종전엔 `index.js`(데몬)만 봐서 감독자가 살아남았고, 그게 곧바로 데몬을 되살려
+    //  `npm ci` 가 네이티브 모듈을 못 지웠다(`EPERM: unlink better_sqlite3.node`). 멈춘다는 건 **되살릴 것까지 멈추는 것**이다.
+    if (!low.includes("index.js") && !low.includes("supervise")) continue;
+    if (h !== "" && !cmdlineHasHome(p.cmd, h)) continue;
+    out.add(p.pid);
+  }
+  const ours = new Map(procs.map((p) => [p.pid, p.cmd]));
+  for (const pid of parseNetstatListenerPids(netstat, port)) {
+    const cmd = ours.get(pid);
+    if (cmd === undefined) continue; // node 가 아니다 — 다른 앱
+    if (!/index\.(js|ts)\b/i.test(cmd) || !cmdlineHasHome(cmd, repoRoot)) continue; // 이 레포의 데몬이 아니다
+    out.add(pid);
+  }
+  return [...out];
 };
 
 /** 실행 중 node 프로세스 명령줄 조회 인자 — 출력 인코딩 머리가 앞에 붙는다(회귀가 확인한다). @returns {string[]} */
@@ -1167,26 +1228,27 @@ export const winProcQueryArgs = () => [
  * @param {Ctx} c
  * @returns {string[]}
  */
-const winDaemonPids = (c) => {
-  const q = spawnSync("powershell", winProcQueryArgs(), { encoding: "utf8" });
-  /** @type {Set<string>} */
-  const pids = new Set();
-  const home = String(c.homeRaw ?? "").toLowerCase();
-  for (const l of (q.stdout ?? "").split(/\r?\n/)) {
-    const low = l.toLowerCase();
-    // ★**감독자도 센다** (2026-08-22). 종전엔 `index.js`(데몬)만 봐서 감독자가 살아남았고,
-    //  그게 곧바로 데몬을 되살려 `npm ci` 가 네이티브 모듈을 못 지웠다 —
-    //  `EPERM: unlink better_sqlite3.node` → 업데이트 실패 → 롤백(실측 로그).
-    //  오늘 본 세 증상(빌드 중 감독자 부활 · 감독자 중복 · 업데이트 EPERM)이 전부
-    //  이 한 구멍이었다. 멈춘다는 건 **되살릴 것까지 멈추는 것**이다.
-    if (!low.includes("index.js") && !low.includes("supervise")) continue;
-    // 이 인스턴스인지 — 홈 경로가 명령줄에 있는지로 가른다(데몬은 supervise 가 넘긴 env,
-    // 감독자는 `--home` 인자에 들어 있다).
-    if (home !== "" && !cmdlineHasHome(l, home)) continue;
-    const m = /^"?(\d+)"?,/.exec(l.trim());
-    if (m) pids.add(m[1]);
-  }
-  return [...pids];
+/**
+ * bridge 포트를 쥔 **node 데몬**(진입점 `index.js`/`index.ts`) — 경로가 이 레포 것인지 **모르는 것까지**.
+ * ★종료 대상이 아니라 «아직 남았나» 판정용이다 (2026-10-08 적대 검토 P3). 상대경로로 띄운 데몬(`npm start`)·8.3 짧은 이름은
+ *  소유를 확인 못 해 안 죽이는데, 그때 «✅ stopped» 라고 하면 거짓이다 — 업데이트가 npm ci 로 가서 잠금에 부딪힌다.
+ * @param {{ netstat: string, procsCsv: string, port: number | string }} input
+ * @returns {string[]}
+ */
+export const winPortDaemonPids = ({ netstat, procsCsv, port }) => {
+  const procs = new Map(parseWinProcCsv(procsCsv).map((p) => [p.pid, p.cmd]));
+  return parseNetstatListenerPids(netstat, port).filter((pid) => /index\.(js|ts)\b/i.test(procs.get(pid) ?? ""));
+};
+
+/** @param {Ctx} c */
+const winScan = (c) => {
+  const netstat = spawnSync("netstat", ["-ano"], { encoding: "utf8" }).stdout ?? "";
+  const procsCsv = spawnSync("powershell", winProcQueryArgs(), { encoding: "utf8" }).stdout ?? "";
+  const port = winPort(c);
+  return {
+    targets: selectWinKillTargets({ netstat, procsCsv, port, home: String(c.homeRaw ?? ""), repoRoot: c.repoRoot }),
+    portDaemons: winPortDaemonPids({ netstat, procsCsv, port }),
+  };
 };
 
 /**
@@ -1197,16 +1259,22 @@ const winDaemonPids = (c) => {
  * @returns {string[]}
  */
 const winKillRunning = (c) => {
-  const targets = new Set([...winListeningPids(c), ...winDaemonPids(c)]);
+  const first = winScan(c);
+  const targets = new Set(first.targets);
   for (const pid of targets)
     spawnSync("taskkill", ["/PID", pid, "/F", "/T"], { stdio: "ignore" });
-  if (targets.size === 0) return [];
-  // 종료는 비동기다 — 잠깐 기다렸다가 실제로 사라졌는지 다시 센다(거짓 성공 차단).
-  spawnSync("powershell", ["-NoProfile", "-Command", "Start-Sleep -Milliseconds 900"], {
-    stdio: "ignore",
-  });
-  const still = new Set([...winListeningPids(c), ...winDaemonPids(c)]);
-  return [...still].filter((p) => targets.has(p));
+  // ★남은 것 = 죽이려던 것 중 아직 사는 것 + 포트를 아직 쥔 node 데몬(소유를 확인 못 해 안 죽인 것 포함 — 거짓 «✅» 금지).
+  //  종료는 비동기다 — **몇 번** 다시 센다(2026-10-08 적대 검토 P1: 한 번만 보고 실패로 치면, 늦게 죽는 데몬이 «실패» 로 남는다).
+  /** @param {{ targets: string[], portDaemons: string[] }} scan */
+  const survivorsOf = (scan) => [...new Set([...scan.targets.filter((p) => targets.has(p)), ...scan.portDaemons])];
+  let survivors = survivorsOf(first);
+  if (targets.size === 0) return survivors;
+  for (let i = 0; i < 6; i++) {
+    spawnSync("powershell", ["-NoProfile", "-Command", "Start-Sleep -Milliseconds 900"], { stdio: "ignore" });
+    survivors = survivorsOf(winScan(c));
+    if (survivors.length === 0) break;
+  }
+  return survivors;
 };
 
 /**
@@ -1430,9 +1498,22 @@ const winStop = (c) => {
         `Running npm ci or an update now will fail on file locks (EPERM).`,
     );
     process.exitCode = 1;
-    return;
+    return false;
   }
   console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
+  return true;
+};
+
+/**
+ * 예약작업을 다시 **켜기만** 한다(띄우지 않는다) — 업데이트가 중지 실패로 멈출 때. 남은 데몬이 포트를 쥔 동안 새 감독자는
+ * 크래시 스로틀에 머물고, 그 데몬이 죽으면 1분 반복 트리거가 되살린다.
+ * @param {Ctx} c
+ */
+const winReenable = (c) => {
+  const r = winPs(`Enable-ScheduledTask -TaskName ${psq(winTaskName(c))} | Out-Null; 'OK'`);
+  if (r.status !== 0 || !/OK/.test(r.stdout)) {
+    console.error(`⚠ could not re-enable the scheduled task — run: schtasks /change /tn "${winTaskName(c)}" /enable`);
+  }
 };
 
 // start = 재실행(숨김 VBS). Run 키·VBS 는 이미 있어야 한다.
@@ -1705,7 +1786,8 @@ const runSupervise = (c) => {
 /** @typedef {"install" | "uninstall" | "restart" | "stop" | "start" | "status" | "logs" | "print" | "update" | "supervise"} Cmd */
 
 /**
- * @type {Record<string, Record<string, (c: Ctx) => void> | undefined>}
+ * ★`stop` 은 **멈췄는지** 를 돌려준다(true/false) — 업데이트가 그걸 보고 설치 전에 멈춘다(2026-10-08 외부 검토 F2).
+ * @type {Record<string, Record<string, (c: Ctx) => void | boolean> | undefined>}
  */
 const handlers = {
   darwin: {
@@ -1731,6 +1813,7 @@ const handlers = {
     uninstall: winUninstall,
     restart: winRestart,
     stop: winStop,
+    reenable: winReenable,
     start: winStart,
     status: winStatus,
     print: winPrint,
@@ -1951,12 +2034,13 @@ const runUpdate = (c) => {
    * 데몬을 멈추기 **전**에 그만둘 때. ★위임이면 HEAD 를 되돌린다 (2026-10-05 적대 검토) — 안 그러면 코드만 새것이고
    *  빌드는 옛것으로 굳고, 다음 `/update` 는 «이미 최신» 이라며 아무것도 안 해 **업데이트가 영영 안 됐다.**
    *  그리고 위임이면 데몬을 다시 띄운다 — 실패 통지는 부팅 때 마커를 읽어 나가므로, 안 띄우면 «업데이트 중» 뒤 침묵이다.
-   * @param {string} stage @param {string} detail @param {{ restart?: boolean }} [opts]
+   * @param {string} stage @param {string} detail @param {{ restart?: boolean, revert?: boolean }} [opts] revert = 이 CLI 가 받은 새 코드도 되돌린다
    */
   const abortBeforeStop = (stage, detail, opts = {}) => {
     /** @type {"unchanged" | "needs-check"} */
     let outcome = "unchanged";
-    if (pulledByCaller) {
+    // 코드가 이미 새 판이면(위임 업데이트가 먼저 pull 했거나, 이 CLI 가 pull 한 뒤 멈추는 경우) 돌고 있는 빌드로 되돌린다.
+    if (pulledByCaller || opts.revert === true) {
       if (run("git", ["reset", "--keep", prevSha]) === 0) console.error(`update: returned the code to ${prevSha.slice(0, 7)} (the running build).`);
       else {
         outcome = "needs-check";
@@ -2053,7 +2137,16 @@ const runUpdate = (c) => {
   // ── 단계 5: (돌고 있으면) 데몬 정지 — npm ci 전에 네이티브 모듈 락 해제(EPERM 방지) ──
   if (wasRunning) {
     console.log("   Stopping the daemon for npm ci (brief downtime).");
-    table?.stop?.(c);
+    // ★멈추지 못했으면 **설치 전에** 그만둔다 (2026-10-08 외부 검토 F2). 종전엔 반환을 안 봐서, Windows 에서 데몬이 살아 있는
+    //  채로 `npm ci` 가 돌아 네이티브 모듈 잠금(EPERM)에 부딪혔다. 받은 코드는 돌고 있는 빌드로 되돌린다(데몬은 그대로 돈다).
+    if (table?.stop?.(c) === false) {
+      console.error("update: the running daemon did not stop — not installing (its files are still locked).");
+      // ★stop 이 먼저 예약작업을 껐다 — 그대로 두면 남은 데몬이 나중에 죽거나 감독자만 죽었을 때 **다시 뜨지 않는다**
+      //  (2026-10-08 적대 검토 P1: «업데이트 중» 뒤 조용히 비서를 잃는다). 다시 **켜기만** 한다 — 띄우면 남은 데몬과 둘이 된다.
+      table?.reenable?.(c);
+      abortBeforeStop("stop", "the running daemon did not stop", { restart: false, revert: true });
+      return;
+    }
   }
 
   // ── 단계 6: npm ci ──────────────────────────────────────────────────────────

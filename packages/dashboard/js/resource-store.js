@@ -23,8 +23,7 @@
  * ★**리소스를 열거하지 않는다.** 이름은 문자열이고, 플러그인이 새 리소스를 내면 코어 수정
  *  0으로 그 구독자에게 배달된다([[feedback_hand_maintained_lists]]).
  *
- * ★이 파일은 **아직 아무도 안 쓴다**(5a = 순수 추가, 동작 변경 0). 드로어를 옮기는 건 5b 다 —
- *  매일 쓰는 화면이라 되돌릴 수 있게 단계를 갈랐다.
+ * 쓰는 곳: SSE 문지기(`sse.js`)·백그라운드 드로어·위젯 호스트.
  */
 (() => {
   /**
@@ -47,12 +46,15 @@
    *
    * ★**스냅샷 요청은 합친다.** 이벤트가 몰아치면 `resnapshot` 이 연달아 나오는데, 매번
    *  받으면 재연결 순간에 스냅샷 폭풍이 된다. 도는 중이면 그 약속에 합류한다.
-   * ★**받는 사이에 온 이벤트는 버린다** — 스냅샷이 더 최신이므로. 순서를 지키려고
-   *  큐를 두지 않는다: 스냅샷이 곧 진실이고, 그 뒤 이벤트부터 이어가면 된다.
+   * ★**받는 사이에 온 이벤트는 «한 번 더 받기» 로 남긴다** (2026-10-08 외부 검토 F5). 종전엔 «스냅샷이 더 최신이므로»
+   *  버렸는데, 서버가 스냅샷을 만든 **뒤**·응답이 닿기 **전**에 온 이벤트면 스냅샷이 더 옛것이다 — 그 변경이 다음 이벤트까지
+   *  사라졌다. 큐는 두지 않는다: 끝나면 한 번 더 받으면 된다(몰아쳐도 한 번).
+   * ★**늦게 온 스냅샷은 지금보다 오래됐으면 버린다** — 받는 사이 이벤트가 적용돼 리비전이 앞서 있으면, 옛 스냅샷이 그걸 되돌렸다.
    */
   const makeResource = (name, fetchSnapshot) => {
     let state = null; // { epoch, revision, data }
     let inflight = null;
+    let again = false; // 받는 사이 이벤트가 «다시 받아라» 를 남겼다
     const subs = new Set();
     /** 진단용 — 검사와 사람이 "왜 이렇게 됐나" 를 볼 수 있게 센다. */
     const stats = { applied: 0, ignored: 0, resnapshots: 0, errors: 0 };
@@ -81,6 +83,10 @@
             //  옳다: 던진 문자열이 어디로 갈지는 여기서 알 수 없다. 기존 js 도 전부 영문이다.
             throw new Error("snapshot is missing epoch/revision");
           }
+          if (state !== null && state.epoch === snap.epoch && snap.revision < state.revision) {
+            stats.ignored += 1; // 받는 사이 더 새 리비전이 적용됐다 — 옛 스냅샷으로 되돌리지 않는다
+            return;
+          }
           state = { epoch: snap.epoch, revision: snap.revision, data: snap.data };
           emit();
         })
@@ -92,6 +98,10 @@
         })
         .finally(() => {
           inflight = null;
+          if (again) {
+            again = false;
+            void resnapshot();
+          }
         });
       return inflight;
     };
@@ -114,6 +124,8 @@
           emit();
         } else if (decision === "ignore") {
           stats.ignored += 1;
+        } else if (inflight !== null) {
+          again = true; // 지금 받는 스냅샷이 이 이벤트보다 옛것일 수 있다 — 끝나면 한 번 더
         } else {
           void resnapshot();
         }

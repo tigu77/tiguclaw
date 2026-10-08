@@ -178,6 +178,50 @@ export const check: RegressionCheck = {
     );
     release?.();
 
+    // ── ③b 받는 사이 온 이벤트 · 늦게 온 옛 스냅샷 (2026-10-08 외부 검토 F5) ──────────────────
+    {
+      // 서버 쪽 진실: 스냅샷을 줄 때마다 지금 리비전을 준다. 첫 스냅샷은 rev1 을 만든 뒤 늦게 닿는다.
+      let serverRev = 1;
+      const gates: Array<() => void> = [];
+      let fetches = 0;
+      const r = store.resource("regr-race", async () => {
+        fetches += 1;
+        const rev = serverRev; // 만드는 순간의 리비전
+        await new Promise<void>((res) => gates.push(res));
+        return { epoch: E, revision: rev, data: rev };
+      });
+      let last: { revision: number } | null = null;
+      (r.subscribe as unknown as (fn: (d: unknown, st: { revision: number } | null) => void) => void)((_d, st) => { last = st; });
+      void r.resnapshot(); // 처음 로드(rev1 을 만든 상태로 대기)
+      await new Promise((res) => setTimeout(res, 0));
+      serverRev = 2;
+      const during = r.handle({ epoch: E, revision: 2 }, (_: unknown, ev: unknown) => (ev as { revision: number }).revision); // 받는 사이 rev2
+      gates.shift()?.();
+      for (let i = 0; i < 20 && gates.length === 0; i++) await new Promise((res) => setTimeout(res, 0));
+      gates.shift()?.(); // 다시 받기(rev2)
+      for (let i = 0; i < 20; i++) await new Promise((res) => setTimeout(res, 0));
+      const revAfterLoad = (last as { revision: number } | null)?.revision;
+      const fetchesAfterLoad = fetches;
+      const lostFixed = revAfterLoad === 2 && fetchesAfterLoad === 2;
+
+      // 이미 rev3 까지 왔는데 rev2 에서 만든 스냅샷이 늦게 닿는다
+      serverRev = 2;
+      void r.resnapshot();
+      await new Promise((res) => setTimeout(res, 0));
+      r.handle({ epoch: E, revision: 3 }, (_: unknown, ev: unknown) => (ev as { revision: number }).revision);
+      gates.shift()?.();
+      for (let i = 0; i < 20; i++) await new Promise((res) => setTimeout(res, 0));
+      const stale = (last as { revision: number } | null)?.revision;
+      out.push(
+        assert(
+          "★스냅샷을 받는 사이 온 이벤트가 사라지지 않는다 — 끝나면 한 번 더 받아 최신(rev2)에 닿는다",
+          during === "resnapshot" && lostFixed,
+          `판정=${during} · 로드 뒤 rev=${String(revAfterLoad)} · 스냅샷 ${fetchesAfterLoad}회`,
+        ),
+        assert("★늦게 닿은 옛 스냅샷(rev2)이 이미 적용된 최신(rev3)을 되돌리지 않는다", stale === 3, `최종 rev=${String(stale)}`),
+      );
+    }
+
     // ── ⑤ 문지기가 실제로 서 있나 (증분 5b) ────────────────────────────────
     //  ★렌더링은 안 바꾸고 **입구에서만** 판정한다. 그래서 지킬 성질은 셋이다:
     //   SSE 가 묻는가 · 게이트가 스토어를 쓰는가 · 게이트가 없어도 현행대로 도는가.

@@ -101,26 +101,8 @@ export const registerWatcher = (
   // 중복 등록 가드 — 기존 watcher close 후 재등록.
   unregisterWatcher(row.id);
 
-  // chokidar opts 매핑.
   const watchPath = path.resolve(row.path);
-  const opts: Parameters<typeof watch>[1] = {
-    persistent: true,
-    ignoreInitial: true,
-    depth: row.recursive ? undefined : 0,
-    awaitWriteFinish: {
-      stabilityThreshold: Math.max(0, row.debounceMs),
-      pollInterval: 100,
-    },
-  };
-  // pattern: chokidar `ignored` 는 *제외* 의미 — pattern 매치되지 *않는* path 만 ignore 처리.
-  // V1 단순화: pattern 이 부분 문자열 매치 (path.includes(pattern)). 정식 glob 은 V2.
-  if (row.pattern !== null && row.pattern.length > 0) {
-    const needle = row.pattern;
-    opts.ignored = (p: string) => {
-      // path 가 pattern 을 포함하지 않으면 ignore.
-      return !p.includes(needle);
-    };
-  }
+  const opts = chokidarOptionsFor(row);
 
   let watcher: FSWatcher;
   try {
@@ -143,6 +125,8 @@ export const registerWatcher = (
     if (!FIREABLE_EVENTS.has(event)) return;
     // event_filter 매치 안 되면 skip.
     if (!matchesEventFilter(event, row.eventFilter)) return;
+    // pattern — `ignored` 는 stats 를 아는 파일에만 걸리므로(삭제 이벤트엔 stats 가 없다) 여기서도 같은 판정으로 거른다.
+    if (!matchesWatchPattern(row.pattern, eventPath, watchPath)) return;
 
     void fireWatch(row, event, eventPath, bus, deps);
   };
@@ -171,6 +155,33 @@ export const unregisterWatcher = (id: number): void => {
   }
   watchers.delete(id);
 };
+
+/**
+ * 감시 패턴 — 부분 문자열(V1, 정식 glob 은 V2). 패턴이 없으면 전부. 판정은 여기 한 곳(chokidar `ignored` 와 이벤트 처리가 같이 쓴다).
+ * ★**감시 루트 기준 상대경로**에 건다 (2026-10-08 적대 검토) — 절대경로 전체에 걸면 루트 폴더 이름에 패턴이 들어 있을 때(`…/notes-txt/`
+ *  에 `txt`) 모든 파일이 통과해 필터가 무력했다.
+ */
+export const matchesWatchPattern = (pattern: string | null, p: string, root?: string): boolean =>
+  pattern === null || pattern.length === 0 || (root === undefined ? p : path.relative(root, p)).includes(pattern);
+
+/**
+ * chokidar 옵션 — 감시 행 하나로 정한다(회귀가 실제 chokidar 에 그대로 넣어 본다).
+ * ★`ignored` 는 **파일에만** 패턴을 건다 (2026-10-08 외부 검토 F4). 종전엔 경로 전체에 걸어 감시 루트·중간 폴더가 패턴(`.txt`)을
+ *  안 담으면 순회에서 통째로 빠졌다 — 필터를 준 감시는 **아무 이벤트도 못 받았다.** chokidar 는 `ignored` 를 stats 없이 한 번,
+ *  있으면 또 한 번 부르므로 «stats 를 아는 파일» 만 거른다(그 문서의 예와 같은 꼴).
+ */
+export const chokidarOptionsFor = (row: Pick<WatchRow, "path" | "recursive" | "debounceMs" | "pattern">): Parameters<typeof watch>[1] => ({
+  persistent: true,
+  ignoreInitial: true,
+  depth: row.recursive ? undefined : 0,
+  awaitWriteFinish: {
+    stabilityThreshold: Math.max(0, row.debounceMs),
+    pollInterval: 100,
+  },
+  ...(row.pattern !== null && row.pattern.length > 0
+    ? { ignored: (p: string, stats?: { isFile(): boolean }) => stats?.isFile() === true && !matchesWatchPattern(row.pattern, p, path.resolve(row.path)) }
+    : {}),
+});
 
 /** 단일 발화 — 격리 try/catch + recordFiring + EventBus publish. */
 /**

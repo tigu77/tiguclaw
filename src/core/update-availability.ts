@@ -302,9 +302,9 @@ export const checkUpdateAvailability = async (
   // ★`package-lock.json` 은 제외한다 — 업데이트(self-update · CLI)가 pull 직전에 `git checkout --` 로 되돌리는
   //  생성물이라 ff-only 를 막지 않는다. 그걸 blocked 로 세면 npm install 을 한 번만 돌려도 버튼이 영영 안 뜬다
   //  (실제로 흔한 상태다). 실행 경로와 **같은 판정**이어야 한다 — 2026-10-05 에 둘이 함께 «거절» 로 바뀌었다가 되살렸다.
-  const blocking = dirty.filter(
-    (f) => f !== "package-lock.json" && !f.endsWith("/package-lock.json"),
-  );
+  //  ★루트 lock **하나만** 뺀다(2026-10-08 외부 검토 E3) — 실행 경로가 되돌리는 건 그 하나뿐이다. 종전엔 하위 폴더의 lock 도 빼서
+  //  «받을 수 있다» 고 띄운 뒤 실행이 «미커밋 변경» 으로 거절했다(같은 판정이 두 곳에서 갈림).
+  const blocking = dirty.filter((f) => f !== "package-lock.json");
   if (blocking.length > 0) {
     const head = blocking.slice(0, 3).join(", ");
     const more = blocking.length > 3 ? ` 외 ${blocking.length - 3}개` : "";

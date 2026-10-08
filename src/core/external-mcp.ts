@@ -109,6 +109,61 @@ export const readProjectMcpServers = async (
   return readMcpFile(projectMcpPath(cwd));
 };
 
+/**
+ * 같은 파일의 «읽기 → 고치기 → 쓰기» 를 **한 번에 하나씩** (2026-10-08 외부 검토 F3).
+ * ★종전엔 각자 읽고 각자 써서, 서버 둘을 동시에 추가하면(병렬 도구 호출) 나중에 쓴 쪽이 먼저 쓴 쪽을 지웠다(재현 5/5).
+ *  원자적 교체(rename)만으로는 이 논리적 유실이 안 막힌다 — 읽기부터 줄을 세워야 한다. 데몬 한 프로세스 안의 직렬화다.
+ */
+const fileQueues = new Map<string, Promise<unknown>>();
+const withFileLock = async <T>(file: string, fn: () => Promise<T>): Promise<T> => {
+  const prev = fileQueues.get(file) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.then(() => undefined, () => undefined);
+  fileQueues.set(file, tail);
+  try {
+    return await run;
+  } finally {
+    if (fileQueues.get(file) === tail) fileQueues.delete(file);
+  }
+};
+
+/**
+ * 쓰기용 읽기 — **깨진 파일을 «빈 설정» 으로 읽지 않는다**, 그리고 `mcpServers` 밖의 최상위 키를 보존한다.
+ * ★읽기 경로(`readMcpFile`)는 데몬 생존이 우선이라 깨지면 `{}` 인데, 쓰기가 그걸 그대로 쓰면 **다른 서버 전부와 다른 최상위 키**를
+ *  지우고 덮는다(2026-10-08 적대 검토 — F3 이 막으려던 유실의 다른 입구). 없으면 빈 것, 깨졌으면 던진다.
+ */
+const readMcpFileForWrite = async (file: string): Promise<Record<string, unknown> & { mcpServers: Record<string, ExternalMcpConfig> }> => {
+  let raw: string;
+  try {
+    raw = await fs.readFile(file, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { mcpServers: {} };
+    throw e;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`${file} is not valid JSON — not overwriting it (fix or remove it first): ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${file} is not a JSON object — not overwriting it.`);
+  }
+  const top = parsed as Record<string, unknown>;
+  const servers = top.mcpServers;
+  return { ...top, mcpServers: servers !== null && typeof servers === "object" && !Array.isArray(servers) ? (servers as Record<string, ExternalMcpConfig>) : {} };
+};
+
+/**
+ * 제자리 쓰기 — ★rename(원자 교체)을 쓰지 않는다 (2026-10-08 적대 검토 P4). 교체하면 심링크인 `.mcp.json` 이 일반 파일이 되고,
+ *  사용자가 좁혀 둔 권한(0600 — env 에 토큰이 들어간다)이 넓어지고, 실패하면 임시 파일이 프로젝트에 남았다. 동시 쓰기 유실은
+ *  위 `withFileLock` 이 막는다.
+ */
+const writeMcpFile = async (file: string, content: Record<string, unknown>): Promise<void> => {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, `${JSON.stringify(content, null, 2)}\n`, "utf8");
+};
+
 /** name→config upsert 후 파일 저장(디렉터리 ensure). projectPath = 프로젝트 .mcp.json 대상. */
 export const upsertExternalMcpServer = async (
   name: string,
@@ -116,10 +171,11 @@ export const upsertExternalMcpServer = async (
   projectPath?: string,
 ): Promise<void> => {
   const file = resolveWriteFile(projectPath);
-  const servers = await readMcpFile(file);
-  servers[name] = config;
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`, "utf8");
+  await withFileLock(file, async () => {
+    const doc = await readMcpFileForWrite(file);
+    doc.mcpServers[name] = config;
+    await writeMcpFile(file, doc);
+  });
 };
 
 /** name 제거 후 저장. 존재 여부 반환. projectPath = 프로젝트 .mcp.json 대상. */
@@ -128,11 +184,13 @@ export const removeExternalMcpServer = async (
   projectPath?: string,
 ): Promise<boolean> => {
   const file = resolveWriteFile(projectPath);
-  const servers = await readMcpFile(file);
-  if (!(name in servers)) return false;
-  delete servers[name];
-  await fs.writeFile(file, `${JSON.stringify({ mcpServers: servers }, null, 2)}\n`, "utf8");
-  return true;
+  return withFileLock(file, async () => {
+    const doc = await readMcpFileForWrite(file);
+    if (!(name in doc.mcpServers)) return false;
+    delete doc.mcpServers[name];
+    await writeMcpFile(file, doc);
+    return true;
+  });
 };
 
 /** 사람이 읽는 한 줄 요약(list 도구·로그용). */

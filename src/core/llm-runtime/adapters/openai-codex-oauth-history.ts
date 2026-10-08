@@ -1562,6 +1562,12 @@ export const splitForFold = (text: string, budget: number, maxChunks: number): s
   return parts;
 };
 
+/** 정의된 신호를 하나로 묶는다(없으면 undefined). */
+export const anySignal = (...signals: (AbortSignal | undefined)[]): AbortSignal | undefined => {
+  const live = signals.filter((x): x is AbortSignal => x !== undefined);
+  return live.length === 0 ? undefined : live.length === 1 ? live[0] : AbortSignal.any(live);
+};
+
 /**
  * **나눠 요약한다** — 계획이 예산보다 큰 한 턴을 받아들였으면(`chunkChars`) 그 크기 조각으로(최대
  * `CODEX_FOLD_MAX_CHUNKS`) 차례로 부르고 이어 붙인다. 아니면 한 번(종전과 같다).
@@ -1573,15 +1579,24 @@ export const summarizeInChunks = async (
   text: string,
   /** 조각 크기 — 계획이 준 `chunkChars`. 없으면(평소 패스) 한 번에 부른다. */
   budget: number | undefined,
-  call: (piece: string, targetChars: number) => Promise<string>,
+  /** `signal` — 이 묶음의 취소. 한 조각이 실패하면 나머지 요청을 끊는다(호출자는 부모 턴 취소와 묶어 쓴다). */
+  call: (piece: string, targetChars: number, signal?: AbortSignal) => Promise<string>,
 ): Promise<string> => {
   if (budget === undefined || text.length <= budget) return call(text, summaryTargetFor(text.length));
   // ★조각은 **동시에** 부른다 (2026-10-04). 차례로 부르면 하루치 한 턴(12만 자 = 4만 자 3조각)이 한 패스 63초였고,
   //  요청 때 접기는 그걸 최대 3패스 돌고서야 답을 시작했다 — 벤치 실측 «턴 준비» 64~264초, 합 935초
   //  (`long-session-compaction`, 아스트라 10-04 ①). 조각·지시문·이어 붙이는 순서는 그대로라 요약 결과는 같고,
   //  기다림만 «합» 에서 «가장 긴 하나» 가 된다. 호출은 서로 독립이다(codex = HTTP 요청 하나 · openai = 매번 새 에이전트).
+  // ★하나가 실패하면 **나머지를 끊는다** (2026-10-08 외부 검토 E1) — `Promise.all` 은 첫 실패로 돌아오지만 남은 요청은 계속
+  //  돌아 과금됐다(재현: 실패 시점 진행 2 → 끝까지 2 완료). 어차피 묶음 전체가 실패로 버려지므로 더 기다릴 이유가 없다.
+  const batch = new AbortController();
   const rs = (await Promise.all(
-    splitForFold(text, budget, CODEX_FOLD_MAX_CHUNKS).map((piece) => call(piece, summaryTargetFor(piece.length))),
+    splitForFold(text, budget, CODEX_FOLD_MAX_CHUNKS).map((piece) =>
+      call(piece, summaryTargetFor(piece.length), batch.signal).catch((e: unknown) => {
+        if (!batch.signal.aborted) batch.abort(e);
+        throw e;
+      }),
+    ),
   )).map((r) => r.trim());
   // ★조각마다 판정한다 — 전체에만 걸면 한 조각의 짧은 거절 문구(«요약할 수 없습니다.»)가 이어 붙어 부분 성공으로
   //  넘어간다(재검토 재현: 워터마크가 큰 턴을 넘고 누적 요약에 거절 문구가 남았다).
@@ -2123,7 +2138,7 @@ const compactThreadNowUnlocked = async (
   const prompt = folded;
   try {
     // 자동 경로와 같은 규칙 — 계획의 기본 예산보다 큰 한 턴은 조각으로 나눠 부른다.
-    const fresh = await summarizeInChunks(prompt, plan.chunkChars, (piece, target) =>
+    const fresh = await summarizeInChunks(prompt, plan.chunkChars, (piece, target, batch) =>
       runSummarizer(
         piece,
         target,
@@ -2131,7 +2146,7 @@ const compactThreadNowUnlocked = async (
         accountId,
         model,
         turnReasoning,
-        signal,
+        anySignal(signal, batch),
         threadKey,
       ),
     );
@@ -2325,7 +2340,8 @@ const compactThreadHistoryUnlocked = async (args: {
   /** 관측 이벤트·로그에 실을 어댑터 이름(`codex`·`openai`…). */
   adapter: string;
   /** 이 어댑터의 요약 호출 — **본 턴과 같은 모델·추론 강도로** 부를 책임은 호출부에 있다. */
-  summarize: (text: string, targetChars: number) => Promise<string>;
+  /** `signal` — 조각 묶음의 취소(`summarizeInChunks`). 구현은 부모 턴 취소와 묶어 쓴다. */
+  summarize: (text: string, targetChars: number, signal?: AbortSignal) => Promise<string>;
   /**
    * 이번 요청의 **고정 비용 재료**(자) — 요약 기준을 «보낼 수 있는 이력 예산» 으로 맞춘다(`historyTriggerChars`).
    * ★합계가 아니라 **따로** 받는다(2026-09-28 전체 검토) — 현재 프롬프트 몫의 상한(`historyFixedChars`)을 여기서만 건다.
@@ -2791,7 +2807,7 @@ export const buildTurnHistory = async (
     budget: { instructionsChars, promptChars: currentPromptWithMemory.length, capChars },
     capFor,
     signal: input.abortSignal, // 앞선 요약을 기다리는 동안에도 이 턴의 취소를 듣는다.
-    summarize: (text, targetChars) =>
+    summarize: (text, targetChars, batch) =>
       runSummarizer(
         text,
         targetChars,
@@ -2799,7 +2815,7 @@ export const buildTurnHistory = async (
         accountId,
         model,
         turnReasoning,
-        input.abortSignal, // 부모 취소가 요약까지 온다(레드팀 O8).
+        anySignal(input.abortSignal, batch), // 부모 취소가 요약까지 온다(레드팀 O8) + 같은 묶음 조각의 실패.
         input.threadKey,
       ),
   });

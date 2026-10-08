@@ -1094,7 +1094,7 @@ export const runOpenAi = async (
     budget: { instructionsChars: instructions.length, promptChars: promptWithMemory.length, capChars },
     capFor,
     signal: input.abortSignal, // 앞선 요약을 기다리는 동안에도 이 턴의 취소를 듣는다.
-    summarize: async (text, targetChars) => {
+    summarize: async (text, targetChars, batch) => {
       // ★**본 턴과 같은 조립 경로를 쓴다** (2026-09-15 2차 정정, 회사 아스트라 지적).
       //  첫 판은 `new Agent({...})` 로 직접 만들어 `modelSettings` 를 통째로 생략했다 —
       //  그러면 추론 강도도, 벤더 기본값 보존(`_openai-agent.ts` 머리말)도 다 잃는다.
@@ -1124,7 +1124,7 @@ export const runOpenAi = async (
       //  본 턴도 codex 요약기도 **스트림을 받아 두드린다**. 같은 모양으로 맞춘다.
       const sumAc = new AbortController();
       const sumIdle = createIdleTimer(sumAc);
-      const linked = linkAbort(sumAc.signal, input.abortSignal);
+      const linked = linkAbort(sumAc.signal, input.abortSignal, batch); // + 같은 묶음 조각의 실패(summarizeInChunks)
       const finishUsage = beginSummaryUsage(input.threadKey, input.provider ?? "openai", model);
       try {
         const streamed = await run(

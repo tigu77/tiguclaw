@@ -255,7 +255,7 @@ export const check: RegressionCheck = {
         /parentSignal: AbortSignal \| undefined/.test(hist) &&
           /linkAbort\(ac\.signal, parentSignal\)/.test(hist) &&
           /signal: linked\.signal/.test(hist) &&
-          /input\.abortSignal, \/\/ 부모 취소가 요약까지 온다/.test(hist),
+          /anySignal\(input\.abortSignal, batch\), \/\/ 부모 취소가 요약까지 온다/.test(hist),
         `인자 ${/parentSignal: AbortSignal/.test(hist)} · 연결 ${/linkAbort\(ac\.signal, parentSignal\)/.test(hist)} · 사용 ${/signal: linked\.signal/.test(hist)} · 전달 ${/input\.abortSignal/.test(hist)}`,
       ),
       assert(

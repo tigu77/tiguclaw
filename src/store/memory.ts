@@ -82,13 +82,10 @@ const bumpAccess = (db: ReturnType<typeof requireDb>, ids: readonly number[]): v
   for (const id of ids) stmt.run(dayStart, now, id);
 };
 
-/** 검색 히트 — **카운트를 올리지 않는다**(위 주석 참조). 마지막 노출 시각만 남긴다. */
-const touchSeen = (db: ReturnType<typeof requireDb>, ids: readonly number[]): void => {
-  if (ids.length === 0) return;
-  const now = Date.now();
-  const stmt = db.prepare(`UPDATE memories SET last_accessed = ? WHERE id = ?`);
-  for (const id of ids) stmt.run(now, id);
-};
+// ★검색 히트는 **아무것도 쓰지 않는다** (2026-10-08 외부 검토 F8). 종전엔 `touchSeen` 이 `last_accessed` 를 오늘로 찍었는데,
+//  그 칸이 곧 위 `bumpAccess` 의 «오늘 이미 셌나» 판정이라, 자동 검색에 걸린 메모리는 그날 직접 읽어도 **세지지 않았다**
+//  (재현: 직접 읽기 1 / 검색 뒤 읽기 0). 그 칸을 읽는 곳은 그 판정 하나뿐이었다 — «마지막 노출» 을 쓰는 곳은 없었다.
+//  그래서 `last_accessed` 의 뜻은 **마지막으로 직접 읽은 시각** 하나다.
 
 const requireDb = (caller: string) => {
   // getDb() throws if initStore() not called — wrap to add caller context.
@@ -448,8 +445,7 @@ export const searchMemories = (
     opts?.includeArchived === true
       ? mergeSearchHits(pick(false, limit), pick(true, limit), limit)
       : pick(false, limit);
-  // ★검색 히트는 **세지 않는다** — 낱말로 도달했다는 건 인덱스 상주가 필요 없다는 증거다.
-  touchSeen(db, rows.map((r) => r.id));
+  // ★검색 히트는 **세지도 쓰지도 않는다** — 낱말로 도달했다는 건 인덱스 상주가 필요 없다는 증거다(위 `bumpAccess` 옆 주석).
   return rows.map(rowToMemory);
 };
 

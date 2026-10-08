@@ -841,6 +841,37 @@ const WEBFETCH_DEFAULT_TIMEOUT_MS = 30_000;
 const WEBFETCH_MAX_TIMEOUT_MS = 60_000;
 const WEBFETCH_MAX_BODY_BYTES = 5 * 1024 * 1024;
 const WEBFETCH_TRUNCATE_MARKER = "\n… [truncated at 5MB]";
+
+/**
+ * 응답 본문을 **상한까지만** 읽는다 — 넘으면 스트림을 취소하고 거기까지 돌려준다.
+ * UTF-8 문자가 상한에서 잘리면 그 반쪽은 버린다(`TextDecoder` stream 모드 — 깨진 글자를 만들지 않는다).
+ */
+export const readBodyCapped = async (
+  body: ReadableStream<Uint8Array> | null,
+  max: number,
+): Promise<{ body: string; truncated: boolean; bytes: number }> => {
+  if (body === null) return { body: "", truncated: false, bytes: 0 };
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let out = "";
+  let bytes = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (bytes + value.length > max) {
+      out += decoder.decode(value.subarray(0, max - bytes), { stream: true });
+      bytes = max;
+      truncated = true;
+      await reader.cancel().catch(() => {});
+      break;
+    }
+    out += decoder.decode(value, { stream: true });
+    bytes += value.length;
+  }
+  if (!truncated) out += decoder.decode();
+  return { body: out, truncated, bytes };
+};
 const WEBFETCH_ALLOWED_CONTENT_TYPES = [
   "text/html",
   "text/plain",
@@ -1680,7 +1711,7 @@ const makeFileOpsTools = (
         ),
       timeout: z.number().int().min(1).optional().describe("타임아웃 (초 단위, 기본 30, 최대 60)"),
     },
-    async (args) => {
+    async (args, extra) => {
       // 안전 가드 1 — URL 파싱 + 스킴 검사.
       let parsed: URL;
       try {
@@ -1704,11 +1735,16 @@ const makeFileOpsTools = (
       const timeoutSec = args.timeout ?? WEBFETCH_DEFAULT_TIMEOUT_MS / 1000;
       const timeout = Math.min(timeoutSec * 1000, WEBFETCH_MAX_TIMEOUT_MS);
 
+      // ★도구 취소(/stop)도 요청에 건다 (2026-10-08 외부 검토 F7) — 종전엔 시한 신호만 넘겨, 멈춘 턴의 다운로드가 끝까지 돌았다.
+      const signal = AbortSignal.any(
+        [AbortSignal.timeout(timeout), abortSignal, (extra as { signal?: AbortSignal } | undefined)?.signal].filter(
+          (x): x is AbortSignal => x !== undefined,
+        ),
+      );
+      if (signal.aborted) return errText("cancelled before the request was sent");
+
       try {
-        const res = await fetch(args.url, {
-          signal: AbortSignal.timeout(timeout),
-          redirect: "follow",
-        });
+        const res = await fetch(args.url, { signal, redirect: "follow" });
 
         // 안전 가드 4 — content-type 검사.
         const rawContentType = res.headers.get("content-type") ?? "";
@@ -1724,16 +1760,9 @@ const makeFileOpsTools = (
           );
         }
 
-        // 안전 가드 5 — body 5MB cap.
-        const buf = Buffer.from(await res.arrayBuffer());
-        let truncated = false;
-        let body: string;
-        if (buf.length > WEBFETCH_MAX_BODY_BYTES) {
-          body = buf.subarray(0, WEBFETCH_MAX_BODY_BYTES).toString("utf8");
-          truncated = true;
-        } else {
-          body = buf.toString("utf8");
-        }
+        // 안전 가드 5 — body 5MB cap. ★**받는 상한**이다 (2026-10-08 외부 검토 F6) — 종전엔 끝까지 받은 뒤 잘라, 12MB 응답이면
+        //  12MB 를 다 내려받고 메모리에 올렸다. 이제 상한에 닿으면 수신을 끊는다.
+        const { body, truncated } = await readBodyCapped(res.body, WEBFETCH_MAX_BODY_BYTES);
 
         // HTML/XHTML 은 markdown 변환, 나머지는 원본.
         let payload: string;

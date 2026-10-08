@@ -12,6 +12,7 @@
  */
 import { listProjects } from "../../store/projects.js";
 import { translate } from "../i18n.js";
+import { getAssistantName } from "../identity.js";
 import { redactSecrets } from "../outbound-sanitize.js";
 import { killShellById, startBackgroundShell, type BgShellResult } from "../llm-runtime/capabilities/file-ops-mcp.js";
 import {
@@ -270,11 +271,14 @@ const offerLink = async (
   note?: string,
 ): Promise<void> => {
   const linked = new Set(linkedProjects(tk).map((p) => p.path));
-  const available = listProjects().filter((p) => !linked.has(p.path));
+  const registered = listProjects();
+  const available = registered.filter((p) => !linked.has(p.path));
   // ★버튼 값은 **경로**로 — 이름이 같은 등록 프로젝트가 둘이면 이름으로는 «여럿» 으로 거절된다(2026-10-08 적대 검토).
   //  `link` 는 나머지 전부를 한 인자로 받으므로 공백 든 경로도 그대로 된다.
   if (available.length === 0) {
-    await say([...(note === undefined ? [] : [note]), translate("srv.project.noneToLink")].join("\n"));
+    // 등록된 게 아예 없으면 등록하는 법까지 — 대시보드 «+ 프로젝트» 의 빈 안내와 같은 말(2026-10-08).
+    const empty = registered.length === 0 ? translate("srv.project.noneRegistered", { name: getAssistantName() }) : translate("srv.project.noneToLink");
+    await say([...(note === undefined ? [] : [note]), empty].join("\n"));
     return;
   }
   await offer(

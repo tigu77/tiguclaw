@@ -63,8 +63,10 @@
             return chip;
           });
 
+        // ★등록된 프로젝트가 하나도 없어도 버튼은 보인다 — 숨기면 이 기능도, 등록하는 법도 화면에서 알 길이 없다(2026-10-08 정태님).
+        //  연결할 게 더 없는 경우(전부 이미 연결)만 숨긴다.
         const addButton = () => {
-          if (state.available.length === 0) return null;
+          if (state.available.length === 0 && state.linked.length > 0) return null;
           const b = document.createElement("button");
           b.type = "button";
           b.className = "ctx-chip ctx-add ctx-link-add";
@@ -84,8 +86,19 @@
         };
 
         // ── 메뉴 ──────────────────────────────────────────────────────────
+        // 등록된 프로젝트가 없을 때의 안내 — 프로젝트 페이지의 빈 화면과 **같은 문구 키**(한 곳에서 같은 말을 한다).
+        const emptyGuide = () => {
+          const name = typeof assistantName === "string" ? assistantName : "tiguclaw";
+          return [
+            i18n("proj.empty.title"),
+            i18n("proj.empty.lead", { name }),
+            i18n("proj.empty.ex1", { quote: i18n("proj.empty.ex1.text", { path: "~/work/myapp" }) }),
+            i18n("proj.empty.ex2", { quote: i18n("proj.empty.ex2.text") }),
+          ].map((label, i) => ({ id: "empty" + i, header: true, label }));
+        };
         registerMenuItems("sessionProjectPick", () => [
           { id: "head", header: true, label: i18n("sproj.pickTitle") },
+          ...(state.available.length === 0 ? emptyGuide() : []),
           ...state.available.map((p) => ({
             id: "link:" + p.path,
             icon: "📁",

@@ -348,7 +348,7 @@
           note.appendChild(i18nNodes("proj.empty.note", {
             doc: codeNode("PROJECT.md"),
             name: assistantName,
-            tag: codeNode(i18n("proj.empty.tagExample")),
+            link: codeNode(i18n("sproj.add")),
           }));
           box.appendChild(note);
           grid.appendChild(box);

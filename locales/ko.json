@@ -508,8 +508,7 @@
   "proj.empty.ex2": "· {quote} (폴더까지 새로 만들어 등록합니다)",
   "proj.empty.ex2.text": "\"이런 프로젝트 하나 해보자\"",
   "proj.empty.lead": "{name} 에게 이렇게 말해보세요 —",
-  "proj.empty.note": "설명을 담은 {doc} 는 {name} 가 씁니다. 등록하면 {tag} 으로 그 프로젝트 얘기를 할 수 있어요.",
-  "proj.empty.tagExample": "#이름",
+  "proj.empty.note": "설명을 담은 {doc} 는 {name} 가 씁니다. 등록하면 입력창 위 {link} 로 대화에 연결해 쓸 수 있어요.",
   "proj.empty.title": "등록된 프로젝트가 없습니다.",
   "proj.folder.open": "폴더 열기",
   "proj.folder.openFailed": "폴더 열기 실패",
@@ -1125,5 +1124,6 @@
   "srv.project.runConfirm": "{project} 에서 /{command} 를 실행할까요?\n`{script}`",
   "srv.project.runYes": "▶ 실행",
   "srv.project.runsStopped": "실행 중이던 커맨드 {n}개를 멈췄습니다.",
-  "srv.project.runAlready": "{project} 의 /{command} 가 이미 실행 중입니다. 끝나기를 기다리거나 먼저 /stop 해 주십시오."
+  "srv.project.runAlready": "{project} 의 /{command} 가 이미 실행 중입니다. 끝나기를 기다리거나 먼저 /stop 해 주십시오.",
+  "srv.project.noneRegistered": "등록된 프로젝트가 없습니다. {name} 에게 \"~/work/myapp 프로젝트로 등록해줘\"(있는 폴더) 또는 \"이런 프로젝트 하나 해보자\"(폴더까지 새로)라고 말해 보십시오."
 }

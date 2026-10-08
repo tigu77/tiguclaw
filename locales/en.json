@@ -508,8 +508,7 @@
   "proj.empty.ex2": "· {quote} (creates the folder too, then registers it)",
   "proj.empty.ex2.text": "\"let's start a project like this\"",
   "proj.empty.lead": "Try saying this to {name} —",
-  "proj.empty.note": "{name} writes the {doc} that describes it. Once registered, you can talk about that project with {tag}.",
-  "proj.empty.tagExample": "#name",
+  "proj.empty.note": "{name} writes the {doc} that describes it. Once registered, link it to a conversation with {link} above the input.",
   "proj.empty.title": "No projects registered yet.",
   "proj.folder.open": "Open folder",
   "proj.folder.openFailed": "Couldn't open the folder",
@@ -1125,5 +1124,6 @@
   "srv.project.runConfirm": "Run /{command} in {project}?\n`{script}`",
   "srv.project.runYes": "▶ Run",
   "srv.project.runsStopped": "Stopped {n} running command(s).",
-  "srv.project.runAlready": "/{command} is already running in {project}. Wait for it to finish, or /stop it first."
+  "srv.project.runAlready": "/{command} is already running in {project}. Wait for it to finish, or /stop it first.",
+  "srv.project.noneRegistered": "No projects registered yet. Tell {name} \"register ~/work/myapp as a project\" (a folder you have) or \"let's start a project like this\" (creates the folder too)."
 }

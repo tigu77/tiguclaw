@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-10-09
+
 ### Added
 
 - **대화(세션)에 프로젝트 연결.** 대시보드 입력창 위 `+ 프로젝트`, 텔레그램 `/project`, 또는 «이 대화에 ○○ 연결해 줘» 로 등록된 프로젝트를 대화에 붙입니다. 여러 개를 붙일 수 있고, 붙인 프로젝트는 대화 내내 비서가 맥락으로 압니다. 그 프로젝트 전용 스킬·에이전트·MCP 도 비서가 그 폴더로 일을 맡겨 씁니다(맡긴 매니저도 연결을 물려받습니다).
@@ -2451,7 +2453,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...HEAD
+[0.68.0]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...v0.65.0

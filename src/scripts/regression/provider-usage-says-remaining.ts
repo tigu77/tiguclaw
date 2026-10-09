@@ -17,6 +17,8 @@
 import { readSourceSync } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import { readFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 
 /**
  * ★문장 만들기는 **대시보드**에 산다(코어도 플러그인도 아니다) — 카탈로그가 거기 있고,
@@ -77,6 +79,43 @@ const saysNothingMeasured = (v: unknown): boolean => {
   if (u === undefined) return true; // 아예 «모름» — 그것도 지어내지 않은 것이다.
   const marked = typeof u.retryAt === "number" || u.unavailable === true;
   return marked ? (u.windows ?? []).length === 0 : true;
+};
+
+/**
+ * ★**«CLI 를 못 쓰는 기계»** — `claude` 실행만 ENOENT 로 만든다(다른 spawn 은 그대로).
+ *  `PATH`·`HOME` 을 비우는 것으론 안 숨는다: 실행기는 node_modules 의 번들을 **위로 거슬러** 찾는다. 그래서 진짜 CLI 가
+ *  실행당 5회 떴고, `HOME=""` 의 진짜 출력은 «로그인 안 됨» 이라 엔드포인트 시계 검사들이 **엉뚱한 가지**(로그인 안내)를
+ *  우연히 지나고 있었다(2026-10-09 적대 검토 G1). 플러그인은 `spawn` 을 실행 시점에 꺼내므로 내장 모듈을 바꿔 두면 닿는다.
+ */
+const cpCjs = createRequire(import.meta.url)("node:child_process") as { spawn: (...a: unknown[]) => unknown };
+const realSpawn = cpCjs.spawn;
+let cliSpawnsBlocked = 0;
+let cliSpawnsFaked = 0;
+/** `output` 이 있으면 그 글자를 `/usage` 결과로 돌려주는 가짜 CLI, 없으면 «못 띄움»(ENOENT). */
+const fakeClaudeCli = (output?: string): void => {
+  cpCjs.spawn = (...a: unknown[]) => {
+    if (!/claude(\.exe)?$/.test(String(a[0]))) return realSpawn(...a);
+    const p = new EventEmitter() as EventEmitter & { stdout: EventEmitter; kill: () => void };
+    p.stdout = new EventEmitter();
+    p.kill = () => {};
+    if (output === undefined) {
+      cliSpawnsBlocked += 1;
+      setImmediate(() => p.emit("error", Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" })));
+    } else {
+      cliSpawnsFaked += 1;
+      setImmediate(() => {
+        p.stdout.emit("data", JSON.stringify({ result: output }));
+        p.emit("close", 0);
+      });
+    }
+    return p;
+  };
+  syncBuiltinESMExports();
+};
+const hideClaudeCli = (): void => fakeClaudeCli(undefined);
+const showClaudeCli = (): void => {
+  cpCjs.spawn = realSpawn;
+  syncBuiltinESMExports();
 };
 
 export const check: RegressionCheck = {
@@ -327,6 +366,7 @@ export const check: RegressionCheck = {
     try {
       process.env.PATH = "";
       process.env.HOME = "";
+      hideClaudeCli();
       process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-regression-fake";
       // ① 첫 기동 — 429 를 받고 시계를 세운다.
       const P1 = (await import(`${modUrl}?clock1`)).default as new () => {
@@ -362,6 +402,7 @@ export const check: RegressionCheck = {
       else process.env.PATH = prevPath;
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
+      showClaudeCli();
       await fsp.rm(dataDir, { recursive: true, force: true });
     }
 
@@ -391,6 +432,7 @@ export const check: RegressionCheck = {
     try {
       process.env.PATH = "";
       process.env.HOME = "";
+      hideClaudeCli();
       process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-regression-fake";
       await fsp.writeFile(
         `${stale}/usage-cache.json`,
@@ -427,6 +469,7 @@ export const check: RegressionCheck = {
       else process.env.PATH = prevPath;
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
+      showClaudeCli();
       await fsp.rm(stale, { recursive: true, force: true });
     }
     // ★판정은 «창을 안 준다» 다 — **반환 타입이 아니다**. 처음엔 `=== undefined` 로 못박았는데,
@@ -617,6 +660,7 @@ export const check: RegressionCheck = {
     try {
       process.env.PATH = "";
       process.env.HOME = "";
+      hideClaudeCli();
       process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-regression-fake";
       const boot = async (refused: number): Promise<unknown> => {
         await fsp.writeFile(
@@ -653,6 +697,7 @@ export const check: RegressionCheck = {
       else process.env.PATH = prevPath;
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
+      showClaudeCli();
       await fsp.rm(gdir, { recursive: true, force: true });
     }
     const isGone = (v: unknown): boolean => (v as { unavailable?: boolean })?.unavailable === true;
@@ -873,6 +918,73 @@ export const check: RegressionCheck = {
       );
     }
 
+
+    // ── ★로그인 안 됨 → 로그인함 (2026-10-09 적대 검토 B) — 시계를 돌려 가며 실제로 부른다 ──────────
+    //  ①429 가 로그인 안내를 가리지 않는다 ②문장 언어는 **부를 때의** 설정 ③«로그인 안 됨» 은 CLI 가 있는 것 — 새로고침 없이도
+    //  다시 묻는다(로그인하면 풀린다) ④성공값이 없어도 서버가 연타를 막는다(종전엔 누를 때마다 CLI·엔드포인트를 불렀다).
+    const ldir = await fsp.mkdtemp(`${os.tmpdir()}/usage-login-`);
+    const realNow = Date.now;
+    const steps: Record<string, unknown> = {};
+    try {
+      process.env.PATH = "";
+      process.env.HOME = "";
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-regression-fake";
+      let clock = realNow();
+      Date.now = () => clock;
+      fakeClaudeCli("Total cost:            $0.0000\nTotal duration (API):  0s");
+      const P = (await import(`${modUrl}?login`)).default as new () => { startService: (b: unknown, h: unknown) => Promise<void> };
+      let locale = "ko";
+      const h = {
+        dataDir: ldir,
+        log: () => {},
+        get locale() {
+          return locale;
+        },
+        captured: undefined as Record<string, unknown> | undefined,
+        registerAuthProvider: (pp: Record<string, unknown>) => {
+          h.captured = pp;
+          return { ok: true as const };
+        },
+      };
+      await new P().startService(null, h);
+      globalThis.fetch = (async () => ({ status: 429, ok: false, headers: { get: () => "3600" } })) as never;
+      const get = async (force = false): Promise<{ reason?: string; windows?: unknown[]; unavailable?: boolean } | undefined> =>
+        (await (h.captured?.getUsage as (f?: boolean) => Promise<unknown>)(force)) as never;
+      const base = cliSpawnsFaked;
+      const r1 = await get();
+      steps.r1 = r1?.reason;
+      locale = "en";
+      clock += 31_000;
+      const r2 = await get();
+      steps.r2 = r2?.reason;
+      const spawnsAfter2 = cliSpawnsFaked - base;
+      clock += 1_000;
+      await get(true);
+      const spawnsAfterForce = cliSpawnsFaked - base;
+      fakeClaudeCli("Current session: 32% used · resets Sep 7 at 5:59pm (Asia/Seoul)");
+      clock += 31_000;
+      const r4 = await get();
+      steps.r4 = { windows: r4?.windows?.length, unavailable: r4?.unavailable };
+      out.push(
+        assert("★429 가 와도 «로그인이 필요합니다» 는 그대로 — «잠시 뒤 다시» 로 가리지 않는다", /\/login/.test(r1?.reason ?? "") && /[가-힣]/.test(r1?.reason ?? ""), steps.r1),
+        assert("★문장 언어는 부를 때의 설정을 따른다(켤 때 고정 X)", /\/login/.test(r2?.reason ?? "") && !/[가-힣]/.test(r2?.reason ?? ""), steps.r2),
+        assert("★«로그인 안 됨» 뒤에도 새로고침 없이 CLI 에 다시 묻는다", spawnsAfter2 === 2, `CLI ${spawnsAfter2}회`),
+        assert("★성공값이 없어도 5초 안의 새로고침은 서버가 접는다", spawnsAfterForce === spawnsAfter2, `새로고침 뒤 CLI ${spawnsAfterForce}회`),
+        assert("★로그인하면 다음 조회에서 한도가 나온다", r4?.windows?.length === 1 && r4?.unavailable !== true, steps.r4),
+      );
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = realFetch;
+      if (prevToken === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = prevToken;
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      showClaudeCli();
+      await fsp.rm(ldir, { recursive: true, force: true });
+    }
+    out.push(assert("★엔드포인트 시계 검사는 CLI 를 실제로 못 쓰는 채로 돌았다(번들 실행기가 안 떴다)", cliSpawnsBlocked > 0, `막은 claude 실행 ${cliSpawnsBlocked}회`));
     return out;
   },
 };

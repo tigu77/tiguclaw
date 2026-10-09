@@ -82,7 +82,9 @@ export const check: RegressionCheck = {
       const { sourceOrder } = await import("./_wiring.js");
       const loadOrder = await sourceOrder("../../core/load-env.ts", [/settleLegacyPorts\(path\.dirname\(homeEnv\), repoEnv\)/, /const home_ok = tryLoad\(homeEnv\)/]);
       const cliOrder = await sourceOrder("../../../bin/daemon.mjs", [
-        /const homeAbs = path\.resolve\(repoRoot, expandHome\(homeRaw\)\);\s*\/\/[^\n]*\n\s*settleLegacyPorts\(homeAbs, path\.join\(repoRoot, "\.env"\)\);/,
+        /const homeAbs = path\.resolve\(repoRoot, expandHome\(homeRaw\)\);/,
+        /settleLegacyPorts\(homeAbs, path\.join\(repoRoot, "\.env"\), portsEnv\);/,
+        /applyWinServiceEnv\(homeAbs\);/,
         /const winPort = \(c\) =>/,
       ]);
       out.push(assert("★고정은 포트를 읽기 전에 — 데몬 본체(.env 로드 전)·관리 스크립트(buildCtx)", loadOrder.ok && cliOrder.ok, { loadOrder, cliOrder }));

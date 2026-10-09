@@ -380,7 +380,20 @@ const buildCtx = () => {
     process.env.TIGUCLAW_HOME?.trim() || path.join(os.homedir(), ".tiguclaw");
   const homeAbs = path.resolve(repoRoot, expandHome(homeRaw));
   // 포트를 읽기 **전에** — 기존 설치는 옛 기본 포트를 홈 .env 에 고정한다(위 주석).
-  settleLegacyPorts(homeAbs, path.join(repoRoot, ".env"));
+  // ★윈도우는 설치 때 실행 환경으로 준 포트를 `win-service-env.json` 에 붙잡아 둔다 — 그것도 «정해진 값» 이다. 안 보면 옛 기본값을
+  //  `.env` 에 적고, `.env` 가 이기므로 저장본 포트가 가려진다(2026-10-09 적대 검토: 7021 인스턴스가 7011 로 떴다).
+  /** @type {NodeJS.ProcessEnv | undefined} */
+  let portsEnv = process.env;
+  if (process.platform === "win32") {
+    try {
+      portsEnv = winLaunchEnv(process.env, homeAbs);
+    } catch {
+      // 손상된 저장본 — 기동을 거절하므로(아래 winEnvError) 고정도 미룬다. 지금 적으면 사용자가 저장본을 고친 뒤에도
+      //  `.env` 의 7011 이 저장본 포트를 가린다(2026-10-09 재검토).
+      portsEnv = undefined;
+    }
+  }
+  if (portsEnv !== undefined) settleLegacyPorts(homeAbs, path.join(repoRoot, ".env"), portsEnv);
   /** @type {string | undefined} */
   let winEnvError;
   if (process.platform === "win32") {

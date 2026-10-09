@@ -82,7 +82,16 @@ interface Deferral {
  *  ★다음에 여기 항목을 넣을 땐 기한을 **2주 이내**로 잡아라. 3주씩 주면 그 사이 새 마이너가
  *   나와 유예가 무효화되고, 그게 곧 "다음에" 가 무한히 밀리는 기제였다.
  */
-const DEFERRED: readonly Deferral[] = [];
+const DEFERRED: readonly Deferral[] = [
+  {
+    pkg: "@openai/agents",
+    latest: "0.20",
+    until: "2026-10-20",
+    why:
+      "v0.68.0 릴리스 준비 중(10-09)에 나온 지 몇 시간 된 마이너다. 의미 변경이 있다(승인 재개 뒤 모델 호출도 maxTurns 에 센다) — " +
+      "어댑터는 승인 재개를 안 쓰고 maxTurns:1 수동 루프라 영향은 없어 보이나, 확인은 릴리스 뒤 e2e:openrouter 실제 왕복으로 한다.",
+  },
+];
 /**
  * 유예가 이 버전에 적용되는가 — **마이너 라인**이 같으면 같은 판단이다.
  *

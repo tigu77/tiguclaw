@@ -701,6 +701,7 @@ function formatUsageLine(usage, now) {
             //  붙어 있어 낱말을 하나 더 얹으면 머리가 붐빈다. 다만 «모양만 줄이고 의미는
             //  안 줄인다» — 뜻은 `aria-label`·`title` 이 그대로 진다(헤더 낱말 접기와 같은 규칙).
             rf.textContent = "🔄";
+            rf.dataset.provider = id;
             rf.setAttribute("aria-label", i18n("plugins.auth.usage.refresh"));
             rf.title = i18n("plugins.auth.usage.refresh");
             rf.disabled = loading;
@@ -718,7 +719,13 @@ function formatUsageLine(usage, now) {
                   id,
                   setTimeout(() => {
                     refreshUnlockTimers.delete(id);
-                    renderPluginsView();
+                    // ★그 버튼만 다시 켠다 — 화면 전체를 다시 그리면 열린 로그인 칸·입력 중이던 값이 지워진다(2026-10-09 적대 검토).
+                    //  그 사이 화면이 다시 그려졌을 수 있어 잡아 둔 요소가 아니라 지금 화면의 버튼을 찾는다.
+                    const btn = document.querySelector(`.usage-refresh[data-provider="${CSS.escape(id)}"]`);
+                    if (!btn || usageState.get(id) === "loading") return;
+                    btn.disabled = false;
+                    btn.title = i18n("plugins.auth.usage.refresh");
+                    btn.setAttribute("aria-label", btn.title);
                   }, Math.min(waitMs + 100, 24 * 3600_000)),
                 );
               }

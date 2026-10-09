@@ -230,13 +230,15 @@ let cliDead = false; // CLI 가 없다고 판명되면 매번 2초를 태우지 
  *  말한다 — 안 그러면 「N분 뒤 다시 시도」가 영원히 뜬다(오지 않을 약속).
  */
 let cliNeedsLogin = false;
-let textLocale = ""; // 사용자에게 보일 문장의 언어 — startService 가 넣는다(host.locale).
+let textHost; // 문장의 언어는 **부를 때마다** host.locale 에서 읽는다 — 켤 때 한 번 읽으면 설정을 바꿔도 안 따라간다(2026-10-09 적대 검토).
 const needsLoginUsage = (now) => ({
   windows: [],
   measuredAt: now,
   unavailable: true,
-  reason: (textLocale.toLowerCase().startsWith("ko") ? TEXT.ko : TEXT.en).needsLogin,
+  reason: say(textHost ?? {}, "needsLogin"),
 });
+/** 이번에 새 값을 못 얻었을 때 — 마지막 성공값, 없으면 (로그인 안 됨이면) 로그인 안내, 아니면 «그때 다시». 429·오류·대기 어디서 멈춰도 같은 답. */
+const fallback = (now, until) => lastOk?.value ?? (cliNeedsLogin ? needsLoginUsage(now) : pending(now, until));
 
 /**
  * **진행 중인 조회 하나를 나눠 쓴다** (2026-09-09, 적대 검토 P1).
@@ -255,6 +257,8 @@ let inflight;
  *  엔드포인트뿐이라, 서버가 정한 대기 시각과 5분 간격까지는 눌러도 같은 값이다.
  */
 let lastAttemptAt = 0;
+/** 마지막으로 돌려준 답(성공이 아니어도) — 서버 쪽 연타 하한. 성공값이 없으면 `lastOk` 하한이 안 걸려 누를 때마다 CLI·엔드포인트를 다시 불렀다. */
+let lastAnswer;
 let cliModRef;
 const refreshAfterNow = () => {
   const floor = lastAttemptAt + FORCE_MIN_GAP_MS;
@@ -266,7 +270,10 @@ const withRefreshAfter = (v) => (v === undefined ? v : { ...v, refreshAfter: ref
 const fetchClaudeUsage = async (force = false) => {
   if (inflight !== undefined) return inflight;
   inflight = fetchClaudeUsageInner(force)
-    .then(withRefreshAfter)
+    .then((v) => {
+      if (v !== undefined) lastAnswer = v;
+      return withRefreshAfter(v);
+    })
     .finally(() => {
       inflight = undefined;
     });
@@ -278,6 +285,7 @@ const fetchClaudeUsageInner = async (force = false) => {
   // ★중복 접기만 한다(30초). 새로고침을 눌렀으면 연타 하한만 남긴다.
   const gap = force ? FORCE_MIN_GAP_MS : DEDUP_MS;
   if (lastOk !== undefined && now - lastOk.at < gap) return lastOk.value;
+  if (lastAnswer !== undefined && now - lastAttemptAt < gap) return lastAnswer;
   // ★새로고침이면 CLI 를 다시 묻는다 — 로그인한 뒤 🔄 를 눌렀는데 재시작 전까지 안 바뀌면 «했는데 안 된다» 가 된다.
   if (force) cliDead = false;
   if (!cliDead) {
@@ -292,7 +300,9 @@ const fetchClaudeUsageInner = async (force = false) => {
       await saveCache();
       return viaCli;
     }
-    cliDead = true; // 이 프로세스가 사는 동안은 다시 안 띄운다(재시작하면 다시 본다).
+    // 이 프로세스가 사는 동안은 다시 안 띄운다(재시작하면 다시 본다). ★«로그인 안 됨» 은 CLI 가 **있는** 것이다 — 죽은 것으로 치면
+    //  로그인한 뒤에도 🔄 를 누르기 전까지 «로그인이 필요합니다» 가 남는다(2026-10-09 적대 검토). 다시 묻는 빈도는 위 하한이 정한다.
+    if (!cliNeedsLogin) cliDead = true;
   }
   // ↓ 여기부터는 **엔드포인트 경로**다 — CLI 가 없거나 못 읽었을 때만 온다.
   // ★5분 바닥은 **여기**가 제자리다(위 CLI 는 공짜라 안 건다). 마지막 성공이 5분 안이면
@@ -300,7 +310,7 @@ const fetchClaudeUsageInner = async (force = false) => {
   if (lastOk !== undefined && now - lastOk.at < MIN_GAP_MS) return lastOk.value;
   if (now < notBefore) {
     noteUsage(`대기 중 — ${Math.ceil((notBefore - now) / 1000)}초 남음`);
-    return lastOk?.value ?? pending(now, notBefore); // 서버가 쉬라고 한 동안은 마지막 값
+    return fallback(now, notBefore); // 서버가 쉬라고 한 동안은 마지막 값
   }
   try {
     const t = token();
@@ -334,13 +344,13 @@ const fetchClaudeUsageInner = async (force = false) => {
           `${new Date(notBefore).toISOString()} 이후 재시도. ` +
           `계정 한도가 아니다(모델 호출은 그대로 된다)`,
       );
-      return lastOk?.value ?? pending(now, notBefore); // «한도 도달» 이 아니다 — 조회만 조인 것이다.
+      return fallback(now, notBefore); // «한도 도달» 이 아니다 — 조회만 조인 것이다.
     }
     if (!res.ok) {
       noteUsage(`HTTP ${res.status} — 마지막 성공값(${lastOk === undefined ? "없음" : "있음"})으로 답한다`);
       // ★CLI 도 «로그인 안 됨» 이었으면 기다려도 안 바뀐다 — 「잠시 뒤 다시」 대신 로그인 안내(집 윈도우 실측: CLI 비용 요약 + 403).
       //  429(조회 제한)는 위에서 서버 시계를 따르므로 여기 오지 않는다.
-      return lastOk?.value ?? (cliNeedsLogin ? needsLoginUsage(now) : pending(now, now + MIN_GAP_MS));
+      return fallback(now, now + MIN_GAP_MS);
     }
     const j = await res.json();
     const windows = [
@@ -359,7 +369,7 @@ const fetchClaudeUsageInner = async (force = false) => {
     return value;
   } catch (e) {
     noteUsage(`조회 실패 — ${e?.name ?? "Error"}: ${String(e?.message ?? e).slice(0, 120)}`);
-    return lastOk?.value ?? pending(Date.now(), Date.now() + MIN_GAP_MS); // 마지막으로 아는 것
+    return fallback(Date.now(), Date.now() + MIN_GAP_MS); // 마지막으로 아는 것
   }
 };
 
@@ -391,7 +401,7 @@ export default class ClaudeSubscriptionAuth {
   async startService(_bus, host) {
     if (host === undefined) return; // 옛 런타임(호스트 미전달)에선 조용히 아무것도 안 한다.
     logSink = (m) => host.log(m); // 왜 사용량이 비었는지는 **로그에만** 남는다(위 noteUsage).
-    textLocale = String(host.locale ?? "");
+    textHost = host;
     // ★조회 시계를 재시작 너머로 — 안 그러면 배포할 때마다 한 시간을 새로 태운다.
     cachePath = `${host.dataDir}/usage-cache.json`;
     await loadCache();

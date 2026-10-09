@@ -188,7 +188,9 @@ Eight things. Everything else is in [the full feature list](docs/features.en.md)
    memory. Start on your phone, finish at your desk.
 3. **One conversation per thing you're doing** — a session is a thread, not a window. Keep them in
    tabs, run several at once without them blocking each other, and pick up any of them later from
-   a different channel. Search spans every session, and narrows to one when you want it to.
+   a different channel. Search spans every session, and narrows to one when you want it to. Link a
+   project to a conversation and it stays in that project's context throughout, with commands like
+   deploy or test one click away, run right in that folder.
 4. **Hand over whole goals** — big work goes to a **manager** that assembles its own sub-agents and
    isn't done until it has collected results. Your conversation keeps going meanwhile.
 5. **Many LLMs, one surface** — `anthropic`, `openai`, `codex` (ChatGPT), `google`,

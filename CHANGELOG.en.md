@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-10-09
+
 ### Added
 
 - **Link projects to a conversation.** Attach registered projects from `+ Project` above the dashboard input, with `/project` on Telegram, or just by asking ("link ○○ to this conversation"). You can link several, and the assistant keeps them in mind for the whole conversation. It also uses each project's own skills, agents and MCP servers by handing work to that folder (managers it starts inherit the links).
@@ -901,7 +903,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...HEAD
+[0.68.0]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/tigu77/tiguclaw/compare/v0.64.0...v0.65.0

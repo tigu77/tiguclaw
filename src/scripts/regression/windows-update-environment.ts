@@ -267,13 +267,44 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       fs.writeFileSync(path.join(h, "win-service-env.json"), JSON.stringify({ DASHBOARD_PORT: "7020" }));
       const bc = source.slice(source.indexOf("const buildCtx = () => {"), source.indexOf("\n};\n", source.indexOf("const buildCtx = () => {")) + 3);
       const fakeProcess = { platform: "win32", execPath: process.execPath, cwd: () => repo, env: { TIGUCLAW_HOME: h, PATH: "C:\\Windows" } as Record<string, string> };
-      const ctx = new Function("process", "path", "os", "expandHome", "runtimeMode", "resolveLabel", "settleLegacyPorts", "applyWinServiceEnv", bc + "; return buildCtx();")(
-        fakeProcess, path, os, (x: string) => x, () => "built", () => "label", () => [], // 포트 고정은 이 검사의 대상이 아니다(legacy-ports-settled)
+      const ctx = new Function("process", "path", "os", "expandHome", "runtimeMode", "resolveLabel", "settleLegacyPorts", "winLaunchEnv", "applyWinServiceEnv", bc + "; return buildCtx();")(
+        fakeProcess, path, os, (x: string) => x, () => "built", () => "label", () => [], d.winLaunchEnv, // 포트 고정은 아래 검사가 본다
         // 기본 인자는 모듈의 진짜 process.env 다 — 가짜 환경을 명시해 스위트 프로세스를 오염시키지 않는다.
         (homeAbs: string) => d.applyWinServiceEnv(homeAbs, fakeProcess.env));
       assert.equal(fakeProcess.env.DASHBOARD_PORT, "7020", "CLI 자신에겐 채운다(라벨·포트 판정)");
       assert.equal(ctx.launchEnv.DASHBOARD_PORT, undefined, "감독자용 실행 환경엔 없어야 한다");
       return `CLI=${fakeProcess.env.DASHBOARD_PORT} · launchEnv=${String(ctx.launchEnv.DASHBOARD_PORT)}`;
+    });
+    test("★기존 설치 고정은 `win-service-env.json` 의 포트도 «정해진 값» 으로 본다 — 안 보면 옛 기본값을 .env 에 적어 저장본(7021)을 가린다", () => {
+      const h = fs.mkdtempSync(path.join(home, "settle-"));
+      fs.mkdirSync(path.join(h, "data"));
+      fs.writeFileSync(path.join(h, "data", "tiguclaw.db"), ""); // 업데이트 전부터 쓰던 홈
+      fs.writeFileSync(path.join(h, "win-service-env.json"), JSON.stringify({ HTTP_BRIDGE_PORT: "7021" }));
+      const bc = source.slice(source.indexOf("const buildCtx = () => {"), source.indexOf("\n};\n", source.indexOf("const buildCtx = () => {")) + 3);
+      const fakeProcess = { platform: "win32", execPath: process.execPath, cwd: () => h, env: { TIGUCLAW_HOME: h, PATH: "C:\\Windows" } as Record<string, string> };
+      new Function("process", "path", "os", "expandHome", "runtimeMode", "resolveLabel", "settleLegacyPorts", "winLaunchEnv", "applyWinServiceEnv", bc + "; return buildCtx();")(
+        fakeProcess, path, os, (x: string) => x, () => "built", () => "label", d.settleLegacyPorts, d.winLaunchEnv,
+        (homeAbs: string) => d.applyWinServiceEnv(homeAbs, fakeProcess.env));
+      const written = fs.readFileSync(path.join(h, ".env"), "utf8");
+      assert(!/^HTTP_BRIDGE_PORT=/m.test(written), `저장본이 정한 키를 .env 에 고정했다:\n${written}`);
+      assert(/^DASHBOARD_PORT=7010$/m.test(written), `어디에도 없는 키는 고정해야 한다:\n${written}`);
+      assert.equal(fakeProcess.env.HTTP_BRIDGE_PORT, "7021", "CLI 가 저장본 포트를 써야 한다");
+      return `bridge=${fakeProcess.env.HTTP_BRIDGE_PORT}(저장본) · .env 에는 DASHBOARD_PORT 만`;
+    });
+    test("★저장본이 손상됐으면 고정도 미룬다 — 지금 적으면 저장본을 고친 뒤에도 .env 의 7011 이 그 포트를 가린다", () => {
+      const h = fs.mkdtempSync(path.join(home, "settle-bad-"));
+      fs.mkdirSync(path.join(h, "data"));
+      fs.writeFileSync(path.join(h, "data", "tiguclaw.db"), "");
+      fs.writeFileSync(path.join(h, "win-service-env.json"), "{ 깨진");
+      const bc = source.slice(source.indexOf("const buildCtx = () => {"), source.indexOf("\n};\n", source.indexOf("const buildCtx = () => {")) + 3);
+      const fakeProcess = { platform: "win32", execPath: process.execPath, cwd: () => h, env: { TIGUCLAW_HOME: h, PATH: "C:\\Windows" } as Record<string, string> };
+      const ctx = new Function("process", "path", "os", "expandHome", "runtimeMode", "resolveLabel", "settleLegacyPorts", "winLaunchEnv", "applyWinServiceEnv", bc + "; return buildCtx();")(
+        fakeProcess, path, os, (x: string) => x, () => "built", () => "label", d.settleLegacyPorts, d.winLaunchEnv,
+        (homeAbs: string) => d.applyWinServiceEnv(homeAbs, fakeProcess.env));
+      assert(typeof ctx.winEnvError === "string", "손상 사유를 들고 가야 한다");
+      assert(!fs.existsSync(path.join(h, ".env")), `.env 에 고정했다:\n${fs.existsSync(path.join(h, ".env")) ? fs.readFileSync(path.join(h, ".env"), "utf8") : ""}`);
+      assert(!fs.existsSync(path.join(h, "data", "ports-settled")), "표식을 남겼다 — 고친 뒤에도 다시 판단하지 않는다");
+      return "고정 0 · 표식 0 · 사유 있음";
     });
     test("★실패 통지는 마커의 outcome 대로만 말한다 — «되돌리고 다시 띄웠다» 는 실제로 그랬을 때만", () => {
       const un = updateFailedText({ stage: "git status", outcome: "unchanged" });

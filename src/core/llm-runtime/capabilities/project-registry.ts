@@ -8,12 +8,13 @@
  * 양 어댑터(codex·claude) 동일 등록 = LLM-agnostic(#2, 어댑터 분기 0). send-file/todo 동형
  * in-process MCP factory. enter_project(진입=cwd)은 P2 항목이라 여기 미포함(register 계열만).
  */
-import { linkProject, unlinkProject } from "../../session-projects.js";
+import { coreMcpServer } from "./_core-server.js";
+import { findRegisteredProject, linkProject, unlinkProject } from "../../session-projects.js";
+import { getPaths } from "../../paths.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -131,10 +132,13 @@ const registerFromDisk = async (
 // ─── MCP factory ─────────────────────────────────────────────────────────────
 /**
  * @param threadKey 지금 대화(세션) — `link_project`·`unlink_project` 가 이 세션에 건다. 없으면(세션 밖 호출) 두 도구는 거절한다.
+ * @param cwd 그 턴의 작업 폴더 — 상대 경로(`.`·`sub/dir`)의 기준. ★종전엔 `path.resolve(인자)` 라 **데몬 process.cwd()**
+ *  (설치 폴더) 기준이었다 — «이 폴더 등록해 줘» 가 tiguclaw 자신을 등록했다(2026-10-09 적대 검토). 없으면 홈(file-ops 와 같은 기본).
  */
 export const createProjectRegistryMcpServer =
-  (threadKey?: string): McpSdkServerConfigWithInstance =>
-    createSdkMcpServer({
+  (threadKey?: string, cwd?: string): McpSdkServerConfigWithInstance => {
+    const at = (p: string): string => path.resolve(cwd ?? getPaths().home, p.trim());
+    return coreMcpServer({
       name: "projects",
       version: "1.0.0",
       tools: onDemand([
@@ -143,7 +147,7 @@ export const createProjectRegistryMcpServer =
           "폴더를 프로젝트로 등록합니다. 그 폴더의 PROJECT.md(frontmatter: name·description·status(active/paused/done)·related)를 읽어 프로젝트 레지스트리에 넣어 대시보드에 노출합니다. PROJECT.md 가 없으면 먼저 작성하세요.",
           { path: z.string().min(1) },
           async (args) => {
-            const r = await registerFromDisk(args.path);
+            const r = await registerFromDisk(at(args.path));
             return r.ok
               ? okText(
                   `프로젝트 '${r.meta.name}' 등록됨 (status: ${r.meta.status}). 대시보드 프로젝트 탭에 표시됩니다.`,
@@ -156,7 +160,7 @@ export const createProjectRegistryMcpServer =
           "등록된 프로젝트의 PROJECT.md 를 다시 읽어 레지스트리(name·status·description)를 갱신합니다. PROJECT.md 를 고친 뒤 반영할 때 사용.",
           { path: z.string().min(1) },
           async (args) => {
-            const r = await registerFromDisk(args.path);
+            const r = await registerFromDisk(at(args.path));
             return r.ok
               ? okText(
                   `프로젝트 '${r.meta.name}' 갱신됨 (status: ${r.meta.status}).`,
@@ -216,11 +220,24 @@ export const createProjectRegistryMcpServer =
         ),
         tool(
           "project_forget",
-          "프로젝트를 레지스트리에서 등록 해제합니다 (PROJECT.md 파일과 폴더는 그대로 둡니다).",
-          { path: z.string().min(1) },
+          "프로젝트를 레지스트리에서 등록 해제합니다 (PROJECT.md 파일과 폴더는 그대로 둡니다). path 에는 경로 또는 등록된 이름.",
+          { path: z.string().min(1).describe("프로젝트 경로 또는 이름(project_list 로 확인)") },
           async (args) => {
-            forgetProject(path.resolve(args.path));
-            return okText(`프로젝트 등록을 해제했습니다: ${path.resolve(args.path)}`);
+            // ★경로로 먼저(턴 cwd 기준) → 아니면 이름으로. 종전엔 이름을 받아도 경로로만 지워 **0행 삭제**인데 «해제했습니다» 라고
+            //  답했다(2026-10-09 적대 검토). 지운 행 수로 말한다.
+            const byPath = findRegisteredProject(at(args.path));
+            const found = byPath.project !== undefined ? byPath : findRegisteredProject(args.path);
+            if (found.project === undefined) {
+              return errText(
+                found.candidates.length > 1
+                  ? `'${args.path}' 이라는 프로젝트가 여럿입니다 — 경로로 지정하세요: ${found.candidates.map((p) => p.path).join(" · ")}`
+                  : `'${args.path}' 은(는) 등록된 프로젝트가 아닙니다 — project_list 로 확인하세요(해제한 것 없음).`,
+              );
+            }
+            const n = forgetProject(found.project.path);
+            return n > 0
+              ? okText(`프로젝트 '${found.project.name}' 등록을 해제했습니다: ${found.project.path}`)
+              : errText(`'${found.project.name}' 등록을 찾았지만 지우지 못했습니다(이미 해제됨?) — 해제한 것 없음.`);
           },
         ),
         tool(
@@ -228,7 +245,7 @@ export const createProjectRegistryMcpServer =
           "폴더의 능력을 스캔해 그 폴더 전용 에이전트/스킬 명세 + PROJECT.md 메타(요약)를 반환합니다. 일을 위임(spawn_agent path=…)하거나 스킬을 쓰기(invoke_skill path=…) 전에, 그 폴더에 어떤 에이전트(name·설명·모델 등급)와 스킬(name·설명)이 있는지 파악할 때 사용. PROJECT.md 의 노트/할 일 등 자세한 본문 맥락이 필요하면 Read 로 그 파일을 직접 읽으세요(토큰 절약 — 여기선 요약만). 진실은 디스크라 매 호출 최신 스캔.",
           { path: z.string().min(1) },
           async (args) => {
-            const abs = path.resolve(args.path);
+            const abs = at(args.path);
             // 폴더 존재 확인 (throw 0 — 없으면 에러텍스트).
             try {
               const st = await fs.stat(abs);
@@ -291,3 +308,4 @@ export const createProjectRegistryMcpServer =
         ),
       ], ["project_register", "project_update", "project_forget"]),
     });
+  };

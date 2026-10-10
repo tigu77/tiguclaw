@@ -22,7 +22,10 @@ export const isRateLimited = (errStr: string): boolean =>
   //  2:20am (Asia/Seoul)" 로 말한다 — 위 어느 패턴에도 안 걸려 **쿨다운이 등록되지 않았고**
   //  죽은 백엔드를 매 턴 다시 때렸다(윈도우 로그 00:39·00:40·00:43). 그 사이 codex 도 흔들려
   //  "모든 어댑터 실패"가 반복됐다.
-  /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b|hit your (usage )?limit|usage limit/i.test(
+  // ★지금 CLI 는 한도마다 이름을 붙인다 (2026-10-09 적대 검토 — 번들 CLI 2.1.280 문자열 실측):
+  //  `You've hit your ${session|weekly|Opus|Sonnet|Fable} limit` · `monthly spend limit` · `team's shared budget` ·
+  //  `out of usage credits`. 옛 패턴은 «hit your limit» 만 알아 이것들이 전부 한도가 아니었다 → 쿨다운 없이 매 턴 다시 때렸다.
+  /usage_limit_reached|rate[-_ ]?limit|too many requests|\bquota\b|\b429\b|hit your [\w' ]{0,30}?(?:limit|budget)|usage limit|out of usage credits/i.test(
     errStr,
   );
 
@@ -108,7 +111,34 @@ export const parseCooldownMs = (errStr: string): number | null => {
  *  길어도 `cooldownRemainingMs` 의 **2시간 주기 탐침**이 실제로 다시 시도한다(6일 공백 사고
  *  대응으로 이미 들어가 있다). 즉 이 파싱이 틀려도 백엔드를 영구히 놀리지 않는다.
  */
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * 날짜가 붙은 리셋 — CLI 는 24시간 넘게 남으면 `resets Oct 14, 7:59pm (Asia/Seoul)` 로 말한다(2026-10-09 적대 검토).
+ * 종전엔 시각만 읽어 이 꼴은 못 읽고 10분 기본값이 됐다 — 주간 한도 동안 10분마다 다시 때리고 안내도 반복됐다.
+ * 해가 없다 — 이미 지났으면(한 달 넘게 과거) 내년이다.
+ */
+const parseResetsOnDateMs = (errStr: string, now: number = Date.now()): number | null => {
+  const m = errStr.match(/resets\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,|\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+  if (m === null) return null;
+  const month = MONTHS.indexOf((m[1] ?? "").toLowerCase());
+  const day = Number(m[2]);
+  let hour = Number(m[3]);
+  const min = m[4] === undefined ? 0 : Number(m[4]);
+  if (month < 0 || day < 1 || day > 31 || hour < 1 || hour > 12 || min > 59) return null;
+  const pm = (m[5] ?? "").toLowerCase() === "pm";
+  if (pm && hour !== 12) hour += 12;
+  if (!pm && hour === 12) hour = 0;
+  const year = new Date(now).getFullYear();
+  let at = new Date(year, month, day, hour, min, 0, 0).getTime();
+  if (at < now - 30 * 24 * 3600_000) at = new Date(year + 1, month, day, hour, min, 0, 0).getTime();
+  const ms = at - now;
+  return ms > 0 ? Math.min(ms, MAX_COOLDOWN_MS) : null;
+};
+
 const parseResetsAtMs = (errStr: string): number | null => {
+  const dated = parseResetsOnDateMs(errStr);
+  if (dated !== null) return dated;
   const m = errStr.match(/resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
   if (m === null) return null;
   let hour = Number(m[1]);

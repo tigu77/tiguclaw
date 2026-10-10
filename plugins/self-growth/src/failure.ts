@@ -56,6 +56,8 @@ export const analyzeFailurePattern = async (input: {
   key: string;
   /** "directive" = SELF_GROWTH.md 확정 / "memory" = feedback reflection 강등. */
   target: "directive" | "memory";
+  /** 이번에 **새로** 기록했나 — 알림·이벤트는 이것으로 가른다(재발은 기존 것을 돌려줄 뿐 새 소식이 아니다). */
+  landedNow: boolean;
 } | null> => {
   const threshold = input.threshold ?? FAILURE_THRESHOLD;
   if (input.count < threshold) return null; // 단발/미달 무시
@@ -92,8 +94,17 @@ export const analyzeFailurePattern = async (input: {
     // (upsertDirective 가 본질적으로 덮어쓰기라 매번 호출해도 무해하나, LLM 비용 절감 위해
     //  멱등 단락. 메타-재귀 (iii)는 별도로 닫혀 있다: SELF_GROWTH.md 쓰기는 이벤트 미발행 +
     //  handleTurnError 가 self-adapter 입력 skip — 박기는 허용·자기입력 루프는 차단.)
-    if ((await getDirective(directiveKey)) !== null) {
-      return { memoryName: directiveKey, autoLanded: true, key, target: "directive" };
+    const already = await getDirective(directiveKey);
+    if (already !== null) {
+      // ★재발은 갱신이다 — 만료 시계를 다시 건다(안 그러면 계속 재발하는 실패의 지침도 120일 뒤 사라진다). 본문·출처는 그대로.
+      //  알림은 안 한다(`landedNow:false`) — 새로 바뀐 게 없다(종전엔 재발마다 «지침을 반영했습니다» 가 다시 나갔다, 2026-10-09 적대 검토).
+      await upsertDirective({ key: directiveKey, text: already.text, group: already.group });
+      return { memoryName: directiveKey, autoLanded: true, key, target: "directive", landedNow: false };
+    }
+    // ★이미 강등돼 사용자 확인을 기다리는 실패는 **LLM 을 부르기 전에** 돌려보낸다 — 종전엔 이 확인이 LLM 호출 뒤에 있어,
+    //  공급자 장애처럼 반복되는 실패마다 모순판단 호출(최대 10초·할당량)이 한 번씩 붙었다(2026-10-09 적대 검토).
+    if (peekMemory(reflectionName) !== undefined) {
+      return { memoryName: reflectionName, autoLanded: false, key, target: "memory", landedNow: false };
     }
 
     // ── 2차: LLM 의미 모순판단 (V3.1) — 박기 *임박 그 자리에서만* 1회 ───────────
@@ -120,7 +131,8 @@ export const analyzeFailurePattern = async (input: {
       });
       if (landed === null) {
         // 파일 쓰기 실패(디스크·권한 등) → 신호 잃지 않게 reflection 강등으로 폴백.
-        if (peekMemory(reflectionName) === undefined) {
+        const created = peekMemory(reflectionName) === undefined;
+        if (created) {
           upsertReflection({
             name: reflectionName,
             description: `반복 실패 (${input.errorKind}·${input.adapter}, ${input.count}회) — SELF_GROWTH.md 쓰기 실패로 강등, 사용자 확인 후 결정`,
@@ -141,15 +153,15 @@ export const analyzeFailurePattern = async (input: {
             ),
           });
         }
-        return { memoryName: reflectionName, autoLanded: false, key, target: "memory" };
+        return { memoryName: reflectionName, autoLanded: false, key, target: "memory", landedNow: created };
       }
-      return { memoryName: directiveKey, autoLanded: true, key, target: "directive" };
+      return { memoryName: directiveKey, autoLanded: true, key, target: "directive", landedNow: true };
     }
 
     // verdict === "yes"(모순) / "uncertain"(실패·불확실·타임아웃) → 보수적 강등.
     // LLM 을 박기 *강행* 근거로 쓰지 않음 — 불확실이면 무조건 강등(ADR 가드레일 c).
     if (peekMemory(reflectionName) !== undefined) {
-      return { memoryName: reflectionName, autoLanded: false, key, target: "memory" };
+      return { memoryName: reflectionName, autoLanded: false, key, target: "memory", landedNow: false };
     }
     const demoteBody = JSON.stringify(
       {
@@ -181,13 +193,13 @@ export const analyzeFailurePattern = async (input: {
       description: `반복 실패 (${input.errorKind}·${input.adapter}, ${input.count}회) — LLM 모순판단=${verdict}, suggester only, 사용자 확인 후 결정`,
       body: demoteBody,
     });
-    return { memoryName: reflectionName, autoLanded: false, key, target: "memory" };
+    return { memoryName: reflectionName, autoLanded: false, key, target: "memory", landedNow: true };
   }
 
   // 자격 미달/모호 → reflection(suggester) 강등 (기존 동작 — 동기 1차 게이트 탈락).
   // 이름이 feedback_growth_* (self namespace) 라 후속 add 분석에서 자동 skip 됨(루프 (i)/(ii)).
   if (peekMemory(reflectionName) !== undefined) {
-    return { memoryName: reflectionName, autoLanded: false, key, target: "memory" };
+    return { memoryName: reflectionName, autoLanded: false, key, target: "memory", landedNow: false };
   }
   const body = JSON.stringify(
     {
@@ -210,7 +222,7 @@ export const analyzeFailurePattern = async (input: {
     description: `반복 실패 (${input.errorKind}·${input.adapter}, ${input.count}회) — suggester only, 사용자 확인 후 결정`,
     body,
   });
-  return { memoryName: reflectionName, autoLanded: false, key, target: "memory" };
+  return { memoryName: reflectionName, autoLanded: false, key, target: "memory", landedNow: true };
 };
 
 /**

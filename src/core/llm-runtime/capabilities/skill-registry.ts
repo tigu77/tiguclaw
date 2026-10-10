@@ -30,11 +30,11 @@
  * 충돌 0. claude·codex 양 어댑터가 본 모듈을 호출한다 (claude 는 SDK 격리 모드라
  * `.claude` 자동발견 0 → discoverSkills 로 전체 인덱스 직접 구성, codex 도 동일).
  */
+import { coreMcpServer } from "./_core-server.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -546,7 +546,13 @@ export const formatSkillIndex = (
 export const getSkillBody = async (
   name: string,
   cwd: string = process.cwd(),
-): Promise<string | undefined> => {
+): Promise<string | undefined> => (await getSkillFile(name, cwd))?.body;
+
+/** 스킬 파일 경로 + 본문 — `getSkillBody` 와 **같은 선택 규칙**(아래 한 곳). */
+export const getSkillFile = async (
+  name: string,
+  cwd: string = process.cwd(),
+): Promise<{ filePath: string; body: string } | undefined> => {
   const skills = await discoverSkills(cwd);
   const candidates = skills.filter((s) => s.name === name);
   if (candidates.length === 0) return undefined;
@@ -560,7 +566,7 @@ export const getSkillBody = async (
   const builtin = candidates.find((s) => s.source === "builtin");
   const chosen = project ?? user ?? plugin ?? builtin ?? candidates[0]!;
   try {
-    return await fs.readFile(chosen.filePath, "utf8");
+    return { filePath: chosen.filePath, body: await fs.readFile(chosen.filePath, "utf8") };
   } catch {
     return undefined;
   }
@@ -628,10 +634,13 @@ export const createSkillInvokeMcpServer = (
         // 미지정 시 현재 cwd(회귀 0). V9.3 — 인덱스(discoverSkills(cwd))와 동일 컨텍스트.
         const resolveCwd =
           args.path !== undefined ? path.resolve(cwd, args.path) : cwd;
-        const body = await getSkillBody(args.name, resolveCwd);
-        if (body === undefined) {
+        const found = await getSkillFile(args.name, resolveCwd);
+        if (found === undefined) {
           return errText(`스킬 '${args.name}' 미발견.`);
         }
+        // ★기준 폴더를 같이 준다 — 스킬 본문은 `references/…`·`scripts/…` 를 **상대경로**로 가리키는데, 번들 스킬은 앱 폴더에 있어
+        //  작업 폴더(홈) 기준 Read 가 실패했다(2026-10-09 적대 검토). Claude Code 도 같은 줄을 준다.
+        const body = `Base directory for this skill: ${path.dirname(found.filePath)}\n\n${found.body}`;
         // 텔레메트리 — 성공 호출(body !== undefined)만 generic skill.invoked 발행.
         // ctx 미지정 시 skip(회귀 0). never-throw — 관측 실패가 도구 응답·데몬을
         // 절대 못 깨게(turn_done 발행 best-effort 패턴 답습). 코어는 어느 스킬인지
@@ -723,7 +732,7 @@ export const createSkillInvokeMcpServer = (
     },
   );
 
-  return createSdkMcpServer({
+  return coreMcpServer({
     name: "skills",
     version: "1.1.0",
     tools: [skillInvokeTool, findSkillsTool],

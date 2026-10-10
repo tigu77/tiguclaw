@@ -40,6 +40,8 @@ export interface BuiltinCommand {
   name: string;
   /** 사용자 노출 설명(텔레그램 메뉴·대시보드·MCP 인덱스 공용). */
   description: string;
+  /** 커스텀 커맨드가 하위 폴더에 있으면 그 경로(`aaa/bbb`) — 대시보드가 묶어 보여준다. 빌트인엔 없다. */
+  folder?: string;
 }
 
 /**
@@ -178,6 +180,11 @@ export interface Command {
   run?: string;
   /** frontmatter `confirm: true` — 실행형을 돌리기 전에 한 번 묻는다(배포처럼 되돌리기 어려운 일). */
   confirm: boolean;
+  /**
+   * 하위 폴더에 있으면 그 경로(`aaa/bbb`) — **묶어 보여주기만** 한다(2026-10-09 정태님: 칩 메뉴 aaa › bbb › /ccc).
+   * ★이름은 파일 이름 그대로다(Claude Code 와 같다) — 부르는 법은 폴더와 무관하게 `/ccc`.
+   */
+  folder?: string;
 }
 
 /**
@@ -206,7 +213,7 @@ export const discoverCommands = async (
     await Promise.all([
       walkCommandsDir(userRoot, "user"),
       walkCommandsDir(projectRoot, "project"),
-      walkCommandsDir(projectLegacyRoot, "project"),
+      walkCommandsDir(projectLegacyRoot, "project", { nested: false }), // 옛 평면 폴더 — 코드 레포의 문서 폴더일 수 있어 안 내려간다
       walkPluginsCommands(bundledPluginsRoot),
       walkPluginsCommands(homePluginsRoot),
     ]);
@@ -231,12 +238,13 @@ export const discoverProjectCommands = async (projectPath: string): Promise<Comm
   walkCommandsDir(projectScope(projectPath).commands, "project");
 
 /**
- * 단일 commands 디렉터리 walk — 안의 `*.md` 파일 직접 순회 (agent-registry 동형).
+ * 단일 commands 디렉터리 walk — `*.md` 를 하위 폴더까지(깊이 상한) 순회한다. `nested:false` 면 맨 위만.
  * 부재 디렉터리는 빈 배열.
  */
 const walkCommandsDir = async (
   root: string,
   source: "user" | "project" | "plugin",
+  opts: { nested?: boolean } = {},
 ): Promise<Command[]> => {
   let rootReal: string;
   try {
@@ -245,22 +253,59 @@ const walkCommandsDir = async (
     return [];
   }
 
-  let entries: Array<{ name: string; isFile: () => boolean }>;
-  try {
-    entries = await fs.readdir(rootReal, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  const mdFiles = entries
-    .filter((e) => e.isFile() && e.name.endsWith(".md") && !e.name.startsWith("."))
-    .map((e) => path.join(rootReal, e.name))
-    .sort((a, b) => a.localeCompare(b));
+  // ★하위 폴더는 **묶음**이다(이름공간 아님) — 그래서 같은 이름이 두 폴더에 있으면 하나만 쓴다: 얕은 쪽, 같은 깊이면 경로순.
+  //  조용히 버리지 않고 로그에 남긴다. 링크(심볼릭)는 파일이든 폴더든 따라가지 않는다(Dirent 가 isFile·isDirectory 둘 다 false).
+  const files: Array<{ filePath: string; folder: string; depth: number }> = [];
+  const walk = async (dir: string, rel: string, depth: number): Promise<void> => {
+    let entries: Array<{ name: string; isFile: () => boolean; isDirectory: () => boolean }>;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const subdirs: string[] = [];
+    for (const e of entries) {
+      if (e.name.startsWith(".")) continue;
+      if (e.isFile() && e.name.endsWith(".md")) files.push({ filePath: path.join(dir, e.name), folder: rel, depth });
+      else if (e.isDirectory() && opts.nested !== false && depth < MAX_COMMAND_FOLDER_DEPTH && e.name !== "node_modules") subdirs.push(e.name);
+    }
+    await Promise.all(subdirs.map((d) => walk(path.join(dir, d), rel === "" ? d : `${rel}/${d}`, depth + 1)));
+  };
+  await walk(rootReal, "", 0);
+  files.sort((a, b) => a.depth - b.depth || a.filePath.localeCompare(b.filePath));
 
   const loaded = await Promise.all(
-    mdFiles.map((filePath) => loadSingleCommand(filePath, source)),
+    files.map(async (f) => {
+      const c = await loadSingleCommand(f.filePath, source);
+      return c === null || f.folder === "" ? c : { ...c, folder: f.folder };
+    }),
   );
-  return loaded.filter((c): c is Command => c !== null);
+  const seen = new Map<string, Command>();
+  for (const c of loaded) {
+    if (c === null) continue;
+    const first = seen.get(c.name);
+    if (first === undefined) seen.set(c.name, c);
+    else warnDuplicateCommandOnce(c.name, first.filePath, c.filePath);
+  }
+  return [...seen.values()];
+};
+
+/**
+ * 한 commands 폴더에서 이름으로 파일을 찾는다(하위 폴더 포함 — 목록과 **같은 규칙**: 겹치면 얕은 쪽).
+ * ★만들기·지우기 도구가 `<dir>/<name>.md` 만 보면 하위 폴더의 커맨드를 못 지우고, 같은 이름을 맨 위에 또 만든다.
+ */
+export const findCommandFile = async (dir: string, name: string): Promise<string | undefined> =>
+  (await walkCommandsDir(dir, "user")).find((c) => c.name === name)?.filePath;
+
+/** 하위 폴더 깊이 상한 — 묶음은 두세 단이면 충분하고, 끝없이 내려가면 엉뚱한 폴더(복사해 둔 레포 등)까지 훑는다. */
+const MAX_COMMAND_FOLDER_DEPTH = 3;
+const reportedDuplicateCommands = new Set<string>();
+/** 같은 이름이 두 폴더에 — 한 번만 알린다(목록은 턴·화면마다 다시 읽힌다 — 매번 찍으면 배경소음이 된다). */
+const warnDuplicateCommandOnce = (name: string, kept: string, dropped: string): void => {
+  const key = `${kept}\n${dropped}`;
+  if (reportedDuplicateCommands.has(key)) return;
+  reportedDuplicateCommands.add(key);
+  console.warn(`[commands] 같은 이름 '/${name}' 이 두 곳에 있어 앞의 것만 씁니다 — 사용: ${kept} · 무시: ${dropped}`);
 };
 
 /** `<cwd>/plugins/<plugin>/commands/` walk — V7.2.a walkPluginsAgents 동형. */
@@ -425,6 +470,6 @@ export const getAllCommands = async (cwd?: string): Promise<BuiltinCommand[]> =>
   }
   return [
     ...builtins,
-    ...discovered.map((c) => ({ name: c.name, description: c.description })),
+    ...discovered.map((c) => ({ name: c.name, description: c.description, ...(c.folder === undefined ? {} : { folder: c.folder }) })),
   ];
 };

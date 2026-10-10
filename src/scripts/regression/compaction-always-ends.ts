@@ -261,9 +261,17 @@ export const check: RegressionCheck = {
       assert(
         // ★O5: 이력 로드 창에서 `renderLocalChat` 이 **자기 자신**을 다시 부르도록 미루면
         //  «한 줄로 고쳐 쓰기» 분기를 건너뛴다 — 창이 열린 동안 실패마다 새 줄이 쌓인다.
-        "★이력 로드 창에서는 **핸들러째** 미룬다(렌더만 미루면 한 줄 갱신이 무너진다)",
-        /holdSseEventDuringHistory\(\{ ts: ev\.ts, __render: \(\) => renderEvent\(ev\) \}\)/.test(sse),
-        `핸들러 재실행으로 미룸 ${/__render: \(\) => renderEvent\(ev\)/.test(sse)}`,
+        // ★2026-10-09: 핸들러째(`renderEvent`) 다시 돌리면 상태 갱신이 두 번 난다 — 미루는 함수가
+        //  «고쳐 쓸지» 판정(compactFailLines)을 품고 있는지를 본다(dashboard-stream-races 가 동작으로 지킨다).
+        "★이력 로드 창에서는 **고쳐 쓰기 판정째** 미룬다(렌더만 미루면 한 줄 갱신이 무너진다)",
+        (() => {
+          const at = sse.indexOf('ev.type === "llm.compact_failed"');
+          const blk = at < 0 ? "" : sse.slice(at, sse.indexOf('ev.type === "llm.tool_slow"', at));
+          const drawAt = blk.indexOf("const draw = () =>");
+          const holdAt = blk.indexOf("holdSseEventDuringHistory(ev.ts, draw)");
+          return drawAt >= 0 && holdAt > drawAt && blk.slice(drawAt, holdAt).includes("compactFailLines.get");
+        })(),
+        `판정 포함 보류 ${/holdSseEventDuringHistory\(ev\.ts, draw\)/.test(sse)} · 핸들러 재실행 ${/renderEvent\(ev\)/.test(sse)}`,
       ),
     );
 

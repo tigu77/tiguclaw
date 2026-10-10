@@ -70,21 +70,27 @@
         if (historyLoadDepth > 0) return; // 중첩 로드 — 가장 바깥에서만 흘린다.
         if (heldSseEvents.length === 0) return;
         const q = heldSseEvents.splice(0, heldSseEvents.length);
-        q.sort((a, b) => (a && a.ts ? a.ts : 0) - (b && b.ts ? b.ts : 0)); // 도착순 아님, 시간순.
+        q.sort((a, b) => a.ts - b.ts); // 도착순 아님, 시간순.
         for (const e of q) {
-          try {
-            // ★재렌더 함수를 실은 항목은 그걸 부른다 (2026-07-29) — 로컬 통지(renderLocalChat)
-            //  는 SSE 이벤트 타입이 아니라서 renderEvent 로는 다시 그릴 수 없다. 그걸 모르고
-            //  합성 이벤트를 큐에 넣으면 흘릴 때 조용히 사라진다(보류가 곧 유실).
-            if (e && typeof e.__render === "function") e.__render();
-            else renderEvent(e);
-          } catch { /* 한 건 실패가 나머지를 막지 않음 */ }
+          try { e.render(); } catch { /* 한 건 실패가 나머지를 막지 않음 */ }
         }
       };
-      /** 이력 로드 중이면 붙잡는다(true = 호출자는 지금 렌더하지 않는다). */
-      const holdSseEventDuringHistory = (ev) => {
+      /**
+       * 이력 로드 중이면 **그리기만** 붙잡는다(true = 호출자는 지금 그리지 않는다).
+       *
+       * ★이벤트가 아니라 **그리는 함수**를 받는다 (2026-10-09 적대 검토). 종전엔 이벤트를
+       *  통째로 붙잡았다가 `renderEvent` 전체로 다시 돌려서, 상태 갱신이 **두 번** 났다 —
+       *  탭 전환 직후 `channel.message.in` → `llm.turn_error`(답 없음) 순서면, 흘릴 때 다시 돈
+       *  인바운드가 오류의 15초 유예 해제 타이머를 지우고(`cancelErrClear`) 진행 표시를 다시
+       *  켜서(`markTurnActive`) «생각 중» 유령이 15분 남았다. 상태(진행 표시·배지·단계)는
+       *  **도착할 때 한 번**이고, 이력 창이 미루는 것은 «리스트에 붙이기» 뿐이다.
+       *  인자 모양으로 못박아 이벤트째 붙잡는 길 자체를 없앴다.
+       * @param {number} ts 정렬 기준(이벤트 시각).
+       * @param {() => void} render 붙이기만 하는 함수(dedup·순서 가드 포함).
+       */
+      const holdSseEventDuringHistory = (ts, render) => {
         if (historyLoadDepth <= 0) return false;
-        heldSseEvents.push(ev);
+        heldSseEvents.push({ ts: typeof ts === "number" ? ts : 0, render });
         if (heldSseEvents.length > HELD_SSE_CAP) heldSseEvents.shift();
         return true;
       };

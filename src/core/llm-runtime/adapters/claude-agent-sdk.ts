@@ -153,6 +153,7 @@ import {
 } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { ToolHangError, watchToolStart } from "../tool-watchdog.js";
+import { createSteeringLedger } from "./_steering-ledger.js";
 import {
   SDK_SUBAGENT_TOOLS,
   withSdkSubagentsBlocked,
@@ -647,7 +648,7 @@ export const runClaude = async (
   //  (2026-08-09). 셸·검색·쓰기는 없고 읽기 하나뿐이라 누수 표면은 안 넓어진다.
   const neutralReadMcp: Options["mcpServers"] =
     neutralTurn && (input.attachments?.length ?? 0) > 0
-      ? { "file-read": createFileOpsMcpServer(cwd, input.threadKey, { readsOnly: true }) }
+      ? { "file-read": createFileOpsMcpServer(cwd, input.threadKey, { readsOnly: (input.attachments ?? []).map((a) => a.path) }) }
       : {};
   // ★최종 리터럴에서 **플러그인 뒤에** 붙는 코어 서버들 (2026-08-29, 2라운드 P-3).
   //  여기 이름과 아래 키가 갈리면 그 이름의 플러그인이 **조용히 사라진다** — 충돌로 안
@@ -661,7 +662,7 @@ export const runClaude = async (
         memory: createMemoryMcpServer(),
         // 프로젝트 레지스트리 (register/list/update/forget) — codex 와 parity(#2). 진실은
         // 폴더 PROJECT.md, 도구는 파싱→얇은 store 인덱스 upsert(단방향, 코어 무참조).
-        projects: createProjectRegistryMcpServer(input.threadKey),
+        projects: createProjectRegistryMcpServer(input.threadKey, cwd),
         // 런타임 유지보수 detect (2026-07-12, P1 runtime-maintenance) — maintenance_status.
         // 읽기전용·저위험 = find_capabilities/skills 류 게이트(depth·workerDepth 무관,
         // lean(toolsNone) 만 게이트) — update-self(depth0&&workerDepth0)와 다르다(계약서 §3.1).
@@ -748,7 +749,7 @@ export const runClaude = async (
           : {}),
         // 외부 MCP 등록 도구(add/list/remove_mcp_server) — endpoint/command 동형 가드.
         // 파일(<home>/mcp.json)만 다룸. codex/openai 와 parity(#2 — 어댑터 분기 0).
-        ...(reaches("mcp-admin", turnKind) ? { "mcp-admin": createMcpAdminMcpServer() } : {}),
+        ...(reaches("mcp-admin", turnKind) ? { "mcp-admin": createMcpAdminMcpServer(cwd) } : {}),
         // 모델 추론 강도 손잡이(set_model_reasoning) — 홈 settings.json 의
         // models.reasoning 한 키만. 3어댑터 동일(#2 — 키가 provider:model 이라 어댑터 무관).
         ...(reaches("model-settings", turnKind)
@@ -1331,6 +1332,16 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   const steerUuids = new Set<string>();
   // 줄 선 입력 — 남아 있으면 result 에서 입력을 닫지 않는다(닫으면 그 턴의 훅·내장 도구가 취소된다). 근거·실측은 모듈 주석.
   const queuedSteer = createSteerQueue();
+  /**
+   * 이 턴이 SDK 에 **넘긴** 끼워넣기 — 턴이 실패로 끝나면(또는 resume 이 죽어 새로 시작하면) 채널에 되돌린다
+   * (2026-10-09 전체 적대 검토 P3). `stream()` 은 꺼내는 순간 채널에서 지우므로, 안 되돌리면 죽은 시도 안에서
+   * 사라진다 — codex·openai 의 `drain()` 과 같은 규칙. «result 뒤 되돌린» 것은 SDK 에 안 갔으니 여기 없다.
+   */
+  const steeringLedger = createSteeringLedger(input.steering, input.replay);
+  const giveBackSteering = (): void => {
+    const n = steeringLedger.giveBack();
+    if (n > 0) console.warn(`[steer] ${input.threadKey} 실패·재시작한 시도가 넘긴 끼워넣기 ${n}건을 채널에 되돌림 — 다음 시도·후보·새 턴이 받는다`);
+  };
   let deferredCloseTimer: NodeJS.Timeout | undefined;
   /** result 에서 닫기를 미뤘고 아직 안 닫았다 — steeringContents 가 되돌려 놓은 뒤 끝내지 말고 기다려야 한다. */
   let steeringHeldOpen = false;
@@ -1415,10 +1426,13 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         turnEnded: () => turnResultSeen,
         holdOpen: () => steeringHeldOpen,
         // 첨부 placeholder(있으면) + steer 텍스트 = 초기 turn(userTurnParts)과 동형 조립.
-        render: (s) =>
-          [formatAttachments(s.attachments), s.text]
+        // render 는 SDK 에 넘기는 그 순간에만 불린다 — 거기서 «넘긴 것» 을 적는다(되돌린 것과 섞이지 않게).
+        render: (s) => {
+          steeringLedger.note(s);
+          return [formatAttachments(s.attachments), s.text]
             .filter((p) => p.trim() !== "")
-            .join("\n\n"),
+            .join("\n\n");
+        },
         onReturned: (s, requeued) => {
           console.warn(
             `[claude-turn-boundary] ${input.threadKey} 첫 result 이후 도착한 사용자 입력을 ` +
@@ -2433,8 +2447,12 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       const freshOptions: Options = { ...options };
       delete (freshOptions as { resume?: unknown }).resume;
       // ★★**기록을 다시 싣는다** — `resume` 만 떼면 모델이 문맥 없이 답한다(위 주석).
-      //  스티어링 턴은 진행 중 턴에 끼어드는 경로라 여기 해당 없음(프롬프트가 다르다).
-      if (input.steering === undefined) promptWithMemory = rebuildPromptWithFullHistory();
+      //  ★스티어링 턴도 같다 (2026-10-09 전체 적대 검토 P3) — 종전엔 «프롬프트가 다르다» 며 뺐는데, 스트리밍
+      //   입력의 첫 메시지도 `promptWithMemory` 이고 생성기는 그 값을 **첫 yield 때** 읽는다(아래 `buildQuery` 가
+      //   새 생성기를 만든다). 스티어링은 기본 켜짐이라 대시보드·텔레그램 대화가 전부 이 길이었다 — 기록 없이 답했다.
+      promptWithMemory = rebuildPromptWithFullHistory();
+      // 죽은 시도에 넘긴 끼워넣기는 새 시도가 다시 받게 채널에 되돌린다(새 생성기가 첫 메시지 뒤에 꺼낸다).
+      giveBackSteering();
       // ★**저장된 죽은 id 도 버린다** — 안 버리면 다음 턴이 같은 resume 을 또 시도한다.
       //  이미지 오염 경로가 하는 것과 같다(그쪽 주석의 «문맥 보존» 이 여기서도 성립한다).
       try {
@@ -2468,16 +2486,11 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     // U-I4 개정)면 raw AbortError 대신 그 typed reason 을 throw 해 상위(index.ts)가 일관되게
     // 분류하게 한다. WorkerCancelledError 는 "모델 거부 아님" 토큰이라 isModelRejected 비매칭 +
     // index.ts 가 name 으로 취소 분류(폴백 단락·turn_error 미발행) → "stop 이 실제 stop".
-    const reason = effectiveAc.signal.reason;
-    if (
-      effectiveAc.signal.aborted &&
-      (reason instanceof IdleTimeoutError ||
-        reason instanceof TurnTimeoutError ||
-        reason instanceof WorkerCancelledError ||
-        // 도구 하드 상한(TOOL_HARD_TIMEOUT_MS) — 승격 안 하면 SDK 원문 «aborted by user» 가 원인으로 나가고 이름 분류가 안 닿는다.
-        reason instanceof ToolHangError)
-    ) {
-      throw reason;
+    // ★사유가 무엇이든 승격한다(아래 «조용한 종결» 승격과 같은 규칙 — 2026-10-09 전체 적대 검토). 도구 하드 상한
+    //  (ToolHangError)도 여기서 이름으로 분류된다 — 승격 안 하면 SDK 원문 «aborted by user» 가 원인으로 나간다.
+    //  사용자 `/stop`·매니저 시한도 raw AbortError 가 아니라 그 사유로 올라가야 상위가 이름으로 가른다.
+    if (effectiveAc.signal.aborted && effectiveAc.signal.reason !== undefined) {
+      throw effectiveAc.signal.reason;
     }
     // ★실행기 부재를 **우리 말로** 바꾼다 (2026-08-27). SDK 원문은
     //  `Claude Code executable not found at <...>. Is options.pathToClaudeCodeExecutable set?`
@@ -2495,6 +2508,11 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     throw e;
   }
   } // for(;;) — resume 폴백 재시도 루프
+  } catch (e) {
+    // 실패로 끝났다 — 넘긴 끼워넣기를 채널에 되돌린다(코어가 새 턴으로, 폴백 후보가 있으면 그 후보가 먼저).
+    //  `/stop` 이면 채널이 닫혀 push 가 거절된다 — 멈추라고 한 것은 되살리지 않는다.
+    giveBackSteering();
+    throw e;
   } finally {
     // 열어 둔 입력의 안전장치 해제 — 턴이 어떤 길로 끝나든 타이머가 남지 않게(닫기는 턴 finally 가 2차로 한다).
     clearDeferredCloseTimer();
@@ -2540,18 +2558,14 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   // 조용히 끝낼 수 있다. 그 경우 succeeded=false 로 떨어져 facade 가 실패를 못 본다.
   // reason 이 Idle/TurnTimeoutError, 또는 native Task 취소(WorkerCancelledError, U-I4 개정)면
   // 명시 throw 로 승격 (셋 다 isModelRejected 비매칭 — facade 무폴백, index.ts 취소 분류).
-  {
-    const reason = effectiveAc.signal.reason;
-    if (
-      effectiveAc.signal.aborted &&
-      (reason instanceof IdleTimeoutError ||
-        reason instanceof TurnTimeoutError ||
-        reason instanceof WorkerCancelledError ||
-        // 도구 하드 상한(TOOL_HARD_TIMEOUT_MS) — 승격 안 하면 SDK 원문 «aborted by user» 가 원인으로 나가고 이름 분류가 안 닿는다.
-        reason instanceof ToolHangError)
-    ) {
-      throw reason;
-    }
+  // ★★**중단됐으면 사유가 무엇이든 승격한다** (2026-10-09 전체 적대 검토 P2). 종전 목록엔 사용자 `/stop`
+  //  (UserCancelledError)·매니저 시한(WorkerTimeoutError)이 없어서, SDK 가 abort 에 **조용히** 끝나면 그때까지
+  //  흐른 부분 텍스트가 **성공으로** 반환됐다(검토 재현: «작업을 시작합니다. 첫째로» 가 turn_done·이력에 적재).
+  //  이름 목록을 늘리지 않고 조건을 뒤집는다 — 손목록은 다음 사유에서 또 빠진다. 예외는 하나, **우리가** 끊은
+  //  앱 도구 캡처(externalTools)뿐이다(그건 정상 종료다 — 위 catch 의 같은 가드).
+  if (effectiveAc.signal.aborted && pendingExternalToolCalls.length === 0) {
+    giveBackSteering();
+    throw effectiveAc.signal.reason ?? new Error("claude: the turn was aborted");
   }
 
   // ★`??` 는 **빈 문자열에 폴백하지 않는다** (2026-08-09 적대 검토 A). 합성 턴(백그라운드

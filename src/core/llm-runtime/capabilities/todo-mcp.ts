@@ -21,9 +21,9 @@
  *  - dep 추가 0. in-memory 영속 0 (todo 는 turn 컨텍스트 + EventBus 만 — Claude Code
  *    도 세션 한정, store 불요). 매 호출 EventBus publish.
  */
+import { coreMcpServer } from "./_core-server.js";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -101,7 +101,7 @@ const makeUpdateTodosTool = (threadKey: string) => tool(
 export const createTodoMcpServer = (
   threadKey = "",
 ): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  coreMcpServer({
     name: "todo",
     version: "1.0.0",
     tools: [makeUpdateTodosTool(threadKey)],

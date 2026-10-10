@@ -45,7 +45,7 @@ import path from "node:path";
 /** 스윕 1건 — 사람이 읽는 한 줄 요약 + 필요 시 상세. */
 export interface HealthFinding {
   /** 지표 종류(로그·이벤트 분류용). */
-  kind: "schedule_failure" | "port_unavailable" | "turn_errors" | "repetition" | "backup_stale" | "memory_index_truncated" | "project_doc_oversized";
+  kind: "schedule_failure" | "port_unavailable" | "plugin_down" | "turn_errors" | "repetition" | "backup_stale" | "memory_index_truncated" | "project_doc_oversized";
   /** 사용자에게 그대로 보여줄 한 줄. */
   summary: string;
 }
@@ -122,6 +122,13 @@ const lastReportTs = (kinds: ReadonlySet<string>): number => {
 
 // 보수적 임계 — 넘으면 "확실히 이상"인 값만.
 const TURN_ERROR_THRESHOLD = 3; // 창 안 턴 실패 3건 이상 = 이상(평소 0~1건)
+/**
+ * ★턴 실패는 **고정 창**으로 센다 (2026-10-09 적대 검토). 종전엔 «지난 스윕 이후» 였는데, 실패 하나하나가 스윕을 깨워
+ *  그 시점을 지금으로 당기므로 창이 **실패 사이 간격**으로 줄었다 — 2분 간격 실패 10건은 0건 보고, 30초 안 3건만 울렸다.
+ *  대신 같은 급증을 깨울 때마다 다시 말하지 않게, 보고는 창 하나에 한 번이고 **새 실패가 있을 때만** 한다.
+ */
+const TURN_ERROR_WINDOW_MS = 60 * 60_000;
+let lastTurnErrorReportTs = 0;
 const REPEAT_PARAGRAPH_THRESHOLD = 5; // 한 답변에 같은 앞머리 산문 문단 5개 이상 = 반복 이상
 
 // ★반복 판정 재조정(2026-07-27) — 초판(앞머리 25자·최소 10자·코드펜스 미제외)은 실데이터에서
@@ -286,6 +293,29 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
     /* 이 지표만 스킵 */
   }
 
+  // ②-b 플러그인이 멈췄다 — 플러그인이 «사용자가 알아야 하는 멈춤» 이라고 표시한 것만(`userFacing: true`, 예: 텔레그램 폴링 사망·
+  //  대시보드 재기동 포기). 종전엔 포트 표식만 알려서, 폴링이 409 로 죽어도 이벤트로만 남고 아무도 몰랐다(2026-10-09 적대 검토).
+  //  ★표시는 플러그인이 정한다 — 답장 한 통 미배달처럼 건마다 나는 오류까지 알리면 소음이 된다.
+  try {
+    const seen = new Set<string>();
+    for (const e of listEvents({ types: ["plugin.error"], sinceTs, limit: 50 })) {
+      let p: { pluginName?: unknown; error?: unknown; userFacing?: unknown } = {};
+      try {
+        p = JSON.parse(String(e.payload ?? "{}")) as typeof p;
+      } catch {
+        continue;
+      }
+      if (p.userFacing !== true || typeof p.pluginName !== "string" || seen.has(p.pluginName)) continue;
+      seen.add(p.pluginName);
+      out.push({
+        kind: "plugin_down",
+        summary: translate("srv.health.pluginDown", { plugin: p.pluginName, error: String(p.error ?? "").slice(0, 200) }),
+      });
+    }
+  } catch {
+    /* 이 지표만 스킵 */
+  }
+
   // ★자원·데이터 축 (2026-08-11) — 종전엔 **행동 이상만** 봤다(턴 실패·반복·스케줄).
   //  DB 가 커지든 백업이 없든 기억 절반이 안 실리든 **아무도 안 알려줬다.** 조용히 썩는
   //  것을 안 조용하게 만드는 게 이 스윕의 일이므로 여기가 제자리다.
@@ -372,9 +402,12 @@ export const runHealthSweep = (sinceTs: number): HealthFinding[] => {
   //     받아 분류해야 했다(실제로 그렇게 진단했다 — 알림이 일을 만들었다)
   //  ★"오래 걸림" 은 여기 없다 — 실패로 세는 것은 백엔드가 실패라고 말한 것뿐이다.
   try {
-    const errs = listEvents({ types: ["llm.turn_error"], sinceTs, limit: 200 });
+    const now = Date.now();
+    const errs = listEvents({ types: ["llm.turn_error"], sinceTs: Math.min(sinceTs, now - TURN_ERROR_WINDOW_MS), limit: 200 });
     const actionable = errs.filter((e) => !isSelfHandled(e.payload));
-    if (actionable.length >= TURN_ERROR_THRESHOLD) {
+    const fresh = actionable.some((e) => e.ts > sinceTs);
+    if (actionable.length >= TURN_ERROR_THRESHOLD && fresh && now - lastTurnErrorReportTs >= TURN_ERROR_WINDOW_MS) {
+      lastTurnErrorReportTs = now;
       out.push({
         kind: "turn_errors",
         summary: translate("srv.health.turnErrors", {

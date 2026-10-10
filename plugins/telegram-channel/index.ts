@@ -192,7 +192,7 @@ const sendWithTransportRetry = async (
 
 // text 를 변환·분할해 청크별로 send 한다. replyToMessageId 있으면 *첫 청크만* 답글로
 // (멀티청크 시각잡음 회피). throwOnFail 이면 plain 폴백까지 실패 시 rethrow(발신 실패를
-// 호출자가 알아야 하는 sendOutgoing 용); 아니면 로그만(답글은 부수 UX).
+// 호출자가 알아야 하는 sendOutgoing 용); 아니면 남은 청크를 긴 예산으로 뒤에서 재전송(resendInBackground).
 // send 는 sendWithTransportRetry 로 감싸므로 여기 하나로 4곳(reply·attachment·edited·
 // sendOutgoing) 발송 경로 전부가 transport 재시도를 얻는다.
 /**
@@ -204,46 +204,172 @@ const extractMessageId = (r: unknown): number | null => {
   return typeof id === "number" ? id : null;
 };
 
+/**
+ * 청크 하나 — HTML 로 보내고, 실패하면 태그를 벗긴 plain 으로 한 번 더. 둘 다 실패면 마지막 에러를 던진다.
+ * HTML 실패(주로 Telegram parse error) → plain 폴백. ★태그를 스트립해 보낸다(raw HTML 그대로 보내면 <b> 등이
+ * 노출됨 = 원래 버그). transport 실패였다면 여기 도달 시점엔 이미 재시도가 소진된 상태이나, plain 폴백도 재시도해 본다.
+ */
+const sendChunk = async (
+  send: TgSend,
+  chunk: string,
+  extra: TgSendExtra,
+  htmlDelays: readonly number[],
+  plainDelays: readonly number[],
+): Promise<number | null> => {
+  try {
+    return extractMessageId(await sendWithTransportRetry(send, chunk, extra, htmlDelays));
+  } catch (e) {
+    console.error(`telegram formatted send failed, falling back to plain — ${describeTelegramError(e)}`);
+    return extractMessageId(await sendWithTransportRetry(send, htmlToPlainText(chunk), {}, plainDelays));
+  }
+};
+
+/**
+ * ★유실을 **판정 수치와 함께** 남긴다 (2026-08-06) — 종전엔 종류만 적혀 있어, 원격 인스턴스(회사 PC 는
+ *  접속 불가)에서 "안 왔다" 를 로그로 확인할 수 없었다. 몇 번째 청크가·전체 몇 개 중·얼마짜리가 못 갔는지가 진단의 재료다.
+ */
+const reportChunkLost = (i: number, chunks: readonly string[], e: unknown): void => {
+  console.error(
+    `★telegram 발송 유실 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)가 ` +
+      `HTML·plain 양쪽 다 실패해 **사용자에게 도달하지 않았습니다**. ${describeTelegramError(e)}`,
+  );
+};
+
+/**
+ * 대화별 «뒤로 미룬 답» 의 꼬리 — 그 대화에 뒤에서 다시 보내는 답이 남아 있으면 **새 답도 그 뒤에 선다** (2026-10-09 재검토).
+ * ★종전엔 실패한 답을 뒤로 넘기고 바로 돌아와, 코어가 보낸 다음 답이 먼저 도착했다(실측: 답B 16초 · 답A 30초) — 사용자가 답이 없어
+ *  다시 물으면 새 답 뒤에 옛 답이 또 왔다. 끝나면 비운다(쌓이지 않는다).
+ */
+const chatBacklog = new Map<string, Promise<void>>();
+/**
+ * 줄의 한 자리가 다음 답을 붙잡는 최대 시간. 긴 예산(재시도 대기 합 ≈80초)을 넉넉히 덮되, 멈춘 발송(응답 없는 연결)이
+ * 그 대화의 **모든** 다음 답을 무기한 막지 않게 한다(2026-10-10 재검토). 넘기면 줄만 풀어준다 — 그 발송은 뒤에서 계속 간다.
+ */
+let BACKLOG_HOLD_MAX_MS = 180_000;
+/** 회귀 검사용 — 3분을 기다리지 않고 «멈춘 발송이 줄을 풀어주는가» 를 동작으로 본다. */
+export const setBacklogHoldMsForTest = (ms: number): void => {
+  BACKLOG_HOLD_MAX_MS = ms;
+};
+const enqueueBacklog = (chatKey: string, job: () => Promise<void>): void => {
+  const tail = (chatBacklog.get(chatKey) ?? Promise.resolve())
+    .then(() => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const hold = new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(`telegram 뒤로 미룬 답이 ${String(BACKLOG_HOLD_MAX_MS / 1000)}초를 넘겨 다음 답의 줄을 풀어줍니다(그 발송은 계속 시도합니다)`);
+          resolve();
+        }, BACKLOG_HOLD_MAX_MS);
+        timer.unref?.();
+      });
+      return Promise.race([job().catch(() => {}), hold]).finally(() => clearTimeout(timer));
+    })
+    .catch(() => {})
+    .finally(() => {
+      if (chatBacklog.get(chatKey) === tail) chatBacklog.delete(chatKey);
+    });
+  chatBacklog.set(chatKey, tail);
+};
+
 export const sendFormatted = async (
   send: TgSend,
   text: string,
-  opts?: { replyToMessageId?: number; throwOnFail?: boolean; retryDelays?: readonly number[] },
+  opts?: {
+    replyToMessageId?: number;
+    throwOnFail?: boolean;
+    retryDelays?: readonly number[];
+    /** 어느 대화인지 — 뒤로 미룬 답이 있으면 그 뒤에 줄을 세우는 데 쓴다(없으면 줄 없이 바로 보낸다). */
+    chatKey?: string;
+    /**
+     * 뒤에서(줄을 서거나 재전송으로) 나중에 간 청크의 id. 반환값엔 **지금** 간 것만 있다 — 이걸 안 받으면 늦게 간 답은
+     * 답장 매핑에 안 묶여, 사용자가 그 답에 답장해도 원래 세션으로 못 간다(2026-10-10 재검토).
+     */
+    onLateIds?: (ids: number[]) => void;
+  },
 ): Promise<number[]> => {
   const { chunks, parseMode } = formatForTelegram(text);
+  const extraFor = (i: number): TgSendExtra => ({
+    ...(parseMode !== undefined ? { parse_mode: parseMode } : {}),
+    ...(opts?.replyToMessageId !== undefined && i === 0
+      ? { reply_parameters: { message_id: opts.replyToMessageId } }
+      : {}),
+  });
+  const chatKey = opts?.chatKey;
+  if (chatKey !== undefined && opts?.throwOnFail !== true && chatBacklog.has(chatKey)) {
+    // 이 대화에 아직 못 간 앞 답이 있다 — 앞지르지 않게 그 뒤에 선다(같은 긴 예산).
+    enqueueBacklog(chatKey, () => resendInBackground(send, chunks, 0, extraFor, opts?.onLateIds));
+    return [];
+  }
   // ★청크 **전부**의 id 를 모은다 — 사용자는 어느 청크에든 답장할 수 있다.
   const messageIds: number[] = [];
   for (let i = 0; i < chunks.length; i++) {
-    const extra: TgSendExtra = {
-      ...(parseMode !== undefined ? { parse_mode: parseMode } : {}),
-      ...(opts?.replyToMessageId !== undefined && i === 0
-        ? { reply_parameters: { message_id: opts.replyToMessageId } }
-        : {}),
-    };
     try {
-      const sent = await sendWithTransportRetry(send, chunks[i]!, extra, opts?.retryDelays);
-      const mid = extractMessageId(sent);
+      const mid = await sendChunk(send, chunks[i]!, extraFor(i), opts?.retryDelays ?? TRANSPORT_RETRY_DELAYS_MS, TRANSPORT_RETRY_DELAYS_MS);
       if (mid !== null) messageIds.push(mid);
-    } catch (e) {
-      // HTML 실패(주로 Telegram parse error) → plain 폴백. ★태그를 스트립해 보낸다(raw HTML
-      // 그대로 보내면 <b> 등이 노출됨 = 원래 버그). transport 실패였다면 여기 도달 시점엔 이미
-      // 재시도가 소진된 상태이나, plain 폴백도 한 번 더 재시도해 본다.
-      console.error(`telegram formatted send failed, falling back to plain — ${describeTelegramError(e)}`);
-      await sendWithTransportRetry(send, htmlToPlainText(chunks[i]!), {}, TRANSPORT_RETRY_DELAYS_MS).then((sent2) => {
-        const mid2 = extractMessageId(sent2);
-        if (mid2 !== null) messageIds.push(mid2);
-      }).catch((e2) => {
-        // ★유실을 **판정 수치와 함께** 남긴다 (2026-08-06) — 종전엔 종류만 적혀 있어,
-        //  원격 인스턴스(회사 PC 는 접속 불가)에서 "안 왔다" 를 로그로 확인할 수 없었다.
-        //  몇 번째 청크가·전체 몇 개 중·얼마짜리가 못 갔는지가 진단의 재료다.
-        console.error(
-          `★telegram 발송 유실 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)가 ` +
-            `HTML·plain 양쪽 다 실패해 **사용자에게 도달하지 않았습니다**. ${describeTelegramError(e2)}`,
-        );
-        if (opts?.throwOnFail === true) throw e2;
-      });
+    } catch (e2) {
+      if (opts?.throwOnFail === true) {
+        reportChunkLost(i, chunks, e2);
+        throw e2;
+      }
+      // ★대화형 답은 여기서 묻지 않는다 (2026-10-09 적대 검토 P3). 종전엔 로그만 찍고 정상 반환해
+      //  코어는 «배달됨» 으로 알았고, 텔레그램이 10초 남짓 흔들리면 본답이 **조용히** 사라졌다 —
+      //  같은 장애에 스케줄 알림은 80초 + 5분 재전송으로 살아남는데 사용자가 기다리던 답만 죽었다.
+      //  그래서 이 청크부터 끝까지를 **스케줄 알림과 같은 긴 예산**으로 뒤에서 순서대로 보낸다
+      //  (대화형 짧은 예산 = 사용자를 오래 붙잡지 않으려는 것이지 포기하려는 게 아니다).
+      //  남은 청크를 넘기고 멈춘다 — 이어서 보내면 장애 중에 뒤 청크만 먼저 도착해 순서가 뒤집힌다.
+      console.error(
+        `telegram 답 발송 실패 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)부터 ` +
+          `${chunks.length - i}개를 긴 예산으로 뒤에서 다시 보냅니다. ${describeTelegramError(e2)}`,
+      );
+      if (chatKey !== undefined) enqueueBacklog(chatKey, () => resendInBackground(send, chunks, i, extraFor, opts?.onLateIds));
+      else void resendInBackground(send, chunks, i, extraFor, opts?.onLateIds).catch(() => {});
+      break;
     }
   }
   return messageIds;
+};
+
+/**
+ * 대화형 답의 남은 청크를 **스케줄 알림과 같은 예산**(`OUTBOUND_RETRY_DELAYS_MS`)으로 보낸다.
+ * 그래도 못 가면 로그 + `plugin.error` 로 «미배달» 을 남긴다 — 사용자가 못 받은 답이 흔적 없이 끝나지 않게.
+ * 간 청크의 id 는 `onIds` 로 넘긴다 — 호출자가 답장 매핑에 묶는다.
+ */
+const resendInBackground = async (
+  send: TgSend,
+  chunks: readonly string[],
+  from: number,
+  extraFor: (i: number) => TgSendExtra,
+  onIds?: (ids: number[]) => void,
+): Promise<void> => {
+  for (let i = from; i < chunks.length; i++) {
+    try {
+      const mid = await sendChunk(send, chunks[i]!, extraFor(i), OUTBOUND_RETRY_DELAYS_MS, OUTBOUND_RETRY_DELAYS_MS);
+      if (mid !== null) {
+        try {
+          onIds?.([mid]);
+        } catch {
+          /* 매핑은 편의 기능 — 배달을 무르지 않는다 */
+        }
+      }
+      console.log(`telegram 답 재전송 성공 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)`);
+    } catch (e) {
+      reportChunkLost(i, chunks, e);
+      try {
+        getEventBus().publish({
+          type: "plugin.error",
+          ts: Date.now(),
+          payload: {
+            pluginName: "telegram-channel",
+            phase: "runtime",
+            error: `reply undelivered — chunk ${i + 1}/${chunks.length} (${chunks[i]!.length} chars) failed after the long retry budget${i + 1 < chunks.length ? `; the remaining ${String(chunks.length - i - 1)} chunk(s) were not sent` : ""}: ${describeTelegramError(e)}`,
+          },
+        });
+      } catch {
+        /* 버스 실패 — 위 로그가 남았다 */
+      }
+      // ★한 청크를 끝내 잃으면 나머지는 보내지 않는다 — 중간이 빠진 채 뒤 청크만 도착하면 읽을 수 없는 답이 된다(재검토).
+      return;
+    }
+  }
 };
 
 /**
@@ -280,16 +406,18 @@ export const replyAndRecord = async (
     replied === undefined || replied === null
       ? ""
       : egressSourcePrefix(replied, getThreadName(replied));
-  const ids = await sendFormatted(
-    send,
-    prefix + out,
-    opts?.replyToMessageId !== undefined
-      ? { replyToMessageId: opts.replyToMessageId }
-      : undefined,
+  // 청크 전부를 묶는다 — 사용자는 어느 청크에든 답장할 수 있다(sendFormatted 와 같은 이유). 뒤에서 늦게 간 청크도 같다.
+  const bind = (ids: number[]): void => {
+    const now = Date.now();
+    for (const id of ids) recordOutboundMessage("telegram", chatId, id, sessionId, now);
+  };
+  bind(
+    await sendFormatted(send, prefix + out, {
+      chatKey: chatId,
+      onLateIds: bind,
+      ...(opts?.replyToMessageId !== undefined ? { replyToMessageId: opts.replyToMessageId } : {}),
+    }),
   );
-  const now = Date.now();
-  // 청크 전부를 묶는다 — 사용자는 어느 청크에든 답장할 수 있다(sendFormatted 와 같은 이유).
-  for (const id of ids) recordOutboundMessage("telegram", chatId, id, sessionId, now);
 };
 
 // ─── 축1 선택지(inline keyboard) callback_data 맵 ─────────────────────────
@@ -312,8 +440,14 @@ interface PromptOptionEntry {
 }
 const promptOptionMap = new Map<string, PromptOptionEntry>();
 let promptOptionSeq = 0;
+/**
+ * ★부팅마다 바뀌는 표식 — id 에 섞는다 (2026-10-09 적대 검토 P4). 번호만 쓰면 재시작 뒤 `o0` 부터 다시 매겨져,
+ *  재시작 전 메시지의 버튼(«보관»=o0)을 누르면 **새 질문의 o0(«전부 삭제»)** 이 사용자 발화로 들어갔다.
+ *  표식이 다르면 옛 버튼은 표에 없어 «만료» 안내로 빠진다. callback_data 64바이트 안이다(6+수 자).
+ */
+const promptOptionBoot = Math.floor(Math.random() * 36 ** 5).toString(36).padStart(5, "0");
 const storePromptOption = (value: string, session?: string): string => {
-  const id = `o${(promptOptionSeq++).toString(36)}`;
+  const id = `o${promptOptionBoot}${(promptOptionSeq++).toString(36)}`;
   promptOptionMap.set(id, session === undefined ? { value } : { value, session });
   while (promptOptionMap.size > PROMPT_OPTION_CAP) {
     const oldest = promptOptionMap.keys().next().value;
@@ -583,13 +717,26 @@ const parseAllowedTelegramIds = (): Set<string> =>
       .filter((s) => s !== ""),
   );
 
+/**
+ * 소유자 판정 — 순수 함수 하나. 빈 집합 = 잠금(아무도 통과 못 함).
+ * ★인터넷에 노출된 **유일한** 인증 게이트인데 지키는 검사가 0이었다 (2026-10-09 적대 검토 G4 —
+ *  «항상 true» 변이가 전체 스위트에서 생존). 판정을 여기 하나로 두고 회귀가 직접 부르고, 배선은
+ *  `start()` 의 미들웨어 한 곳이 이것만 쓴다(회귀가 진짜 update 를 흘려 잰다).
+ */
+export const isAllowedSender = (
+  fromId: number | string | undefined,
+  allowed: ReadonlySet<string>,
+): boolean => fromId !== undefined && allowed.has(String(fromId));
+
 export default class TelegramChannel implements Channel {
   readonly name = "telegram" as const;
   /**
    * presence 상태 자기선언(D1(b) §12.2) — 토큰 있으면 "up"(폴링), 없으면 "disabled"
    * (self-disable). 생성자에서 스냅샷(env 는 런타임 불변). 로더가 wrapper 로 forward.
+   * ★폴링이 죽으면(409·401 등) "disabled" 로 내린다 (2026-10-09) — 생성자의 "up" 으로 고정돼 있으면
+   *  메시지를 못 받는 채널이 계속 «살아 있다» 고 말한다.
    */
-  readonly status: "up" | "disabled";
+  status: "up" | "disabled";
   /**
    * 아웃바운드 능력(ADR 2026-07-16 §D1/§D3) — 코어 레지스트리에 등록.
    *  - deliver = sendOutgoing(현행 switch telegram 케이스와 동일 함수). null/빈 target 은
@@ -690,14 +837,6 @@ export default class TelegramChannel implements Channel {
     } else {
       console.log(`telegram: allowlist 활성 (${allowedIds.size} ID)`);
     }
-    const isAllowed = (ctx: Context): boolean => {
-      const id = ctx.from === undefined ? undefined : String(ctx.from.id);
-      if (id !== undefined && allowedIds.has(id)) return true;
-      console.warn(
-        `telegram: 차단된 접근 무시 — user=${id ?? "unknown"} (allowlist 외)`,
-      );
-      return false;
-    };
 
     /**
      * 부팅 전에 보내진 오래된 메시지인가. `ctx.message.date` 는 텔레그램이 준 **초** 단위
@@ -725,7 +864,19 @@ export default class TelegramChannel implements Channel {
         .catch(() => {});
     };
 
-    // ★게이트를 **미들웨어 한 곳**에 둔다. 핸들러마다 달면 손으로 관리하는 목록이 되고,
+    // ★소유자 게이트는 **미들웨어 한 곳**이다 (2026-10-09). 종전엔 핸들러 셋(텍스트·첨부·버튼)이
+    //  각자 `isAllowed` 를 불렀다 — 아래 시간 게이트가 텍스트에만 걸려 사진이 새던 것과 같은 모양이라,
+    //  핸들러가 하나 늘면 그것만 열린다. 가장 먼저 둔다: 남의 메시지는 오래됐든 아니든 세지도 답하지도 않는다.
+    bot.use(async (ctx, next) => {
+      if (!isAllowedSender(ctx.from?.id, allowedIds)) {
+        console.warn(`telegram: 차단된 접근 무시 — user=${ctx.from?.id ?? "unknown"} (allowlist 외)`);
+        // 버튼이면 로딩은 풀어준다 — 안 그러면 차단된 쪽 화면에서 버튼이 영원히 돈다.
+        if (ctx.callbackQuery !== undefined) await ctx.answerCallbackQuery().catch(() => {});
+        return;
+      }
+      await next();
+    });
+    // ★시간 게이트도 **미들웨어 한 곳**에 둔다. 핸들러마다 달면 손으로 관리하는 목록이 되고,
     //  실제로 그렇게 됐다: 텍스트에만 걸어서 **사진·음성·문서·영상은 그대로 통과**했다
     //  (검토 실측 — 24시간 전 photo/voice 가 부팅 시 턴을 발사). `drop_pending_updates`
     //  를 false 로 바꾸면서 새로 열린 구멍이라, 그 수정이 스스로 만든 부작용이었다.
@@ -733,14 +884,13 @@ export default class TelegramChannel implements Channel {
     //  콜백(버튼)은 대상이 아니다 — 오래된 메시지의 버튼을 **지금** 누른 것이라 정상 행위다.
     bot.use(async (ctx, next) => {
       if (ctx.message !== undefined && isStaleInbound(ctx.message.date)) {
-        if (isAllowed(ctx)) noteStaleInbound(ctx);
+        noteStaleInbound(ctx);
         return; // 턴을 발사하지 않는다.
       }
       await next();
     });
 
     bot.on("message:text", async (ctx) => {
-      if (!isAllowed(ctx)) return;
       const text = ctx.message.text.trim();
       if (text.length === 0) return;
       // 답글(reply) 원문 회수 — telegram 이 주는 reply_to_message 의 텍스트/캡션을
@@ -856,7 +1006,6 @@ export default class TelegramChannel implements Channel {
     bot.on(
       ["message:photo", "message:document", "message:voice", "message:audio", "message:video"],
       async (ctx) => {
-        if (!isAllowed(ctx)) return;
         const token = process.env.TELEGRAM_BOT_TOKEN ?? "";
         const receivedAtSeconds = ctx.message.date;
         const triggerId = ctx.message.message_id;
@@ -974,11 +1123,7 @@ export default class TelegramChannel implements Channel {
     // router 로 흘려보낸다(같은 chat=같은 thread·인격 — 새 세션/분기 0). 이는 message:text
     // 핸들러가 텍스트를 router 로 보내는 경로와 동형(비차단 발사 + heartbeat 재배선).
     bot.on("callback_query:data", async (ctx) => {
-      if (!isAllowed(ctx)) {
-        // 차단된 사용자에게도 로딩은 풀어줘야 버튼이 영원히 도는 걸 막는다.
-        await ctx.answerCallbackQuery().catch(() => {});
-        return;
-      }
+      // 소유자 게이트는 위 미들웨어 한 곳이다(차단된 버튼의 로딩 해제도 거기서).
       const id = ctx.callbackQuery.data;
       const entry = promptOptionMap.get(id);
       const value = entry?.value;
@@ -1083,6 +1228,8 @@ export default class TelegramChannel implements Channel {
     // ★false — 재시작 창(1~5초)의 메시지를 살린다. 오래된 것은 아래 handler 의
     //  시간 게이트가 거르되 **조용히 버리지 않고 알린다**.
     bot.start({ drop_pending_updates: false }).catch((err: unknown) => {
+      // 우리가 멈춘 것이면 사망이 아니다 — 부팅 재시도 중 정상 stop() 이 `Aborted delay` 로 여기 온다(재검토).
+      if (this.stopping) return;
       const e = err as { error_code?: number; description?: string } & Error;
       if (e?.error_code === 409) {
         console.error(
@@ -1095,6 +1242,25 @@ export default class TelegramChannel implements Channel {
           "telegram: polling 종료 —",
           e?.description ?? e?.message ?? String(err),
         );
+      }
+      // ★로그만으론 아무도 모른다 (2026-10-09 적대 검토 P3) — status 가 "up" 으로 남고 이벤트도 없어,
+      //  메시지를 하나도 못 받는 채널이 화면·점검 어디에도 안 드러났다. 상태를 내리고 plugin.error 를 낸다.
+      //  ★다시 띄우지는 않는다 — 409 는 다른 인스턴스가 이 토큰을 쓰고 있다는 뜻이고, 401 은 토큰이 틀렸다는
+      //   뜻이다. 둘 다 재시도로 풀리지 않고, 409 에서 재시도하면 상대 인스턴스와 서로를 끊는다.
+      this.status = "disabled";
+      try {
+        getEventBus().publish({
+          type: "plugin.error",
+          ts: Date.now(),
+          payload: {
+            pluginName: "telegram-channel",
+            phase: "runtime",
+            error: `telegram polling stopped — no messages will be received until restart: ${describeTelegramError(err)}`,
+            userFacing: true, // 폴링이 죽었다 — 재시작 전까지 메시지를 못 받는다(자기 점검이 알린다)
+          },
+        });
+      } catch {
+        /* 버스 실패 — 위 로그가 남았다 */
       }
     });
   }
@@ -1133,7 +1299,11 @@ export default class TelegramChannel implements Channel {
     });
   }
 
+  /** stop() 이 시작됐나 — 폴링 종료를 «사망» 으로 보고하지 않게 한다. */
+  private stopping = false;
+
   async stop(): Promise<void> {
+    this.stopping = true;
     // 구독 해제 먼저 — bot 정지 후 잔여 이벤트로 refreshMenu 호출 방지(누수 0).
     if (this.unsubscribeCommandsChanged !== null) {
       this.unsubscribeCommandsChanged();

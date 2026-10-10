@@ -206,6 +206,9 @@
         // killable:false(claude SDK 소유, ADR §6) — 카드/칩이 ⏹️ 를 안 그려도 이중 방어(cosmetic
         // 버튼 금지는 U-I4 교훈 — 실수로 호출돼도 여기서 하드 거부, 서버도 no-op 이나 조용히).
         if (!entry || entry.status !== "running" || entry.killRequested || entry.killable === false) return;
+        // ★강제 종료는 **먼저 묻는다** (2026-10-09 적대 검토) — 카드의 ⏹ 가 한 번에 실행됐다(잡 ⋯ 메뉴의 «중지» 는 묻는데).
+        //  버튼이 아니라 여기 둔다: 셸을 죽이는 문은 카드·채팅 칩 둘이고 둘 다 이 함수로 온다(메뉴 경로는 없다 — 두 번 묻지 않는다).
+        if (!window.confirm(i18n("ctx.confirm", { what: i18n("common.shell.kill") }))) return;
         entry.killRequested = true;
         scheduleShellsRender();
         if (typeof syncShellChip === "function") syncShellChip(shellId); // 표면 A 칩도 즉시 낙관 반영.

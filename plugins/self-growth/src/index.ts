@@ -402,6 +402,7 @@ class SelfGrowthPlugin {
         count,
       });
       if (result === null) return;
+      if (!result.landedNow) return; // 재발 — 이미 기록된 것이다(로그·이벤트·알림을 반복하지 않는다)
 
       console.log(
         `self-growth: failure ${

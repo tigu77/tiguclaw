@@ -88,18 +88,18 @@
         // tabs.js 훅 — 탭 전환/새탭/세션 프리뷰 갱신 시 호출(로드 순서-안전한 window 게시).
         window.hydrateModelSelect = hydrate;
 
-        sel.addEventListener("change", async () => {
-          const profile = sel.value; // "" = 상속(기본).
-          const tk = activeThread();
-          if (!tk) return;
-          // 낙관적 로컬 반영(탭 전환 정합) — in-memory 만(localStorage 직렬화 shape 불변,
-          // 새로고침 시 /api/sessions.modelProfile 로 재hydrate).
-          try {
-            if (typeof openTabs !== "undefined") {
-              const t = openTabs.find((x) => x.threadKey === tk);
-              if (t) t.modelProfile = profile === "" ? null : profile;
-            }
-          } catch {}
+        /**
+         * 탭별 선택 쓰기 상태 — `confirmed`(서버가 받아들인 마지막 값) · `inFlight`(아직 안 끝난 요청 수) · `chain`(요청 줄).
+         * ★요청을 **줄 세운다** (2026-10-10 아스트라 검토). 동시에 보내면 응답 순서가 곧 서버 적용 순서라는 보장이 없어,
+         *  «A 선택 → B 선택 → B 실패 → A 늦게 성공» 에서 화면은 기본값으로 되돌아갔는데 서버는 A 였다. 줄을 세우면 서버 적용 순서 =
+         *  고른 순서이고, 마지막 성공이 곧 서버 값이다.
+         * ★화면은 **줄이 다 비었을 때** 서버가 받아들인 값으로 맞춘다 — 중간 실패로 되돌리면 아직 가는 중인 더 최신 선택을 지운다.
+         * ★`confirmed` 는 줄이 빌 때마다 **지금 탭 값**(서버 동기화로 바뀌었을 수 있다)에서 다시 잡는다 — 한 번 잡고 계속 쓰면
+         *  다른 기기·새로고침이 바꾼 값을 모른 채 옛 값으로 되돌렸다(2026-10-09 재검토 #7).
+         * 탭 직렬화 모양을 안 바꾸려고 WeakMap 이다(화면 전용 메모).
+         */
+        const writeState = new WeakMap();
+        const postProfile = async (tk, profile) => {
           try {
             const r = await fetch("/api/set-session-profile", {
               method: "POST",
@@ -109,20 +109,47 @@
             const data = await r.json().catch(() => ({}));
             if (!r.ok) {
               if (typeof showToast === "function")
-                showToast(
-                  i18n("models.select.failed", { err: data.error || "HTTP " + r.status }),
-                  "bad",
-                );
-              return;
+                showToast(i18n("models.select.failed", { err: data.error || "HTTP " + r.status }), "bad");
+              return false;
             }
             if (typeof showToast === "function")
-              showToast(
-                profile === "" ? i18n("models.select.default") : i18n("models.select.picked", { name: profile }),
-                "good",
-              );
-          } catch (err) {
-            if (typeof showToast === "function")
-              showToast(i18n("models.select.failedConn"), "bad");
+              showToast(profile === "" ? i18n("models.select.default") : i18n("models.select.picked", { name: profile }), "good");
+            return true;
+          } catch {
+            if (typeof showToast === "function") showToast(i18n("models.select.failedConn"), "bad");
+            return false;
+          }
+        };
+        sel.addEventListener("change", async () => {
+          const profile = sel.value; // "" = 상속(기본).
+          const tk = activeThread();
+          if (!tk) return;
+          const want = profile === "" ? null : profile;
+          let tab = null;
+          try {
+            if (typeof openTabs !== "undefined") tab = openTabs.find((x) => x.threadKey === tk) || null;
+          } catch {}
+          if (!tab) {
+            // 탭 상태가 없는 화면 — 줄 없이 보내고 끝(되돌릴 화면 상태가 없다).
+            await postProfile(tk, profile);
+            return;
+          }
+          let st = writeState.get(tab);
+          if (!st || st.inFlight === 0) {
+            st = { confirmed: typeof tab.modelProfile === "string" ? tab.modelProfile : null, inFlight: 0, chain: st ? st.chain : Promise.resolve() };
+            writeState.set(tab, st);
+          }
+          // 낙관적 로컬 반영(탭 전환 정합) — in-memory 만(새로고침 시 /api/sessions.modelProfile 로 재hydrate).
+          tab.modelProfile = want;
+          st.inFlight += 1;
+          const mine = st.chain.then(() => postProfile(tk, profile));
+          st.chain = mine.then(() => undefined, () => undefined);
+          const ok = await mine.catch(() => false);
+          if (ok) st.confirmed = want;
+          st.inFlight -= 1;
+          if (st.inFlight === 0) {
+            tab.modelProfile = st.confirmed; // 줄이 비었다 — 서버가 받아들인 마지막 값으로
+            hydrate(); // 지금 활성 탭의 값으로 드롭다운을 맞춘다(탭을 바꿨어도 맞다).
           }
         });
 

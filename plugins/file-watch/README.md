@@ -12,8 +12,8 @@ tiguclaw 트리거 두 번째 시민 — 파일/폴더 변경 감지 기반 가�
 
 - fs 엔진: `chokidar@^5` (Win ReadDirChange / mac FSEvents / Linux inotify 모두 지원, deps total 1개).
 - 옵션 5종 hardcoded: `path` / `pattern` / `recursive` / `debounce_ms` / `event_filter`.
-- 발화 흐름은 `runClaude` 직접 호출 — destination push 가 필요하면 외부 작성자가 `dispatcher.ts` 를 watcher.ts 의 fireWatch 안에서 호출 추가 가능 (scheduler 처럼).
-- overlap policy = chokidar `awaitWriteFinish` (debounce_ms 안의 폭주 fs 이벤트 1회로 묶음).
+- 발화 흐름 = `runClaude` 호출 → 결과 텍스트를 `dest_channel`/`dest_target` 으로 보낸다(`dispatcher.ts` → 코어 `deliverOutbound`, 스케줄 알림과 같은 배달 경로). 빈 결과는 보내지 않는다. 배달에 실패하면 `last_status=error`, `last_error="dispatch: …"`(내용은 생성됐고 전달만 실패).
+- overlap policy = chokidar `awaitWriteFinish` (debounce_ms 안의 폭주 fs 이벤트 1회로 묶음). 한 감시가 실행 중일 때 온 이벤트는 버리지 않고 모았다가, 끝나면 한 번 더 발화한다(`{path}` = 모인 경로 목록, 줄바꿈 구분).
 - 격리 try/catch — watcher 1개 throw 가 데몬 안 죽임. 다른 watch 진행 0 영향.
 
 ## 시연 — 3 케이스 (safety-check 스킬 카테고리 정합)
@@ -166,7 +166,7 @@ getMcpServer(): McpSdkServerConfigWithInstance {
 
 ### 5. dispatcher
 
-발화 결과를 destination 채널로 push 할 때 자유 작성. file-watch `dispatcher.ts` 는 telegram/cli/http-bridge 3종 hardcoded — scheduler dispatcher 와 거의 동형. 외부 작성자는 자기 destination 추가 가능 (slack/discord/webhook 등).
+발화 결과를 destination 채널로 push 한다. file-watch `dispatcher.ts` 는 채널을 직접 고르지 않고 코어 `deliverOutbound` 에 위임한다(등록된 채널이면 어디든 — scheduler dispatcher 와 동형). 미배달이면 throw 해서 호출자가 성공으로 기록하지 않게 한다.
 
 ## 한계 (V2 후속)
 

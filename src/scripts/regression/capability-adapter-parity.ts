@@ -68,7 +68,11 @@ const run = async (): Promise<Assertion[]> => {
     files.set(path.relative(CAPS, p), stripComments(await readFile(p, "utf8")));
   }
 
-  const capFiles = [...files].filter(([, src]) => src.includes("createSdkMcpServer("));
+  // ★코어 능력은 `coreMcpServer(` 로 만든다(2026-10-09 — 만들 때 도구 목록을 기억하는 한 통로, `_core-server.ts`). 그 통로
+  //  자신은 능력이 아니다(정의점). SDK 를 직접 부르는 파일도 계속 능력으로 센다 — 통로를 우회해도 이 판정은 못 빠져나간다.
+  const capFiles = [...files].filter(
+    ([, src]) => (src.includes("coreMcpServer(") || src.includes("createSdkMcpServer(")) && !src.includes("export const coreMcpServer"),
+  );
   const toolFiles = [...files].filter(([, src]) => /\btool\(/.test(src));
 
   // ★"0을 세면 그것도 실패" — 능력을 못 찾으면 이 검사는 아무것도 안 지킨 것이다.

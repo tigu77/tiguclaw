@@ -760,7 +760,11 @@
       let modelProfilesCache = null; // { profiles:[{name,isDefault,description?,pool[],fallback?}], ... } 또는 null(미로드).
       let assistantName = "tiguclaw"; // 비서 표시 이름(AGENT.md 이름 → chat-history 응답, 폴백 tiguclaw).
       let selectedProviderId = null;
-      let currentView = "overview";
+      // ★처음엔 **아무 화면도 아니다** — 화면은 부팅 끝(activity.js)의 showOverview·복원이 정한다(2026-10-09).
+      //  "overview" 로 시작하면, 먼저 로드된 파일의 응답(업데이트 판정 등)이 `currentView === "overview"` 를 보고
+      //  showOverview 를 예약하는데, 뒤 파일(chat-core.js 의 setChatPanel)이 아직 안 와서 ReferenceError 가 났다
+      //  (chat-core.js 를 10초 늦추면 매번 재현). 부팅 전의 «다시 그려라» 는 부팅이 어차피 그리니 버려도 된다.
+      let currentView = "";
       // 앱 버전 — `/api/health` 가 채운다(activity.js). 헤더 부제와 홈 「상태 요약」이 **같은 값**을
       // 본다. 모바일 헤더는 폭이 없어 부제를 숨기므로(app.css @media), 홈이 유일한 노출 자리다.
       let appVersion = "";

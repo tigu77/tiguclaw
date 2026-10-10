@@ -68,8 +68,10 @@ export const check: RegressionCheck = {
         path.join(path.dirname(fileURLToPath(new URL(import.meta.url))), "../../core/plugins/manager.ts"),
         "utf8",
       );
+      // ★문 넷은 이름별 줄 세우기 래퍼(`oneAtATime`)이고 본문은 `<이름>Now` 에 있다
+      //  (2026-10-09, 동시 설치 누수) — 래퍼가 아니라 **본문**을 본다.
       const body = (name: string): string =>
-        new RegExp(`export const ${name} = async[\\s\\S]*?\\n\\};`).exec(mgr)?.[0] ?? "";
+        new RegExp(`const ${name}(?:Now)? = async[\\s\\S]*?\\n\\};`).exec(mgr)?.[0] ?? "";
 
       const rm = body("removePlugin");
       out.push(

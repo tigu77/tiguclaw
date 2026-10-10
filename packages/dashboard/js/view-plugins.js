@@ -174,7 +174,8 @@ function formatUsageLine(usage, now) {
         } catch {
           usageState.set(provider, null); // 못 물었으면 «모름» — 0% 로 뭉개지 않는다
         }
-        renderPluginsView();
+        // ★한도 블록만 다시 그린다 — 화면 전체를 다시 그리면 입력 중이던 설치 칸·로그인 칸이 지워진다(repaintAuthUsage).
+        repaintAuthUsage(provider);
       };
       const fetchAuthProviders = async () => {
         try {
@@ -515,6 +516,160 @@ function formatUsageLine(usage, now) {
         btn.disabled = false;
       };
 
+      /**
+       * 인증 카드의 **한도 블록**(🔄 버튼 + `.plugin-auth-usage`) — 화면 전체가 아니라 이 블록만 다시 그릴 수 있게 꺼냈다
+       * (2026-10-09 적대 검토). 종전엔 한도 조회가 끝날 때·🔄 를 누를 때 `renderPluginsView()` 로 **화면 전체**를 다시 그려
+       * 설치 입력칸·열어 둔 로그인 붙여넣기 칸이 지워졌다 — 같은 날 🔄 다시 켜기 타이머에서 고친 것과 같은 부류다.
+       * @returns {{refresh: HTMLElement|null, usage: HTMLElement|null}}
+       */
+      const buildAuthUsage = (id, info) => {
+        let refresh = null;
+        let usageEl = null;
+        // ── ★한도가 **얼마나 남았나** (2026-09-07 정태님) ────────────────────
+        //  사용자가 묻는 축은 둘뿐이다: «주간이 얼마나 남았나 · 시간이 얼마나 남았나».
+        //  («어디서 토큰을 많이 쓰나» 는 다른 문제라 여기 안 넣는다 — 섞으면 흥미로운
+        //   숫자로 붐비고 정작 필요한 답이 안 보인다.)
+        //  ★문장은 **여기서** 만든다 — 카탈로그(i18n)가 사는 자리가 여기다. 서버나
+        //   플러그인이 만들면 영어 화면에 한국어가 샌다. 서버는 숫자만 준다.
+        //  ★**모르면 아무것도 안 그린다.** 실제로 자주 그렇다 — claude 의 조회
+        //   엔드포인트는 폴링 방지로 조여 있어 `429 retry-after ~1시간` 을 낸다(실측).
+        //   그때 빈 자리는 «모름» 이라는 뜻이고, **왜 비었는지는 로그가 말한다**
+        //   (`[usage] claude-subscription: 429 조회 제한 — …`). 0% 로 뭉개면 그
+        //   숫자로 판단하게 되고, «한도 도달» 로 적으면 거짓말이 된다.
+        // ★목록 응답엔 이제 사용량이 없다 — 이 카드가 열릴 때 provider 하나만 묻는다.
+        // ★**인증된 provider 에게만 묻는다** (2026-09-09, 적대 검토 P4). 종전엔
+        //  `hasUsage` 만 보고 물어서 둘 다 나빴다: codex 는 로그인 전이라 **영원히 안 올**
+        //  값을 «1분 뒤 다시 시도» 로 약속했고, claude 는 이 설치가 쓰지도 않는 OS 로그인
+        //  계정의 키체인을 CLI 가 읽어 **토큰이 없는데 «63% 남음»** 을 띄웠다. 둘 다
+        //  «모름» 이 정답인 자리에 그럴듯한 숫자·약속을 놓은 것이다.
+        const canAsk = info && info.hasUsage === true && info.authenticated === true;
+        if (canAsk && !usageState.has(id)) void loadUsage(id, false);
+        const cur = usageState.get(id);
+        const loading = cur === "loading";
+        const usage = loading ? null : cur || null;
+        const rows = usageRows(usage);
+        const pendingLine = loading ? i18n("plugins.auth.usage.loading") : usagePendingLine(usage);
+        // ★**새로고침** (2026-09-09 정태님) — 캐시의 일은 «화면 한 번 여는 동안의 중복
+        //  호출을 접는 것» 이므로, 다시 누른 것은 정의상 그 중복이 아니다. 누른 사람이
+        //  그 숫자를 보려고 기다리는 것이니 여기선 기다려도 된다(목록과 성질이 다르다).
+        if (canAsk) {
+          const rf = document.createElement("button");
+          rf.className = "usage-refresh";
+          rf.type = "button";
+          // ★**아이콘으로 둔다** (2026-09-09 정태님). 이 줄에 이미 provider 이름·상태가
+          //  붙어 있어 낱말을 하나 더 얹으면 머리가 붐빈다. 다만 «모양만 줄이고 의미는
+          //  안 줄인다» — 뜻은 `aria-label`·`title` 이 그대로 진다(헤더 낱말 접기와 같은 규칙).
+          rf.textContent = "🔄";
+          rf.dataset.provider = id;
+          rf.setAttribute("aria-label", i18n("plugins.auth.usage.refresh"));
+          rf.title = i18n("plugins.auth.usage.refresh");
+          rf.disabled = loading;
+          // ★눌러도 새로 안 묻는 동안은 막는다 (2026-10-09 정태님) — 그 시각은 제공자가 안다(`refreshAfter`). 시각이 되면 저절로 풀린다.
+          const ra = !loading && usage && typeof usage.refreshAfter === "number" ? usage.refreshAfter : 0;
+          const waitMs = ra - Date.now();
+          if (waitMs > 0) {
+            rf.disabled = true;
+            // 1분 안이면 «곧» — 분 단위 표시는 올림이라 5초 대기가 «1분 뒤» 로 읽힌다.
+            const when = waitMs < 60_000 ? i18n("plugins.auth.usage.until.soon") : usageUntilLabel(ra, Date.now()) || i18n("plugins.auth.usage.until.soon");
+            rf.title = i18n("plugins.auth.usage.refreshAfter", { when });
+            rf.setAttribute("aria-label", rf.title);
+            if (!refreshUnlockTimers.has(id)) {
+              refreshUnlockTimers.set(
+                id,
+                setTimeout(() => {
+                  refreshUnlockTimers.delete(id);
+                  // ★그 버튼만 다시 켠다 — 화면 전체를 다시 그리면 열린 로그인 칸·입력 중이던 값이 지워진다(2026-10-09 적대 검토).
+                  //  그 사이 화면이 다시 그려졌을 수 있어 잡아 둔 요소가 아니라 지금 화면의 버튼을 찾는다.
+                  const btn = document.querySelector(`.usage-refresh[data-provider="${CSS.escape(id)}"]`);
+                  if (!btn || usageState.get(id) === "loading") return;
+                  btn.disabled = false;
+                  btn.title = i18n("plugins.auth.usage.refresh");
+                  btn.setAttribute("aria-label", btn.title);
+                }, Math.min(waitMs + 100, 24 * 3600_000)),
+              );
+            }
+          }
+          // ★**누른 즉시 그린다** (2026-09-09, 코드 리뷰). `loadUsage` 는 렌더 재진입(P2)
+          //  때문에 앞쪽 `renderPluginsView()` 를 없앴는데, 그 제약은 «렌더 안에서 불릴
+          //  때» 의 것이다. 클릭 핸들러는 **렌더 밖**이라 그리는 사람이 아무도 없어,
+          //  조회가 끝날 때까지(claude CLI 2.3초·시한 25초) 화면이 그대로였다 —
+          //  버튼도 계속 눌리는 것처럼 보인다. 여기서만 먼저 그린다.
+          rf.addEventListener("click", () => {
+            if (usageState.get(id) === "loading") return;
+            usageState.set(id, "loading");
+            repaintAuthUsage(id);
+            void loadUsage(id, true);
+          });
+          refresh = rf;
+        }
+        if (rows.length > 0 || pendingLine !== "") {
+          const u = document.createElement("div");
+          u.className = "plugin-auth-usage";
+          // 한 문장 요약은 **툴팁**으로 남긴다 — 줄로 쪼개도 «복사해서 붙일 한 줄» 은
+          // 여전히 쓸모가 있고, 그게 `formatUsageLine` 과 이 화면이 갈리지 않는 이유다.
+          u.title = formatUsageLine(usage);
+          for (const r of rows) {
+            const row = document.createElement("div");
+            row.className = "usage-win";
+            const nm2 = document.createElement("span");
+            nm2.className = "usage-win-name";
+            nm2.textContent = r.name;
+            row.appendChild(nm2);
+            // 막대는 **아는 값이 있을 때만** — 모르는데 빈 막대를 그리면 0% 로 읽힌다.
+            const bar = document.createElement("span");
+            bar.className = "usage-win-bar" + (r.percent === null ? " unknown" : "");
+            if (r.percent !== null) {
+              const fill = document.createElement("i");
+              // 남은 양이 적을수록 눈에 띄게 — 판단이 «더 돌려도 되나» 라서 그 축으로 칠한다.
+              fill.className = r.percent <= 10 ? "bad" : r.percent <= 25 ? "warn" : "";
+              fill.style.width = Math.max(0, Math.min(100, r.percent)) + "%";
+              bar.appendChild(fill);
+            }
+            row.appendChild(bar);
+            const val = document.createElement("span");
+            val.className = "usage-win-val";
+            val.textContent = r.left;
+            row.appendChild(val);
+            if (r.reset !== "") {
+              const rs = document.createElement("span");
+              rs.className = "usage-win-reset";
+              rs.textContent = r.reset;
+              row.appendChild(rs);
+            }
+            u.appendChild(row);
+          }
+          if (pendingLine !== "") {
+            const pw = document.createElement("div");
+            pw.className = "usage-win-pending";
+            pw.textContent = pendingLine;
+            u.appendChild(pw);
+          }
+          if (usage && usage.limitReached === true) {
+            const hit = document.createElement("div");
+            hit.className = "usage-win-hit";
+            hit.textContent = i18n("plugins.auth.usage.limitReached").replace(/^\s*—\s*/, "");
+            u.appendChild(hit);
+          }
+          usageEl = u;
+        }
+        return { refresh, usage: usageEl };
+      };
+      /** 지금 화면에 있는 그 provider 의 한도 블록만 갈아 끼운다(없으면 할 일 없음 — 다음 렌더가 상태를 읽는다). */
+      const repaintAuthUsage = (id) => {
+        for (const box of document.querySelectorAll(`.plugin-auth[data-provider="${CSS.escape(id)}"]`)) {
+          const head = box.querySelector(".plugin-auth-head");
+          if (!head) continue;
+          const info = authState.providers.find((x) => x && x.provider === id) || null;
+          const next = buildAuthUsage(id, info);
+          const oldRf = head.querySelector(".usage-refresh");
+          if (oldRf) oldRf.remove();
+          if (next.refresh) head.appendChild(next.refresh);
+          const oldU = box.querySelector(".plugin-auth-usage");
+          if (oldU) oldU.remove();
+          if (next.usage) head.after(next.usage);
+        }
+      };
+
       const buildPluginCard = (p) => {
         const card = document.createElement("div");
         card.className = "settings-row plugin-row";
@@ -647,6 +802,7 @@ function formatUsageLine(usage, now) {
           const info = authState.providers.find((x) => x && x.provider === id) || null;
           const box = document.createElement("div");
           box.className = "plugin-auth";
+          box.dataset.provider = id; // 한도 블록만 다시 그릴 때 이 상자를 찾는다(repaintAuthUsage).
           const head = document.createElement("div");
           head.className = "plugin-auth-head";
           const nm = document.createElement("span");
@@ -666,133 +822,9 @@ function formatUsageLine(usage, now) {
           head.appendChild(st);
           box.appendChild(head);
 
-          // ── ★한도가 **얼마나 남았나** (2026-09-07 정태님) ────────────────────
-          //  사용자가 묻는 축은 둘뿐이다: «주간이 얼마나 남았나 · 시간이 얼마나 남았나».
-          //  («어디서 토큰을 많이 쓰나» 는 다른 문제라 여기 안 넣는다 — 섞으면 흥미로운
-          //   숫자로 붐비고 정작 필요한 답이 안 보인다.)
-          //  ★문장은 **여기서** 만든다 — 카탈로그(i18n)가 사는 자리가 여기다. 서버나
-          //   플러그인이 만들면 영어 화면에 한국어가 샌다. 서버는 숫자만 준다.
-          //  ★**모르면 아무것도 안 그린다.** 실제로 자주 그렇다 — claude 의 조회
-          //   엔드포인트는 폴링 방지로 조여 있어 `429 retry-after ~1시간` 을 낸다(실측).
-          //   그때 빈 자리는 «모름» 이라는 뜻이고, **왜 비었는지는 로그가 말한다**
-          //   (`[usage] claude-subscription: 429 조회 제한 — …`). 0% 로 뭉개면 그
-          //   숫자로 판단하게 되고, «한도 도달» 로 적으면 거짓말이 된다.
-          // ★목록 응답엔 이제 사용량이 없다 — 이 카드가 열릴 때 provider 하나만 묻는다.
-          // ★**인증된 provider 에게만 묻는다** (2026-09-09, 적대 검토 P4). 종전엔
-          //  `hasUsage` 만 보고 물어서 둘 다 나빴다: codex 는 로그인 전이라 **영원히 안 올**
-          //  값을 «1분 뒤 다시 시도» 로 약속했고, claude 는 이 설치가 쓰지도 않는 OS 로그인
-          //  계정의 키체인을 CLI 가 읽어 **토큰이 없는데 «63% 남음»** 을 띄웠다. 둘 다
-          //  «모름» 이 정답인 자리에 그럴듯한 숫자·약속을 놓은 것이다.
-          const canAsk = info && info.hasUsage === true && info.authenticated === true;
-          if (canAsk && !usageState.has(id)) void loadUsage(id, false);
-          const cur = usageState.get(id);
-          const loading = cur === "loading";
-          const usage = loading ? null : cur || null;
-          const rows = usageRows(usage);
-          const pendingLine = loading ? i18n("plugins.auth.usage.loading") : usagePendingLine(usage);
-          // ★**새로고침** (2026-09-09 정태님) — 캐시의 일은 «화면 한 번 여는 동안의 중복
-          //  호출을 접는 것» 이므로, 다시 누른 것은 정의상 그 중복이 아니다. 누른 사람이
-          //  그 숫자를 보려고 기다리는 것이니 여기선 기다려도 된다(목록과 성질이 다르다).
-          if (canAsk) {
-            const rf = document.createElement("button");
-            rf.className = "usage-refresh";
-            rf.type = "button";
-            // ★**아이콘으로 둔다** (2026-09-09 정태님). 이 줄에 이미 provider 이름·상태가
-            //  붙어 있어 낱말을 하나 더 얹으면 머리가 붐빈다. 다만 «모양만 줄이고 의미는
-            //  안 줄인다» — 뜻은 `aria-label`·`title` 이 그대로 진다(헤더 낱말 접기와 같은 규칙).
-            rf.textContent = "🔄";
-            rf.dataset.provider = id;
-            rf.setAttribute("aria-label", i18n("plugins.auth.usage.refresh"));
-            rf.title = i18n("plugins.auth.usage.refresh");
-            rf.disabled = loading;
-            // ★눌러도 새로 안 묻는 동안은 막는다 (2026-10-09 정태님) — 그 시각은 제공자가 안다(`refreshAfter`). 시각이 되면 저절로 풀린다.
-            const ra = !loading && usage && typeof usage.refreshAfter === "number" ? usage.refreshAfter : 0;
-            const waitMs = ra - Date.now();
-            if (waitMs > 0) {
-              rf.disabled = true;
-              // 1분 안이면 «곧» — 분 단위 표시는 올림이라 5초 대기가 «1분 뒤» 로 읽힌다.
-              const when = waitMs < 60_000 ? i18n("plugins.auth.usage.until.soon") : usageUntilLabel(ra, Date.now()) || i18n("plugins.auth.usage.until.soon");
-              rf.title = i18n("plugins.auth.usage.refreshAfter", { when });
-              rf.setAttribute("aria-label", rf.title);
-              if (!refreshUnlockTimers.has(id)) {
-                refreshUnlockTimers.set(
-                  id,
-                  setTimeout(() => {
-                    refreshUnlockTimers.delete(id);
-                    // ★그 버튼만 다시 켠다 — 화면 전체를 다시 그리면 열린 로그인 칸·입력 중이던 값이 지워진다(2026-10-09 적대 검토).
-                    //  그 사이 화면이 다시 그려졌을 수 있어 잡아 둔 요소가 아니라 지금 화면의 버튼을 찾는다.
-                    const btn = document.querySelector(`.usage-refresh[data-provider="${CSS.escape(id)}"]`);
-                    if (!btn || usageState.get(id) === "loading") return;
-                    btn.disabled = false;
-                    btn.title = i18n("plugins.auth.usage.refresh");
-                    btn.setAttribute("aria-label", btn.title);
-                  }, Math.min(waitMs + 100, 24 * 3600_000)),
-                );
-              }
-            }
-            // ★**누른 즉시 그린다** (2026-09-09, 코드 리뷰). `loadUsage` 는 렌더 재진입(P2)
-            //  때문에 앞쪽 `renderPluginsView()` 를 없앴는데, 그 제약은 «렌더 안에서 불릴
-            //  때» 의 것이다. 클릭 핸들러는 **렌더 밖**이라 그리는 사람이 아무도 없어,
-            //  조회가 끝날 때까지(claude CLI 2.3초·시한 25초) 화면이 그대로였다 —
-            //  버튼도 계속 눌리는 것처럼 보인다. 여기서만 먼저 그린다.
-            rf.addEventListener("click", () => {
-              if (usageState.get(id) === "loading") return;
-              usageState.set(id, "loading");
-              renderPluginsView();
-              void loadUsage(id, true);
-            });
-            head.appendChild(rf);
-          }
-          if (rows.length > 0 || pendingLine !== "") {
-            const u = document.createElement("div");
-            u.className = "plugin-auth-usage";
-            // 한 문장 요약은 **툴팁**으로 남긴다 — 줄로 쪼개도 «복사해서 붙일 한 줄» 은
-            // 여전히 쓸모가 있고, 그게 `formatUsageLine` 과 이 화면이 갈리지 않는 이유다.
-            u.title = formatUsageLine(usage);
-            for (const r of rows) {
-              const row = document.createElement("div");
-              row.className = "usage-win";
-              const nm2 = document.createElement("span");
-              nm2.className = "usage-win-name";
-              nm2.textContent = r.name;
-              row.appendChild(nm2);
-              // 막대는 **아는 값이 있을 때만** — 모르는데 빈 막대를 그리면 0% 로 읽힌다.
-              const bar = document.createElement("span");
-              bar.className = "usage-win-bar" + (r.percent === null ? " unknown" : "");
-              if (r.percent !== null) {
-                const fill = document.createElement("i");
-                // 남은 양이 적을수록 눈에 띄게 — 판단이 «더 돌려도 되나» 라서 그 축으로 칠한다.
-                fill.className = r.percent <= 10 ? "bad" : r.percent <= 25 ? "warn" : "";
-                fill.style.width = Math.max(0, Math.min(100, r.percent)) + "%";
-                bar.appendChild(fill);
-              }
-              row.appendChild(bar);
-              const val = document.createElement("span");
-              val.className = "usage-win-val";
-              val.textContent = r.left;
-              row.appendChild(val);
-              if (r.reset !== "") {
-                const rs = document.createElement("span");
-                rs.className = "usage-win-reset";
-                rs.textContent = r.reset;
-                row.appendChild(rs);
-              }
-              u.appendChild(row);
-            }
-            if (pendingLine !== "") {
-              const pw = document.createElement("div");
-              pw.className = "usage-win-pending";
-              pw.textContent = pendingLine;
-              u.appendChild(pw);
-            }
-            if (usage && usage.limitReached === true) {
-              const hit = document.createElement("div");
-              hit.className = "usage-win-hit";
-              hit.textContent = i18n("plugins.auth.usage.limitReached").replace(/^\s*—\s*/, "");
-              u.appendChild(hit);
-            }
-            box.appendChild(u);
-          }
+          const au = buildAuthUsage(id, info);
+          if (au.refresh) head.appendChild(au.refresh);
+          if (au.usage) box.appendChild(au.usage);
 
           if (info && info.login) {
             const btn = document.createElement("button");

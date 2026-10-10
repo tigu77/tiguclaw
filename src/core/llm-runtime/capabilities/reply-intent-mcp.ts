@@ -18,8 +18,8 @@
  *
  * 능력만 — 언제 쓸지(정책)는 sysprompt/AGENT.md 지침이 정함. 디폴트 off.
  */
+import { coreMcpServer } from "./_core-server.js";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -38,7 +38,7 @@ const okText = (text: string) => ({
 export const createReplyIntentMcpServer = (
   onCalled: () => void,
 ): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  coreMcpServer({
     name: "reply-intent",
     version: "1.0.0",
     tools: [

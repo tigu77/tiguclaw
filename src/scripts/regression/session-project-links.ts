@@ -107,7 +107,7 @@ export const check: RegressionCheck = {
       };
       const adapters = ["claude-agent-sdk", "openai-codex-oauth", "openai-agents-sdk"].map((f) => {
         const src = readFileSync(path.join(process.cwd(), "src/core/llm-runtime/adapters", `${f}.ts`), "utf8");
-        return { f, passes: /createProjectRegistryMcpServer\(\s*input\.threadKey\s*\)/.test(src) };
+        return { f, passes: /createProjectRegistryMcpServer\(\s*input\.threadKey\s*,\s*(?:cwd|discoveryCwd)\s*\)/.test(src) };
       });
       return [
         assert(

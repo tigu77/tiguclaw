@@ -132,9 +132,11 @@ export const check: RegressionCheck = {
     // ③⑤ 배선 — 동작으로 못 보는 부분(throw 인자)은 **겨냥을 좁혀** 못박는다.
     const failure = await sourceHas(CODEX, [
       // 결정적 실패는 retryable=false 로. 생성 지점을 통째로 겨냥한다.
-      /throw new CodexBackendFailureError\(\s*why,\s*userWhy,\s*f\.source !== "response\.incomplete",\s*\);/,
+      /const deterministic = f\.source === "response\.incomplete";/,
+      /throw new CodexBackendFailureError\(why, userWhy, !deterministic && !streamed, deterministic\);/,
       // 클래스가 그 값을 **저장**한다(생성자에서 무시하면 위 겨냥이 무의미).
       /readonly retryable: boolean,/,
+      /readonly deterministic: boolean,/,
       /if \(\s*e\.retryable &&/,
       // 백오프가 취소되고, 깨면 재전송하지 않는다.
       /await sleep\(wait, effectiveAc\.signal\)/,
@@ -154,13 +156,15 @@ export const check: RegressionCheck = {
     const { codexFailureAdviceForTest } = await import(
       "../../core/llm-runtime/adapters/openai-codex-oauth.js"
     );
+    // 두 번째 인자 = 결정적인가(같은 요청은 같은 벽). 재전송 가능 여부(retryable)와 따로다 — 글이 흐른 뒤의 과부하는
+    //  재전송은 못 해도 «잠시 후 다시» 가 맞는 안내다(2026-10-10 재검토: 하나로 묶여 «요청을 바꿔서» 를 권했다).
     const adviceDeterministic = codexFailureAdviceForTest(
       "response.incomplete/max_output_tokens",
-      false,
+      true,
     );
     const adviceTransient = codexFailureAdviceForTest(
       "response.failed/server_is_overloaded",
-      true,
+      false,
     );
     out.push(
       assert(

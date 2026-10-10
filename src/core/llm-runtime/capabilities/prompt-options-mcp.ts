@@ -30,10 +30,10 @@
  *  - presentOptions === undefined → 렌더 시도 없이 "선택지 UI 미지원 — 질문과 보기를
  *    텍스트로 제시하라" graceful 반환. 양 어댑터(claude/codex) 동일 동작 (parity).
  */
+import { coreMcpServer } from "./_core-server.js";
 import { z } from "zod";
 import { rememberPendingOptions } from "../../pending-options.js";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -60,7 +60,7 @@ export const createPromptOptionsMcpServer = (
    */
   threadKey: string,
 ): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  coreMcpServer({
     name: "prompt-options",
     version: "1.0.0",
     tools: [

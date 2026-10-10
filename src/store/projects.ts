@@ -82,7 +82,6 @@ export const listProjects = (): ProjectRow[] =>
       .all() as DbRow[]
   ).map(toRow);
 
-/** 등록 해제 — 인덱스에서만 제거. PROJECT.md 파일은 안 지운다. */
-export const forgetProject = (path: string): void => {
-  getDb().prepare(`DELETE FROM projects WHERE path = ?`).run(path);
-};
+/** 등록 해제 — 인덱스에서만 제거. PROJECT.md 파일은 안 지운다. 지운 행 수를 돌려준다(0 = 그런 등록 없음 — 호출부가 «해제했다» 고 거짓말하지 않게). */
+export const forgetProject = (path: string): number =>
+  getDb().prepare(`DELETE FROM projects WHERE path = ?`).run(path).changes;

@@ -90,6 +90,9 @@ import { formatEnvContext, localTimeZone } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
 import { translate } from "../../i18n.js";
+import { redactSecrets } from "../../outbound-sanitize.js";
+import { createSteeringLedger } from "./_steering-ledger.js";
+import { isAuthRejected, isRateLimited } from "../rate-limit.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
 import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
@@ -153,7 +156,7 @@ import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { composeSwallowedFailure } from "../swallowed-failure.js";
 import { watchToolStart } from "../tool-watchdog.js";
-import { needsClosingReport } from "./_turn-completion.js";
+import { needsClosingReport, TURN_MAX_MODEL_CALLS } from "./_turn-completion.js";
 import {
   isCheckinGuardedThread,
   JOB_OWNING_TOOL_CALL_TIMEOUT_MS,
@@ -239,11 +242,16 @@ class CodexBackendFailureError extends Error {
    * @param retryable `response.incomplete`(max_output_tokens·content_filter)처럼
    *                 **같은 body 를 다시 보내면 같은 결과**인 실패는 false. 재전송이
    *                 27초를 태우고 같은 곳에 도착할 뿐이라, 즉시 올려 복구 경로에 맡긴다.
+   *                 일시적 실패라도 글이 이미 화면에 흘렀으면 false 다(다시 보내면 두 번 쓰인다).
+   * @param deterministic 같은 요청은 같은 벽인가 — **안내 문구**만 이걸로 고른다. `retryable` 과 따로 둔다:
+   *                 «지금 재전송할 수 있나» 와 «사용자가 다시 시도하면 되나» 는 다른 질문이라, 하나로 묶으니
+   *                 글이 흐른 뒤의 과부하에 «요청을 바꿔서» 를 권했다(2026-10-10 재검토).
    */
   constructor(
     readonly why: string,
     readonly userWhy: string,
     readonly retryable: boolean,
+    readonly deterministic: boolean,
   ) {
     super(`The codex backend reported a request failure — ${userWhy}`);
     this.name = "CodexBackendFailureError";
@@ -268,11 +276,11 @@ const CODEX_BACKEND_FAIL_BACKOFF_MS = [1_000, 3_000, 8_000, 15_000];
  * 유일한 대책인데 종전엔 그 말이 어디에도 안 나갔다(검토 지적 2026-07-31).
  */
 /** 회귀 검사용 — 안내 문구를 **동작으로** 볼 수 있게(에러 객체 없이 두 축만 준다). */
-export const codexFailureAdviceForTest = (userWhy: string, retryable: boolean): string =>
-  codexFailureAdvice({ userWhy, retryable } as CodexBackendFailureError);
+export const codexFailureAdviceForTest = (userWhy: string, deterministic: boolean): string =>
+  codexFailureAdvice({ userWhy, deterministic } as CodexBackendFailureError);
 
 const codexFailureAdvice = (e: CodexBackendFailureError): string => {
-  if (e.retryable) return translate("srv.codex.advice.retry");
+  if (!e.deterministic) return translate("srv.codex.advice.retry");
   if (e.userWhy.includes("max_output_tokens")) return translate("srv.codex.advice.outputLimit");
   if (e.userWhy.includes("content_filter")) return translate("srv.codex.advice.contentFilter");
   return translate("srv.codex.advice.changeRequest");
@@ -281,6 +289,41 @@ const codexFailureAdvice = (e: CodexBackendFailureError): string => {
 
 const CODEX_FETCH_MAX_RETRIES = 2;
 const CODEX_FETCH_BACKOFF_MS = [500, 1500];
+
+/**
+ * **서버가 응답 도중 연결을 끊었다** — 헤더(200)를 받은 뒤 본문을 읽다가 소켓이 닫힌 것(undici `TypeError: terminated` ←
+ * `SocketError: other side closed` · `ECONNRESET` 류). 이유는 서버 쪽이라 알 수 없지만, **끊긴 뒤 무엇을 할지는 우리가 정한다**
+ * (2026-10-10 정태님 — 맥·윈도우 돌쇠에서 10-07 부터 하루 1~4건, 전부 사용자 손으로 «이어서 진행해줘» 가 필요했다).
+ * ★우리 쪽 중단(유휴·턴 시한·/stop)은 여기 안 온다 — 호출부가 signal 로 먼저 거른다.
+ */
+const CUT_CODES = new Set(["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"]);
+/** 사슬의 오류 코드 — 판정과 로그(«왜 끊겼나» 를 로그만으로 가르게)가 같이 쓴다. */
+const causeCodes = (e: unknown): string[] => {
+  const out: string[] = [];
+  for (let cur: unknown = e, depth = 0; cur !== null && typeof cur === "object" && depth < 4; depth += 1) {
+    const c = cur as { code?: unknown; cause?: unknown };
+    if (typeof c.code === "string") out.push(c.code);
+    cur = c.cause;
+  }
+  return out;
+};
+export const isCodexStreamCut = (e: unknown): boolean => {
+  const codes = causeCodes(e);
+  // undici 본문 시한은 우리 쪽 무진전과 같은 성질 — 무진전 재개의 몫이다(끊김으로 세면 그 관측이 빠진다, 재검토 F5).
+  if (codes.includes("UND_ERR_BODY_TIMEOUT")) return false;
+  if (codes.some((c) => CUT_CODES.has(c))) return true;
+  for (let cur: unknown = e, depth = 0; cur !== null && typeof cur === "object" && depth < 4; depth += 1) {
+    const c = cur as { name?: unknown; message?: unknown; cause?: unknown };
+    if (c.name === "TypeError" && c.message === "terminated") return true;
+    cur = c.cause;
+  }
+  return false;
+};
+/** 끊김 복구 — 요청 하나당 횟수와 대기. 그래도 끊기면 종전처럼 정직하게 실패한다(«이어서 진행해줘» 안내). */
+const CODEX_CUT_BACKOFF_MS = [1_000, 3_000];
+/** 글을 쓰던 중 끊겼을 때 이어 쓰게 하는 지시 — 모델 대면 문장. */
+const CODEX_CUT_CONTINUE_NUDGE =
+  "[연결이 끊겨 바로 앞 답변이 중간에 잘렸습니다] 잘린 바로 그 지점부터 이어서 쓰세요. 앞에 쓴 내용을 다시 쓰지 말고, 잘린 문장이면 그 문장의 나머지부터 시작하세요.";
 const RETRIABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 
 // soft checkpoint 간격 (25·50·75… 마다 진행 nudge). 강제 마무리 아님.
@@ -307,10 +350,8 @@ const CODEX_MAX_TOOL_ITERATIONS = parseCapEnv(
  *  둔다 — 정당한 대작업은 안 닿고 진짜 런어웨이는 멈춘다. 닿으면 **크게 로그**한다
  *  (종전 백스톱은 아무 줄도 안 찍고 발동해 "자꾸 걸린다" 를 역추론해야 했다).
  */
-const CODEX_MAX_TOTAL_ITERATIONS = parsePosIntEnv(
-  process.env.CODEX_MAX_TOTAL_ITERATIONS,
-  1_500,
-);
+// 값은 세 어댑터 공용(`_turn-completion.ts` — openai 의 `maxTurns` 도 이것이다).
+const CODEX_MAX_TOTAL_ITERATIONS = TURN_MAX_MODEL_CALLS;
 
 const CODEX_MAX_TOOL_ITERATIONS_HARD = parsePosIntEnv(
   process.env.CODEX_MAX_TOOL_ITERATIONS_HARD,
@@ -768,7 +809,7 @@ export const runOpenAiCodex = async (
   // 프로젝트 레지스트리 (register/list/update/forget) — 양 어댑터 공통(#2). 진실은
   // 각 폴더 PROJECT.md, 이 도구는 파싱→얇은 store 인덱스 upsert(단방향, 코어 무참조).
   const projectBridge = await adaptClaudeMcpServer(
-    createProjectRegistryMcpServer(input.threadKey),
+    createProjectRegistryMcpServer(input.threadKey, discoveryCwd),
     "projects",
   );
   // V7.8 — invoke_skill 단일 정의(skill-registry) bridge. claude 어댑터도 동일
@@ -963,7 +1004,7 @@ export const runOpenAiCodex = async (
     // 파일(<home>/mcp.json)만 다룸. claude/openai 와 parity(#2). (실연결 브리지=Phase 2.)
     if (reaches("mcp-admin", turnKind)) {
       const mcpAdminBridge = await adaptClaudeMcpServer(
-        createMcpAdminMcpServer(),
+        createMcpAdminMcpServer(discoveryCwd),
         "mcp-admin",
       );
       allBridges.push(mcpAdminBridge);
@@ -1236,8 +1277,10 @@ export const runOpenAiCodex = async (
   // codex SSE delta 는 토큰 단위(고빈도) → coalescer 가 ~80ms∥120자로 묶음. seq 는
   // iteration 가로질러 단조(activitySeq 동형). parseCodexSse 의 onTextDelta 콜백으로 push,
   // 각 iteration SSE 소비 후 flush(도구 실행 전 잔여 발행).
+  // 이 턴의 글이 화면에 흐르나 — 델타 발행과 «흘린 뒤라 재전송 금지» 판정이 같이 본다(한 곳).
+  const streamsToScreen = depth === 0 && (input.workerDepth ?? 0) === 0;
   const deltaStream = createDeltaStream({
-    enabled: depth === 0 && (input.workerDepth ?? 0) === 0,
+    enabled: streamsToScreen,
     channel: input.channel,
     threadKey: input.threadKey,
     adapter: "codex",
@@ -1314,6 +1357,10 @@ export const runOpenAiCodex = async (
    *  다시 내므로, 누적하면 답장에 같은 문단이 두 번 실린다.
    */
   let streamedInFlight = "";
+  /** 이 시도가 흘린 답변 글 — 화면 스트림 여부와 무관(끊김 복구가 «이어 쓰기» 재료로 쓴다). 시도마다 초기화. */
+  let attemptText = "";
+  /** 이 시도가 외부 도구 호출 조각을 이미 밖(게이트웨이 클라이언트)으로 흘렸나 — 그러면 끊김 복구를 하지 않는다(다시 보내면 반쪽 호출 뒤에 새 호출이 이어진다). */
+  let attemptToolDeltaOut = false;
   const tracePush = (delta: string): void => {
     if (!traceDelta) return;
     streamedInFlight += delta;
@@ -1392,6 +1439,8 @@ export const runOpenAiCodex = async (
   //  스티어링이 몇 번 끼어들었는지도 로그에 없어 추론밖에 못 했다. 원격 인스턴스(회사돌쇠)는
   //  DB 조회도 불가라 로그가 유일한 진단면이다.
   let steeredTotal = 0;
+  /** 이 턴이 채널에서 꺼낸 끼워넣기 — 턴이 실패로 끝나면 채널에 되돌린다(바깥 catch, `_steering-ledger.ts`). */
+  const steeringLedger = createSteeringLedger(input.steering, input.replay);
   /**
    * ★스트림이 어떻게 끝났는지 이터레이션별 집계 (2026-07-30, **판단 근거 수집용**).
    *
@@ -1418,8 +1467,6 @@ export const runOpenAiCodex = async (
    * 만든다. **확인 전에 고치지 않는다.**
    */
   const sseObs = newSseObservation();
-  /** 백엔드 보고 실패로 같은 body 를 재전송한 횟수(전송 재시도와 같은 cap 공유). */
-  let backendFailAttempt = 0;
   /**
    * ★마지막 요청의 **크기 분해** (2026-07-30) — "인풋이 커서 실패하나" 에 답하려면 이게 있어야
    *  한다. 종전 로그의 `inputChars` 는 **사용자 발화 길이**(예: 5자)라 아무 답도 못 준다.
@@ -1495,7 +1542,8 @@ export const runOpenAiCodex = async (
       // → `?.drain() ?? []` = [] → for-of no-op → push 0 → 현행 코드경로 바이트 동일.
       // 어댑터는 이 값을 *소비만* — 채널/모델 분기 0(#2 LLM-agnostic). Phase 2 관측(steering.
       // injected)은 deferred — 여기선 추가 관측 없음(P0 가 도착 시 channel.message.in 발행).
-      const steered = input.steering?.drain() ?? [];
+      // 장부로 꺼낸다 — 실패하면 바깥 catch 의 `rethrow` 가 채널에 되돌린다(꺼낸 순간 채널엔 없다).
+      const steered = steeringLedger.drain();
       for (const s of steered) {
         inputArray.push(await buildSteeringInputItem(s));
       }
@@ -1592,10 +1640,25 @@ export const runOpenAiCodex = async (
       // reader.read() 가 reject → parseCodexSse throw → 아래 catch 가 IdleTimeoutError 로.
       // codex 는 resume 없음 → 매 iteration 전체 input 재전송. 단일 stringify 로 sizing +
       // fetch body 둘 다 사용(이중 직렬화 회피). 스톨 재개 시 같은 body 를 재전송한다.
-      const bodyJson = JSON.stringify(body);
-      lastInputComposition = process.env.CODEX_CACHE_CURVE === "1"
-        ? summarizeInputComposition(Array.isArray(body.input) ? body.input : [], inputBoundary)
-        : undefined;
+      let bodyJson = JSON.stringify(body); // 끊김 복구(이어 쓰기)만 다시 만든다 — 그 밖의 재전송은 같은 body.
+      /**
+       * 보내는 본문의 크기·구성 계측 — **실제로 보낸 마지막 본문** 기준이어야 한다. 이어 쓰기가 본문을 다시 만들면 다시 잰다
+       * (2026-10-10 아스트라 검토: 옛 본문 크기가 남아 성공 응답의 토큰과 짝지어져 토큰 밀도 → 이력 예산을 낮게 잡았다).
+       */
+      const measureRequest = (): void => {
+        lastInputComposition = process.env.CODEX_CACHE_CURVE === "1"
+          ? summarizeInputComposition(Array.isArray(body.input) ? body.input : [], inputBoundary)
+          : undefined;
+        lastReqBytes = {
+          total: bodyJson.length,
+          mediaChars: mediaCharsOf(body.input),
+          instructions: String(body.instructions ?? "").length,
+          input: JSON.stringify(body.input ?? []).length,
+          tools: JSON.stringify(body.tools ?? []).length,
+          items: Array.isArray(body.input) ? body.input.length : 0,
+        };
+      };
+      measureRequest();
       // ★**캐시가 끊긴 자리를 로그가 말하게 한다** (2026-09-09). 종전엔 바이트 수만 남아서
       //  «크기는 같은데 내용이 다른가» 를 못 가렸다 — 같은 분에 같은 크기의 두 요청이
       //  65% 와 8% 로 갈린 것을 설명할 수 없었다. 프리픽스를 **보내는 순서 그대로**
@@ -1653,7 +1716,7 @@ export const runOpenAiCodex = async (
         ? describeToolChange(toolNames, rememberToolNames(input.threadKey, toolNames))
         : "";
       if (!firstCallOfTurn) {
-        // 이번 iteration 의 바이트만 갱신하고(아래 lastReqBytes) 지문 노트는 보존한다.
+        // 이번 iteration 의 바이트만 갱신하고(위 measureRequest) 지문 노트는 보존한다.
         lastToolsCount = Array.isArray(body.tools) ? body.tools.length : 0;
       }
       if (firstCallOfTurn) {
@@ -1680,14 +1743,6 @@ export const runOpenAiCodex = async (
         );
         turnPrefixNoted = true;
       }
-      lastReqBytes = {
-        total: bodyJson.length,
-        mediaChars: mediaCharsOf(body.input),
-        instructions: String(body.instructions ?? "").length,
-        input: JSON.stringify(body.input ?? []).length,
-        tools: JSON.stringify(body.tools ?? []).length,
-        items: Array.isArray(body.input) ? body.input.length : 0,
-      };
       // ★조립된 입력 상한 검사 (2026-07-26) — 호출 *전에* 끊는다.
       //
       //  왜 여기인가: facade 의 용량 스킵(selectEligiblePool)은 `input.text` 즉 **현재
@@ -1722,6 +1777,19 @@ export const runOpenAiCodex = async (
       // 발화는 turn/매니저 예산(input.abortSignal)과 별개라 재개에 예산이 남는다. 모델 폴백 아님.
       let sseResult: CodexSseResult;
       let stallAttempt = 0;
+      /**
+       * 백엔드 보고 실패로 **이 요청**의 같은 body 를 재전송한 횟수.
+       * ★요청 단위다(2026-10-09 전체 적대 검토 P4) — 전송 재시도(`attempt`)·무진전 재개(`stallAttempt`)와 같다.
+       *  종전엔 턴 전체가 4회·27초를 나눠 써서, 도구를 오래 쓴 턴은 앞 요청들이 한 번씩 과부하를 맞기만 해도
+       *  뒤 요청의 첫 과부하가 **재전송 없이** 턴 실패가 됐다(검토 재현: 5번째 요청의 과부하에서 사망).
+       */
+      let backendFailAttempt = 0;
+      /** 서버가 도중에 끊어 이 요청을 다시 보낸 횟수(요청 단위) — 아래 `isCodexStreamCut` 분기. */
+      let cutAttempt = 0;
+      /** 끊기기 전에 이미 흘린 글 — 이어 쓰기로 복구하면 이번 요청의 글 = 이것 + 이어 쓴 것. */
+      let carriedText = "";
+      /** 이어 쓰기로 inputArray 에 붙인 첫 자리(-1 = 없음) — 이 요청이 끝내 실패하면 떼어 낸다(다음 턴 이력에 부분 글이 겹치지 않게, 재검토 F2). */
+      let cutInsertStart = -1;
       /** 무진전으로 재시도를 시작한 시각 — 결과(완료·소진·취소)를 로그에 남길 때 쓴다. 0 = 이 요청은 재시도 안 함. */
       let stallRetryAt = 0;
       /** 재시도 결과를 이미 한 줄 남겼나 — 루프를 빠져나가는 예외가 무엇이든 한 번은 남긴다. */
@@ -1826,7 +1894,10 @@ export const runOpenAiCodex = async (
         // 매 재시도(stall-resume)마다 새 parseCodexSse 호출 = index 재출발이라 로컬 재선언.
         const toolDeltaIsExternal = new Map<number, boolean>();
         // 이 시도가 흘린 텍스트만 담는다 — 위 선언의 «시도마다 초기화» 참조.
-        streamedInFlight = "";
+        // 끊김 뒤 이어 쓰는 시도면 앞에 흘린 글을 안고 시작한다 — 끝내 실패하면 삼킴 안내가 앞부분까지 싣는다(화면 스트림이 꺼진 턴의 유일한 재료).
+        streamedInFlight = carriedText;
+        attemptText = "";
+        attemptToolDeltaOut = false;
         sseResult = await parseCodexSseObserved(
           sseObs,
           res.body,
@@ -1838,6 +1909,7 @@ export const runOpenAiCodex = async (
             firstEventAt ??= iterLastChunkAt;
           },
           (delta) => {
+            attemptText += delta;
             deltaStream.push(delta); // llm.delta fan-out (coalesce → publish, depth-0).
             tracePush(delta); // 매니저/서브에이전트 서술 로그 트레이스(deltaStream 꺼진 턴만).
           },
@@ -1855,6 +1927,7 @@ export const runOpenAiCodex = async (
                   toolDeltaIsExternal.set(info.index, externalToolNames.has(info.name));
                 }
                 if (toolDeltaIsExternal.get(info.index) !== true) return; // 내장 도구 조각은 무시.
+                attemptToolDeltaOut = true;
                 try {
                   bus.publish({
                     type: "llm.tool_call_delta",
@@ -1976,17 +2049,29 @@ export const runOpenAiCodex = async (
                 ` + tools ${lastReqBytes.tools.toLocaleString()}) ` +
                 `thread=${input.threadKey}`,
             );
-            // 건진 게 없으면(텍스트·도구 0) 재전송 가치가 있다 → typed throw 로 올려
-            // 바깥 catch 가 **같은 body 로 재시도**한다(부작용 판단도 거기서 한 번에).
-            if (sseResult.text === "" && sseResult.toolCalls.length === 0) {
+            // 실패면 typed throw 로 올려 바깥 catch 가 **같은 body 로 재시도**한다(부작용 판단도 거기서 한 번에).
+            // ★**생성 실패(`error`·`response.failed`)는 텍스트가 있어도 실패다** (2026-10-09 전체 적대 검토 P3).
+            //  종전엔 «건진 게 없을 때만» 던져서, 과부하가 답을 쓰던 **도중**에 오면 잘린 문장이 성공으로 확정됐다
+            //  (검토 재현: «결론부터 말씀드리면, 첫째» 가 최종 답·이력에 박힘). 요약 경로가 10-05 에 같은 결함을
+            //  고친 규칙(`openai-codex-oauth-history.ts` 요약 호출)과 맞춘다 — 출력 상한(`response.incomplete`)만
+            //  받은 부분을 쓰고, 그것도 텍스트·도구가 다 비었으면 던진다.
+            //  ★재전송은 안전하다 — 이 응답의 도구는 **아직 실행 전**이고(실행은 이 블록 뒤), 앞 스텝의 결과는
+            //   inputArray 에 있다. 같은 이유로 실패한 응답의 도구 호출은 실행하지 않는다.
+            if (
+              f.source !== "response.incomplete" ||
+              (sseResult.text === "" && sseResult.toolCalls.length === 0)
+            ) {
               // ★`response.incomplete` 는 **결정적 실패**다 — 사유가 max_output_tokens
               //  이든 content_filter 든 같은 body 를 다시 보내면 같은 벽에 부딪힌다.
               //  transient 로 취급하면 27초를 태우고 같은 자리에 온다.
-              throw new CodexBackendFailureError(
-                why,
-                userWhy,
-                f.source !== "response.incomplete",
-              );
+              // ★재전송은 **아직 아무 글도 안 흘렸을 때만** (2026-10-09 수정분 재검토 P3). 글이 이미 흘러간 뒤 다시 보내면
+              //  대시보드·게이트웨이 스트림에 «잘린 앞부분 + 새 전체» 가 이어붙고 되돌릴 길이 없다(델타는 이미 나갔다).
+              //  그때는 정직하게 실패로 올린다 — 잘린 답을 성공으로 확정하지도, 두 번 쓰지도 않는다.
+              //  ★글을 **화면에 흘리지 않는 턴**(매니저·에이전트 — deltaStream 꺼짐)은 받은 글이 이 응답 안에만 있어
+              //   다시 보내도 두 번 쓰이지 않는다 — 거기선 글이 있어도 재전송한다(2026-10-10 재검토).
+              const deterministic = f.source === "response.incomplete";
+              const streamed = sseResult.text !== "" && streamsToScreen;
+              throw new CodexBackendFailureError(why, userWhy, !deterministic && !streamed, deterministic);
             }
           }
         }
@@ -2008,6 +2093,8 @@ export const runOpenAiCodex = async (
           //  것이 유일한 대책이다 — 여기서 빨리 포기하면 일시적 과부하가 턴 실패가 된다.
           if (
             e.retryable &&
+            // 게이트웨이 외부 도구 조각이 이미 밖으로 나갔으면 재전송하지 않는다 — 반쪽 호출 뒤에 새 호출이 이어진다(끊김 복구와 같은 규칙, 재검토)
+            !attemptToolDeltaOut &&
             backendFailAttempt < CODEX_BACKEND_FAIL_BACKOFF_MS.length &&
             input.abortSignal?.aborted !== true &&
             !effectiveAc.signal.aborted
@@ -2028,6 +2115,44 @@ export const runOpenAiCodex = async (
           // (안쪽에서 break 하면 `for(;;)` 스톨 루프만 빠져나가 sseResult 미할당 지점으로
           //  떨어진다 — tsc 가 잡았다.)
           throw e;
+        }
+        // ★서버가 응답 도중 연결을 끊었다 — 같은 요청을 다시 보내거나, 글을 쓰던 중이면 **이어 쓰게** 한다 (2026-10-10).
+        //  안전 근거: 이 응답의 도구 호출은 스트림을 다 받은 **뒤에** 실행되므로(아래) 끊긴 응답의 도구는 아직 아무것도 안 했다 —
+        //  버리고 다시 물어도 부작용이 두 번 일어나지 않는다. 앞 단계 도구 결과는 이미 입력에 있다.
+        //  글이 이미 흘렀으면 같은 요청을 다시 보내면 화면에 두 번 찍힌다 → 흘린 글을 비서 자신의 말로 입력에 붙이고 «잘린 지점부터
+        //  이어 쓰라» 를 더해 보낸다(사용자가 손으로 하던 «이어서 진행해줘» 를 한 번 대신 해 준다). 화면의 글은 그대로 두고 뒤에 이어진다.
+        //  우리 쪽 중단(유휴·턴 시한·/stop)은 여기 오지 않는다(signal 로 거른다 — 그건 아래 분기들의 몫이다).
+        if (
+          isCodexStreamCut(e) &&
+          // 헤더를 받은 **뒤에** 끊긴 것만 — 연결 단계 실패는 위 전송 재시도의 몫이고, 거기서 소진된 걸 여기서 받으면 앞 시도에서
+          //  남은 글을 «방금 잘린 글» 로 다시 붙였다(재검토 F1: 최종 답 «앞글 앞글 뒷글»).
+          headersAt > 0 &&
+          !attemptToolDeltaOut &&
+          !effectiveAc.signal.aborted &&
+          input.abortSignal?.aborted !== true &&
+          cutAttempt < CODEX_CUT_BACKOFF_MS.length
+        ) {
+          const wait = CODEX_CUT_BACKOFF_MS[cutAttempt] ?? 3_000;
+          cutAttempt += 1;
+          const partial = attemptText;
+          if (partial !== "") {
+            carriedText += partial;
+            if (cutInsertStart < 0) cutInsertStart = inputArray.length;
+            inputArray.push(
+              { type: "message", role: "assistant", content: [{ type: "output_text", text: partial }] },
+              { type: "message", role: "user", content: [{ type: "input_text", text: CODEX_CUT_CONTINUE_NUDGE }] },
+            );
+            bodyJson = JSON.stringify(body);
+            measureRequest(); // 마지막 전송 본문 기준으로 — 첫 호출 프리픽스 비교 상태는 건드리지 않는다(목적이 다르다).
+          }
+          console.warn(
+            `[codex-cut] 서버가 응답 도중 연결을 끊음(${causeCodes(e).join("←") || "code 없음"}) — ${partial === "" ? "같은 요청 재전송" : `흘린 글 ${partial.length}자 뒤부터 이어 쓰기`} ` +
+              `${cutAttempt}/${CODEX_CUT_BACKOFF_MS.length} (${wait}ms 뒤) iteration=${iteration} model=${model} thread=${input.threadKey}`,
+          );
+          await sleep(wait, input.abortSignal);
+          const turnSignal: AbortSignal | undefined = input.abortSignal;
+          if (turnSignal?.aborted === true) throw turnSignal.reason ?? e;
+          continue;
         }
         // 무진전(IdleTimeoutError = no-progress 타이머)이고 매니저/턴 예산이 아직 살아있고
         // 재시도 여유가 있으면 → turn 을 죽이지 말고 *같은 body(같은 대화 컨텍스트)로* 스텝
@@ -2151,6 +2276,12 @@ export const runOpenAiCodex = async (
       }
       }
       } catch (err) {
+        // 끊김 복구가 끝내 실패했다 — 결과를 남기고(감지 줄만 있으면 끝을 모른다), 이어 쓰기로 붙인 부분 글은 떼어 낸다
+        //  (실패 안내가 그 글을 따로 싣는다 — 남겨 두면 다음 턴 이력에 같은 글이 두 번 실린다, 재검토 F2·F4).
+        if (cutAttempt > 0) {
+          console.warn(`[codex-cut] 결과=실패(${err instanceof Error ? err.name : String(err)}) — 복구 ${cutAttempt}/${CODEX_CUT_BACKOFF_MS.length}, iteration=${iteration}, thread=${input.threadKey}`);
+        }
+        if (cutInsertStart >= 0) inputArray.splice(cutInsertStart);
         // ★재시도한 요청이 **어떤 경로로든** 예외로 끝나면 결과를 남긴다(2026-10-05 적대 검토 F2) — 재시도 중 취소·턴 시한·네트워크·
         //  백엔드 실패 소진이 종전엔 «감지» 줄만 남기고 끝을 안 알렸다. 경로마다 로그를 다는 대신 루프를 한 번 감싼다(빠뜨릴 자리가 없다).
         if (stallRetryAt > 0 && !stallOutcomeLogged) {
@@ -2164,7 +2295,13 @@ export const runOpenAiCodex = async (
       if (stallRetryAt > 0) {
         console.log(`[codex-stall] 재시도 결과=완료 — 이 요청 재시도 ${stallAttempt}/${CODEX_STALL_MAX_RETRIES}, 재개 후 ${Math.round((Date.now() - stallRetryAt) / 1000)}s, iteration=${iteration}, thread=${input.threadKey}`);
       }
-      const { text, responseId, toolCalls, usage } = sseResult;
+      if (cutAttempt > 0) {
+        console.log(`[codex-cut] 결과=복구 — ${carriedText === "" ? "재전송" : `이어 쓰기(앞 ${carriedText.length}자)`} ${cutAttempt}회, iteration=${iteration}, thread=${input.threadKey}`);
+      }
+      // ★`text` 는 사용자에게 가는 이번 요청의 글 전체다 — 끊김 뒤 이어 쓰기로 복구했으면 앞에 흘린 글 + 이어 쓴 글.
+      //  이력(inputArray)에는 이어 쓴 글만 넣는다(`continuationText`) — 흘린 글과 이어 쓰라는 지시는 재전송 때 이미 들어갔다.
+      const { text: continuationText, responseId, toolCalls, usage } = sseResult;
+      const text = carriedText + continuationText;
       {
         const endAt = Date.now();
         lastSpans = requestSpans(
@@ -2263,11 +2400,11 @@ export const runOpenAiCodex = async (
       if (replayOutput !== undefined && toolCalls.length === 0) inputArray.push(...replayOutput);
       // 호출은 아래 실제 실행 진입에서만 넣는다. 한도 마무리/외부 반환은 도구를
       // 실행하지 않으므로 여기서 호출을 넣으면 결과 없는 function_call이 남는다.
-      else if (text !== "") {
+      else if (continuationText !== "") {
         inputArray.push({
           type: "message",
           role: "assistant",
-          content: [{ type: "output_text", text }],
+          content: [{ type: "output_text", text: continuationText }],
         });
       }
       // 최종 텍스트 = **마지막 non-empty**(2026-07-26). 종전엔 전 iteration 을 `\n\n` 로 누적
@@ -2661,7 +2798,7 @@ export const runOpenAiCodex = async (
       if (input.abortSignal?.aborted) throw input.abortSignal.reason;
       // 위에서 임시로 붙인 텍스트 한 항목만 정상 완료 출력으로 교체한다.
       // 중간 체크포인트 메시지는 지우지 않으며, 기존 이력 프리픽스도 그대로다.
-      if (replayOutput !== undefined) inputArray.splice(replayStart, text !== "" ? 1 : 0, ...replayOutput);
+      if (replayOutput !== undefined) inputArray.splice(replayStart, continuationText !== "" ? 1 : 0, ...replayOutput);
       // function_call item 순서대로 누적 — assistant 가 보낸 호출 의도 보존 (다음 turn 필수).
       for (const tc of replayOutput === undefined ? toolCalls : []) {
         inputArray.push({
@@ -2846,6 +2983,13 @@ export const runOpenAiCodex = async (
       iteration += 1;
     }
   } catch (e) {
+    // ★던지기 전에 이 턴이 꺼낸 끼워넣기를 채널에 되돌린다(2026-10-09 전체 적대 검토 P3 — 규칙은 `_steering-ledger.ts`).
+    //  이 catch 의 모든 throw 가 이 함수를 지난다 — 삼키는 갈래(아래)만 안 지난다(그 턴은 답장으로 끝난다).
+    const rethrow = (err: unknown): never => {
+      const n = steeringLedger.giveBack();
+      if (n > 0) console.warn(`[steer] ${input.threadKey} 실패한 턴이 꺼낸 끼워넣기 ${n}건을 채널에 되돌림 — 다음 후보나 새 턴이 받는다`);
+      throw err;
+    };
     // ★실패·취소로 끝난 턴도 분해를 남긴다 (2026-10-03, 회사돌쇠 후속 보고) — 지금까지 끝난 요청 + 끝나지 않은 요청이
     //  어디서 멈췄나(조립 · 헤더 대기 · 첫출력 대기 · 출력 중). 성공 턴만 찍으면 가장 궁금한 턴이 안 보인다.
     try {
@@ -2871,7 +3015,7 @@ export const runOpenAiCodex = async (
     // 이미 실행됐어도 facade 가 턴을 재실행하지 않으므로 중복 위험 없음 — 즉 1층의
     // sideEffectExecuted 중복 방어가 2층엔 불요. 큐 무한 점유 해소가 핵심 목적(TT-I6).
     if (e instanceof TurnTimeoutError) {
-      throw e;
+      rethrow(e);
     }
     // ★진입 조건은 **부작용 유무**다 — 에러 종류가 아니다 (2026-07-31 전체검토 P0).
     //
@@ -2899,7 +3043,33 @@ export const runOpenAiCodex = async (
     //  판정은 이름 목록이 아니라 **동일성**이다: 이 에러가 곧 abort 사유면 취소다.
     const abortReason: unknown = input.abortSignal?.reason;
     if (input.abortSignal?.aborted === true && e === abortReason) {
-      throw e;
+      rethrow(e);
+    }
+    // ★★**계정 축 실패(사용량 한도·인증 거부)는 삼키지 않는다** (2026-10-09 전체 적대 검토 P4).
+    //  아래 삼킴은 «끊긴 연결·과부하» 처럼 **이어서 하면 되는** 실패를 위한 것이다(부분 보고 보존 — 회귀
+    //  `partial-report-survives-cut`). 그런데 도구 뒤 429 usage_limit·401 까지 성공 답장으로 바꾸면 facade 의
+    //  후처리가 통째로 빠졌다: turn_done 만 나고 **쿨다운 0**, 성공 처리(`clearCooldownOnSuccess`)가 기존
+    //  쿨다운까지 지우고, 해제 시각 안내 없이 «이어서 진행해줘» 를 권해 사용자는 **같은 벽**을 또 때렸다.
+    //  ★던져도 중복 실행은 없다 — 부작용 도구는 dispatch 직전에 논리 턴 guard(`markToolDispatch`)에 찍혀
+    //   facade 가 재실행을 막고(`replayBlocked`), 쿨다운·안내·turn_error 를 **지난 뒤** 단락한다. claude·openai
+    //   는 원래 이 길로 간다(이 어댑터만 삼키던 비대칭).
+    //  ★판정은 facade 쿨다운과 **같은 분류기**(`isRateLimited`·`isAuthRejected`)다 — 두 벌이면 한쪽만 걸린다.
+    //   입력은 백엔드 문장(메시지+cause)뿐이다 — 도구 이름 같은 외부 글자를 섞지 않는다(facade 레드팀 P2 와 같은 이유).
+    const failText = ((): string => {
+      const m = e instanceof Error ? e.message : String(e);
+      const c = e instanceof Error ? (e as { cause?: unknown }).cause : undefined;
+      return c === undefined || c === null ? m : `${m} (cause: ${c instanceof Error ? c.message : String(c)})`;
+    })();
+    const accountLevel = isRateLimited(failText) || isAuthRejected(failText);
+    if (sideEffectExecuted && accountLevel) {
+      // 화면에 흘러간 조각은 턴 뷰 세그먼트로 남긴다(안 닫으면 이 어댑터 호출과 함께 버려진다).
+      closeTextSegment();
+      console.error(
+        `[codex-account-failure] ${input.threadKey} 도구 실행 뒤 계정 축 실패 — 삼키지 않고 올린다(쿨다운·안내는 facade) ` +
+          `model=${model} iter=${iteration} tools=[${[...executedToolNames].join(",")}] ` +
+          `${redactSecrets(failText).slice(0, 200)}`,
+      );
+      rethrow(e);
     }
     if (sideEffectExecuted) {
       const ranList =
@@ -2925,7 +3095,8 @@ export const runOpenAiCodex = async (
       } else {
         // HTTP 실패·전송 실패·그 밖의 일반 에러. 종전엔 이 갈래가 통째로 throw 로 빠져
         // 폴백이 부작용을 중복 실행했다.
-        const detail = e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200);
+        // ★답장에 실리므로 비밀을 가린다 — 백엔드 JSON 원문이 그대로 나가던 자리다(2026-10-09 전체 적대 검토).
+        const detail = redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200);
         notice = `${translate("srv.codex.requestFailed", { detail })}${ranList}\n\n${translate("srv.codex.sayContinue")}`;
       }
 
@@ -2981,7 +3152,7 @@ export const runOpenAiCodex = async (
       closeTextSegment(); // 안내도 세그먼트로 — 턴 뷰에서 도구 뒤에 실제로 보이게.
       finalText = view.saved;
     } else {
-      throw e; // 부작용 없음 → 정직 throw (풀 폴백으로 안전 재실행 / 정직 에러).
+      rethrow(e); // 부작용 없음 → 정직 throw (풀 폴백으로 안전 재실행 / 정직 에러).
     }
   } finally {
     // 생성한 모든 bridge 일괄 close (in-memory transport 누수 0). 개별 try 로 격리 —

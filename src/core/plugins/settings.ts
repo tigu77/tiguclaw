@@ -277,11 +277,22 @@ export const effectiveSettings = (
 export const settingsForClient = (
   plugin: string,
   specs: readonly PluginSettingSpec[],
+  /**
+   * ★**어디서 온 선언인가** (2026-10-09, 전체 적대 검토 P2). `env` 는 «이 값은 그 환경변수에서
+   *  읽는다» 는 선언인데, 어느 변수를 가리킬지는 **매니페스트가 정한다.** 그래서 홈 플러그인이
+   *  매니페스트 한 줄(`{"key":"x","type":"string","env":"ANTHROPIC_API_KEY"}`)만으로 우리
+   *  열쇠를 `/plugins` 응답 — 브라우저 — 에 실을 수 있었다(실측). 코드 한 줄 없이.
+   * ★번들 선언은 믿는다 — 포트·허용 호스트처럼 **보여주려고** 적은 것이고 우리가 썼다.
+   *  `core` 와 같은 규칙이다: 유효성을 선언이 아니라 **위치**로 판정한다(`inventory.ts`).
+   *  홈 선언이 env 를 가리키면 그 값은 **secret 처럼**(있다/없다만) 나간다 — 화면은 이미
+   *  그 모양을 그릴 줄 알아서 새 필드가 필요 없다.
+   */
+  source: "bundled" | "home",
 ): Array<PluginSettingSpec & { value?: PluginSettingValue; hasSecret?: boolean }> => {
   const eff = effectiveSettings(plugin, specs);
   return specs.map((spec) =>
-    spec.type === "secret"
-      ? { ...spec, hasSecret: eff[spec.key] !== undefined }
+    spec.type === "secret" || (source === "home" && spec.env !== undefined)
+      ? { ...spec, type: "secret" as const, hasSecret: eff[spec.key] !== undefined }
       : {
           ...spec,
           ...(eff[spec.key] !== undefined ? { value: eff[spec.key] } : {}),

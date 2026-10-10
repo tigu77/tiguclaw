@@ -52,3 +52,19 @@ export const needsClosingReport = (s: TurnClosingState): boolean => {
   if (names.length > 0 && names.every((n) => TURN_ENDING_TOOLS.has(n))) return false;
   return true; // 예고 뒤 도구만 돌고 보고 없음 = 미완결.
 };
+
+/**
+ * **한 턴의 모델 호출 절대 상한** — 런어웨이 최후 방어. 우리가 루프를 소유하든(codex) SDK 가 소유하든(openai)
+ * **같은 수**다 (2026-10-09 전체 적대 검토 P4).
+ *
+ * ★openai 어댑터는 본 턴 `run()` 에 `maxTurns` 를 안 줘서 SDK 기본 **10** 이 걸려 있었다 — 도구를 10번 넘게
+ *  쓰는 평범한 작업이 `MaxTurnsExceededError` 로 죽었다(OpenRouter·Gemini·Ollama 공통, 검토 재현). codex 는
+ *  같은 작업을 1,500 까지 이어 간다. 상한이 어댑터마다 다르면 «같은 일이 모델 따라 죽는다»(원칙: LLM 무관).
+ * ★근거·크기(실측 최대 정당 작업 149회의 10배)는 codex 의 누적 백스톱 주석 그대로 — env 이름도 그대로 둔다
+ *  (이미 그 이름으로 조정해 온 설치가 있다).
+ */
+export const TURN_MAX_MODEL_CALLS = ((): number => {
+  const raw = process.env.CODEX_MAX_TOTAL_ITERATIONS;
+  const n = raw === undefined || raw === "" ? NaN : Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : 1_500;
+})();

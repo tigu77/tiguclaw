@@ -27,6 +27,10 @@
           group = c.group;
           const item = document.createElement("div");
           item.className = "slash-item" + (i === slashActive ? " active" : "");
+          if (c.folder) { // 하위 폴더에 둔 커맨드 — 묶음만 보여준다(부르는 이름은 그대로 /이름)
+            const f = document.createElement("span"); f.className = "slash-folder"; f.textContent = c.folder.split("/").join(" › ") + " ›";
+            item.appendChild(f);
+          }
           const n = document.createElement("span"); n.className = "slash-name"; n.textContent = "/" + c.name;
           item.appendChild(n);
           if (c.description) {

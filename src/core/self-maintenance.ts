@@ -169,8 +169,10 @@ export const startSelfMaintenance = (bus: EventBus = getEventBus()): void => {
     }
     // 포트를 못 열었다(대시보드·브리지) — 사용자는 화면이 안 열리는 것밖에 모른다. 표식이 있는 것만.
     if (event.type === "plugin.error") {
-      const err = (event.payload as { error?: unknown } | null)?.error;
-      if (typeof err === "string" && err.includes(PORT_UNAVAILABLE_TAG)) wakeDebounced(bus);
+      const p = event.payload as { error?: unknown; userFacing?: unknown } | null;
+      const err = p?.error;
+      // 포트 표식이거나, 플러그인이 «사용자가 알아야 하는 멈춤» 이라고 표시한 것(health-sweep ②-b)만 깨운다.
+      if ((typeof err === "string" && err.includes(PORT_UNAVAILABLE_TAG)) || p?.userFacing === true) wakeDebounced(bus);
       return;
     }
     if (event.type === "scheduler.error") {

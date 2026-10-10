@@ -111,6 +111,19 @@ export const check: RegressionCheck = {
         `PATH=${String(built.PATH)} LANG=${String(built.LANG)}`,
       ),
     );
+    // 값이 실제 파일 경로인 «자격 위치» 변수는 비밀이 아니라 위치다 — 지우면 gcloud·aws 가 깨진다(2026-10-09 재검토).
+    //  경로가 아닌 값(진짜 키)은 그대로 지운다.
+    {
+      const credFile = process.execPath; // 존재가 보장된 절대 경로
+      const withPath = buildChildEnv(undefined, { GOOGLE_APPLICATION_CREDENTIALS: credFile, AWS_SECRET_ACCESS_KEY: "probe-not-a-real-secret" });
+      out.push(
+        assert(
+          "자격 «위치» 변수(값이 실제 파일 경로)는 남기고, 키 값은 지운다",
+          withPath.GOOGLE_APPLICATION_CREDENTIALS === credFile && !("AWS_SECRET_ACCESS_KEY" in withPath),
+          { 남은키: Object.keys(withPath) },
+        ),
+      );
+    }
     // mcp.json 에 사용자가 직접 적은 env 는 **의도된 위임**이라 시크릿이어도 통과해야 한다.
     const delegated = buildChildEnv({ MY_API_KEY: "intended-by-user" }, parentEnv);
     out.push(

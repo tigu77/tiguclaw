@@ -46,6 +46,7 @@ export const check: RegressionCheck = {
     const empty = buildReinjectMessage(turnOpener, [], 1);
 
     const idx = readFileSync(new URL("../../index.ts", import.meta.url), "utf8");
+    const life = readFileSync(new URL("../../core/entry/turn-lifecycle.ts", import.meta.url), "utf8"); // 턴 출구 판정(2026-10-09 index.ts 에서 옮김)
     const tg = readFileSync(new URL("../../../plugins/telegram-channel/index.ts", import.meta.url), "utf8");
     const bridge = readFileSync(new URL("../../../plugins/http-bridge/routes-chat.ts", import.meta.url), "utf8");
     // 채널은 자르지 않거나(텔레그램) 요청 크기 방어만 한다(대시보드) — 정확히 1500 만 금지하면 숫자를 바꾼 변이가 통과했다(재검토 G3).
@@ -85,7 +86,7 @@ export const check: RegressionCheck = {
       assert(
         "새 턴은 같은 인용 함수를, 재주입은 조립 함수를 쓴다 · 채널은 인용 원문을 상한 아래로 자르지 않는다(배선)",
         /effectiveText = withReplyQuote\(effectiveText, msg\.replyToText\)/.test(idx) &&
-          /const reinject = reinjectUnlessStopped\(turnAc\.signal, msg, leftover\)/.test(idx) && /serializedHandler\(reinject\)/.test(idx) &&
+          (/const again = reinjectUnlessStopped\(t\.signal, t\.msg, leftover\)/.test(life) && /signal: turnAc\.signal,/.test(idx) && /reinject: \(m\) => serializedHandler\(m\)/.test(idx)) &&
           tgStmt !== "" && !/slice/.test(tgStmt) && brStmt !== "" && brCaps.every((n) => n >= 4096),
         `텔레그램=${tgStmt.slice(0, 60)} · 대시보드 상한=${JSON.stringify(brCaps)}`,
       ),

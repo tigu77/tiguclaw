@@ -92,7 +92,8 @@ export const check: RegressionCheck = {
           }
           await new Promise<void>((resolve) => setImmediate(resolve));
           out.push(assert(`${kind}/${mode}: 완료·실패·취소 뒤 등록 해제와 발화 기록`, !inflight.listExternalTurns().some(([k]) => k === key) && records.length === 1 && records[0].ok === (mode === "complete"), records));
-          out.push(assert(`${kind}/${mode}: 정상 결과 전송 정책 보존`, dispatches.length === (kind === "scheduler" && mode === "complete" ? 1 : 0), dispatches));
+          // 정상 완료만 결과를 목적지로 보낸다 — 파일감시도 스케줄과 같다(2026-10-09 사용자 결정: 종전엔 파일감시가 결과를 버렸다).
+          out.push(assert(`${kind}/${mode}: 정상 결과 전송 정책 보존`, dispatches.length === (mode === "complete" ? 1 : 0), dispatches));
         } finally {
           modelInput?.abortSignal && inflight.listExternalTurns().find(([k]) => k === key)?.[1].ac.abort();
           finish?.();

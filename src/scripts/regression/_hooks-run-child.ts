@@ -247,6 +247,13 @@ const base = { cwd, channel: "regr", threadKey: "regr:hooks" };
     }),
     "utf8",
   );
+  // ★프로젝트 훅은 **등록된 프로젝트**에서만 돈다(2026-10-09 신뢰 경계 · project-trust.ts) — 그래서 등록하고 잰다.
+  {
+    const { initStore } = await import("../../store/sessions.js");
+    initStore();
+    const { upsertProject } = await import("../../store/projects.js");
+    upsertProject({ path: proj, name: "regr-hooks-proj", status: "active", description: null });
+  }
   // ★홈 훅 표식을 **지우고** 돌린다 — 안 지우면 ①에서 만든 파일이 남아 있어 "홈 훅도
   //  돌았다" 가 무조건 참이 된다(아무것도 안 재는 가짜 판정). 지운 뒤 둘 다 생겨야 concat 이다.
   rmSync(mark("pre-bash"), { force: true });

@@ -16,7 +16,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /** settings.json 만 있는 일회용 cwd — 실제 홈·데몬 불변. */
 const withSettings = (models: unknown): string => {
@@ -57,6 +57,12 @@ export const check: RegressionCheck = {
       },
     });
 
+    // ★프로젝트 설정은 **믿는 폴더**(데몬 폴더·등록 프로젝트)일 때만 연결에 쓰인다(2026-10-10) — 등록한다.
+    assertIsolated();
+    const { initStore } = await import("../../store/sessions.js");
+    initStore();
+    const { upsertProject } = await import("../../store/projects.js");
+    upsertProject({ path: cwd, name: "provider-fixture", status: "active", description: null });
     const or = resolveProviderConn("openrouter", cwd);
     const bogus = resolveProviderConn("bogus", cwd);
     const anth = resolveProviderConn("anthropic", cwd);

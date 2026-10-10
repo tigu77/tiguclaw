@@ -417,11 +417,16 @@
         if (!panel) return;
         panel.innerHTML = '<div class="empty"></div>';
         panel.querySelector(".empty").textContent = i18n("common.loading");
+        // ★await 뒤엔 **아직 이 상세를 볼 차례인가**부터 본다 (2026-10-09 적대 검토). 종전엔 성공 경로만 선택을 확인했고
+        //  오류 경로는 아무것도 안 봐서, 그 사이 다른 프로젝트를 골랐거나 다른 화면으로 갔어도 오류 문구가 그 화면을 덮었다.
+        //  `#detail-panel` 은 모든 뷰가 같이 쓴다 — 선택만이 아니라 지금 화면도 본다.
+        const stale = () => selectedProjectPath !== projectPath || currentView !== "projects";
         let detail;
         try {
           const r = await fetch("/api/projects/detail?path=" + encodeURIComponent(projectPath));
           if (!r.ok) {
             const err = await r.json().catch(() => ({}));
+            if (stale()) return;
             panel.innerHTML = '';
             const msg = document.createElement("div");
             msg.className = "empty";
@@ -433,6 +438,7 @@
           }
           detail = await r.json();
         } catch (e) {
+          if (stale()) return;
           panel.innerHTML = '';
           const msg = document.createElement("div");
           msg.className = "empty";
@@ -440,8 +446,8 @@
           panel.appendChild(msg);
           return;
         }
-        // 현재 선택이 바뀌었으면(빠른 연속 클릭) 렌더 폐기.
-        if (selectedProjectPath !== projectPath) return;
+        // 현재 선택이 바뀌었거나(빠른 연속 클릭) 다른 화면으로 갔으면 렌더 폐기.
+        if (stale()) return;
         renderProjectDetail(panel, projectPath, detail);
       };
 

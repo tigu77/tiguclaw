@@ -24,6 +24,8 @@ export interface ReplayGuard {
   unsafe: boolean;
   /** 그 첫 도구 이름 — 실패 보고가 «무엇까지 갔나» 를 말할 수 있게. */
   firstTool?: string;
+  /** 되돌릴 수 없는 도구가 실행에 들어간 횟수 — 끼워넣기 장부가 «그 메시지를 받은 **뒤에** 부작용이 있었나» 를 본다. */
+  unsafeCount?: number;
 }
 
 export const createReplayGuard = (): ReplayGuard => ({ unsafe: false });
@@ -40,6 +42,7 @@ export const markToolDispatch = (
   readOnly: boolean,
 ): void => {
   if (guard === undefined || readOnly) return;
+  guard.unsafeCount = (guard.unsafeCount ?? 0) + 1;
   if (!guard.unsafe) {
     guard.unsafe = true;
     guard.firstTool = toolName;

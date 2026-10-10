@@ -40,7 +40,7 @@ import {
   type CheckedTarget,
   type ScreenRect,
 } from "./observe.js";
-import type { LowEvent } from "./control.js";
+import { postTimeoutMs, type LowEvent } from "./control.js";
 
 /**
  * 탐침 한 줄에서 **화면 사각형 목록**을 읽는다. 못 읽으면 `null` — «모른다» 이고,
@@ -456,7 +456,7 @@ const wrapped = (script: string): string =>
  * ★관측만 있을 땐 스크립트가 하나뿐이라 안 받았는데, 조작이 붙으며 셋이 됐다(캡처·유휴·입력).
  *  ★`-EncodedCommand`(UTF-16LE base64)는 **셋 다 그대로** — 명령줄 따옴표 규칙을 아예 안 지난다.
  */
-const runScript = (script: string, env: Record<string, string>): Promise<RunOk | RunFail> =>
+const runScript = (script: string, env: Record<string, string>, timeoutMs: number = CHILD_TIMEOUT_MS): Promise<RunOk | RunFail> =>
   runChild(psExe(), [
     "-NoProfile",
     "-NonInteractive",
@@ -464,19 +464,19 @@ const runScript = (script: string, env: Record<string, string>): Promise<RunOk |
     "Bypass",
     "-EncodedCommand",
     Buffer.from(wrapped(script), "utf16le").toString("base64"),
-  ], env);
+  ], env, timeoutMs);
 
 /**
  * **자식 하나** — PowerShell 이든 컴파일된 캡처 프로그램이든 같은 계약이다: 시한 · stdout 의 `{"error":…}` 가 정본 ·
  * 실패해도 stdout 을 버리지 않는다.
  */
-const runChild = (file: string, args: string[], env: Record<string, string>): Promise<RunOk | RunFail> =>
+const runChild = (file: string, args: string[], env: Record<string, string>, timeoutMs: number = CHILD_TIMEOUT_MS): Promise<RunOk | RunFail> =>
   new Promise((resolve) => {
     execFile(
       file,
       args,
       {
-        timeout: CHILD_TIMEOUT_MS,
+        timeout: timeoutMs,
         killSignal: "SIGKILL",
         env: { ...process.env, ...env },
         windowsHide: true,
@@ -491,7 +491,7 @@ const runChild = (file: string, args: string[], env: Record<string, string>): Pr
           ok: false,
           reason: killed ? "timeout" : "failed",
           detail: killed
-            ? `${CHILD_TIMEOUT_MS}ms 초과`
+            ? `${timeoutMs}ms 초과`
             : (own ?? cleanPowerShellError(String(stderr)) ?? err?.message.slice(0, 300) ?? "알 수 없는 실패"),
           // ★**버리지 않는다** — 죽은 자식이 어디까지 갔는지는 여기에만 남아 있다.
           stdout: out,
@@ -909,7 +909,7 @@ export const post = async (
   const r = await runScript(CONTROL_SCRIPT, {
     TIGUCLAW_EVENTS: JSON.stringify(events),
     TIGUCLAW_DRY: "0",
-  });
+  }, postTimeoutMs(events, CHILD_TIMEOUT_MS));
   if (!r.ok) return r;
   try {
     const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as { fired?: number };

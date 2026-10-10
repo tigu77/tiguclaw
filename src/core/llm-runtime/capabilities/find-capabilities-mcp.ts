@@ -49,6 +49,8 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import { adaptSharedClaudeMcpServer } from "../adapters/_mcp-bridge.js";
+import { coreServerTools } from "./_core-server.js";
+import { memoryToolNames } from "../../memory-mcp.js";
 
 /** 정규형 반환 shape (contract §3a) — 어댑터 무관 동일. */
 export interface CapabilityHit {
@@ -65,10 +67,16 @@ export interface CapabilityHit {
   source: "builtin" | "plugin";
 }
 
+/**
+ * 카탈로그 = **사람이 쓰는 보강**(요약·언제 쓰나)뿐이다. 도구 목록은 여기 적지 않는다 — 실제로 조립된 서버의 도구
+ * 정의에서 온다(`coreServerTools`). ★종전엔 여기 `tools` 를 손으로 적어 실제와 갈렸다(2026-10-09 적대 검토: agents 에
+ *  `wait_for_worker`·`read_worker_result` 누락, 카탈로그에 없는 코어 서버 넷이 «외부 연결 MCP · 도구 0개» 로 광고).
+ * `fallbackTools` 는 코어 **밖**에서 만드는 서버(memory — `src/core/memory-mcp.ts`)만 — 그것도 도구 정의에서 파생한 함수다.
+ */
 interface BuiltinCapabilityMeta {
   summary: string;
   whenToUse: string;
-  tools: string[];
+  fallbackTools?: () => string[];
 }
 
 /**
@@ -82,112 +90,71 @@ const BUILTIN_CAPABILITY_CATALOG: Record<string, BuiltinCapabilityMeta> = {
     summary: "장기 기억(SQLite) 저장·검색·수정·삭제 — 룰·선호·사실·통찰·관측 신호.",
     whenToUse:
       "사용자가 기억할 만한 사실·선호·규칙을 말했거나, 저장해둔 메모리를 다시 확인·정정·삭제해야 할 때.",
-    tools: [
-      "read_memory",
-      "add_memory",
-      "update_memory",
-      "delete_memory",
-      "archive_memory",
-      "list_memories",
-      "list_installed_plugins",
-    ],
+    fallbackTools: memoryToolNames,
   },
   skills: {
     summary: "발견된 스킬(SKILL.md) 본문 로드·검색.",
     whenToUse:
       "특정 하네스·작업 절차를 스킬로 실행하고 싶거나, 스킬 인덱스에 안 보이는 스킬을 찾을 때.",
-    tools: ["invoke_skill", "find_skills"],
   },
   agents: {
     summary: "서브에이전트 위임 — 하위 작업을 별도 에이전트에 맡기거나 다른 프로젝트로 병렬 위임.",
     whenToUse: "하위 작업을 위임하거나, 현재 작업 폴더가 아닌 다른 프로젝트로 작업을 보낼 때.",
-    tools: ["spawn_agent", "find_agents"],
   },
   workers: {
     summary: "긴 작업을 백그라운드로 발사·조회·**추가 지시**·취소(비차단, 대시보드에 노출).",
     whenToUse:
       "지금 응답을 끝내지 않고 오래 걸리는 작업(빌드·대량 처리 등)을 뒤에서 계속 돌리고 싶을 때.",
-    tools: ["run_in_background", "list_workers", "list_all_workers", "steer_worker", "cancel_worker"],
   },
   endpoints: {
     summary: "커스텀 HTTP 엔드포인트 등록·조회·삭제 — 외부에서 나를 호출.",
     whenToUse:
       "외부 앱이 나를 호출하거나 웹훅을 수신해야 할 때(예: 'GitHub 웹훅 받게 해줘'). 파일 감시 같은 우회책 대신 이 도구부터 확인.",
-    tools: ["register_endpoint", "list_endpoints", "delete_endpoint"],
   },
   commands: {
     summary: "커스텀 슬래시 명령 등록·조회·삭제.",
     whenToUse: "사용자가 자주 쓰는 요청을 짧은 /명령으로 만들고 싶을 때.",
-    tools: ["register_command", "list_commands", "delete_command"],
   },
   "mcp-admin": {
     summary: "외부 MCP 서버 연결 등록·조회·삭제.",
     whenToUse:
       "새 외부 도구/서비스를 MCP 서버로 연결해 내 도구로 쓰고 싶을 때, 또는 이미 연결된 외부 MCP 목록을 확인할 때.",
-    tools: ["add_mcp_server", "list_mcp_servers", "remove_mcp_server"],
   },
   "update-self": {
     summary: "자가 업데이트(git pull + 의존성·빌드 + 실패 시 롤백 + 재시작).",
     whenToUse: "'업데이트해줘' 처럼 스스로 최신화하라는 요청을 받았을 때.",
-    tools: ["update_self"],
   },
   maintenance: {
     summary: "런타임 저장소(대화 이력·메모리·매니저 잡·관측 이벤트) 구조적 건강 점검. 읽기전용.",
     whenToUse: "사용자가 '상태 괜찮아?', '용량 어때', '정리 필요해?' 처럼 자기 상태를 물을 때.",
-    tools: ["maintenance_status"],
   },
   "send-file": {
     summary: "현재 채널로 파일·첨부를 네이티브 전송(멱등).",
     whenToUse:
       "만든 파일이나 이미지를 사용자에게 직접 전송해야 할 때(채널이 전송을 지원하는 턴에서만 활성).",
-    tools: ["send_file"],
   },
   "prompt-options": {
     summary: "객관식 선택지를 사용자에게 제시.",
     whenToUse:
       "여러 옵션 중 사용자가 클릭/선택하게 하고 싶을 때(채널이 렌더를 지원하는 턴에서만 활성).",
-    tools: ["prompt_options"],
   },
   "reply-intent": {
     summary: "이번 응답을 트리거 메시지의 직접 답글로 마킹.",
     whenToUse: "여러 화제가 섞여 있어 어느 메시지에 답하는지 명확히 해야 할 때.",
-    tools: ["reply_to_current_message"],
   },
   projects: {
     summary: "폴더를 프로젝트로 등록·조회·갱신 — PROJECT.md 기반, 대시보드에 노출. 등록된 프로젝트를 이 대화에 연결·해제.",
     whenToUse:
       "작업 폴더를 프로젝트로 등록하거나, 등록된 프로젝트 목록·그 폴더 전용 에이전트/스킬을 확인할 때. 사용자가 «이 대화에 X 연결해 줘»·«연결 끊어 줘» 라고 할 때(연결하면 대화 내내 그 프로젝트가 맥락에 실리고 사용자 화면에 그 프로젝트 메뉴가 생긴다).",
-    tools: [
-      "project_register",
-      "project_update",
-      "project_list",
-      "project_forget",
-      "project_capabilities",
-      "link_project",
-      "unlink_project",
-    ],
   },
   todo: {
-    summary:
-      "작업 진행 체크리스트 관리(Claude Code TodoWrite 대응 — codex/openai 전용, claude 는 SDK 빌트인 TodoWrite 사용).",
+    summary: "작업 진행 체크리스트 관리(Claude Code TodoWrite 대응 — 세 어댑터 공통).",
     whenToUse: "여러 단계짜리 작업의 진행 상황을 사용자에게 투명하게 보여주고 싶을 때.",
-    tools: ["update_todos"],
   },
   "file-ops": {
     summary:
-      "파일 읽기/쓰기/편집/검색 + Bash 실행(codex/openai 전용 — claude 는 SDK 빌트인 Read/Write/Edit/Bash/Glob/Grep/WebFetch 사용, 이 서버명으로는 안 보임).",
+      "파일 읽기/쓰기/편집/검색 + Bash 실행(백그라운드 셸 포함). 어댑터마다 노출 범위가 다르다 — 아래 도구 목록이 이번 턴의 실제다.",
     whenToUse: "코드/파일 작업, 셸 명령 실행이 필요할 때.",
-    tools: [
-      "Read",
-      "Glob",
-      "Grep",
-      "Write",
-      "Edit",
-      "Bash",
-      "BashOutput",
-      "KillShell",
-      "WebFetch",
-    ],
   },
 };
 
@@ -232,6 +199,21 @@ export const createFindCapabilitiesMcpServer = (
   subagentInvocationHint: string = DEFAULT_SUBAGENT_INVOCATION_HINT,
   extraMcpServers: Record<string, McpSdkServerConfigWithInstance> = {},
 ): McpSdkServerConfigWithInstance => {
+  // ★**생성 시점에** 떠 둔다 — 어댑터가 이번 턴의 서버들을 막 만든 직후다(`_core-server.ts`). 질의 때 읽으면 그 사이
+  //  다른 턴의 조립을 볼 수 있다.
+  const coreTools = new Map<string, readonly { name: string; description: string }[]>();
+  for (const n of [...activeNames, ...Object.keys(BUILTIN_CAPABILITY_CATALOG)]) {
+    const t = coreServerTools(n);
+    if (t !== undefined && extraMcpServers[n] === undefined) coreTools.set(n, t);
+  }
+  /** 도구 설명의 첫 문장들로 만든 요약 — 카탈로그 보강이 없는 코어 서버용. */
+  const summaryOf = (name: string, ts: readonly { description: string }[]): string => {
+    const firsts = ts
+      .map((t) => t.description.split(/(?<=[.。])\s|\n/)[0]?.trim() ?? "")
+      .filter((d) => d !== "");
+    const joined = firsts.join(" / ");
+    return joined === "" ? `코어 능력(${name}).` : joined.length > 400 ? `${joined.slice(0, 400)}…` : joined;
+  };
   const findCapabilitiesTool = tool(
     "find_capabilities",
     "지금 이 턴에 실제로 쓸 수 있는 빌트인/플러그인 능력(엔드포인트·매니저·프로젝트·외부 MCP 관리·자가업데이트·슬래시명령·스케줄 등)을 조회합니다. 사용자의 간접 의도를 자기 도구로 매핑할 때, 또는 필요한 능력이 없어 습득 경로를 찾을 때 사용하세요. query 생략 시 전체 그룹 요약, query 지정 시 이름/설명/도구명 키워드 매칭.",
@@ -250,14 +232,23 @@ export const createFindCapabilitiesMcpServer = (
             name === "agents"
               ? `${meta.whenToUse} ${subagentInvocationHint}.`
               : meta.whenToUse,
-          tools: meta.tools,
+          // 도구 = 실제 조립된 서버의 정의(없으면 코어 밖 서버의 파생 목록, 그것도 없으면 비움 — 지어내지 않는다).
+          tools: coreTools.get(name)?.map((t) => t.name) ?? meta.fallbackTools?.() ?? [],
           available: activeSet.has(name),
           source: "builtin" as const,
         }));
 
-        // active 이지만 카탈로그에 없는 이름 = 플러그인(§0 — 코어 카탈로그엔 절대
+        // 카탈로그엔 없지만 **코어가 만든** 서버 — 카탈로그 보강 없이 도구 정의에서 그대로 요약한다(외부 MCP 로 오인 금지).
+        const coreOnlyHits: CapabilityHit[] = [...activeSet]
+          .filter((n) => !catalogNames.has(n) && coreTools.has(n))
+          .map((name) => {
+            const ts = coreTools.get(name)!;
+            return { name, summary: summaryOf(name, ts), tools: ts.map((t) => t.name), available: true, source: "builtin" as const };
+          });
+
+        // active 이지만 카탈로그에도 코어 조립에도 없는 이름 = 플러그인·외부 MCP(§0 — 코어 카탈로그엔 절대
         // 하드코딩하지 않음, 여기서 매 호출 data-파생).
-        const pluginNames = [...activeSet].filter((n) => !catalogNames.has(n));
+        const pluginNames = [...activeSet].filter((n) => !catalogNames.has(n) && !coreTools.has(n));
         const pluginHits: CapabilityHit[] = await Promise.all(
           pluginNames.map(async (name): Promise<CapabilityHit> => {
             const cfg = extraMcpServers[name];
@@ -309,7 +300,7 @@ export const createFindCapabilitiesMcpServer = (
           }),
         );
 
-        let hits = [...catalogHits, ...pluginHits];
+        let hits = [...catalogHits, ...coreOnlyHits, ...pluginHits];
         const query = args.query?.trim();
         if (query !== undefined && query !== "") {
           // 토큰 단위 OR 매칭 — 모델은 "웹훅 외부호출 webhook endpoint" 처럼 다중어 쿼리를

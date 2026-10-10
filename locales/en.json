@@ -757,6 +757,7 @@
   "srv.options.replyHint": "Reply with the number or the text of the option you want.",
   "srv.restart.cancelled": "🔴 Restart cancelled — there was no way to bring the daemon back up.\nThis OS has no automatic restart (supervisor), so shutting down now would have left it off. The daemon is still running, so you can carry on with the conversation. The cause is in the logs (`/logs`).",
   "srv.restart.complete": "✅ Restart complete",
+  "srv.restart.refusedWhileClosing": "🔄 Restarting right now, so this message wasn't handled. Please send it again once the restart notice arrives.",
   "srv.restart.soon": "🔄 Restarting shortly… you'll get a notice when it's done.",
   "srv.stop.dropped.one": "You sent {count} message while it was running — any it hadn't handled were dropped along with it, so send again whatever you still need.",
   "srv.stop.dropped.other": "You sent {count} messages while it was running — any it hadn't handled were dropped along with it, so send again whatever you still need.",
@@ -1110,7 +1111,7 @@
   "sproj.pickTitle": "Link a project to this conversation",
   "sproj.folderMissing": "Folder not found: {path}",
   "sproj.noCommands": "No commands in this project yet",
-  "sproj.showMd": "View PROJECT.md",
+  "sproj.openDetail": "Project details",
   "sproj.unlink": "Unlink",
   "sproj.unlinkConfirm": "Unlink the {name} project from this conversation? From your next message, its context and menu are removed.",
   "srv.project.nameTaken": "Another project named {name} is already linked to this conversation. Rename one of them (the title in its PROJECT.md) or unlink the other first.",
@@ -1128,5 +1129,6 @@
   "srv.project.noneRegistered": "No projects registered yet. Tell {name} \"register ~/work/myapp as a project\" (a folder you have) or \"let's start a project like this\" (creates the folder too).",
   "srv.health.portExcluded": "{key} {port} could not be opened, so it is off — Windows has reserved that port in an excluded range (Hyper-V/WSL/Docker). Set {key} in the home .env to a free port between 15001 and 32767 (defaults 17010/17011) and restart.",
   "srv.health.portInUse": "{key} {port} is in use by another program, so it is off. Set {key} in the home .env to a free port and restart.",
+  "srv.health.pluginDown": "The {plugin} plugin has stopped — {error}",
   "plugins.auth.usage.refreshAfter": "You can check again {when}"
 }

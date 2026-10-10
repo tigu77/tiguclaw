@@ -27,11 +27,11 @@
  *  등록 — worker/spawn 도구와 *동일* 가드. lean(toolPolicy none = restricted 엔드포인트 턴)
  *  이면 미등록 → 엔드포인트가 또 엔드포인트를 만드는 재귀가 자연 차단된다.
  */
+import { coreMcpServer } from "./_core-server.js";
 import { promises as fs } from "node:fs";
 import { isSafeCapabilityName } from "./_names.js";
 import path from "node:path";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -309,7 +309,7 @@ export const createEndpointToolsMcpServer = (): McpSdkServerConfigWithInstance =
     },
   );
 
-  return createSdkMcpServer({
+  return coreMcpServer({
     name: "endpoints",
     version: "1.0.0",
     tools: onDemand([registerEndpoint, listEndpoints, deleteEndpoint]),

@@ -116,7 +116,7 @@ export const check: RegressionCheck = {
       ),
     );
 
-    const client = settingsForClient(PLUGIN, SPECS);
+    const client = settingsForClient(PLUGIN, SPECS, "home");
     const secretRow = client.find((c) => c.key === "apiKey");
     out.push(
       assert(

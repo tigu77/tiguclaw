@@ -3,10 +3,11 @@
       // 판단은 코어(`core/session-projects.ts`)가 한다 — 여기는 그 결과를 **그리기만** 한다:
       //  ·연결 줄(#chat-projects) — 컨텍스트 태그 줄 바로 아래, 📁 칩 + [+ 프로젝트]
       //  ·[+ 프로젝트] → «이 대화에 프로젝트 연결» 목록
-      //  ·📁 칩 메뉴 — 그 프로젝트의 커맨드 · PROJECT.md 보기 · 연결 해제(확인)
+      //  ·📁 칩 메뉴 — 그 프로젝트의 커맨드 · 프로젝트 상세(프로젝트 화면으로) · 연결 해제(확인)
       //  ·`/` 자동완성의 프로젝트 구획(slash.js 가 window.sessionProjectSlashItems 로 받는다)
-      // 커맨드 실행·PROJECT.md 보기는 텔레그램과 **같은 슬래시 명령**을 보낸다(`/project run …`·`/project show …`) —
-      // 실행 경로가 채널마다 갈리지 않게.
+      // 커맨드 실행은 텔레그램과 **같은 슬래시 명령**을 보낸다(`/project run …`) — 실행 경로가 채널마다 갈리지 않게.
+      // ★상세는 대화에 PROJECT.md 를 찍지 않고 프로젝트 화면을 연다(2026-10-09 정태님) — 화면이 있는 채널이라 대화를 어지럽힐
+      //  이유가 없고, 상세가 더 많이 보인다. 텔레그램은 화면이 없어 `/project show` 그대로다.
       (() => {
         // 활성 탭의 연결 상태 — {threadKey, linked:[{name,path,exists,commands:[{name,description}]}], available:[{name,path}]}
         let state = { threadKey: null, linked: [], available: [] };
@@ -108,6 +109,34 @@
         ]);
         registerBuiltinHandler("sessionProject.link", (_ctx, args) => post("link", args.path));
 
+        // 커맨드를 폴더대로 묶는다 — `aaa/bbb/ccc.md` 는 aaa › bbb › /ccc. 폴더가 없으면 지금처럼 평평하다.
+        const commandTree = (cmds, q) => {
+          const top = [];
+          const dirs = new Map();
+          const dirItem = (folder) => {
+            if (!folder) return null;
+            if (dirs.has(folder)) return dirs.get(folder);
+            const cut = folder.lastIndexOf("/");
+            const it = { id: "dir:" + folder, group: "commands", icon: "📂", label: folder.slice(cut + 1), children: [] };
+            dirs.set(folder, it);
+            const parent = dirItem(cut === -1 ? "" : folder.slice(0, cut));
+            (parent ? parent.children : top).push(it);
+            return it;
+          };
+          for (const c of cmds) {
+            const item = {
+              id: "cmd:" + c.name,
+              group: "commands",
+              icon: c.run ? "▶" : "💬", // ▶ 실행형(비서 없이 셸) · 💬 프롬프트형(비서에게)
+              label: "/" + c.name + (c.description ? " — " + c.description : ""),
+              action: { kind: "send_message", template: "/project run " + q + " " + c.name },
+            };
+            const dir = dirItem(c.folder || "");
+            (dir ? dir.children : top).push(item);
+          }
+          return top;
+        };
+
         registerMenuItems("sessionProject", (ctx) => {
           const p = ctx.project;
           if (!p) return [];
@@ -115,15 +144,9 @@
           const cmds = Array.isArray(p.commands) ? p.commands : [];
           return [
             ...(p.exists ? [] : [{ id: "missing", header: true, label: i18n("sproj.folderMissing", { path: p.path }) }]),
-            ...cmds.map((c) => ({
-              id: "cmd:" + c.name,
-              group: "commands",
-              icon: c.run ? "▶" : "💬", // ▶ 실행형(비서 없이 셸) · 💬 프롬프트형(비서에게)
-              label: "/" + c.name + (c.description ? " — " + c.description : ""),
-              action: { kind: "send_message", template: "/project run " + q + " " + c.name },
-            })),
+            ...commandTree(cmds, q),
             ...(p.exists && cmds.length === 0 ? [{ id: "nocmd", group: "commands", header: true, label: i18n("sproj.noCommands") }] : []),
-            { id: "show", group: "info", icon: "📄", label: i18n("sproj.showMd"), action: { kind: "send_message", template: "/project show " + q } },
+            { id: "detail", group: "info", icon: "📄", label: i18n("sproj.openDetail"), action: { kind: "builtin", handler: "sessionProject.openDetail", args: { path: p.path } } },
             {
               id: "unlink",
               danger: true,
@@ -135,6 +158,14 @@
           ];
         });
         registerBuiltinHandler("sessionProject.unlink", (_ctx, args) => post("unlink", args.path));
+        registerBuiltinHandler("sessionProject.openDetail", (_ctx, args) => {
+          applyView("projects"); // 모바일은 본문 탭까지 넘긴다
+          void openProjectDetail(args.path);
+          // ★모바일은 **상세를 연 쪽이** 상세 화면(m-detail)을 켠다 (2026-10-09 적대 검토). 목록 행을 누르면 mobile-nav 가 켜 주지만
+          //  여긴 행 클릭이 아니라서 목록 화면에 착지했다. 그리고 mobile-nav 는 뷰 전환(data-view)을 보고 «새 뷰는 목록부터» 로
+          //  **마이크로태스크에서** 끈다 — 그 관측자 콜백은 위 전환 때 이미 줄에 섰으므로, 그 **뒤**에 켠다.
+          if (window.matchMedia("(max-width: 900px)").matches) queueMicrotask(() => document.body.classList.add("m-detail"));
+        });
 
         // ── `/` 자동완성 구획 ─────────────────────────────────────────────
         // 넣을 글: 이름이 하나뿐이고 다른 명령과 안 겹치면 `/이름 ` — 아니면 `/project run "<프로젝트>" 이름 `
@@ -151,6 +182,7 @@
                 name: c.name,
                 description: (c.run ? "▶ " : "") + (c.description || ""),
                 group: "📁 " + p.name,
+                folder: c.folder,
                 insert: plain ? "/" + c.name + " " : "/project run " + quote(p.name) + " " + c.name + " ",
               });
             }

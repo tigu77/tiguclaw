@@ -156,10 +156,6 @@ const resolveStartHook = <A>(
  * 플러그인 하나를 배선한다. **이 함수는 던지지 않는다** — 자기 예외를 자기가 삼키고
  * `skipped` 에 이유를 남긴다(호출자 루프가 다음 플러그인으로 간다).
  */
-/** 채널 배선이 쓰는 이름 규칙과 **같은 것**을 쓴다(두 곳이 다르면 중복 제거가 헛돈다). */
-const channelNameOf = (lp: LoadedPlugin, inst: PluginInstance): string =>
-  typeof inst.name === "string" ? inst.name : lp.manifest.name;
-
 export const wirePlugin = async (
   lp: LoadedPlugin,
   deps: WirePluginDeps,
@@ -341,16 +337,15 @@ export const wirePlugin = async (
             }
           }
         });
-        channels.push({
-          name: channelName,
-          start: startFn,
-          stop: stopFn,
-          // presence 상태 forward(D1(b), §12.3) — 플러그인 채널은 wrapper 로 push 되므로
-          // 인스턴스가 선언한 status 를 duck-type 으로 읽어 wrapper 에 실어야 presence 루프가
-          // 본다(inst.outbound → registerChannelOutbound forward 와 동형). 미선언 = 미포함
-          // → presence `?? "up"`(회귀 0).
-          ...(inst.status !== undefined ? { status: inst.status } : {}),
-        });
+        const wrapper: (typeof channels)[number] = { name: channelName, start: startFn, stop: stopFn };
+        // presence 상태 forward(D1(b), §12.3) — 플러그인 채널은 wrapper 로 push 되므로 인스턴스가 선언한 status 를 실어야
+        // presence 루프가 본다. 미선언 = 미포함 → presence `?? "up"`(회귀 0).
+        // ★값이 아니라 **지금 값을 읽는다** (2026-10-09 적대 검토) — 종전엔 로드 시점 값을 복사해, 폴링이 죽어 채널이 status 를
+        //  내려도 화면은 계속 «up» 이었다.
+        if (inst.status !== undefined) {
+          Object.defineProperty(wrapper, "status", { get: () => inst.status, enumerable: true });
+        }
+        channels.push(wrapper);
         // ★어느 플러그인이 이 채널을 제공하나 — 화면이 `/plugin-icon?name=` 을 부르려면
         //  필요하다. 지금은 채널 이름과 같은 경우가 많지만 **유추하지 않는다**: 한 플러그인이
         //  다른 이름의 채널을 제공할 수 있고, 그때 «같겠지» 는 조용히 틀린다.
@@ -395,6 +390,8 @@ export const wirePlugin = async (
       },
     ];
 
+    /** 이 호출이 `serviceStops` 에 건 항목 — 인스턴스당 하나(아래 판정 참조). */
+    let serviceStopEntry: { name: string; stop: () => Promise<void> } | undefined;
     for (const { capability, hook, specific } of immediate) {
       if (!lp.capabilities.includes(capability)) continue;
       const startFn = resolveStartHook<EventBus>(inst, specific);
@@ -438,26 +435,31 @@ export const wirePlugin = async (
         //  의 2회는 `channels` 와 `serviceStops` **두 배열**에서 오기 때문이다(3라운드가
         //  실측으로 잡았다: 고친 뒤에도 여전히 2회).
         // ★그래서 **두 배열을 다 본다.** 이미 어느 쪽에 등록됐으면 다시 안 넣는다.
+        // ★★단, 묻는 것은 **«이 인스턴스»** 의 stop 이다 — «이 이름» 이 아니다 (2026-10-09,
+        //  전체 적대 검토 P3). 종전 판정은 배열에서 **이름**을 찾았는데, 같은 이름의 다른
+        //  인스턴스(동시 설치·재설치 중 아직 안 걷힌 옛것)가 있으면 «이미 있다» 로 읽고 새
+        //  인스턴스의 stop 을 **아무 데도 안 걸었다.** 실측: 같은 이름 두 번 동시 설치 →
+        //  observer 2개 시작·stop 1개 → 제거 뒤에도 running=2(영구 누수). 되돌림도 이름으로
+        //  찾아서 **남의 stop** 을 뺄 수 있었다 — 그래서 둘 다 이 호출이 만든 것만 본다.
         if (
           typeof inst.stop === "function" &&
-          !serviceStops.some((x) => x.name === lp.manifest.name) &&
-          !channels.some((c) => c.name === channelNameOf(lp, inst))
+          serviceStopEntry === undefined &&
+          !result.wired.includes("channel")
         ) {
+          const entry = { name: lp.manifest.name, stop: inst.stop.bind(inst) };
+          serviceStopEntry = entry;
           undo.push(async () => {
-            const i = serviceStops.findIndex((x) => x.name === lp.manifest.name);
+            const i = serviceStops.indexOf(entry);
             if (i >= 0) {
-              const [removed] = serviceStops.splice(i, 1);
+              serviceStops.splice(i, 1);
               try {
-                await removed?.stop();
+                await entry.stop();
               } catch {
                 /* 이미 죽었을 수 있다 */
               }
             }
           });
-          serviceStops.push({
-            name: lp.manifest.name,
-            stop: inst.stop.bind(inst),
-          });
+          serviceStops.push(entry);
         }
         result.wired.push(capability);
         console.log(

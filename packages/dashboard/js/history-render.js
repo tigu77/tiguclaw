@@ -559,9 +559,17 @@
 
       // 더 로드 — 상단 근처 스크롤이 트리거. 과거 배치(ASC)를 vtPrependOlder 로 앞에 붙인다.
       // vtPrependOlder 가 늘어난 위 높이만큼 scrollTop 을 밀어 보던 위치 유지(점프 0). try/catch 로 라이브 무손상.
+      // ★**보낸 탭이 아직 그 탭인가** (2026-10-09 적대 검토). 이력 응답은 await 뒤에 오는데,
+      //  그 사이 탭을 옮기면 `resetStreamState` 가 리스트·커서를 새 탭 것으로 바꿔 놓는다.
+      //  종전엔 탭 전환 로드(tabs.js)만 이걸 물어서, 늦게 온 «더보기»·초기 로드·점프 배치가
+      //  **다른 세션 탭에 그려지고 그 탭의 커서까지 덮었다**(다음 더보기가 엉뚱한 지점부터 받는다).
+      //  탭 전환이 언제나 `switchToken` 을 올리므로 토큰 하나로 판정한다(판정은 tabs.js 와 같은 것).
+      const sameLoadToken = (token) => token === switchToken;
+
       const loadOlderHistory = async () => {
         if (loadingOlder || reachedOldest || oldestLoadedTs === null) return;
         loadingOlder = true;
+        const myToken = switchToken;
         try {
           const r = await fetch(
             historyPageQuery(HISTORY_PAGE, oldestLoadedTs, oldestLoadedId) +
@@ -569,6 +577,7 @@
           );
           if (!r.ok) return; // ★더보기 실패는 전체 상태를 안 바꾼다(이미 내용이 있다).
           const data = await r.json().catch(() => ({}));
+          if (!sameLoadToken(myToken)) return; // 그 사이 탭이 바뀌었다 — 그리지도 커서를 옮기지도 않는다.
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
           if (entries.length === 0) {
@@ -587,7 +596,9 @@
         } catch (err) {
           console.warn("older history load failed:", err && err.message ? err.message : err);
         } finally {
-          loadingOlder = false;
+          // ★버려진 배치는 새 탭의 가드를 풀지 않는다 — 전환이 이미 false 로 되돌렸고, 그 뒤
+          //  새 탭이 시작한 더보기가 돌고 있을 수 있다(풀면 같은 페이지를 두 번 받는다).
+          if (sameLoadToken(myToken)) loadingOlder = false;
         }
       };
 
@@ -610,8 +621,11 @@
       const JUMP_MAX_PAGES = 10;
       window.jumpToMessageTs = async (ts) => {
         if (typeof ts !== "number" || !Number.isFinite(ts)) return "bad-ts";
+        const myToken = switchToken;
         if (window.vtScrollToTs && (await window.vtScrollToTs(ts))) return "ok";
         for (let i = 0; i < JUMP_MAX_PAGES; i++) {
+          // 점프 도중 사용자가 다른 탭으로 갔다 — 그 탭에 이 세션 페이지를 붙이지 않는다.
+          if (!sameLoadToken(myToken)) return "switched";
           if (reachedOldest || oldestLoadedTs === null) break;
           if (oldestLoadedTs <= ts) break; // 이미 그 시점보다 과거까지 로드됨.
           let entries = [];
@@ -620,8 +634,10 @@
               historyPageQuery(JUMP_PAGE, oldestLoadedTs, oldestLoadedId) +
                 "&threadKey=" + encodeURIComponent(activeThreadKey),
             );
+            if (!sameLoadToken(myToken)) return "switched";
             if (!r.ok) break;
             const data = await r.json().catch(() => ({}));
+            if (!sameLoadToken(myToken)) return "switched";
             entries = Array.isArray(data.entries) ? data.entries : [];
             const activities = Array.isArray(data.activities) ? data.activities : [];
             if (entries.length === 0) { reachedOldest = true; break; }
@@ -649,17 +665,23 @@
       const loadChatHistory = async () => {
         beginHistoryLoad(); // 이 창의 SSE 메시지는 보류 — 빈 리스트에 붙으면 순서가 깨진다.
         setHistoryLoadState("loading"); // 받아보기 전엔 "없다"고 말하지 않는다.
+        // 부팅 로드가 도는 중에 탭을 누르면 그 탭의 로드가 화면을 가져간다 — 이 배치는 버린다.
+        const myToken = switchToken;
         try {
           // 멀티세션(ADR 2026-07-15) — 초기 로드도 active 세션(기본=dashboard:default)만. 미지정이면
           // 전 스레드 병합이라 텔레그램/매니저가 섞임(D4 위배). threadKey 로 스코프.
           const r = await fetch("/api/chat-history?limit=" + HISTORY_PAGE + "&threadKey=" + encodeURIComponent(activeThreadKey));
-          if (!r.ok) { setHistoryLoadState("error"); return; } // 실패와 빈 대화는 다른 상태다.
+          if (!r.ok) { if (sameLoadToken(myToken)) setHistoryLoadState("error"); return; } // 실패와 빈 대화는 다른 상태다.
           const data = await r.json().catch(() => ({}));
           // 비서 표시 이름(AGENT.md 이름, 폴백 tiguclaw) — 라벨/문구에 반영. 빈 이력이어도 세팅.
+          // ★탭 검사보다 **앞**에서 — 이름은 탭과 무관한데 넣는 곳이 여기 하나라, 로드 중 탭을 옮기면 영영 안 들어갔다(재검토).
+          //  ★그래서 탭 검사는 **본문을 읽은 뒤** 한 번만 한다 — 헤더 직후에도 검사하면 헤더 대기 중 전환에서 이름을 읽기 전에
+          //   돌아갔다(2026-10-10 아스트라 검토). 떠난 탭의 이력·커서·로딩 상태는 아래 검사가 그대로 지킨다.
           if (typeof data.assistantName === "string" && data.assistantName.trim() !== "") {
             assistantName = data.assistantName.trim();
             applyAssistantName();
           }
+          if (!sameLoadToken(myToken)) return;
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
           if (entries.length === 0 && activities.length === 0) return; // 빈 이력(아래 finally 가 ready 로 닫는다).
@@ -676,12 +698,13 @@
         } catch (err) {
           // 무해 — 라이브 경로 무손상. 콘솔만.
           console.warn("chat-history load failed:", err && err.message ? err.message : err);
-          setHistoryLoadState("error");
+          if (sameLoadToken(myToken)) setHistoryLoadState("error");
         } finally {
           endHistoryLoad(); // 실패·조기 return 경로 포함 — 보류분을 반드시 흘린다(유실 0).
           // ★"loading" 으로 굳는 경로가 없게 — 성공·빈이력·조기 return 전부 여기서 닫힌다.
           //  이미 error 로 확정된 건 덮지 않는다(실패를 성공처럼 말하지 않는다).
-          if (historyLoadState === "loading") setHistoryLoadState("ready");
+          //  ★버려진 배치는 닫지 않는다 — 아직 로딩 중인 새 탭을 «없다» 로 단언하게 된다(tabs.js 와 같은 규칙).
+          if (sameLoadToken(myToken) && historyLoadState === "loading") setHistoryLoadState("ready");
         }
       };
 

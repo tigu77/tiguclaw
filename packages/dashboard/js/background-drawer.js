@@ -859,7 +859,13 @@
           const stopBtn = document.createElement("button");
           stopBtn.type = "button"; stopBtn.className = "bg-job-stop"; stopBtn.title = i18n("bg.stopTitle");
           stopBtn.textContent = i18n("bg.stop"); stopBtn.style.display = "none";
-          stopBtn.addEventListener("click", (ev) => { ev.stopPropagation(); void requestCancelJob(jobId); });
+          // ★⋯ 메뉴의 «중지»(danger)와 **같은 확인**을 받는다 (2026-10-09 적대 검토) — 같은 일을 하는 두 문 중 이쪽만 한 번에 실행됐다.
+          //  확인을 requestCancelJob 안에 두면 메뉴 경로가 두 번 묻는다(메뉴 프리미티브가 danger 를 이미 묻는다).
+          stopBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            if (!window.confirm(i18n("ctx.confirm", { what: i18n("bg.stopShort") }))) return;
+            void requestCancelJob(jobId);
+          });
           const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
           // 실제 응답 모델 (2026-07-27) — tierBadge 는 *요청한* 티어(high/mid/low)이고 이건 그
           //  요청이 실제로 어느 모델로 실행됐나다. 둘이 갈리는 경우(폴백·쿨다운)를 보이게 하는 게
@@ -1031,7 +1037,11 @@
           const nm = String(opts.agentName);
           const title = typeof opts.label === "string" ? opts.label.trim() : "";
           const ai = kindIcon("agent") + " ";
-          const want = title !== "" && title !== nm ? ai + nm + " · " + title : ai + nm;
+          // ★이름 없이 띄운 즉석 서브에이전트(`subagent(<등급>)` — 서버 `agent-registry.ts` 의 `shownName`)는 제목만 보인다
+          //  (2026-10-10 정태님: 등급은 옆 배지에 이미 있어 이름 칸이 같은 말을 한 번 더 했다). 제목이 없으면 그 이름이라도 보인다.
+          //  ★서버 데이터(훅의 agent_name·통지 이름)는 그대로 둔다 — 화면 표시만의 판단이다.
+          const adhoc = /^subagent\(.*\)$/.test(nm);
+          const want = title !== "" && title !== nm ? (adhoc ? ai + title : ai + nm + " · " + title) : ai + nm;
           if (entry.label !== want) setJobLabel(entry, want);
         }
         // 모델 티어(멱등) — 매니저·서브 공통, modelTier 있을 때만. "default"/빈값은 표시 생략.

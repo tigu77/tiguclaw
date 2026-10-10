@@ -210,15 +210,30 @@ const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
 
 // ─── 저수준 read / atomic write ──────────────────────────────────────────────
 
-const readDirectivesRaw = async (): Promise<Directive[]> => {
+/**
+ * @param forWrite 쓰기 전에 읽는 것인가 — 그렇다면 **못 읽은 것을 «없다» 로 치지 않는다**(2026-10-09 적대 검토 P4).
+ *  ★종전엔 어떤 읽기 오류든 `[]` 였고, 그 뒤 쓰기가 새 지침 하나만 담아 파일을 덮었다 — 권한·핸들 고갈 같은 일시 오류
+ *   한 번에 사용자가 승격한 지침까지 통째로 사라졌다(chmod 000 으로 재현). 손으로 고치다 머리 JSON 이 깨진 블록도
+ *   같은 길로 버려졌다. 그래서 쓰기 쪽은 «부재» 일 때만 빈 목록이고, 그 밖의 오류·깨진 블록이면 던져서 쓰기를 멈춘다.
+ *  읽기 쪽(매 턴 지침 싣기)은 그대로 관대하다 — 깨진 블록 하나 때문에 나머지 지침까지 안 보이면 안 된다.
+ */
+const readDirectivesRaw = async (forWrite = false): Promise<Directive[]> => {
   const file = getPaths().selfGrowthMd;
   let body: string;
   try {
     body = await fs.readFile(file, "utf8");
-  } catch {
-    return []; // 부재 = 빈 목록.
+  } catch (e) {
+    if (!forWrite || (e as NodeJS.ErrnoException).code === "ENOENT") return []; // 부재 = 빈 목록.
+    throw e;
   }
-  return parseFile(body);
+  const parsed = parseFile(body);
+  if (forWrite) {
+    const blocks = body.split(/\r?\n/).filter((l) => l.includes(BLOCK_BEGIN)).length;
+    if (blocks > parsed.length) {
+      throw new Error(`${file} 에 읽지 못한 지침 블록이 ${blocks - parsed.length}개 있어 쓰지 않습니다(덮으면 그 블록이 사라진다) — 블록의 머리 줄을 고쳐 주세요`);
+    }
+  }
+  return parsed;
 };
 
 const atomicWrite = async (directives: Directive[]): Promise<void> => {
@@ -314,7 +329,7 @@ export const upsertDirective = (
   serialize(async () => {
     try {
       const now = Date.now();
-      const directives = await readDirectivesRaw();
+      const directives = await readDirectivesRaw(true);
       const idx = directives.findIndex((d) => d.key === input.key);
       let result: Directive;
       if (idx >= 0) {
@@ -365,7 +380,7 @@ export const getDirective = (key: string): Promise<Directive | null> =>
 export const deleteDirective = (key: string): Promise<boolean> =>
   serialize(async () => {
     try {
-      const directives = await readDirectivesRaw();
+      const directives = await readDirectivesRaw(true);
       const next = directives.filter((d) => d.key !== key);
       if (next.length === directives.length) return false;
       await atomicWrite(next);
@@ -387,7 +402,7 @@ export const cleanupDirectives = (opts?: {
 }): Promise<number> =>
   serialize(async () => {
     try {
-      const directives = await readDirectivesRaw();
+      const directives = await readDirectivesRaw(true);
       const { kept, removed } = applyCapAndTtl(directives, opts);
       if (removed.length === 0) return 0;
       await atomicWrite(kept);

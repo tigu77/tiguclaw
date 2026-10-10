@@ -28,11 +28,11 @@
  * 어댑터 등록 가드: 각 어댑터가 `!toolsNone && depth === 0 && workerDepth === 0` turn 에만
  *  등록 — endpoint/worker 도구와 *동일* 가드. lean(toolsNone) 턴엔 미노출.
  */
+import { coreMcpServer } from "./_core-server.js";
 import { promises as fs } from "node:fs";
 import { isSafeCapabilityName } from "./_names.js";
 import path from "node:path";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -42,6 +42,7 @@ import { findRegisteredProject } from "../../session-projects.js";
 import { getEventBus } from "../../eventbus.js";
 import {
   discoverCommands,
+  findCommandFile,
   formatCommandIndex,
   BUILTIN_COMMANDS as BUILTIN_COMMANDS_ARRAY,
   UNLISTED_BUILTIN_COMMANDS,
@@ -186,22 +187,14 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         const where = commandsDirFor(args.project);
         if ("error" in where) return errText(where.error);
 
-        // 3) 기존 name 충돌 거부(overwrite 명시 시에만 덮어쓰기).
+        // 3) 기존 name 충돌 거부(overwrite 명시 시에만 덮어쓰기). ★하위 폴더(묶음)에 있는 같은 이름도 본다 — 덮어쓰면 그 자리에 쓴다.
         const commandsDir = where.dir;
-        const filePath = path.join(commandsDir, `${name}.md`);
-        if (args.overwrite !== true) {
-          let exists = false;
-          try {
-            await fs.access(filePath);
-            exists = true;
-          } catch {
-            exists = false;
-          }
-          if (exists) {
-            return errText(
-              `슬래시 명령 '${name}' 가 이미 존재합니다(${filePath}). 덮어쓰려면 overwrite: true 를 지정하거나, 먼저 delete_command 로 삭제하세요.`,
-            );
-          }
+        const existing = await findCommandFile(commandsDir, name);
+        const filePath = existing ?? path.join(commandsDir, `${name}.md`);
+        if (args.overwrite !== true && existing !== undefined) {
+          return errText(
+            `슬래시 명령 '${name}' 가 이미 존재합니다(${filePath}). 덮어쓰려면 overwrite: true 를 지정하거나, 먼저 delete_command 로 삭제하세요.`,
+          );
         }
 
         // 4) frontmatter(description optional) + 본문=prompt 조립. parseFrontmatter 가
@@ -285,7 +278,7 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
 
         const where = commandsDirFor(args.project);
         if ("error" in where) return errText(where.error);
-        const filePath = path.join(where.dir, `${name}.md`);
+        const filePath = (await findCommandFile(where.dir, name)) ?? path.join(where.dir, `${name}.md`); // 하위 폴더(묶음)에 있어도 찾는다
         try {
           await fs.unlink(filePath);
         } catch {
@@ -309,7 +302,7 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
     },
   );
 
-  return createSdkMcpServer({
+  return coreMcpServer({
     name: "commands",
     version: "1.0.0",
     tools: onDemand([registerCommand, listCommands, deleteCommand]),

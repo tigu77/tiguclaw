@@ -13,6 +13,7 @@
  * 별 모듈로 분리한 이유: router → index 순환 import 회피. 1.5층 (코어와 plugin 사이).
  */
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { getEventBus } from "./eventbus.js";
 
 /**
  * **이 턴이 어느 대화인가** — 플러그인 도구가 화면에 뭔가를 붙이려면 반드시 필요하다
@@ -68,11 +69,47 @@ export const registerMcpServer = (
  */
 export const unregisterMcpServer = (name: string): boolean => REGISTRY.delete(name);
 
-/** ★매 호출 새 인스턴스 집합 — 호출자(턴)가 소유한다. 턴 사이에 공유하지 마라. */
+/** 경고를 이미 낸 (서버, 대화) — 같은 대화에서 매 턴 같은 줄을 찍지 않는다. */
+const WARNED = new Set<string>();
+
+/**
+ * ★매 호출 새 인스턴스 집합 — 호출자(턴)가 소유한다. 턴 사이에 공유하지 마라.
+ *
+ * ★**팩토리 하나가 던지면 그 서버만 빠진다** (2026-10-09, 전체 적대 검토 P4).
+ *  종전엔 격리 없이 `map` 해서, 플러그인 하나의 예외가 이 함수를 지나는 **모든 턴**을
+ *  죽였다 — 메인 턴도, 도구가 필요 없는 내부 분류 호출도(어댑터 호출 0). 흔한 모양이다:
+ *  부팅 땐 서버를 내고, 턴마다 «설정 값이 없으면 던지는» 플러그인 하나면 데몬 전체가
+ *  답을 못 한다. 남의 코드가 우리 핫경로의 생사를 정하면 안 된다 — 로더·배선이 이미
+ *  플러그인별로 격리하는데 **턴마다 부르는 이 자리만** 격리가 없었다.
+ * ★경고는 **(서버, 대화) 당 한 번**이다 — 매 턴 같은 줄은 배경 소음이 돼 진짜를 묻는다
+ *  ([[feedback_logs_must_stand_alone]]). 로그(진단)와 `plugin.error`(화면) 둘 다 낸다.
+ */
 export const getRegisteredMcpServers = (
   ctx?: PluginTurnContext,
 ): Record<string, McpSdkServerConfigWithInstance> => {
-  return Object.fromEntries(
-    [...REGISTRY].map(([name, factory]) => [name, factory(ctx)]),
-  );
+  const out: Record<string, McpSdkServerConfigWithInstance> = {};
+  for (const [name, factory] of REGISTRY) {
+    try {
+      out[name] = factory(ctx);
+    } catch (e) {
+      const key = `${name}\u0000${ctx?.threadKey ?? ""}`;
+      if (WARNED.has(key)) continue;
+      WARNED.add(key);
+      const error = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[mcp-registry] 플러그인 MCP '${name}' 이(가) 이번 턴에 서버를 못 냈습니다 — ` +
+          `이 서버만 빼고 진행합니다 (thread=${ctx?.threadKey ?? "-"}): ${error}`,
+      );
+      try {
+        getEventBus().publish({
+          type: "plugin.error",
+          ts: Date.now(),
+          payload: { pluginName: name, phase: "runtime", error },
+        });
+      } catch {
+        /* 발행 실패 — 위에서 이미 로그에 남겼다 */
+      }
+    }
+  }
+  return out;
 };

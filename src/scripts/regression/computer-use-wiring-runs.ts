@@ -378,10 +378,11 @@ export const check: RegressionCheck = {
       await a.doTool.handler(
         {
           frameId: fid,
+          // ★`type` 은 수식키 앞에 둔다 — 누른 채 입력은 계획 단계에서 거절된다(2026-10-09, 단축키로 바뀌므로).
           steps: [
+            { t: "type", text: "Ab" },
             { t: "keydown", key: "CTRL" },
             { t: "keydown", key: "Shift" },
-            { t: "type", text: "Ab" },
             { t: "keyup", key: "Shift" },
             { t: "keyup", key: "CTRL" },
           ],

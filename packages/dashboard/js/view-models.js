@@ -42,6 +42,11 @@
         const profiles = (data && data.profiles) || [];
         if (navCount) navCount.textContent = String(profiles.length);
         if (!root) return;
+        // ★그릴 것이 같으면 다시 만들지 않는다 (2026-10-09 적대 검토) — 30초 폴링(activity.js)이 카드를 통째로 다시 만들어
+        //  **열려 있던 색 피커가 닫혔다**(고르는 중이던 미리보기도 사라진다). 인벤토리 목록과 같은 규칙(`dataset.sig`).
+        const sig = JSON.stringify(profiles);
+        if (root.dataset.sig === sig && root.childElementCount > 0) return;
+        root.dataset.sig = sig;
         root.innerHTML = "";
         if (profiles.length === 0) {
           const e = document.createElement("div");
@@ -93,6 +98,9 @@
             } catch (e) {
               showToast(i18n("models.color.failed", { err: e.message }), "bad");
               picker.disabled = false;
+              // 저장 못 했으면 미리보기를 원래 색으로 — 카드는 같은 목록이면 다시 안 그려져(sig) 틀린 색이 남는다(재검토).
+              paintProfileBadge(swatch, profileColor(prof));
+              picker.value = profileColor(prof) || "#9aa7b7";
             }
           };
           // `input` 은 드래그 중 초당 수십 번 온다 — 저장은 `change`(고르기 끝) 한 번만.
@@ -211,6 +219,8 @@
           renderModelProfiles(await r.json());
         } catch (e) {
           const root = document.getElementById("models");
+          // 오류 문구로 바꿨으니 «같은 그림» 표식도 지운다 — 안 지우면 다음 성공 응답이 같다고 보고 오류 문구를 남긴다.
+          if (root) delete root.dataset.sig;
           if (root) root.innerHTML =
             '<div class="empty" style="font-size:11px;padding:10px">' +
             escHtml(i18n("models.profiles.loadFailed", { err: e.message })) + "</div>";
@@ -293,7 +303,8 @@
             const data = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(data.error || "HTTP " + r.status);
             showToast(i18n("models.suggest.toggled", { state: next ? i18n("common.on") : i18n("common.off") }), "good");
-            renderSettingsRow(root, next); // 서버가 확인해 준 값으로 다시 그린다.
+            // 서버가 확인해 준 값으로 다시 그린다 — 단 **아직 설정 화면일 때만**(기다리는 사이 다른 화면으로 갔으면 그 화면을 덮는다).
+            if (currentView === "settings") renderSettingsRow(root, next);
           } catch (e) {
             showToast(i18n("models.settings.saveFailed", { err: e.message }), "bad");
             btn.disabled = false;
@@ -728,7 +739,10 @@
        * @param {{open?:string}} [opts] `open` 이면 그 `data-settings-row` 를 펴고 스크롤한다
        *   (헤더 업데이트 칩 옆 `?` 가 「업데이트 내역」으로 데려올 때 쓴다).
        */
+      /** 설정 화면 요청 번호 — 늦게 온 이전 요청의 응답이 새 그림을 덮지 않게(renderPluginsView 와 같은 규칙). */
+      let settingsSeq = 0;
       const showSettings = async (opts) => {
+        const seq = ++settingsSeq;
         setActiveNav("settings");
         setChatPanel("chat");
         setWorkbenchLayout();
@@ -748,6 +762,9 @@
             enabled = !(d && d.enabled === false);
           }
         } catch { /* 조회 실패 = 서버 기본(켜짐)으로 그린다(값은 서버가 정본) */ }
+        // ★기다리는 사이 다른 화면으로 갔으면 그리지 않는다 (2026-10-09 적대 검토) — 실측: 설정을 누르고 0.3초 뒤 모델로 가면
+        //  nav 는 모델인데 화면은 설정이었다(`#detail-panel` 은 모든 뷰가 같이 쓴다). 다시 누른 설정이면 새 요청이 그린다.
+        if (seq !== settingsSeq || currentView !== "settings") return;
         renderSettingsRow(root, enabled);
         // ★행을 **클릭해서** 연다 — 여는 절차(로딩·1회 fetch·문구 전환)가 그 핸들러에만
         //  있으므로, 여기서 `hidden = false` 를 흉내 내면 그게 두 번째 사본이 된다.

@@ -720,13 +720,20 @@ const collectMcp = async (repoRoot: string): Promise<PluginEntry[]> => {
       if (servers && typeof servers === "object") {
         for (const [name, cfg] of Object.entries(servers)) {
           try {
+            // ★`env`·`headers` 는 **싣지 않는다** (2026-10-09, 전체 적대 검토 P2). 그 둘이
+            //  바로 MCP 서버에 열쇠를 건네는 자리다(`API_KEY`·`Authorization: Bearer …`) —
+            //  종전엔 설정을 통째로 펼쳐 `/inventory` 응답에 그대로 실었고, 그 응답은
+            //  브라우저로 나간다. 목록이 알아야 할 것은 «무엇을 어떻게 띄우나» 까지다.
+            // ★지우는 쪽으로 고른다(허용 목록이 아니다) — 서버 설정의 나머지 키는 형식이
+            //  자유라, 허용 목록을 두면 그게 손으로 관리하는 목록이 되고 조용히 낡는다.
+            const { env: _env, headers: _headers, ...shown } = cfg ?? {};
             out.push({
               category: "mcp",
               layer: "discovered", // 외부 server — 우리가 spawn/연결만, 소유 X
               name,
               source: file,
               enabled: true,
-              metadata: { ...cfg, inProcess: false, external: true },
+              metadata: { ...shown, inProcess: false, external: true },
             });
           } catch {
             // 한 server 실패 무시.

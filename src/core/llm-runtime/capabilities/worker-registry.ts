@@ -22,6 +22,8 @@
  * LLM-agnostic (W-I3): 발사 도구는 claude/codex/openai *동일 의미* 등록(어댑터 분기 0).
  *   spawn_agent 의 createSpawnAgentMcpServer 등록 지점과 동형.
  */
+import { untrustedDelegationNote } from "../../project-trust.js";
+import { coreMcpServer } from "./_core-server.js";
 import { tierDescription, unresolvableTierText } from "./tier-description.js";
 import path from "node:path";
 import { z } from "zod";
@@ -32,7 +34,6 @@ import {
   type SteeringInput,
 } from "../../steering.js";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -625,7 +626,8 @@ export const createWorkerMcpServer = (
         );
         return okText(
           `🛠️ '${args.label}' 백그라운드 작업을 시작했습니다 (jobId: ${jobId}). ` +
-            `끝나면 결과를 알려드릴게요.`,
+            `끝나면 결과를 알려드릴게요.` +
+            (workerCwd === undefined ? "" : untrustedDelegationNote(workerCwd)),
         );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
@@ -948,7 +950,7 @@ export const createWorkerMcpServer = (
     },
   );
 
-  return createSdkMcpServer({
+  return coreMcpServer({
     name: "workers",
     version: "1.0.0",
     tools: onDemand([runInBackground, listWorkers, listAllWorkers, steerWorker, cancelWorker], ["list_all_workers"]),

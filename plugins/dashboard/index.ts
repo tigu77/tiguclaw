@@ -48,11 +48,23 @@ const HEALTH_TIMEOUT_MS = 800;
  */
 const DASHBOARD_MARKER = "티구클로 대시보드";
 
+/**
+ * 자식이 죽었을 때 다시 띄우는 간격 — 이만큼 시도하고도 계속 죽으면 포기하고 `plugin.error` 로 알린다.
+ * ★종전엔 «child exited» 로그뿐이라 대시보드가 한 번 죽으면 데몬을 재시작할 때까지 안 열렸다 (2026-10-09 적대 검토 P3).
+ *  한 번 죽은 것(OOM 등)은 1초 뒤 살아나고, 뜨자마자 죽는 크래시 루프는 7초 안에 포기해 소음을 만들지 않는다.
+ */
+const RESTART_DELAYS_MS = [1_000, 2_000, 4_000];
+/** 이만큼 살아 있었으면 «안정» — 재시작 횟수를 처음부터 센다(며칠에 한 번 죽는 것까지 포기하지 않게). */
+const STABLE_MS = 60_000;
+
 class DashboardService {
   readonly name = "dashboard";
 
   private child: ChildProcess | null = null;
   private stopping = false;
+  /** 연속 재시작 횟수(안정 구간을 넘기면 0) · 대기 중인 재시작 타이머(stop 이 지운다). */
+  private restarts = 0;
+  private restartTimer: NodeJS.Timeout | null = null;
 
   /** service capability — loader 가 startService(bus) 호출. */
   async startService(bus: EventBus): Promise<void> {
@@ -131,6 +143,12 @@ class DashboardService {
     //  죽든 동작한다. 데몬이 띄운 경우에만 설정하므로 수동 실행(npm run dashboard)은 무영향.
     childEnv.TIGUCLAW_PARENT_PID = String(process.pid);
 
+    this.launch(bus, spawnArgs, childEnv, root);
+  }
+
+  /** 자식 하나를 띄우고 종료를 지켜본다 — 비정상 종료면 다시 띄우거나(백오프) 포기를 알린다. */
+  private launch(bus: EventBus, spawnArgs: string[], childEnv: NodeJS.ProcessEnv, root: string): void {
+    const startedAt = Date.now();
     const child = spawn(process.execPath, spawnArgs, {
       cwd: root,
       env: childEnv,
@@ -145,26 +163,41 @@ class DashboardService {
     });
     pipePrefixed(child, "dashboard");
 
-    child.on("exit", (code, signal) => {
+    // ★`close`(stdio 까지 닫힌 뒤)를 쓴다 — `exit` 는 stderr 마지막 줄보다 먼저 올 수 있어, 포트 안내 줄을 못 본 채
+    //  «그냥 죽었다» 로 읽고 재시작을 돌다가 포트 표식 없는 알림으로 끝날 수 있다(재시작이 생기며 커진 경합).
+    child.on("close", (code, signal) => {
       if (this.child === child) this.child = null;
       // stop() 가 의도적으로 죽인 경우는 조용히. 그 외 비정상 종료만 로그.
-      if (!this.stopping) {
-        console.warn(
-          `dashboard: child exited (code=${code ?? "?"} signal=${signal ?? "?"})`,
-        );
-        try {
-          bus.publish({
-            type: "plugin.error",
-            ts: Date.now(),
-            payload: {
-              pluginName: "dashboard",
-              phase: "runtime",
-              error: portLine ?? `child exited code=${code ?? "?"} signal=${signal ?? "?"}`,
-            },
-          });
-        } catch {
-          /* bus throw — ignore */
-        }
+      if (this.stopping) return;
+      console.warn(
+        `dashboard: child exited (code=${code ?? "?"} signal=${signal ?? "?"})`,
+      );
+      if (Date.now() - startedAt >= STABLE_MS) this.restarts = 0;
+      // ★포트를 못 연 것은 다시 띄워도 같다 — 기존 port-unavailable 알림 경로에 그대로 맡긴다(재시작 0).
+      if (portLine === undefined && this.restarts < RESTART_DELAYS_MS.length) {
+        const delay = RESTART_DELAYS_MS[this.restarts]!;
+        this.restarts += 1;
+        console.warn(`dashboard: restarting in ${delay}ms (${this.restarts}/${RESTART_DELAYS_MS.length})`);
+        this.restartTimer = setTimeout(() => {
+          this.restartTimer = null;
+          if (!this.stopping) this.launch(bus, spawnArgs, childEnv, root);
+        }, delay);
+        return;
+      }
+      const error =
+        portLine ??
+        `dashboard child keeps exiting — gave up after ${RESTART_DELAYS_MS.length} restarts ` +
+          `(last code=${code ?? "?"} signal=${signal ?? "?"}); the dashboard stays down until the daemon restarts`;
+      console.error(`dashboard: ${error}`);
+      try {
+        bus.publish({
+          type: "plugin.error",
+          ts: Date.now(),
+          // 재기동 포기만 «멈춤» 으로 표시한다 — 포트 실패는 포트 표식 경로가 이미 알린다(둘 다 붙이면 같은 일이 두 줄로 나간다).
+          payload: { pluginName: "dashboard", phase: "runtime", error, ...(portLine === undefined ? { userFacing: true } : {}) },
+        });
+      } catch {
+        /* bus throw — ignore */
       }
     });
     child.on("error", (err) => {
@@ -179,6 +212,10 @@ class DashboardService {
   /** 데몬 종료 시 src/index.ts shutdown 이 호출 — child 정리. */
   async stop(): Promise<void> {
     this.stopping = true;
+    if (this.restartTimer !== null) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
     const child = this.child;
     if (child === null || child.exitCode !== null || child.signalCode !== null) {
       return;

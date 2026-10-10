@@ -215,10 +215,40 @@
         if (!same && repaint && currentView === "overview") showOverview();
       };
 
+      // ── 홈 갱신 합치기 (2026-10-09 적대 검토) ─────────────────────────────────
+      //
+      // ★홈은 **SSE 이벤트마다** «다시 그려라» 를 받는다(sse.js·token-delta.js·channel-hints.js
+      //  등이 `if (currentView === "overview") setTimeout(showOverview, 0)`). 종전엔 그때마다
+      //  `root.innerHTML` 을 통째로 갈아 **위젯을 떼었다 다시 붙이고 위젯 값(plugin-data)을 다시
+      //  부르고 타이머를 새로 걸었다** — 스트리밍 중엔 초당 수십 번이다.
+      // ★고침은 부르는 쪽(열 곳)을 고치는 게 아니라 **받는 쪽 한 곳**이다: 이미 홈이면 그 호출은
+      //  이동이 아니라 갱신이므로 짧은 창으로 합치고(창 안의 요청은 한 번이 된다 — 마지막 상태로),
+      //  갱신은 **숫자 부분만** 바꾼다. 위젯 영역은 **배치가 바뀔 때만** 다시 마운트한다.
+      const OVERVIEW_REFRESH_MS = 250;
+      let overviewRefreshTimer = null;
+      /** 지금 붙어 있는 위젯 영역을 그린 배치 — 같으면 다시 마운트하지 않는다. */
+      let homeWidgetsPaintedSig = null;
+      const homeLayoutSig = () => JSON.stringify([homeWidgets, homeDataRoutes]);
+
       const showOverview = () => {
+        if (currentView === "overview") {
+          if (overviewRefreshTimer === null) {
+            overviewRefreshTimer = setTimeout(() => {
+              overviewRefreshTimer = null;
+              if (currentView === "overview") renderOverview(false);
+            }, OVERVIEW_REFRESH_MS);
+          }
+          return;
+        }
         setActiveNav("overview");
         setChatPanel("chat");
         setWorkbenchLayout();
+        // 다른 화면에서 들어왔다 — 위젯은 그 화면이 `#detail-panel` 을 비울 때 이미 회수됐다.
+        renderOverview(true);
+      };
+
+      /** @param {boolean} enter 홈으로 **들어오는** 그림인가(위젯을 새로 붙인다). 거짓이면 갱신. */
+      const renderOverview = (enter) => {
         const root = document.getElementById("detail-panel");
         const active = providersCache.filter((p) => (p.status || "unknown") === "active").length;
         const degraded = providersCache.filter((p) => ["degraded", "error"].includes(p.status || "unknown")).length;
@@ -233,16 +263,11 @@
           : degraded > 0
             ? i18n("home.modules.degraded", { n: degraded })
             : i18n("home.modules.ok");
-        root.innerHTML = "";
-        const wrap = document.createElement("div");
-        wrap.className = "page-view overview";
-
         const hero = document.createElement("div");
         hero.className = "hero-card";
         hero.innerHTML = "<h1></h1><p></p>";
         hero.querySelector("h1").textContent = i18n("home.hero.title");
         hero.querySelector("p").textContent = i18n("home.hero.desc");
-        wrap.appendChild(hero);
 
         const quick = document.createElement("div");
         quick.className = "quick-grid";
@@ -257,17 +282,6 @@
           card.innerHTML = '<div class="quick-label">' + escHtml(label) + '</div><div class="quick-value">' + escHtml(value) + '</div><div class="quick-hint">' + escHtml(hint) + '</div>';
           quick.appendChild(card);
         }
-        wrap.appendChild(quick);
-
-        // ★위젯을 **여기** 둔다(요약 다음·상태 패널 위). 맨 아래에 두면 390×780 화면에서
-        //  뷰포트 밖으로 밀린다 — 버전 행이 정확히 그래서 둘째 줄로 옮겨졌다. 사용자가
-        //  "왼쪽 모니터에 띄워두는" 것이라 눈이 먼저 가는 자리여야 한다.
-        stopHomeWidgets();
-        const widgetPanel = buildHomeWidgets();
-        if (widgetPanel) wrap.appendChild(widgetPanel);
-        // ★**그리는 건 문서에 붙은 뒤**다(아래 `root.appendChild` 이후 — `paintHomeWidgets()`).
-        //  붙기 전에 마운트하면 호스트가 그 노드를 **대기줄**에 넣는데, 값이 도착해 상자를
-        //  갈아끼우면 그 대기분은 영영 안 붙어 관측자가 안 꺼진다(실측 5건).
 
         const layout = document.createElement("div");
         layout.className = "overview-layout";
@@ -331,6 +345,36 @@
         }
         actionPanel.appendChild(actions);
         layout.appendChild(actionPanel);
+
+        // ── 갱신이면 **숫자 부분만** 갈아 끼운다 ─────────────────────────────────
+        // ★위젯 영역은 건드리지 않는다 — 떼면 호스트가 회수하고(관측자가 removedNodes 를 본다)
+        //  다시 붙이면 또 마운트·조회가 돈다. 옮기기만 해도 그렇다(떼었다 붙이는 것이라).
+        //  배치가 바뀌었거나 홈 그림이 없으면(누가 패널을 비웠다) 아래 전체 그리기로 간다.
+        const live = root.firstElementChild;
+        if (!enter && live && live.classList.contains("overview") && homeWidgetsPaintedSig === homeLayoutSig()) {
+          for (const node of [hero, quick, layout]) {
+            const old = [...live.children].find((c) => c.className === node.className);
+            if (old) old.replaceWith(node);
+            else live.appendChild(node);
+          }
+          return;
+        }
+
+        root.innerHTML = "";
+        const wrap = document.createElement("div");
+        wrap.className = "page-view overview";
+        wrap.appendChild(hero);
+        wrap.appendChild(quick);
+        // ★위젯을 **여기** 둔다(요약 다음·상태 패널 위). 맨 아래에 두면 390×780 화면에서
+        //  뷰포트 밖으로 밀린다 — 버전 행이 정확히 그래서 둘째 줄로 옮겨졌다. 사용자가
+        //  "왼쪽 모니터에 띄워두는" 것이라 눈이 먼저 가는 자리여야 한다.
+        stopHomeWidgets();
+        const widgetPanel = buildHomeWidgets();
+        if (widgetPanel) wrap.appendChild(widgetPanel);
+        homeWidgetsPaintedSig = homeLayoutSig();
+        // ★**그리는 건 문서에 붙은 뒤**다(아래 `root.appendChild` 이후 — `paintHomeWidgets()`).
+        //  붙기 전에 마운트하면 호스트가 그 노드를 **대기줄**에 넣는데, 값이 도착해 상자를
+        //  갈아끼우면 그 대기분은 영영 안 붙어 관측자가 안 꺼진다(실측 5건).
         wrap.appendChild(layout);
         root.appendChild(wrap);
         // 문서에 붙었다 — 이제 그린다(마운트가 항상 **연결된** 노드를 받는다).

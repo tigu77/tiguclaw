@@ -1,7 +1,7 @@
 /**
  * 세션에 연결한 프로젝트 — 대시보드(📁 칩·«이 대화에 프로젝트 연결»·칩 메뉴·`/` 구획)의 입구 (2026-10-08).
  * 판단은 전부 `core/session-projects.ts` — 여기는 배관만 한다(가장자리는 판단하지 않는다).
- *  GET  /session-projects?threadKey=…   → { linked: [{name,path,description,exists,commands:[{name,description,run}]}], available: [...] }  (read)
+ *  GET  /session-projects?threadKey=…   → { linked: [{name,path,description,exists,commands:[{name,description,run,folder?}]}], available: [...] }  (read)
  *  POST /session-projects {threadKey, action:"link"|"unlink", project}                                                          (write)
  * 세션 id 는 `/messages` 와 같은 정규화(`resolveSessionId`) — 대화 턴이 보는 세션과 같아야 한다.
  */
@@ -24,7 +24,7 @@ export const handleGetSessionProjects = async (ctx: RouteCtx): Promise<void> => 
   writeJson(ctx.res, 200, {
     linked: sections.map(({ project, commands }) => ({
       ...project,
-      commands: commands.map((c) => ({ name: c.name, description: c.description, run: c.run !== undefined })),
+      commands: commands.map((c) => ({ name: c.name, description: c.description, run: c.run !== undefined, ...(c.folder === undefined ? {} : { folder: c.folder }) })),
     })),
     available: listProjects()
       .filter((p) => !linkedPaths.has(p.path))

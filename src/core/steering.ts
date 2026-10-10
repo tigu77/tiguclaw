@@ -143,6 +143,11 @@ export interface SteeringChannel {
   push(msg: SteeringInput): boolean;
   /** consumer(codex/openai) — 비블로킹 pull-all(버퍼 반환+클리어, 빈 배열 안전). */
   drain(): SteeringInput[];
+  /**
+   * 이미 꺼냈던 것을 **맨 앞에** 되돌린다 — 닫혔으면 0. 꺼낸 것은 아직 안 꺼낸 대기분보다 **먼저 도착한 것**이라 앞에 둬야 도착 순서가
+   * 지켜진다(2026-10-10 아스트라 검토: `push` 로 되돌리니 «A 소비 → 정정 B 대기 → 실패» 가 B, A 로 뒤집혔다).
+   */
+  restore(msgs: SteeringInput[]): number;
   /** consumer(claude) — 도착 시 yield, close/abort 시 종료(무한대기 0). */
   stream(signal: AbortSignal): AsyncGenerator<SteeringInput>;
   /** 턴 종료 — 멱등. pending stream 대기자 unblock(→ 제너레이터 종료). */
@@ -188,6 +193,12 @@ export const createSteeringChannel = (): SteeringChannel => {
     drain(): SteeringInput[] {
       if (buffer.length === 0) return []; // 빈 배열 안전.
       return buffer.splice(0, buffer.length);
+    },
+    restore(msgs: SteeringInput[]): number {
+      if (closed || msgs.length === 0) return 0;
+      buffer.unshift(...msgs);
+      wake();
+      return msgs.length;
     },
     async *stream(signal: AbortSignal): AsyncGenerator<SteeringInput> {
       if (signal.aborted) return; // 이미 abort — 즉시 종료(무한대기 0).

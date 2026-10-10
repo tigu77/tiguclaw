@@ -147,6 +147,36 @@ export const check: RegressionCheck = {
       ),
     );
 
+    // ★순서와 상한 — 줄 순서는 **만든 순서**(재발 갱신이 줄을 흔들면 프리픽스 캐시가 깨진다), 상한에 닿으면 **최근에 다시
+    //  확인된 것**을 남긴다(만든 순서로 고르면 계속 재발하는 오래된 지침이 빠졌다 — 2026-10-10 재검토).
+    {
+      const { renderFile } = await import("../../store/self-growth-md.js");
+      const { getPaths } = await import("../../core/paths.js");
+      const { writeFileSync: wf, rmSync: rm } = await import("node:fs");
+      const long = (tag: string): string => `${tag} ` + "가".repeat(600); // 줄당 ≈1.8KB → 상한(4KB)에 둘만 들어간다
+      const mk = (key: string, text: string, createdAt: number, updatedAt: number) => ({ key, text, source: "auto" as const, createdAt, updatedAt });
+      const file = getPaths().selfGrowthMd;
+      const render = (ds: ReturnType<typeof mk>[]): string => {
+        wf(file, renderFile(ds));
+        return formatSelfGrowthDirectives();
+      };
+      const order = (t: string): string => [...t.matchAll(/\] (S\d)/g)].map((m) => m[1]).join(",");
+      const small = [mk("s1", "S1 첫째", 1, 1), mk("s2", "S2 둘째", 2, 2), mk("s3", "S3 셋째", 3, 3)];
+      const before = order(render(small));
+      const afterRefresh = order(render([mk("s1", "S1 첫째", 1, 99), small[1]!, small[2]!])); // S1 이 재발로 갱신됐다
+      const capped = order(render([mk("s1", long("S1"), 1, 99), mk("s2", long("S2"), 2, 2), mk("s3", long("S3"), 3, 3)]));
+      // user 확정은 만든 시각과 무관하게 맨 앞(재검토: 앞 검사는 user 가 더 늦게 만들어져 정렬 없이도 통과했다)
+      const userFirst = order(render([{ ...mk("s1", "S1 사용자", 0, 0), source: "user" as never }, small[1]!, small[2]!]));
+      rm(file, { force: true });
+      out.push(
+        assert(
+          "★지침 줄 순서는 만든 순서로 고정(재발 갱신이 줄을 안 흔든다) · 상한이면 최근에 다시 확인된 것을 남긴다",
+          before === "S3,S2,S1" && afterRefresh === before && capped === "S3,S1" && userFirst === "S1,S3,S2",
+          { 갱신전: before, 갱신후: afterRefresh, 상한: capped, 사용자먼저: userFirst },
+        ),
+      );
+    }
+
     // ★⑤ 자동 채택 금지가 유지되는가 — 신호를 키운 것이지 권한을 준 게 아니다.
     out.push(
       assert(

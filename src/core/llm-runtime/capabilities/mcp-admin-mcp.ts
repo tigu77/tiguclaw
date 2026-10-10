@@ -22,11 +22,12 @@
  * 명시하고, 비서는 SYSTEM.md(파괴적=명시승인) 대로 add 전 사용자 확인해야 한다(soft-gate,
  * 하드 훅 아님). 3어댑터 동일 등록(#2) — depth0 게이트는 어댑터가.
  */
+import { coreMcpServer } from "./_core-server.js";
 import path from "node:path";
 import { listProjects } from "../../../store/projects.js";
+import { getPaths } from "../../paths.js";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -45,8 +46,12 @@ const errText = (text: string) => ({
   isError: true as const,
 });
 
-export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+/**
+ * @param turnCwd 그 턴의 작업 폴더 — `path` 인자가 상대 경로일 때의 기준. ★종전엔 `path.resolve(인자)` 라 **데몬 process.cwd()** 기준이어서
+ *  «이 프로젝트에 MCP 붙여 줘(path=".")» 가 설치 폴더의 `.mcp.json` 에 썼다(2026-10-09 적대 검토). 없으면 홈(file-ops 와 같은 기본).
+ */
+export const createMcpAdminMcpServer = (turnCwd?: string): McpSdkServerConfigWithInstance =>
+  coreMcpServer({
     name: "mcp-admin",
     version: "1.0.0",
     tools: onDemand([
@@ -78,7 +83,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
           }
           const projectPath =
             args.path !== undefined && args.path.trim() !== ""
-              ? path.resolve(args.path.trim())
+              ? path.resolve(turnCwd ?? getPaths().home, args.path.trim())
               : undefined;
           // ★전역 등록 가드 (2026-08-07 사용자 지정: "프로젝트 레벨 전용 MCP 를 전역에 추가하면
           //  안 돼"). 실사고: 회사 PC 에 Unity MCP 가 **전역+프로젝트 양쪽**에 등록돼, 전역판이
@@ -129,7 +134,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
           try {
             const cwd =
               args.path !== undefined && args.path.trim() !== ""
-                ? path.resolve(args.path.trim())
+                ? path.resolve(turnCwd ?? getPaths().home, args.path.trim())
                 : undefined;
             const servers = await readExternalMcpServers(cwd);
             const names = Object.keys(servers);
@@ -155,7 +160,7 @@ export const createMcpAdminMcpServer = (): McpSdkServerConfigWithInstance =>
           try {
             const projectPath =
               args.path !== undefined && args.path.trim() !== ""
-                ? path.resolve(args.path.trim())
+                ? path.resolve(turnCwd ?? getPaths().home, args.path.trim())
                 : undefined;
             const had = await removeExternalMcpServer(args.name, projectPath);
             return okText(

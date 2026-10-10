@@ -8,8 +8,9 @@
  *  Claude 턴도 그 기록이 필요하다. Claude 에는 접힌 채(이름만, 쓸 때 스키마를 연다) 실린다 — 순수 Claude 대화의 매 요청 비용을 안 늘린다.
  * 판정은 전부 저장 계층(`store/tool-recall.ts`)에 있다. 여기는 입출력 모양뿐이다.
  */
+import { coreMcpServer } from "./_core-server.js";
 import { z } from "zod";
-import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import type { ChannelName } from "../../../channels/types.js";
 import { readThreadToolResult, searchThreadToolResults, TOOL_RECALL_NAME } from "../../../store/tool-recall.js";
 import { onDemand } from "../tool-load-policy.js";
@@ -34,7 +35,7 @@ export const recallConversationOf = (input: TurnConversation): { channel: Channe
 
 export const createToolRecallMcpServer = (input: TurnConversation): McpSdkServerConfigWithInstance => {
   const conv = recallConversationOf(input);
-  return createSdkMcpServer({
+  return coreMcpServer({
     name: "tool-recall",
     version: "1.0.0",
     tools: onDemand([

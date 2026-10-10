@@ -81,6 +81,31 @@ const needDeps = (): WirePluginDeps => {
   return DEPS;
 };
 
+/**
+ * **같은 이름에 대한 조작은 한 줄로 선다** (2026-10-09, 전체 적대 검토 P3).
+ *
+ * ★네 문(설치·제거·켜기·끄기)이 모두 «`LIVE` 를 읽고 → `await`(로드·배선·되돌림) → `LIVE` 에
+ *  쓴다» 모양인데 잠금이 없었다. 그래서 같은 이름을 두 번 동시에 설치하면 둘 다 «아직 없다»
+ *  를 읽고 각자 배선했고, `LIVE` 엔 뒤의 것만 남았다 — 앞의 것은 **아무도 못 끄는 인스턴스**가
+ *  됐다(실측: observer 2개 시작 · 제거 뒤에도 running=2). 버튼 연타·두 탭·비서와 사람이
+ *  동시에 누르는 것만으로 난다.
+ * ★이름별 promise 체인이다 — 다른 이름끼리는 안 막는다. 앞 조작이 던져도 뒤는 돈다
+ *  (던진 것은 그 호출자에게만 간다).
+ */
+const QUEUE = new Map<string, Promise<unknown>>();
+const oneAtATime = <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+  const run = (QUEUE.get(name) ?? Promise.resolve()).then(fn, fn);
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  QUEUE.set(name, tail);
+  void tail.then(() => {
+    if (QUEUE.get(name) === tail) QUEUE.delete(name);
+  });
+  return run;
+};
+
 /** 부팅 배선이 끝난 플러그인을 등록한다 — 그래야 나중에 뺄 수 있다. */
 export const trackPlugin = (
   lp: LoadedPlugin,
@@ -263,7 +288,7 @@ export const listAllPlugins = async (): Promise<PluginListItem[]> => {
         capabilities: m.capabilities,
         wired: live?.wired ?? [],
         enabled: live !== undefined,
-        settings: settingsForClient(m.manifest.name, m.manifest.settings ?? []),
+        settings: settingsForClient(m.manifest.name, m.manifest.settings ?? [], source),
         widgets: (m.manifest.widgets ?? []).map((w) => ({
           type: `${m.manifest.name}/${w.id}`,
           size: w.size,
@@ -283,7 +308,10 @@ export const listAllPlugins = async (): Promise<PluginListItem[]> => {
  *  `modules.disabled`(설정) 의 일이다 — 그쪽은 재부팅 시 반영되고 기록으로 남는다.
  *  [[project_self_dev_flag_gate]] 와 같은 결: 되돌릴 수 없게 만들지 않는다.
  */
-export const removePlugin = async (
+export const removePlugin = (name: string): Promise<PluginActionResult> =>
+  oneAtATime(name, () => removePluginNow(name));
+
+const removePluginNow = async (
   name: string,
 ): Promise<PluginActionResult> => {
   const live = LIVE.get(name);
@@ -317,7 +345,13 @@ export const removePlugin = async (
  *  (실측: 엔트리만 무효화하면 하위 모듈은 옛것 그대로 — 반만 새것인 상태가 더 나쁘다).
  *  그건 프로세스 경계가 필요하고, 그래서 **갱신과 격리는 같은 문제**다(설계 §H).
  */
-export const setPluginEnabled = async (
+export const setPluginEnabled = (
+  name: string,
+  enabled: boolean,
+): Promise<PluginActionResult & { codeReloaded: boolean }> =>
+  oneAtATime(name, () => setPluginEnabledNow(name, enabled));
+
+const setPluginEnabledNow = async (
   name: string,
   enabled: boolean,
 ): Promise<PluginActionResult & { codeReloaded: boolean }> => {
@@ -397,15 +431,16 @@ export const setPluginEnabled = async (
  * ★같은 이름이 이미 살아 있으면 **먼저 되돌린다** — 그게 "재설치" 다.
  * ★번들과 이름이 겹치면 거부한다: 홈에서 코어 플러그인을 가로채는 건 공격면이다.
  */
-export const installHomePlugin = async (
-  name: string,
-): Promise<
-  PluginActionResult & {
-    needs?: string;
-    needsFacts?: readonly NeedFact[];
-    wired?: readonly string[];
-  }
-> => {
+export const installHomePlugin = (name: string): Promise<InstallResult> =>
+  oneAtATime(name, () => installHomePluginNow(name));
+
+type InstallResult = PluginActionResult & {
+  needs?: string;
+  needsFacts?: readonly NeedFact[];
+  wired?: readonly string[];
+};
+
+const installHomePluginNow = async (name: string): Promise<InstallResult> => {
   const deps = needDeps();
   // ★**돌고 있는 것이 아니라 디스크에 있는 이름**을 본다 — 번들 쌍둥이가 꺼져 있거나 로드에
   //  실패한 순간 이 문이 열려 있었다(B-1). 부팅과 같은 판정을 쓴다.

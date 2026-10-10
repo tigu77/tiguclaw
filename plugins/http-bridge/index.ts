@@ -580,7 +580,8 @@ class HttpBridge implements Channel, Observer {
               : pathname === "/auth-login-finish" && method === "POST"
                 ? "admin"
               : pathname === "/set-module-enabled" && method === "POST"
-                ? "write"
+                ? "admin" // ★`/plugins/action` 의 켜기·끄기와 **같은 `setModuleDisabled`** 에 닿는다(2026-10-09 적대 검토 P2) —
+                //  write 였을 때는 write 토큰이 admin 문을 옆문으로 넘었다. 같은 일 = 같은 등급. 대시보드 프록시는 env 토큰(admin)이라 영향 없음.
               : pathname === "/transcribe" && method === "POST"
                 ? "write"
               : pathname === "/restart" && method === "POST"
@@ -866,7 +867,7 @@ class HttpBridge implements Channel, Observer {
     }
 
     // /set-module-enabled — kind:plugin 모듈 활성/비활성(ADR 2026-07-17-module-capability-model
-    // §5.6 MVP). write 게이트(위 role 표, /set-default-profile·/cancel-worker 패턴).
+    // §5.6 MVP). admin 게이트(위 role 표 — `/plugins/action` 켜기·끄기와 같은 일이라 같은 등급).
     // body { name, enabled }. 코어는 이 경로에 없음(loadPlugins 가 <root>/plugins/* 만 훑음 —
     // 가드1 이 자연 강제, 여기서 별도 kind 검사 불필요). ★MVP = config 만 갱신 — 재시작해야
     // loadPlugins 스킵이 실제 적용(핫토글 아님) → 응답에 requiresRestart:true 로 항상 안내.

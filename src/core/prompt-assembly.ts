@@ -143,6 +143,8 @@ export const formatMemoryIndex = (
   //  `memory.indexCapBytes`. 미지정·이상값이면 위 상수로 떨어진다.
   maxBytes: number = readMemoryIndexCapBytes(MEMORY_INDEX_CAP_BYTES),
 ): string => {
+  // ★0 = 인덱스를 끈 것이다 — 아무것도 싣지 않는다. 종전엔 «전부 잘렸다» 로 읽혀 매 턴 «정리를 제안하세요» 가 실렸다(2026-10-09 적대 검토).
+  if (maxBytes <= 0) return "";
   const { lines, total, truncated } = listMemoriesForIndex(maxBytes);
   if (total === 0) return "";
   const out = [`## 메모리 인덱스 (전체 ${total}건, body 는 read_memory 로 fetch)`];
@@ -199,22 +201,24 @@ export const formatSelfGrowthDirectives = (): string => {
   }
   if (directives.length === 0) return "";
   // user 확정을 먼저(영구·사용자 의사) — auto 는 TTL 대상이라 뒤로.
-  const sorted = [...directives].sort((a, b) =>
-    a.source !== b.source ? (a.source === "user" ? -1 : 1) : b.updatedAt - a.updatedAt,
-  );
-  const out: string[] = ["## 확정 지침 (self-growth)"];
+  const userFirst = (a: (typeof directives)[number], b: (typeof directives)[number]): number =>
+    a.source !== b.source ? (a.source === "user" ? -1 : 1) : 0;
+  const lineOf = (d: (typeof directives)[number]): string => `- [${d.source}] ${d.text.split("\n")[0]}`;
+  // ★상한에 닿으면 **최근에 다시 확인된 것**(updatedAt)을 남긴다 — 만든 순서로 고르면 재발로 계속 갱신되는 오래된 지침이
+  //  먼저 빠졌다(2026-10-10 재검토). 고른 뒤 줄 순서는 **만든 순서**로 고정한다 — updatedAt 순서면 재발 갱신이 매번 줄을
+  //  바꿔 안정 system 조각의 프리픽스 캐시가 깨진다(2026-10-09 재검토). 고르는 기준과 놓는 순서는 다른 질문이다.
+  const picked: typeof directives = [];
   let bytes = 0;
-  let shown = 0;
-  for (const d of sorted) {
-    const line = `- [${d.source}] ${d.text.split("\n")[0]}`;
-    const n = Buffer.byteLength(line) + 1;
+  for (const d of [...directives].sort((a, b) => userFirst(a, b) || b.updatedAt - a.updatedAt)) {
+    const n = Buffer.byteLength(lineOf(d)) + 1;
     if (bytes + n > DIRECTIVE_INDEX_CAP_BYTES) break;
-    out.push(line);
+    picked.push(d);
     bytes += n;
-    shown += 1;
   }
-  if (shown < sorted.length) {
-    out.push(`… ${sorted.length - shown}건 더 (상한 — 전문은 SELF_GROWTH.md)`);
+  const out: string[] = ["## 확정 지침 (self-growth)"];
+  for (const d of picked.sort((a, b) => userFirst(a, b) || b.createdAt - a.createdAt)) out.push(lineOf(d));
+  if (picked.length < directives.length) {
+    out.push(`… ${directives.length - picked.length}건 더 (상한 — 전문은 SELF_GROWTH.md)`);
   }
   return out.join("\n");
 };

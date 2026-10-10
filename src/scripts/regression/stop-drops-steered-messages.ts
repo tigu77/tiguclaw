@@ -51,6 +51,7 @@ export const check: RegressionCheck = {
     const three = stopReplyText(0, 3);
     const both = stopReplyText(2, 1);
     const idx = readFileSync(new URL("../../index.ts", import.meta.url), "utf8");
+    const life = readFileSync(new URL("../../core/entry/turn-lifecycle.ts", import.meta.url), "utf8"); // 턴 출구 판정(2026-10-09 index.ts 에서 옮김)
     const facade = readFileSync(new URL("../../core/llm-runtime/index.ts", import.meta.url), "utf8");
     // 통로: 돌던 턴에 /stop · 통로를 열기 전에 이미 /stop · 무응답 시한으로 끝남
     const input = left[0]!;
@@ -113,8 +114,8 @@ export const check: RegressionCheck = {
         "배선 — 끼워넣기를 받을 때 그 턴에 센다 · /stop 답이 그 수를 쓴다 · 재주입은 /stop 판정을 거친다",
         /if \(turn !== undefined\) turn\.steered = \(turn\.steered \?\? 0\) \+ 1;/.test(idx) &&
           /stopReplyText\(stopped, entry\.steered \?\? 0\)/.test(idx) &&
-          /const reinject = reinjectUnlessStopped\(turnAc\.signal, msg, leftover\)/.test(idx),
-        `세기=${/turn\.steered = \(turn\.steered \?\? 0\) \+ 1/.test(idx)} · 답=${/stopReplyText\(stopped, entry\.steered/.test(idx)} · 재주입=${/reinjectUnlessStopped\(turnAc\.signal/.test(idx)}`,
+          (/const again = reinjectUnlessStopped\(t\.signal, t\.msg, leftover\)/.test(life) && /signal: turnAc\.signal,/.test(idx) && /reinject: \(m\) => serializedHandler\(m\)/.test(idx)),
+        `세기=${/turn\.steered = \(turn\.steered \?\? 0\) \+ 1/.test(idx)} · 답=${/stopReplyText\(stopped, entry\.steered/.test(idx)} · 재주입=${(/const again = reinjectUnlessStopped\(t\.signal, t\.msg, leftover\)/.test(life) && /signal: turnAc\.signal,/.test(idx) && /reinject: \(m\) => serializedHandler\(m\)/.test(idx))}`,
       ),
     ];
   },

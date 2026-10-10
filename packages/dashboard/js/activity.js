@@ -519,9 +519,8 @@
       let lastRecvAt = Date.now();
       const STREAM_STALE_MS = 70_000; // 하트비트 3회(60s) + 여유.
       const forceReconnect = () => {
-        try { if (es) es.close(); } catch { /* 이미 닫힘 */ }
         setConn(false);
-        connectStream();
+        connectStream(); // 직전 연결 닫기·예약 취소는 connectStream 이 한다(한 곳).
       };
       /**
        * 데몬이 **다른 버전으로** 바뀌어 있으면 이 탭을 새로고침한다.
@@ -554,8 +553,17 @@
           .catch(() => { /* health 미도달 — 다음 재연결에 다시 본다 */ });
       };
 
+      // ★연결은 **언제나 하나** (2026-10-09 적대 검토). 종전엔 onerror(CLOSED)가 3초 뒤
+      //  재연결을 예약하고, 그 사이 forceReconnect(워치독·탭 복귀)가 새로 열면 예약분이 **또**
+      //  열었다 — 앞의 것은 아무도 안 닫아 EventSource 가 둘이 되고, 모든 이벤트가 두 번
+      //  렌더 경로를 탔다(진행 표시·배지·잡 카드). 여는 자리에서 직전 연결을 닫고 예약을
+      //  지우면, 누가 몇 번 부르든 남는 건 마지막 하나다.
+      let reconnectTimer = null;
       const connectStream = () => {
-        es = new EventSource("/api/events");
+        if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        try { if (es) es.close(); } catch { /* 이미 닫힘 */ }
+        const mine = new EventSource("/api/events");
+        es = mine;
         lastRecvAt = Date.now();
         es.onopen = () => {
           lastRecvAt = Date.now();
@@ -571,10 +579,12 @@
           try { renderEvent(JSON.parse(m.data)); } catch (e) { /* skip malformed */ }
         };
         es.onerror = () => {
+          // 이미 갈아끼운 옛 연결의 늦은 오류는 지금 연결의 상태를 건드리지 않는다.
+          if (es !== mine) return;
           setConn(false);
           // CONNECTING(=자동 재연결 중)이면 브라우저에 맡기고, CLOSED(치명)면 수동 재연결.
-          if (es.readyState === EventSource.CLOSED) {
-            setTimeout(connectStream, 3000);
+          if (mine.readyState === EventSource.CLOSED && reconnectTimer === null) {
+            reconnectTimer = setTimeout(connectStream, 3000);
           }
         };
       };

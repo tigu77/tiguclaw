@@ -7,6 +7,7 @@
  */
 import { generatePKCE as generatePkceUpstream } from "@openauthjs/openauth/pkce";
 import { upsertHomeEnvVars } from "../../env-file.js";
+import { refreshHomeCredentials } from "../../credential-env.js";
 import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { homeEnvPath } from "../../load-env.js";
@@ -247,6 +248,44 @@ export const codexAuthAvailable = (): boolean =>
   (process.env.OPENAI_CODEX_OAUTH_TOKEN ?? "") !== "" ||
   (process.env.OPENAI_CODEX_OAUTH_REFRESH ?? "") !== "";
 
+/**
+ * **진행 중인 갱신 — 프로세스에 하나만** (2026-10-09 전체 적대 검토 P4).
+ *
+ * ★갱신 토큰은 **회전형**이다 — 한 번 쓰면 서버에서 무효가 된다. 종전엔 만료 시각에 걸린 요청
+ *  N개(메인 턴·매니저·사용량 조회 플러그인)가 **각자** 같은 갱신 토큰으로 POST 했고, 첫 번째만
+ *  성공하고 나머지는 `refresh_token_reused` 4xx 를 받았다(검토 재현: 동시 3건 → POST 3회 · 실패 2).
+ *  그 실패가 인증 거부로 분류돼 **갱신은 성공했는데 12시간 인증 쿨다운 + «다시 로그인»** 이 났다.
+ *  → 진행 중인 갱신 Promise 를 공유한다. 늦게 온 호출은 새로 POST 하지 않고 그 결과를 기다린다.
+ */
+let refreshInFlight: Promise<string> | undefined;
+
+/** 회전된 갱신 토큰을 다시 썼다는 서버 응답인가(다른 프로세스가 먼저 갱신한 경우). */
+const isRefreshTokenReused = (e: unknown): boolean =>
+  /refresh_token_reused/i.test(e instanceof Error ? e.message : String(e));
+
+const refreshOnce = async (refresh: string): Promise<string> => {
+  try {
+    const refreshed = await refreshAccessToken(refresh);
+    await upsertCodexTokens(refreshed);
+    return refreshed.access;
+  } catch (e) {
+    // ★**다른 프로세스가 먼저 갱신했다**(터미널 `codex-auth`·같은 홈을 쓰는 다른 인스턴스) — 우리 메모리의
+    //  갱신 토큰은 이미 무효다. 홈 `.env` 를 다시 읽어(바뀐 인증 키만 — `credential-env.ts`) 새 값이 들어왔으면
+    //  그걸로 한 번 더 간다. 같은 값이면 진짜 거부라 원래 오류를 올린다(무한 재시도 0 — 한 번뿐).
+    if (!isRefreshTokenReused(e)) throw e;
+    refreshHomeCredentials();
+    const access = process.env.OPENAI_CODEX_OAUTH_TOKEN;
+    if (access !== undefined && access !== "" && !isExpiringSoon(process.env.OPENAI_CODEX_OAUTH_EXPIRES)) {
+      return access;
+    }
+    const next = process.env.OPENAI_CODEX_OAUTH_REFRESH;
+    if (next === undefined || next === "" || next === refresh) throw e;
+    const refreshed = await refreshAccessToken(next);
+    await upsertCodexTokens(refreshed);
+    return refreshed.access;
+  }
+};
+
 export const ensureFreshAccessToken = async (): Promise<string> => {
   const currentAccess = process.env.OPENAI_CODEX_OAUTH_TOKEN;
   const expiresEnv = process.env.OPENAI_CODEX_OAUTH_EXPIRES;
@@ -266,9 +305,13 @@ export const ensureFreshAccessToken = async (): Promise<string> => {
     return currentAccess as string;
   }
 
-  const refreshed = await refreshAccessToken(refresh);
-  await upsertCodexTokens(refreshed);
-  return refreshed.access;
+  // 이미 누가 갱신 중이면 그 결과를 같이 받는다 — 같은 갱신 토큰으로 두 번 POST 하지 않는다(위 주석).
+  if (refreshInFlight !== undefined) return refreshInFlight;
+  const p = refreshOnce(refresh).finally(() => {
+    if (refreshInFlight === p) refreshInFlight = undefined;
+  });
+  refreshInFlight = p;
+  return p;
 };
 
 // ★auth-provider 심(2026-07-18) — codex 를 Tier 2(라이브-리프레시 구독) auth-provider 로

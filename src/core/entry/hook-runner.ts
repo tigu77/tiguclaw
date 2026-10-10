@@ -44,7 +44,9 @@
  *  - dep 추가 0 (node builtin child_process/fs/os/path).
  */
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { loadSettingsLayers, loadSettingsLayersWithSource } from "../settings.js";
+import { isTrustedProjectDir } from "../project-trust.js";
 
 interface HookCommand {
   type: string;
@@ -152,7 +154,11 @@ const loadSettingsHooks = (
   const result: HookMatcher[] = [];
   // 홈 → 프로젝트 순 레이어. hooks 는 override 가 아니라 concat(프로젝트가 추가) — 병합
   // 순서 보존이 중요(기존 동작). 각 레이어에서 이벤트 matcher 배열만 뽑아 누적.
-  for (const layer of loadSettingsLayers(cwd)) {
+  // ★프로젝트 층의 훅은 **믿는 폴더**에서만 — 등록 안 된 남의 레포로 위임했을 때 그 레포의 settings.json 훅(명령)이
+  //  확인 없이 돌았다(2026-10-09 적대 검토 · project-trust.ts). 홈 층은 사용자 것이라 그대로.
+  const trusted = isTrustedProjectDir(cwd);
+  for (const { scope, settings: layer } of loadSettingsLayersWithSource(cwd)) {
+    if (scope === "project" && !trusted) continue;
     const hooks = layer.hooks?.[event];
     if (Array.isArray(hooks)) {
       for (const m of hooks) {
@@ -256,8 +262,15 @@ const runShellHook = (
   command: string,
   stdinData: string,
   timeoutMs: number,
+  /**
+   * 훅이 돌 폴더 = 그 턴의 cwd (2026-10-09 적대 검토). 종전엔 spawn 에 cwd 가 없어 **데몬 cwd** 에서 돌았다 —
+   * 프로젝트 훅의 `./scripts/lint.sh` 같은 상대 경로가 엉뚱한 폴더를 봤다(Claude Code 는 프로젝트 폴더에서 돈다).
+   * 폴더가 사라졌으면 데몬 cwd 로 물러난다(없는 cwd 는 spawn 자체가 실패해 훅이 통째로 안 돈다).
+   */
+  cwd: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> =>
   new Promise((resolve) => {
+    const at = existsSync(cwd) ? { cwd } : {};
     const child =
       process.platform === "win32"
         ? spawn(process.env.ComSpec || "cmd", ["/d", "/s", "/c", `"${command}"`], {
@@ -267,9 +280,11 @@ const runShellHook = (
             //  훅까지 바꾸면 cmd 문법으로 쓴 기존 훅이 깨진다) — 창 숨김만 맞춘다.
             windowsHide: true,
             timeout: timeoutMs,
+            ...at,
           })
         : spawn("sh", ["-c", command], {
             timeout: timeoutMs,
+            ...at,
             // maxBuffer 는 spawn 에 없음 — stdout 누적 직접 cap.
           });
     let stdout = "";
@@ -396,6 +411,7 @@ export const runHooks = async (
         h.command,
         stdinJson,
         timeoutMs,
+        cwd,
       );
       if (code === 2) {
         const blockReason = stderr.trim() || `${event} 훅이 차단했습니다.`;

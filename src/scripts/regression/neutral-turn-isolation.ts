@@ -56,10 +56,10 @@ export const check: RegressionCheck = {
     // ── ③★2차 결함 가드: 첨부가 있는 중립 턴엔 Read 가 있어야 한다(없으면 비전이 죽는다) ──
     const readRestored =
       /neutralTurn && \(input\.attachments\?\.length \?\? 0\) > 0/.test(adapter) &&
-      /readsOnly: true/.test(adapter);
+      /readsOnly: \(input\.attachments \?\? \[\]\)\.map\(\(a\) => a\.path\)/.test(adapter); // 값 = 이 턴의 첨부 경로(2026-10-09) — 그 밖은 `file-ops-secrets-and-reads` 가 실행으로 본다.
     // 그리고 그 노출은 **Read 하나뿐**이어야 한다(셸·검색·쓰기가 딸려오면 격리가 무의미).
     const readOnlyIsRead =
-      /opts\?\.readsOnly === true/.test(fileOps) &&
+      /opts\?\.readsOnly !== undefined/.test(fileOps) &&
       /\(\(t as \{ name\?: string \}\)\.name \?\? ""\) === "Read"/.test(fileOps);
     // 첨부가 없으면 붙이지 않는다(도구 0 유지).
     const gatedOnAttachments = /attachments\?\.length \?\? 0\) > 0\n?\s*\?/.test(adapter);

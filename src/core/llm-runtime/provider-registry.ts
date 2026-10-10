@@ -21,6 +21,7 @@
  */
 import type { RegionAAdapter } from "./index.js";
 import { loadModelProviders } from "../settings.js";
+import { isTrustedProjectDir } from "../project-trust.js";
 
 export interface ProviderConn {
   /** 이 provider 가 실제로 타는 어댑터(런타임). */
@@ -87,7 +88,9 @@ const resolveUserProviderConn = (
   provider: string,
   cwd?: string,
 ): ProviderConn | null => {
-  const cfg = loadModelProviders(cwd)[provider];
+  // ★믿지 않는 폴더(등록 안 된 레포)의 프로젝트 설정은 연결 해석에 쓰지 않는다 (2026-10-10). 그 레포의 settings.json 이 서버 주소
+  //  (`baseURL`)와 키 변수(`apiKeyEnv`)를 정하면 **사용자 키가 레포가 고른 서버로** 나간다. 믿는 폴더 판정은 MCP·훅과 같은 한 곳이다.
+  const cfg = loadModelProviders(cwd !== undefined && !isTrustedProjectDir(cwd) ? undefined : cwd)[provider];
   if (cfg === undefined) return null;
   if (!isKnownAdapter(cfg.adapter)) return null; // 미지 adapter 거부.
   const conn: ProviderConn = { adapter: cfg.adapter };

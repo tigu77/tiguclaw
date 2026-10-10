@@ -14,9 +14,9 @@
  * ★판정은 여기 없다 — `core/home-widgets.ts` 의 순수 함수가 한다. 핸들러 안에 두면 검사가
  *  문자열 grep 밖에 못 한다([[feedback_simple_composable_no_duplication]]).
  */
+import { coreMcpServer } from "./_core-server.js";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -166,7 +166,7 @@ const CONFIGURE_HOME = tool(
 );
 
 export const createHomeWidgetsMcpServer = (): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  coreMcpServer({
     name: "home-widgets",
     version: "1.0.0",
     tools: [CONFIGURE_HOME],

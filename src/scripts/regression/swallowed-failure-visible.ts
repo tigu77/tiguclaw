@@ -93,7 +93,10 @@ export const check: RegressionCheck = {
           // 내므로, 누적하면 답장에 같은 문단이 두 번 실린다. 초기화가 SSE 호출 **직전**인지 본다.
           // ★함수 **이름**이 아니라 «초기화가 SSE 호출 직전인가» 를 본다 — 파서를 감싸는
           //  이름이 바뀌어도(`parseCodexSseObserved`) 성질은 같다.
-          /streamedInFlight = "";\s*\n\s*sseResult = await parseCodexSse\w*\(/.test(body) &&
+          // ★2026-10-10: 서버 끊김 뒤 «이어 쓰기» 시도는 앞에 흘린 글(`carriedText`)을 안고 시작한다 — 그 외엔 빈 값이다(같은 성질:
+          //  이 시도의 시작점으로 되돌린다). 그래서 초기값이 `carriedText` 인지, 그리고 그 사이에 파서 호출 말고 다른 대입만 있는지 본다.
+          /streamedInFlight = carriedText;(?:\s*\n\s*\w+ = [^;\n]+;)*\s*\n\s*sseResult = await parseCodexSse\w*\(/.test(body) &&
+          /let carriedText = "";/.test(body) &&
           // 그 버퍼를 실제로 채우는가 — 선언만 있고 안 채우면 폴백이 늘 빈 문자열이다.
           /streamedInFlight \+= delta;/.test(body),
         "폴백·시도별 초기화·적재 셋 다 확인",

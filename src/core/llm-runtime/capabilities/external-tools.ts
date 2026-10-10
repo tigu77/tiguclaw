@@ -21,6 +21,7 @@
  *  데몬·SDK·네트워크 없이 검사된다. 어댑터 안에 두면 검사가 "소스에 문자열이 있나" 로
  *  약해진다([[feedback_gate_must_actually_run]] 의 그 부류).
  */
+import { coreMcpServer } from "./_core-server.js";
 import { mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -209,7 +210,7 @@ export const jsonSchemaToShape = (parameters: unknown): Record<string, z.ZodType
 export const createExternalToolsMcpServer = (
   specs: readonly ExternalToolSpec[],
 ): ReturnType<typeof createSdkMcpServer> =>
-  createSdkMcpServer({
+  coreMcpServer({
     name: EXTERNAL_TOOLS_SERVER,
     version: "1.0.0",
     tools: specs.map((s) =>

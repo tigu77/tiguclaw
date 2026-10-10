@@ -46,7 +46,7 @@ type StepsPlan =
     }
   | {
       ok: false;
-      why: "offscreen" | "empty" | "too-many" | "unbalanced-key" | "unsupported-key" | "scroll-too-big";
+      why: "offscreen" | "empty" | "too-many" | "unbalanced-key" | "unsupported-key" | "scroll-too-big" | "type-while-held";
       detail?: string;
     };
 interface Desktop {
@@ -76,7 +76,7 @@ interface StepsModule {
     b: { keys: readonly string[]; buttons: readonly Button[] },
   ) => { keys: string[]; buttons: Button[] };
   planRejection: (
-    why: "offscreen" | "empty" | "too-many" | "unbalanced-key" | "unsupported-key" | "scroll-too-big",
+    why: "offscreen" | "empty" | "too-many" | "unbalanced-key" | "unsupported-key" | "scroll-too-big" | "type-while-held",
     detail?: string,
   ) => string;
   stepsOutcome: (
@@ -85,6 +85,7 @@ interface StepsModule {
     childOk: boolean,
   ) => { status: string[]; stoppedAt?: { i: number; why: string; saw: string } };
   STEPS_MAX: number;
+  postTimeoutMs: (events: readonly LowEvent[], baseMs: number) => number;
 }
 
 /** 1:1 배율·원점 0 — 그림 좌표가 그대로 화면 좌표가 되어 **계약만** 남는다. */
@@ -113,7 +114,7 @@ export const check: RegressionCheck = {
     "가드가 멈춘 부분 실행을 «자식이 정상 종료했으니 전부 완료» 로 읽는 것 · " +
     "죽은 자식이 시작만 한 step 을 «안 했다» 로 읽어 다시 누르게 하는 것",
   run: async (): Promise<Assertion[]> => {
-    const { planSteps, planRejection, stepsOutcome, STEPS_MAX, newDesktop, endAction, mergeHeld,
+    const { planSteps, planRejection, stepsOutcome, STEPS_MAX, postTimeoutMs, newDesktop, endAction, mergeHeld,
       PLATFORM_KEY_GAPS, SCROLL_MAX, supportedKey } =
       await loadPluginModule<StepsModule>("../../../plugins/computer-use/src/control.ts");
     const { afterActionTarget } = await loadPluginModule<ObserveModule>(
@@ -194,19 +195,40 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
-        "거절 사유 여섯이 **각각 다른 말**을 한다(한 문구로 뭉뚱그리지 않는다)",
+        "거절 사유 일곱이 **각각 다른 말**을 한다(한 문구로 뭉뚱그리지 않는다)",
         new Set(
-          (["offscreen", "empty", "too-many", "unbalanced-key", "unsupported-key", "scroll-too-big"] as const).map((w) =>
+          (["offscreen", "empty", "too-many", "unbalanced-key", "unsupported-key", "scroll-too-big", "type-while-held"] as const).map((w) =>
             planRejection(w),
           ),
-        ).size === 6,
+        ).size === 7,
         `서로 다른 문구 ${String(
           new Set(
-            (["offscreen", "empty", "too-many", "unbalanced-key", "unsupported-key", "scroll-too-big"] as const).map((w) =>
+            (["offscreen", "empty", "too-many", "unbalanced-key", "unsupported-key", "scroll-too-big", "type-while-held"] as const).map((w) =>
               planRejection(w),
             ),
           ).size,
         )}개`,
+      ),
+    );
+
+    // ★★수식키를 누른 채 글자를 넣지 않는다 — 맥은 ⌘V 에 수식키가 얹혀 딴 단축키가 나가고 «완료» 로 보고됐다(2026-10-09).
+    const heldType = planSteps([{ t: "keydown", key: "alt" }, { t: "type", text: "x" }, { t: "keyup", key: "alt" }], frame("A:1"));
+    const freeType = planSteps([{ t: "keydown", key: "alt" }, { t: "keyup", key: "alt" }, { t: "type", text: "x" }], frame("A:1"));
+    out.push(
+      assert(
+        "★★수식키를 누른 채 `type` 은 **쏘기 전에** 거절한다 — 뗀 뒤면 된다",
+        !heldType.ok && heldType.why === "type-while-held" && heldType.detail === "alt" && freeType.ok,
+        `누른 채=${heldType.ok ? "통과" : heldType.why} · 뗀 뒤=${freeType.ok ? "통과" : freeType.why}`,
+      ),
+    );
+    // ★★자식 시한은 열이 허용한 시간만큼은 기다린다 — 고정 시한이면 허용한 `wait` 가 시한에 죽는다(2026-10-09).
+    const waits = planSteps([{ t: "wait", ms: 5000 }, { t: "wait", ms: 5000 }, { t: "type", text: "a" }], frame("A:1"));
+    const budget = waits.ok ? postTimeoutMs(waits.events, 4000) : 0;
+    out.push(
+      assert(
+        "★★자식 시한 ≥ 기본 + 열이 허용한 대기 합 — `wait` 5초 둘 + 입력이 4초 시한에 죽지 않는다",
+        waits.ok && budget >= 4000 + 10_000 + 300,
+        `시한=${String(budget)}ms`,
       ),
     );
 

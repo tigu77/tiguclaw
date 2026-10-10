@@ -172,6 +172,13 @@ const isWindows = process.platform === "win32";
 
 /** execFile Promise 래퍼 — 기본 쉘 미경유(인자 배열, 인젝션 0). opts.shell 시에만 쉘 경유
  *  (Windows npm.cmd 용 — 인자 고정 상수 전제). exit≠0 도 reject(stderr 보존). */
+/**
+ * 단계 하나의 시한 — ★종전엔 없어서, 원격이 응답하지 않으면 `git pull` 이 끝나지 않고 업데이트 잠금이 영구히 잡혔다
+ *  (그 뒤 모든 `/update` 가 «진행 중», 재시작 전까지 — 2026-10-09 적대 검토, 응답 없는 원격으로 재현). git 은 네트워크 한 번이라
+ *  짧게, npm·빌드는 길게. 시한에 걸리면 실패로 끝나고 기존 실패 처리(롤백·잠금 해제)를 그대로 탄다.
+ */
+const STEP_TIMEOUT_MS = { git: 3 * 60_000, other: 20 * 60_000 } as const;
+
 const run = (
   cmd: string,
   args: readonly string[],
@@ -179,10 +186,19 @@ const run = (
   opts: { shell?: boolean } = {},
 ): Promise<{ stdout: string; stderr: string }> =>
   new Promise((resolve, reject) => {
+    const isGit = cmd === "git";
     execFile(
       cmd,
       args,
-      { cwd, maxBuffer: 16 * 1024 * 1024, shell: opts.shell ?? false },
+      {
+        cwd,
+        maxBuffer: 16 * 1024 * 1024,
+        shell: opts.shell ?? false,
+        timeout: isGit ? STEP_TIMEOUT_MS.git : STEP_TIMEOUT_MS.other,
+        killSignal: "SIGKILL",
+        // git 이 자격증명을 물으며 멈추지 않게(데몬엔 답할 터미널이 없다).
+        ...(isGit ? { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } } : {}),
+      },
       (err, stdout, stderr) => {
         if (err !== null) {
           // err.message 는 명령·exit 코드를 담음. stdout+stderr 를 붙여 진단성 확보 — tsc 는

@@ -1645,6 +1645,16 @@ const runPool = async (
       //  이 변경의 나머지 절반이 «외부 이름으로 안전을 추정하지 마라» 인데, 여기서 그
       //  이름을 우리 분류기의 입력에 넣고 있었다. 사유는 **분류가 끝난 뒤** 붙인다.
       const blockedReason = replayBlocked ? replayBlockedReason(replay) : undefined;
+      // ★★**밖에서 끊긴 턴은 다음 후보로 안 간다** (2026-10-09, 전체 적대 검토 P2~3).
+      //  위 두 단락은 **이름**으로 고른다(UserCancelled·WorkerCancelled, 아래 TurnTimeout).
+      //  그런데 신호를 끊는 주체는 그 셋만이 아니다 — 매니저 시한(WorkerTimeoutError)·재시작
+      //  중단·분류 8초 시한도 같은 `abortSignal` 을 끊는다. 그 이름들은 목록에 없어서 풀의
+      //  나머지 후보를 **다 시도**했다(실측: [codex,claude,openai] 에서 어댑터 3회 ·
+      //  turn_error 3건 · 그중 둘이 «다른 모델로 이어서 시도합니다»). 같은 신호가 이미
+      //  끊겼으니 다음 후보도 즉시 죽는다 — 시도 자체가 무의미하고, 안내는 거짓이다.
+      // ★판정은 이름이 아니라 **신호의 상태**다 — 다음에 생길 abort 주체도 목록 없이 잡힌다
+      //  ([[feedback_hand_maintained_lists]]). 후처리(쿨다운·turn_error)는 지나고 단락한다.
+      const externallyAborted = input.abortSignal?.aborted === true;
       // turn_error — 실패·타임아웃 종료 1회 (성공 경로의 turn_done 과 상호배타).
       // 폴백 단락(TurnTimeoutError) 전에 발행 — 타임아웃도 self-growth 의 학습 대상.
       // internal(분류성 호출)은 미발행 — 메타-재귀 차단(킬스위치). 분류 실패는 호출자가
@@ -1715,7 +1725,8 @@ const runPool = async (
           //   그게 바로 이 주석이 말하는 거짓말이다(2026-09-15).
           specIndex < effectivePool.length - 1 &&
             !(e instanceof TurnTimeoutError) &&
-            !replayBlocked,
+            !replayBlocked &&
+            !externallyAborted,
           input,
           e,
           Date.now() - startedAt,
@@ -1727,6 +1738,7 @@ const runPool = async (
       // TurnTimeoutError 는 isModelRejected 비매칭(TT-I3)이라 runRegionA 의 override
       // 자동폴백도 안 타고 핸들러로 직행 → "⏱️ 중단" 정직 보고. 여기서 명시 단락해 깔끔히.
       if (e instanceof TurnTimeoutError) throw e;
+      if (externallyAborted) throw e;
       // 부작용 이후 폴백 금지 — 후처리(쿨다운·안내·turn_error)를 **지나고 나서** 단락한다.
       if (replayBlocked) {
         // 사유는 **여기서** 붙인다 — 위 분류기들이 우리가 쓴 글자를 읽지 않게(레드팀 P2).
@@ -1799,17 +1811,22 @@ export const runRegionA = async (
   //  플러그인 MCP 를 이미 걷어낸다(세 어댑터 동형). 실측으로 그 부류(분류·webfetch 추출·
   //  엔드포인트·`host.ask` 기본)는 전부 `none` 을 명시하고 있다. 즉 이 기본값은 **도구를
   //  받기로 되어 있던 턴에만** 닿는다.
+  // ★그래서 `none` 이면 **팩토리를 아예 안 부른다** (2026-10-09, 전체 적대 검토 P4). 어차피
+  //  걷어낼 것을 만들려고 남의 코드를 돌리면, 그 코드가 던질 때 도구가 필요 없던 분류
+  //  호출까지 같이 죽는다(실측: 분류 8초 시한 안에서 어댑터 호출 0). 만든 뒤 버리는 것도 낭비다.
   const input: RegionASdkInput =
     rawInput.extraMcpServers !== undefined
       ? rawInput
-      : {
-          ...rawInput,
-          extraMcpServers: getRegisteredMcpServers({
-            threadKey: rawInput.threadKey,
-            channel: rawInput.channel,
-            target: rawInput.channelAddress ?? null,
-          }),
-        };
+      : rawInput.toolPolicy?.mode === "none"
+        ? { ...rawInput, extraMcpServers: {} }
+        : {
+            ...rawInput,
+            extraMcpServers: getRegisteredMcpServers({
+              threadKey: rawInput.threadKey,
+              channel: rawInput.channel,
+              target: rawInput.channelAddress ?? null,
+            }),
+          };
   // 풀 체인 조립 — 프로파일 간(inter) 폴백을 *분리된 풀들*로 운반한다(평탄화 금지).
   //  (1) opts.chain(신규 — 프로파일 .fallback 체인): 그대로. chain[0]=요청 풀.
   //  (2) opts.specs(레거시 — /model override·서브에이전트 단일 풀): [override, 기본 풀] 2단.
@@ -1894,6 +1911,8 @@ export const runRegionA = async (
       // 2층 턴 타임아웃 단락 — 런타임 결함이라 다음 풀로 폴백해봐야 같은 turn signal 이 이미
       // abort 라 무의미 + 어댑터 결함 마스킹 방지(feedback_no_cross_adapter_fallback).
       if (e instanceof TurnTimeoutError) throw e;
+      // 밖에서 끊긴 신호도 같다 — 다음 풀도 같은 신호라 즉시 죽는다(위 runPool 과 대칭).
+      if (input.abortSignal?.aborted === true) throw e;
       // ★★**부작용이 시작됐으면 다음 «풀» 로도 가지 않는다** (2026-09-14 2차 정정).
       //  풀 간 전환도 «원 요청을 처음부터 다시» 이므로 후보 전환과 위험이 같다. 그리고
       //  다음 풀이 성공하면 앞 풀의 **부분 실행 실패가 정상 응답에 가려진다** — 조용한

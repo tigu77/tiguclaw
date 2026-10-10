@@ -27,7 +27,7 @@ import {
   type CheckedTarget,
   type ScreenRect,
 } from "./observe.js";
-import type { LowEvent } from "./control.js";
+import { postTimeoutMs, type LowEvent } from "./control.js";
 
 /** 자식 하나의 시한 — 캡처는 보통 수백 ms 다. 넘으면 권한 대화상자를 의심한다. */
 const CHILD_TIMEOUT_MS = 4_000;
@@ -237,6 +237,7 @@ export const displays = async (): Promise<ScreenRect[] | null> => {
 const jxa = (
   script: string,
   env: Record<string, string> = {},
+  timeoutMs: number = CHILD_TIMEOUT_MS,
 ): Promise<
   | { ok: true; out: string }
   // ★`out` 은 **실패해도 싣는다** (2026-09-19, 계약 3) — 죽은 자식이 어디까지 갔는지는
@@ -248,7 +249,7 @@ const jxa = (
     execFile(
       "/usr/bin/osascript",
       ["-l", "JavaScript", "-e", script],
-      { timeout: CHILD_TIMEOUT_MS, killSignal: "SIGKILL", env: { ...process.env, ...env } },
+      { timeout: timeoutMs, killSignal: "SIGKILL", env: { ...process.env, ...env } },
       (err, so, se) => {
         if (err === null) return resolve({ ok: true, out: String(so).trim() });
         const killed = (err as { killed?: boolean }).killed === true;
@@ -256,7 +257,7 @@ const jxa = (
         resolve({
           ok: false,
           reason: killed ? "timeout" : "failed",
-          detail: killed ? `${CHILD_TIMEOUT_MS}ms 초과` : why.slice(0, 300),
+          detail: killed ? `${timeoutMs}ms 초과` : why.slice(0, 300),
           out: String(so),
         });
       },
@@ -424,15 +425,19 @@ const POST_SCRIPT = [
   "  var prevStr = prev.isNil() ? null : ObjC.unwrap(prev);",
   "  pb.clearContents;",
   "  pb.setStringForType($(text), $.NSPasteboardTypeString);",
-  "  delay(0.05);",
-  "  var d = $.CGEventCreateKeyboardEvent($(), 9, true);",   // v
-  "  $.CGEventSetFlags(d, 0x100000 | flags());",
-  "  post(d); delay(0.03);",
-  "  var u = $.CGEventCreateKeyboardEvent($(), 9, false);",
-  "  $.CGEventSetFlags(u, 0x100000 | flags());",
-  "  post(u); delay(0.25);",
-  "  pb.clearContents;",
-  "  if (prevStr !== null) pb.setStringForType($(prevStr), $.NSPasteboardTypeString);",
+  // ★되돌리기는 finally — 쏘다 던져도 사용자 클립보드에 비서가 친 글(비밀번호일 수 있다)을 남기지 않는다.
+  "  try {",
+  "    delay(0.05);",
+  "    var d = $.CGEventCreateKeyboardEvent($(), 9, true);",   // v
+  "    $.CGEventSetFlags(d, 0x100000 | flags());",
+  "    post(d); delay(0.03);",
+  "    var u = $.CGEventCreateKeyboardEvent($(), 9, false);",
+  "    $.CGEventSetFlags(u, 0x100000 | flags());",
+  "    post(u); delay(0.25);",
+  "  } finally {",
+  "    pb.clearContents;",
+  "    if (prevStr !== null) pb.setStringForType($(prevStr), $.NSPasteboardTypeString);",
+  "  }",
   "}",
   "var BTN = {left:{d:1,u:2,b:0,drag:6}, right:{d:3,u:4,b:1,drag:7}, middle:{d:25,u:26,b:2,drag:27}};",
   "for (var i = 0; i < evs.length; i++) {",
@@ -510,7 +515,7 @@ export const post = async (
   const r = await jxa(POST_SCRIPT, {
     TIGUCLAW_EVENTS: JSON.stringify(events),
     TIGUCLAW_DRY: "0",
-  });
+  }, postTimeoutMs(events, CHILD_TIMEOUT_MS));
   if (!r.ok) return { ...r, stdout: r.out };
   try {
     // ★**마지막 줄이 최종 산출**이다 — 앞의 줄들은 진행(`mark`)이다.

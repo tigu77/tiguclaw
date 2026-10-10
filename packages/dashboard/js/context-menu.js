@@ -189,13 +189,61 @@
             }
             const lb = document.createElement("span"); lb.className = "cm-label"; lb.textContent = it.label || it.id || "";
             row.appendChild(lb);
-            if (enabled) {
-              row.addEventListener("click", (ev) => { ev.stopPropagation(); void runMenuItem(it, ctx); });
+            const hasSub = Array.isArray(it.children) && it.children.length > 0;
+            if (hasSub) {
+              // ★하위 메뉴 — 마우스는 올리면 펼친다(관례). 터치·클릭·Enter 는 눌러서 펼친다(올려 둘 마우스가 없다).
+              row.classList.add("cm-has-sub");
+              row.setAttribute("aria-haspopup", "menu");
+              row.setAttribute("aria-expanded", "false");
+              const ar = document.createElement("span"); ar.className = "cm-sub-arrow"; ar.textContent = "›";
+              row.appendChild(ar);
+              row.addEventListener("pointerenter", (ev) => { if (ev.pointerType === "mouse") openSubmenu(el, row, it.children, ctx); });
+              row.addEventListener("click", (ev) => {
+                ev.stopPropagation();
+                const sub = openSubmenu(el, row, it.children, ctx);
+                if (ev.detail === 0) { const f = sub.querySelector(".cm-item:not(.cm-disabled)"); if (f) f.focus(); } // 키보드로 열었으면 안으로
+              });
+            } else {
+              // 다른 줄에 올라가면 이 단의 열린 하위 메뉴를 닫는다.
+              row.addEventListener("pointerenter", (ev) => { if (ev.pointerType === "mouse") closeSubmenu(el); });
+              if (enabled) row.addEventListener("click", (ev) => { ev.stopPropagation(); void runMenuItem(it, ctx); });
             }
             el.appendChild(row);
           }
         });
         return el;
+      };
+
+      // ── 하위 메뉴 ── 부모 메뉴 **안에** 붙인다(position:fixed 라 화면 기준) — 그래야 바깥 클릭 판정(el.contains)과
+      //  닫기(menuEl.remove)가 하위 메뉴까지 그대로 덮는다. 한 단에 하나만 열린다.
+      const closeSubmenu = (parentEl) => {
+        const open = parentEl._cmSub;
+        if (!open) return;
+        closeSubmenu(open.el);
+        open.el.remove();
+        open.row.classList.remove("cm-open");
+        open.row.setAttribute("aria-expanded", "false");
+        parentEl._cmSub = null;
+      };
+      const openSubmenu = (parentEl, row, children, ctx) => {
+        if (parentEl._cmSub && parentEl._cmSub.row === row) return parentEl._cmSub.el;
+        closeSubmenu(parentEl);
+        const sub = buildMenuDom(children, ctx);
+        sub.classList.add("cm-sub");
+        sub._cmParentRow = row;
+        parentEl.appendChild(sub);
+        const vw = window.innerWidth, vh = window.innerHeight;
+        const pr = parentEl.getBoundingClientRect(), rr = row.getBoundingClientRect(), sr = sub.getBoundingClientRect();
+        let x = pr.right - 4;
+        if (x + sr.width > vw - 8) x = Math.max(8, pr.left - sr.width + 4); // 오른쪽에 자리가 없으면 왼쪽으로
+        let y = rr.top - 7;
+        if (y + sr.height > vh - 8) y = Math.max(8, vh - sr.height - 8);
+        sub.style.left = x + "px";
+        sub.style.top = y + "px";
+        parentEl._cmSub = { row, el: sub };
+        row.classList.add("cm-open");
+        row.setAttribute("aria-expanded", "true");
+        return sub;
       };
 
       // 위치 — anchor rect 또는 pos 좌표 기준, 뷰포트 클램프(넘치면 flip). anchor 우선(opts.anchor).
@@ -233,9 +281,25 @@
       const attachMenuBehavior = (el) => {
         const onDocPointerDown = (ev) => { if (!el.contains(ev.target)) closeMenu(); };
         const onKeydown = (ev) => {
-          const focusable = Array.from(el.querySelectorAll(".cm-item:not(.cm-disabled)"));
+          // 지금 포커스가 있는 단(하위 메뉴면 그 단)의 줄만 오간다.
+          const active = document.activeElement;
+          const level = active && el.contains(active) ? active.closest(".ctx-menu") : el;
+          const focusable = Array.from(level.querySelectorAll(".cm-item:not(.cm-disabled)")).filter((r) => r.closest(".ctx-menu") === level);
           if (ev.key === "Escape") { ev.preventDefault(); closeMenu(); return; }
           if (!focusable.length) return;
+          menuFocusIndex = focusable.indexOf(active);
+          if (ev.key === "ArrowRight" && active && active.classList.contains("cm-has-sub")) {
+            ev.preventDefault();
+            active.click(); // 펼치고 안으로(키보드 클릭은 detail 0)
+            return;
+          }
+          if (ev.key === "ArrowLeft" && level !== el && level._cmParentRow) {
+            ev.preventDefault();
+            const row = level._cmParentRow;
+            closeSubmenu(row.closest(".ctx-menu"));
+            row.focus();
+            return;
+          }
           if (ev.key === "ArrowDown") {
             ev.preventDefault();
             menuFocusIndex = (menuFocusIndex + 1) % focusable.length;
@@ -249,16 +313,26 @@
             if (menuFocusIndex >= 0 && focusable[menuFocusIndex]) focusable[menuFocusIndex].click();
           }
         };
-        const onScrollOrResize = () => closeMenu();
+        // ★메뉴 **안** 스크롤은 닫는 사유가 아니다 (2026-10-09) — 메뉴는 창 높이로 묶여(app.css) 길면 스스로 스크롤하고,
+        //  그걸 바깥 스크롤처럼 닫으면 아래 항목에 영영 못 닿는다. 그 단의 열린 하위 메뉴만 접는다(고정 위치라 줄을 못 따라간다).
+        const onScroll = (ev) => {
+          const t = ev && ev.target;
+          if (t && t.nodeType === 1 && el.contains(t)) {
+            if (t.classList.contains("ctx-menu")) closeSubmenu(t);
+            return;
+          }
+          closeMenu();
+        };
+        const onResize = () => closeMenu();
         document.addEventListener("pointerdown", onDocPointerDown, true);
         document.addEventListener("keydown", onKeydown, true);
-        window.addEventListener("scroll", onScrollOrResize, true); // capture — 내부 스크롤 컨테이너도.
-        window.addEventListener("resize", onScrollOrResize);
+        window.addEventListener("scroll", onScroll, true); // capture — 내부 스크롤 컨테이너도.
+        window.addEventListener("resize", onResize);
         return () => {
           document.removeEventListener("pointerdown", onDocPointerDown, true);
           document.removeEventListener("keydown", onKeydown, true);
-          window.removeEventListener("scroll", onScrollOrResize, true);
-          window.removeEventListener("resize", onScrollOrResize);
+          window.removeEventListener("scroll", onScroll, true);
+          window.removeEventListener("resize", onResize);
         };
       };
 

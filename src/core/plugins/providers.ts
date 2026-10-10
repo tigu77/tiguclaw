@@ -5,7 +5,7 @@ import { appRoot, getPaths } from "../paths.js";
 import { countMemories, listMemories } from "../../store/memory.js";
 import { listSchedules } from "../../store/schedules.js";
 import { collectInventory } from "./inventory.js";
-import { resolveEntry } from "./loader.js";
+import { refusalToRun, resolveEntry } from "./loader.js";
 import { listProviderNames, resolveProviderConn } from "../llm-runtime/provider-registry.js";
 import { catalogModelKeys, modelCapsFor } from "../llm-runtime/model-catalog.js";
 import { providerAuthAvailable, missingAuthEnv } from "../llm-runtime/provider-availability.js";
@@ -464,7 +464,7 @@ const discoverPluginDirs = async (root: string): Promise<string[]> => {
 
 const readModuleExportFromManifest = async (
   pluginDir: string,
-): Promise<{ id: string; entry: string } | null> => {
+): Promise<{ name: string; id: string; entry: string } | null> => {
   const pkg = await readJson(path.join(pluginDir, "package.json"));
   if (!isRecord(pkg) || !isRecord(pkg.tiguclaw)) return null;
 
@@ -476,8 +476,29 @@ const readModuleExportFromManifest = async (
   if (!isRecord(provider)) return null;
   if (typeof provider.id !== "string") return null;
   if (typeof provider.entry !== "string") return null;
+  if (typeof marker.name !== "string") return null;
 
-  return { id: provider.id, entry: provider.entry };
+  return { name: marker.name, id: provider.id, entry: provider.entry };
+};
+
+/**
+ * 플러그인 카드의 id 이름공간 — 코어 카드(`core.*`·`llm-adapter.*`)를 **흉내 낼 수 없게**.
+ * ★문서(`docs/plugins.ko.md`)가 이미 `plugin.<이름>` 을 쓰라고 하고, `moduleError` 도 이
+ *  접두로 플러그인/코어를 가른다 — 새 규칙이 아니라 있던 규칙을 집행하는 것이다.
+ */
+const PLUGIN_MODULE_ID = /^plugin\./;
+
+/**
+ * entry 가 **그 플러그인 폴더 안**에 있나 — 심링크를 풀어서(realpath) 본다.
+ * ★`provider.entry: "../../../outside/escape.js"` 가 폴더 밖 임의 파일을 실행했다(실측).
+ */
+const entryInsidePluginDir = async (pluginDir: string, modulePath: string): Promise<boolean> => {
+  try {
+    const [dir, file] = await Promise.all([fs.realpath(pluginDir), fs.realpath(modulePath)]);
+    return file.startsWith(dir + path.sep);
+  } catch {
+    return false; // 없는 파일 — 어차피 import 가 실패한다. 실행 시도 자체를 안 한다.
+  }
 };
 
 const loadPluginModuleExports = async (): Promise<PluginModuleExport[]> => {
@@ -489,11 +510,30 @@ const loadPluginModuleExports = async (): Promise<PluginModuleExport[]> => {
     for (const pluginDir of await discoverPluginDirs(root)) {
       const manifest = await readModuleExportFromManifest(pluginDir);
       if (manifest === null) continue;
+      // ★★**로더와 같은 문을 지난다** (2026-10-09, 전체 적대 검토 P3). 종전엔 여기가 아무것도
+      //  안 봐서, 꺼 두거나 제거한 플러그인의 코드가 «모듈» 화면을 열 때마다 **실행됐다** —
+      //  사용자는 껐다고 믿는데. 번들 쌍둥이 홈 플러그인도 여기선 그대로 돌았다.
+      //  판정을 새로 쓰지 않는다 — 로더가 쓰는 그 함수다(두 벌이면 갈린다).
+      if (refusalToRun(path.join(root, "plugins"), manifest.name) !== undefined) continue;
+      if (!PLUGIN_MODULE_ID.test(manifest.id)) {
+        console.warn(
+          `[modules] ${manifest.name}: provider.id '${manifest.id}' 를 받지 않습니다 — ` +
+            `플러그인 카드는 'plugin.' 으로 시작해야 합니다(코어 카드를 흉내 낼 수 없게).`,
+        );
+        continue;
+      }
 
       // ★built 런타임 대응: loader 와 동일한 entry 해석(.ts→.js 폴백 + tsx 등록).
       // raw path.resolve 면 built 에서 `.ts` entry(예: self-growth provider)가 존재하지
       // 않아 import 실패→조용히 skip→모듈뷰 카드 누락. resolveEntry 재사용으로 대칭 복구.
       const modulePath = await resolveEntry(pluginDir, manifest.entry);
+      if (!(await entryInsidePluginDir(pluginDir, modulePath))) {
+        console.warn(
+          `[modules] ${manifest.name}: provider.entry '${manifest.entry}' 가 플러그인 폴더 밖을 ` +
+            `가리킵니다 — 실행하지 않습니다.`,
+        );
+        continue;
+      }
       const key = `${manifest.id}:${modulePath}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -511,7 +551,22 @@ const loadPluginModuleExports = async (): Promise<PluginModuleExport[]> => {
           (typeof mod.collectProvider === "function"
             ? { id: manifest.id, load: mod.collectProvider as () => Module | Promise<Module> }
             : null);
-        if (pluginModule !== null) exports.push(pluginModule);
+        // ★낸 카드의 id 도 본다 — 매니페스트만 보면 `load()` 가 `core.daemon` 을 돌려줘서
+        //  코어 카드가 두 장 뜬다(실측). 어기면 그 플러그인 이름의 오류 카드로 바꾼다.
+        if (pluginModule !== null) {
+          exports.push({
+            id: manifest.id,
+            load: async () => {
+              const m = await pluginModule.load();
+              if (!PLUGIN_MODULE_ID.test(m.id)) {
+                throw new Error(
+                  `${manifest.name} 이(가) 낸 카드 id '${m.id}' 를 받지 않습니다 — 'plugin.' 으로 시작해야 합니다`,
+                );
+              }
+              return m;
+            },
+          });
+        }
       } catch {
         // 부재/로드 실패는 discovery skip. module 실행 중 throw는 moduleError 경계에서 처리.
       }

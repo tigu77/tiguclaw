@@ -107,6 +107,8 @@ import { createRequestTimeline, openAiStreamMark } from "./_request-timing.js";
 import { buildActivityDiffFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
+import { TURN_MAX_MODEL_CALLS } from "./_turn-completion.js";
+import { createSteeringLedger } from "./_steering-ledger.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import {
   createIdleTimer,
@@ -311,6 +313,20 @@ export const extractUsage = (
  *  return」 두 변이가 전체 스위트 3,890건 초록으로 통과했다. 둘 다 이 수정이 고치려던
  *  바로 그 결함이다. 이름 있는 함수면 회귀가 가짜 `modelData` 로 **직접 부른다.**
  */
+/**
+ * **본 턴 `run()` 의 실행 옵션** — 스트림·취소·모델 호출 상한.
+ *
+ * ★상한을 **명시한다** (2026-10-09 전체 적대 검토 P4) — 안 주면 SDK 기본 **10** 이라 도구를 10번 넘게 쓰는 평범한
+ *  작업이 `MaxTurnsExceededError` 로 죽었다(OpenRouter·Gemini·Ollama 공통). codex 누적 백스톱과 같은 상수다
+ *  (`_turn-completion.ts`). ★이름 있는 함수로 둔 이유: `run()` 리터럴 안에 있으면 실행 검사가 SDK 런을 띄워야 닿는다
+ *  (`createTurnInputFilter` 와 같은 이유) — 회귀가 이 값을 **실제 SDK `run()`** 에 넣어 도구 15회 턴을 돌린다.
+ */
+export const openAiTurnRunOptions = (signal: AbortSignal): { stream: true; signal: AbortSignal; maxTurns: number } => ({
+  stream: true,
+  signal,
+  maxTurns: TURN_MAX_MODEL_CALLS,
+});
+
 export const createTurnInputFilter = (deps: {
   steering?: { drain: () => SteeringInput[] };
   buildSteeringItem: (s: SteeringInput) => Promise<AgentInputItem>;
@@ -363,6 +379,27 @@ import { assertLiveModelAllowed } from "../regression-model-guard.js";
 import { publishTurnMeta } from "../turn-meta.js";
 import { beginSummaryUsage } from "../auxiliary-usage.js";
 import { ProviderUnavailableError } from "../rate-limit.js";
+
+/**
+ * 이 턴이 실제로 붙을 연결 — 주소·키가 여기서 정해진다.
+ * ★**턴의 폴더(cwd)를 같이 넘긴다** (2026-10-10 아스트라 검토). 종전엔 cwd 없이 데몬 폴더 설정만 읽어, 프로젝트에만 정의한 서버로
+ *  위임하면 고르는 쪽(인증 판정은 cwd 를 본다)과 붙는 쪽이 갈렸다 — 로컬 서버 대신 정품 OpenAI 로 가거나 키 없음으로 멈췄다.
+ * ★**이름을 줬는데 못 찾으면 실패다** — 조용히 정품 OpenAI 로 바꾸지 않는다(다른 서버·다른 키로 간다). 미지정(레거시 호출)만
+ *  정품 openai 다.
+ */
+export const pickOpenAiConn = (
+  provider: string | undefined,
+  cwd: string | undefined,
+): NonNullable<ReturnType<typeof resolveProviderConn>> => {
+  if (provider === undefined) return resolveProviderConn("openai")!;
+  // 턴 폴더에 없으면 **데몬 폴더**(믿는 폴더) 기준으로 한 번 더 — 모델 이름을 직접 적은 경로(`provider:model`)는 데몬 폴더 기준으로
+  //  해석되므로, 거기서 고른 서버를 여기서 못 찾으면 고르는 쪽과 붙는 쪽이 또 갈린다(2026-10-10 재검토 F1: 그렇게 회귀했다).
+  const conn = resolveProviderConn(provider, cwd) ?? (cwd !== undefined ? resolveProviderConn(provider) : null);
+  if (conn === null) {
+    throw new ProviderUnavailableError(`'${provider}' is not a configured provider for this folder — check models.providers in settings.json.`);
+  }
+  return conn;
+};
 
 // ★SDK 실행 추적을 끈다 (2026-10-06). 기본값이 «켜짐» 이라 프로세스 환경에 `OPENAI_API_KEY` 가 있으면 매 턴의 추적을
 //  **입력·출력 내용까지** `api.openai.com/v1/traces/ingest` 로 올렸다 — 그 턴이 OpenRouter·Google·Ollama 로 돌았어도.
@@ -418,9 +455,8 @@ export const runOpenAi = async (
   // (회귀 0). 표시/감사는 input.channel 유지 — claude 어댑터와 parity(#2).
   const idChannel = input.sessionChannel ?? input.channel;
 
-  // provider 연결 해석 — input.provider 미지정(레거시 호출)이면 정품 openai 로 폴백.
-  // google·사용자 서버는 baseURL/apiKey 가 여기서 단일 지점 해석된다(어댑터별 if 분기 0).
-  const conn = resolveProviderConn(input.provider) ?? resolveProviderConn("openai")!;
+  // provider 연결 해석 — google·사용자 서버는 baseURL/apiKey 가 여기서 단일 지점 해석된다(어댑터별 if 분기 0).
+  const conn = pickOpenAiConn(input.provider, input.cwd);
 
   // 인증 가드 — provider conn 기반(기존 OPENAI_API_KEY 직접 throw 완화).
   // 키 없는 서버(사용자 정의, apiKeyEnv 없음)는 자리표시 키로 통과. 정품 openai/google 은 키 필요.
@@ -544,7 +580,7 @@ export const runOpenAi = async (
               ),
             ]
           : []),
-        await adaptClaudeMcpServer(createProjectRegistryMcpServer(input.threadKey), "projects"),
+        await adaptClaudeMcpServer(createProjectRegistryMcpServer(input.threadKey, discoveryCwd), "projects"),
         // 런타임 유지보수 detect (2026-07-12, P1) — maintenance_status. 읽기전용·저위험 =
         // memory/projects/skills 와 동일 무조건 등록(claude/codex 와 parity, 계약서 §3.1).
         await adaptClaudeMcpServer(createMaintenanceMcpServer(), "maintenance"),
@@ -648,7 +684,7 @@ export const runOpenAi = async (
   // (외부 MCP 실연결 브리지는 Phase 2 — 지금은 등록 도구만 3어댑터 대칭.)
   if (!toolsNone && reaches("mcp-admin", turnKind)) {
     mcpServers.push(
-      await adaptClaudeMcpServer(createMcpAdminMcpServer(), "mcp-admin"),
+      await adaptClaudeMcpServer(createMcpAdminMcpServer(discoveryCwd), "mcp-admin"),
     );
   }
 
@@ -1367,8 +1403,11 @@ export const runOpenAi = async (
   // ★필터는 **이름 있는 값**이다 — `run()` 설정 리터럴 안에 익명으로 두면 실행 검사가
   //  SDK 런을 띄워야 닿는다(적대 검토 F1). 조립은 `createTurnInputFilter` 가 하고,
   //  회귀는 그걸 가짜 `modelData` 로 직접 부른다.
+  // ★꺼낸 끼워넣기를 기록한다 — 턴이 실패로 끝나면 채널에 되돌린다(아래 `run` 실패 처리). `drain()` 은 꺼내는
+  //  순간 채널에서 지우므로, 안 되돌리면 실패한 요청 안에만 있다가 사라진다(2026-10-09 전체 적대 검토 P3, codex 와 같은 규칙).
+  const steeringLedger = createSteeringLedger(steeringChannel, input.replay);
   const turnInputFilter = createTurnInputFilter({
-    steering: steeringChannel,
+    steering: steeringChannel === undefined ? undefined : { drain: () => steeringLedger.drain() },
     buildSteeringItem,
     accumulatedSteering,
     mediaWindow: toolMediaWindow,
@@ -1387,8 +1426,8 @@ export const runOpenAi = async (
     lastTimeline = requestTimeline;
     try {
       const streamed = await run(agentToRun, runInput, {
-        stream: true,
-        signal: effectiveAc.signal,
+        // 스트림·취소·모델 호출 상한 — 조립은 `openAiTurnRunOptions` 한 곳(회귀가 실제 SDK 에 그대로 넣어 돌린다).
+        ...openAiTurnRunOptions(effectiveAc.signal),
         // ★이 필터는 **항상** 건다 (2026-09-15). 종전엔 steering 이 없으면 훅 자체를 안
         // 걸었는데(`steeringChannel === undefined` → 빈 spread), 이제 도구가 돌려준 이미지도
         // 이 자리로 들어온다 — 그리고 **어떤 턴이든 도구가 이미지를 줄 수 있다.**
@@ -1607,6 +1646,7 @@ export const runOpenAi = async (
   // 됐으니 재시도는 closeServers=false. abort/도구 없던 turn(toolsNone)엔 재시도 안 함.
   let result: Awaited<ReturnType<typeof runOnce>>;
   try {
+  try {
     result = await runOnce();
   } catch (e) {
     // ★★**부작용이 시작됐으면 no-tools 로 다시 돌리지 않는다** (2026-09-14, 외부 검토 P1).
@@ -1650,6 +1690,13 @@ export const runOpenAi = async (
     } else {
       throw e;
     }
+  }
+  } catch (e) {
+    // 실패로 끝났다 — 이 턴이 꺼낸 끼워넣기를 채널에 되돌린다(코어가 새 턴으로, 폴백 후보가 있으면 그 후보가 먼저 받는다).
+    //  `/stop` 이면 채널이 닫혀 있어 push 가 거절된다 — 멈추라고 한 것은 되살리지 않는다.
+    const n = steeringLedger.giveBack();
+    if (n > 0) console.warn(`[steer] ${input.threadKey} 실패한 턴이 꺼낸 끼워넣기 ${n}건을 채널에 되돌림 — 다음 후보나 새 턴이 받는다`);
+    throw e;
   }
 
   const usage = extractUsage(result);

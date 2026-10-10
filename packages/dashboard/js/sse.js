@@ -281,6 +281,7 @@
                 const b = el.querySelector(".queued-badge"); if (b) b.remove();
                 const xb = el.querySelector(".queued-cancel"); if (xb) xb.remove();
                 el.dataset.ts = String(ev.ts);
+                delete el.dataset.clock; // 이제 서버 시계 — 순서 판정에 다시 든다(virtualization vtNewestTs).
                 renderedMsgKeys.add(msgKey(ev.ts, "user"));
                 return;
               }
@@ -295,23 +296,27 @@
           // ★멀티세션(B계층) — 채팅 스트림 DOM 은 active 세션만. 비active 는 워킹표시만 갱신하고
           // 스트림 미출력(원본은 chat_log/SSE 보존 = 전환 시 fetch 재빌드, §3.4).
           if (!isActiveThread(tk)) return;
-          // ★이력 로드 창이면 보류 (2026-07-28) — 이 창엔 리스트가 비어 있어 아래 stale 가드가
-          //  꺼진다(빈 리스트 = 비교 기준 없음). 지금 붙이면 뒤이어 prepend 되는 이력 아래에
-          //  옛 메시지가 남아 순서가 깨진다. 이력 렌더 후 시간순으로 다시 흘린다(chat-core).
-          if (holdSseEventDuringHistory(ev)) return;
           // dedup — chat-history 로 이미 그린 과거 메시지면(ts|role 일치) 스킵.
           const role = ev.type === "channel.message.out" ? "assistant" : "user";
           const key = msgKey(ev.ts, role);
-          if (renderedMsgKeys.has(key)) return;
-          // ★재연결 replay 로 온 *과거* 메시지는 바닥에 붙이지 않는다 — 붙이면 옛 메시지가
-          //  최신처럼 보인다(vtIsStaleForAppend 주석의 실측 사례). 원본은 chat_log 에 있어
-          //  위로 스크롤하거나 새로고침하면 제 순서로 나온다 = 손실 아님.
-          if (vtIsStaleForAppend(ev.ts)) {
-            console.debug("[sse] stale replay 무시(순서 보호):", role, new Date(ev.ts).toISOString());
-            return;
-          }
-          renderedMsgKeys.add(key);
-          renderChannelMessage(ev, ts);
+          const draw = () => {
+            if (renderedMsgKeys.has(key)) return;
+            // ★재연결 replay 로 온 *과거* 메시지는 바닥에 붙이지 않는다 — 붙이면 옛 메시지가
+            //  최신처럼 보인다(vtIsStaleForAppend 주석의 실측 사례). 원본은 chat_log 에 있어
+            //  위로 스크롤하거나 새로고침하면 제 순서로 나온다 = 손실 아님.
+            if (vtIsStaleForAppend(ev.ts)) {
+              console.debug("[sse] stale replay 무시(순서 보호):", role, new Date(ev.ts).toISOString());
+              return;
+            }
+            renderedMsgKeys.add(key);
+            renderChannelMessage(ev, ts);
+          };
+          // ★이력 로드 창이면 보류 (2026-07-28) — 이 창엔 리스트가 비어 있어 위 stale 가드가
+          //  꺼진다(빈 리스트 = 비교 기준 없음). 지금 붙이면 뒤이어 prepend 되는 이력 아래에
+          //  옛 메시지가 남아 순서가 깨진다. 이력 렌더 후 시간순으로 다시 흘린다(chat-core).
+          //  ★미루는 건 `draw` 뿐 — 진행 표시·배지는 위에서 이미 한 번 끝났다(2026-10-09).
+          if (holdSseEventDuringHistory(ev.ts, draw)) return;
+          draw();
           return;
         }
         if (ev.type === "llm.activity") {
@@ -334,18 +339,22 @@
           // 멀티세션(B계층) — 채팅 스트림 DOM(스폰 칩 포함)은 active 세션만. 세션 A 스폰 칩이 B 에
           // 새지 않음(§3.3 교차 누수 0 — 스폰 스텝의 부모 threadKey 가 곧 그 세션이므로 자연 격리).
           if (!isActiveThread(ap.threadKey)) return;
+          const draw = () => {
+            // ★재연결 replay 순서 보호 (2026-07-28 검수) — dedup(renderedActivityKeys)이
+            //  중복은 막지만 **순서**는 안 본다. 이력 페이지에 없던 옛 활동이 replay 로 오면
+            //  최신 대화 아래에 도구 스텝이 붙는다(메시지·선택지에서 고친 것과 같은 부류).
+            //  진행 중 활동은 항상 최신이라 이 가드에 안 걸린다(라이브 무영향).
+            if (vtIsStaleForAppend(ev.ts)) {
+              console.debug("[activity] stale replay 무시(순서 보호):", ap.label || ap.kind || "?");
+              return;
+            }
+            renderActivity(ap, ts);
+          };
           // ★이력 로드 창 보류 (2026-07-29 검토) — 메시지에만 걸려 있어 활동은 빈 리스트에
           //  그대로 붙었다(05d2f46 이 고친 것과 같은 버그가 이 경로에 남아 있었다).
-          if (holdSseEventDuringHistory(ev)) return;
-          // ★재연결 replay 순서 보호 (2026-07-28 검수) — dedup(renderedActivityKeys)이
-          //  중복은 막지만 **순서**는 안 본다. 이력 페이지에 없던 옛 활동이 replay 로 오면
-          //  최신 대화 아래에 도구 스텝이 붙는다(메시지·선택지에서 고친 것과 같은 부류).
-          //  진행 중 활동은 항상 최신이라 이 가드에 안 걸린다(라이브 무영향).
-          if (vtIsStaleForAppend(ev.ts)) {
-            console.debug("[activity] stale replay 무시(순서 보호):", ap.label || ap.kind || "?");
-            return;
-          }
-          renderActivity(ap, ts);
+          //  미루는 건 붙이기뿐 — 단계 표시·유예 취소는 도착 때 한 번(2026-10-09).
+          if (holdSseEventDuringHistory(ev.ts, draw)) return;
+          draw();
           return;
         }
         if (ev.type === "llm.delta") {
@@ -373,15 +382,18 @@
           //  메시지 경로가 이미 쓰는 두 가드를 그대로 적용한다: 같은 이벤트는 한 번만,
           //  그리고 이미 지나간 것은 바닥에 붙이지 않는다.
           //  ★진행 중 질문은 살린다 — 최신이면 stale 이 아니므로 재연결해도 버튼이 남는다.
-          if (holdSseEventDuringHistory(ev)) return; // 이력 창 보류(2026-07-29).
           const okey = `${ev.ts}|${ptk || ""}`;
-          if (renderedPromptOptionKeys.has(okey)) return;
-          if (vtIsStaleForAppend(ev.ts)) {
-            console.debug("[prompt-options] stale replay 무시(순서 보호):", new Date(ev.ts).toISOString());
-            return;
-          }
-          renderedPromptOptionKeys.add(okey);
-          renderPromptOptions(ev.payload || {}, ts, ev.ts);
+          const draw = () => {
+            if (renderedPromptOptionKeys.has(okey)) return;
+            if (vtIsStaleForAppend(ev.ts)) {
+              console.debug("[prompt-options] stale replay 무시(순서 보호):", new Date(ev.ts).toISOString());
+              return;
+            }
+            renderedPromptOptionKeys.add(okey);
+            renderPromptOptions(ev.payload || {}, ts, ev.ts);
+          };
+          if (holdSseEventDuringHistory(ev.ts, draw)) return; // 이력 창 보류(2026-07-29).
+          draw();
           return;
         }
         // 스케줄 실패 통보(2026-07-26) — 발화는 됐는데 **전달이 실패**하면 종전엔 로그·DB·
@@ -490,17 +502,14 @@
         if (ev.type === "llm.compact_failed") {
           const p = ev.payload || {};
           stopCompactingTick(p.threadKey);
-          // ★**이력 로드 창에서는 이 핸들러가 통째로 미뤄져야 한다** (2026-09-15, 레드팀 O5).
+          // ★**이력 로드 창에서는 «고쳐 쓸지» 판정까지 같이 미룬다** (2026-09-15, 레드팀 O5).
           //  `renderLocalChat` 은 그 창에서 자기 자신을 다시 부르도록 미루는데, 그러면
           //  아래 «한 줄로 고쳐 쓰기» 분기를 **건너뛴다** — 창이 열려 있는 동안 실패가
           //  올 때마다 새 줄이 쌓이고 맵도 안 갱신된다. 미루려면 **판정까지 같이** 미뤄야 한다.
-          if (
-            typeof holdSseEventDuringHistory === "function" &&
-            holdSseEventDuringHistory({ ts: ev.ts, __render: () => renderEvent(ev) })
-          ) {
-            return;
-          }
-          if (!isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
+          //  ★단 핸들러째(`renderEvent`) 다시 돌리지는 않는다(2026-10-09) — 위 표식 걷기는
+          //   상태라 도착 때 한 번이면 되고, 미루는 건 아래 그리기 판정뿐이다.
+          const draw = () => {
+            if (isEndpointThread(p.threadKey) || !isActiveThread(p.threadKey)) return;
             // ★**이미 있으면 그 줄을 고쳐 쓴다** (2026-09-15 아스트라 지적). 종전엔 키에
             //  스레드만 넣고 «한 줄로 갱신된다» 고 적었는데, `renderLocalChat` 이 키 뒤에
             //  `ts` 를 붙여 중복을 판정하므로 **매번 새 줄이 쌓였다** — 주석이 코드보다
@@ -528,7 +537,9 @@
               { ts: ev.ts, key: "compact-failed|" + (p.threadKey || "") },
             );
             if (line) compactFailLines.set(failKey, line);
-          }
+          };
+          if (holdSseEventDuringHistory(ev.ts, draw)) return;
+          draw();
           return;
         }
         // ★도구 지연 고지 (2026-08-06) — 종전엔 이 이벤트를 **아무도 안 그렸다**. 그래서
@@ -574,9 +585,12 @@
         if (ev.type === "llm.agent_no_tools") {
           const p = ev.payload || {};
           if (isActiveThread(p.threadKey)) {
+            // ★이벤트 시각과 잡 키를 싣는다 (2026-10-09 적대 검토) — 안 실으면 `Date.now()` 가
+            //  찍혀 재연결·새로고침 replay 마다 같은 통지가 «방금» 으로 바닥에 다시 붙었다.
             renderLocalChat(
               "info",
               i18n("sys.agentNoTools", { name: p.agentName || "agent", chars: p.resultChars ?? "?" }),
+              { ts: ev.ts, key: "agent-no-tools|" + (p.jobId || "") },
             );
           }
           return;
@@ -636,14 +650,7 @@
         if (evTs !== null) {
           // 이력 로드 창이면 통지도 보류한다(2026-07-29 검토) — 빈 리스트에선 아래 stale
           // 가드가 꺼지므로 옛 경고가 "방금 온 것" 처럼 붙는다. 이력 렌더 후 다시 흘린다.
-          if (
-            holdSseEventDuringHistory({
-              ts: evTs,
-              __render: () => renderLocalChat(kind, text, opts),
-            })
-          ) {
-            return;
-          }
+          if (holdSseEventDuringHistory(evTs, () => renderLocalChat(kind, text, opts))) return;
           const nkey = `${(opts && opts.key) || kind}|${evTs}`;
           if (renderedNoticeKeys.has(nkey)) return; // replay 중복.
           if (vtIsStaleForAppend(evTs)) {
@@ -665,6 +672,8 @@
         const div = document.createElement("div");
         div.className = "ev local";
         div.dataset.ts = String(now); // 날짜 구분선 경계 판정용.
+        // 이벤트 시각이 없으면 브라우저 시계다 — 서버 ts 와 섞어 순서를 판정하지 않는다(vtNewestTs).
+        if (evTs === null) div.dataset.clock = "local";
         const head = document.createElement("div");
         const tsEl = document.createElement("span");
         tsEl.className = "ts";

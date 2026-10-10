@@ -21,10 +21,10 @@
  *  안에 두면 검사가 문자열 grep 밖에 못 하고, 그러면 지키는 게 없다
  *  ([[feedback_simple_composable_no_duplication]] — "검사가 껄끄러우면 코드가 잘못 놓인 것").
  */
+import { coreMcpServer } from "./_core-server.js";
 import path from "node:path";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -269,7 +269,7 @@ export const applyModelReasoning = (args: {
 export const createModelSettingsMcpServer = (
   cwd: string,
 ): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  coreMcpServer({
     name: "model-settings",
     version: "1.0.0",
     tools: onDemand([

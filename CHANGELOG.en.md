@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Commands can be grouped in subfolders.** `commands/aaa/bbb/ccc.md` opens as aaa › bbb › /ccc in the 📁 chip menu (hover or tap), and the `/` list shows the group too. It is still called as `/ccc`. Previously, commands in subfolders didn't show up at all.
+
+### Changed
+
+- **Delegating work to a folder you haven't registered now runs with that folder's `.mcp.json` and hooks turned off, and asks first.** A repository someone else made can no longer run commands just by its settings. Registering it as a project turns them on.
+- **Shell commands the assistant runs no longer receive the daemon's secrets (tokens, API keys).**
+- **Computer use refuses to type text while a modifier key is held.** On macOS this used to fire a different shortcut instead.
+- **The 📁 chip menu now opens Project details instead of "View PROJECT.md".** It shows the project on the Projects page rather than posting the file into the conversation. `/project` on Telegram is unchanged.
+
+### Fixed
+
+- **Starting a second daemon on the same home stopped the first one's jobs and shells.** The second one now exits right away and says why.
+- **Some settings in the home `.env` (job timeouts, shell, and others) were ignored.**
+- **Telegram:** replies could vanish during a brief outage (they are now resent in the background) · after a restart, an old choice button could send the value of a newer question · nobody knew when receiving had stopped (you are now notified).
+- **Claude's named usage limits (session, weekly, and others) weren't recognised as limits.** The pause and reset time are now reported properly.
+- **Codex:** overlapping token refreshes could wrongly ask you to log in again · limit and auth errors after a tool ran were treated as success · answers cut off by overload were kept as final.
+- **On OpenRouter, Gemini, Ollama and similar, a task ended after ten tool calls.**
+- **Edit could corrupt content containing `$&` and similar, and files that aren't UTF-8.**
+- **File watch:** results are now actually sent to the chosen channel · files created at the same moment could be missed.
+- **Dashboard:** late chat history could land in another tab · attachments could run as scripts · the 📁 menu overflowed the screen with many commands · on mobile, «Project details» landed on the list · the home page redrew on every event · fields you were typing in got cleared · ⏹ stopped jobs without asking.
+- **An error in one plugin could stop every conversation, and a disabled plugin's code could still run.**
+- **The self-growth guidelines file could be wiped by a temporary read error.**
+
 ## [0.68.0] - 2026-10-09
 
 ### Added

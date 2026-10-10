@@ -48,6 +48,36 @@ export const check: RegressionCheck = {
         parseCooldownMs('{"resets_in_seconds":492480}') === 492480 * 1000,
         String(parseCooldownMs('{"resets_in_seconds":492480}')),
       ),
+      // ★지금 CLI 의 이름 붙은 한도 문구 (2026-10-09 적대 검토 — 번들 CLI 2.1.280 문자열 실측). 옛 패턴은 «hit your limit» 만 알았다.
+      ...(() => {
+        const named = [
+          "You've hit your session limit · resets 7:59pm (Asia/Seoul)",
+          "You've hit your weekly limit · resets Oct 14, 7:59pm (Asia/Seoul)",
+          "You've hit your Opus limit",
+          "You've hit your Fable limit · resets 3am",
+          "You've hit your monthly spend limit",
+          "You've hit your team's shared budget",
+          "You're out of usage credits",
+        ];
+        const missed = named.filter((t) => !isRateLimited(t));
+        const at = new Date(Date.now() + 3 * 24 * 3600_000);
+        const mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][at.getMonth()];
+        const h = at.getHours() % 12 === 0 ? 12 : at.getHours() % 12;
+        const dated = `You've hit your weekly limit · resets ${String(mon)} ${String(at.getDate())}, ${String(h)}:${String(at.getMinutes()).padStart(2, "0")}${at.getHours() < 12 ? "am" : "pm"} (Asia/Seoul)`;
+        const got = parseCooldownMs(dated);
+        return [
+          assert(
+            "★이름 붙은 한도(session·weekly·Opus·Fable·monthly spend·team budget·usage credits)도 한도다",
+            missed.length === 0,
+            { 놓친문구: missed },
+          ),
+          assert(
+            "★날짜가 붙은 리셋(`resets Oct 14, 7:59pm`)을 읽는다 — 24시간 넘게 남았을 때 CLI 가 쓰는 꼴",
+            got !== null && Math.abs(got - 3 * 24 * 3600_000) < 2 * 60_000,
+            { 문구: dated, 쿨다운ms: got },
+          ),
+        ];
+      })(),
       assert(
         "한도와 무관한 오류는 쿨다운 아님(오탐 0)",
         !isRateLimited("Operation aborted") && !isRateLimited("ETIMEDOUT"),

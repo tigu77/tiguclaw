@@ -293,6 +293,8 @@
         const o = opts || {};
         const cid = o.cid || "";
         const div = buildHistoryDiv({ ts: Date.now(), role: "user", text });
+        // 브라우저 시계 ts — 순서 판정(vtNewestTs)에서 빠진다. echo 승격이 서버 ts 로 바꾸며 뗀다(sse.js).
+        div.dataset.clock = "local";
         if (o.attachments && o.attachments.length) {
           const msg = div.querySelector(".chat-message");
           (msg || div).appendChild(buildAttachmentsPreview(o.attachments));

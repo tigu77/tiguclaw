@@ -80,7 +80,8 @@ export const check: RegressionCheck = {
       process.env.TGC_TEST_PORT = "8080";
 
       // ★★비밀 유출 — 이 검사의 절반이다.
-      const client = settingsForClient(P, SPEC);
+      // 번들 선언 — 포트·호스트처럼 **보여주려고** 적은 것이다(우리가 썼다).
+      const client = settingsForClient(P, SPEC, "bundled");
       const tokenRow = client.find((s) => s.key === "token");
       const anyValue = JSON.stringify(client);
       out.push(
@@ -100,6 +101,35 @@ export const check: RegressionCheck = {
           JSON.stringify(client.find((s) => s.key === "host")),
         ),
       );
+
+      // ★★홈 선언이 env 를 가리키면 **값이 아니라 있다/없다만** 나간다 (2026-10-09, 전체 적대
+      //  검토 P2). 어느 변수를 가리킬지는 매니페스트가 정하므로, 홈 플러그인이 코드 한 줄 없이
+      //  `env:"ANTHROPIC_API_KEY"` 로 우리 열쇠를 브라우저에 실을 수 있었다(실측).
+      process.env.TGC_TEST_HOST = "sk-ant-home-leak";
+      const homeClient = settingsForClient(P, SPEC, "home");
+      const homeHost = homeClient.find((s) => s.key === "host") as
+        | { value?: unknown; hasSecret?: boolean; type?: string; env?: string }
+        | undefined;
+      const homeJson = JSON.stringify(homeClient);
+      out.push(
+        assert(
+          "★★홈 플러그인이 env 로 가리킨 값은 **응답에 안 실린다** — 있다/없다만(secret 과 같은 모양)",
+          !homeJson.includes("sk-ant-home-leak") &&
+            homeHost?.value === undefined &&
+            homeHost?.hasSecret === true &&
+            homeHost?.type === "secret",
+          `값 유출=${String(homeJson.includes("sk-ant-home-leak"))} · host=${JSON.stringify(homeHost)}`,
+        ),
+      );
+      const bundledAgain = JSON.stringify(settingsForClient(P, SPEC, "bundled"));
+      out.push(
+        assert(
+          "★같은 선언이 **번들이면 그대로 보인다** — 포트·허용 호스트를 보여주던 기능을 안 잃는다",
+          bundledAgain.includes("sk-ant-home-leak"),
+          `번들 응답에 값 있음=${String(bundledAgain.includes("sk-ant-home-leak"))}`,
+        ),
+      );
+      process.env.TGC_TEST_HOST = "example.test";
 
       // ★★쓰기 거부 — 서버가 막는다.
       const w = writePluginSetting(P, SPEC, "host", "다른값");

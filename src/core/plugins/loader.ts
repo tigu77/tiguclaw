@@ -20,7 +20,8 @@ import type { EventBus } from "../eventbus.js";
 import { describeNeeds, readNeeds, type PluginNeeds } from "./host.js";
 import { readSettingsSpec, type PluginSettingSpec } from "./settings.js";
 import { readWidgetSpecs, type PluginWidgetSpec } from "./widgets.js";
-import { isModuleActive } from "./inventory.js";
+import { bundledDeclaredNames, isModuleActive } from "./inventory.js";
+import { appRoot } from "../paths.js";
 
 // D1-c (2026-07-14, ADR built-artifact-production-runtime) — built(순수 node) 런타임에서
 //  컴파일되지 않은 `.ts` drop-in 플러그인을 로드하기 위한 tsx 온디맨드 로더 등록.
@@ -114,6 +115,34 @@ export interface PluginMeta {
  */
 export const isValidPluginName = (name: string): boolean =>
   /^[a-z0-9][a-z0-9-]{0,63}$/.test(name);
+
+/**
+ * **이 뿌리에서 이 이름의 코드를 실행해도 되나** — 플러그인 코드를 `import` 하는 문은 전부
+ * 이걸 지난다(로더 · 모듈 카드 수집). 거절이면 사유, 통과면 `undefined`.
+ *
+ * ★사고(2026-10-09, 전체 적대 검토 P3): 같은 질문에 문마다 다른 답이 있었다.
+ *  - **번들 이름 예약**은 설치 문에만 있었다 — 「켜기」 는 번들 뿌리에서 못 찾으면(꺼져
+ *    있다 깨진 번들) 홈 뿌리로 넘어가 **그 이름의 홈 플러그인을 그대로 배선했다**(B-1 우회).
+ *    부팅도 홈 것을 일단 `import`·인스턴스화한 **뒤에** 걸렀다(코드는 이미 돌았다).
+ *  - 모듈 카드 수집(`providers.ts`)은 **아무것도** 안 봤다 — 꺼 두거나 제거한 플러그인의
+ *    코드가 «모듈» 화면을 열 때마다 실행됐다.
+ *  문마다 가드를 달면 다음 문에서 또 샌다. 그래서 **판정을 실행 직전 한 자리**에 둔다.
+ * ★예약은 **홈 뿌리에서만** 의미가 있다 — 번들 뿌리의 이름은 정의상 예약 목록 자체다.
+ */
+export const refusalToRun = (
+  rootDir: string,
+  name: string,
+): "invalid-name" | "user-disabled" | "bundled-name" | undefined => {
+  if (!isValidPluginName(name)) return "invalid-name";
+  if (!isModuleActive(name)) return "user-disabled";
+  if (
+    path.resolve(rootDir) !== path.resolve(appRoot(), "plugins") &&
+    bundledDeclaredNames().has(name)
+  ) {
+    return "bundled-name";
+  }
+  return undefined;
+};
 
 export interface PluginManifest {
   schemaVersion: number;
@@ -512,8 +541,17 @@ export const loadPlugins = async (
       // ★판정은 `isModuleActive` 하나가 한다 — **코어는 목록에 있어도 돈다**(v0.40.0 F2:
       //  settings.json 한 줄로 브리지를 꺼서 되돌릴 길이 없어지던 것). 인벤토리의 `enabled`
       //  도 같은 함수를 쓰므로 화면과 실제가 갈리지 않는다.
-      if (!isModuleActive(manifest.name)) {
-        console.log(`[plugin-loader] skip ${manifest.name}: user-disabled`);
+      // ★번들 이름 예약도 **여기서**(`import` 전에) 본다 — `refusalToRun` 주석 참조.
+      const refusal = refusalToRun(rootDir, manifest.name);
+      if (refusal === "bundled-name") {
+        console.warn(
+          `[plugin-loader] 홈 플러그인 '${manifest.name}' 를 건너뜁니다 — 같은 이름의 번들 ` +
+            `플러그인이 있습니다(번들이 이깁니다).`,
+        );
+        continue;
+      }
+      if (refusal !== undefined) {
+        console.log(`[plugin-loader] skip ${manifest.name}: ${refusal}`);
         continue;
       }
 

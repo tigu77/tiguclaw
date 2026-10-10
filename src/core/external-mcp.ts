@@ -15,7 +15,8 @@
  *
  * 견고성: 읽기 실패/손상 → 빈 맵(never-throw). 데몬 생존 우선(원칙 #3).
  */
-import { promises as fs } from "node:fs";
+import { isTrustedProjectDir } from "./project-trust.js";
+import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -58,7 +59,8 @@ const projectMcpPath = (cwd: string): string => path.join(cwd, ".mcp.json");
 export const isProjectMcpCwd = (cwd?: string): cwd is string => {
   if (cwd === undefined || cwd === "") return false;
   try {
-    return path.resolve(cwd) !== path.resolve(getPaths().home);
+    // ★믿는 폴더만 — 등록 안 된 남의 레포의 `.mcp.json` 은 그 `command` 를 그대로 실행한다(project-trust.ts).
+    return path.resolve(cwd) !== path.resolve(getPaths().home) && isTrustedProjectDir(cwd);
   } catch {
     return false;
   }
@@ -311,7 +313,9 @@ export const buildChildEnv = (
   const base: Record<string, string> = {};
   for (const [k, v] of Object.entries(parentEnv)) {
     if (v === undefined) continue;
-    if (SECRET_KEY_NAME_RE.test(k)) continue; // 시크릿류는 상속시키지 않는다.
+    // 시크릿류는 상속시키지 않는다. ★단 값이 **실제 파일 경로**면 비밀이 아니라 위치다(`GOOGLE_APPLICATION_CREDENTIALS`·
+    //  `AWS_SHARED_CREDENTIALS_FILE`) — 지우면 gcloud·aws·terraform 이 깨진다(2026-10-09 재검토).
+    if (SECRET_KEY_NAME_RE.test(k) && !(path.isAbsolute(v) && existsSync(v))) continue;
     base[k] = v;
   }
   // 명시 지정분은 그대로(사용자가 mcp.json 에 적은 의도된 위임 — 시크릿이어도 통과).

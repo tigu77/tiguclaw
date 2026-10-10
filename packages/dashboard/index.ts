@@ -191,6 +191,21 @@ const proxyJson = async (
 
 // 바이너리 프록시(첨부 파일) — 토큰 server-side 주입, bridge 의 content-type 보존. 첨부는
 // 작아(이미지 수십KB~수MB) arrayBuffer 버퍼링으로 충분(스트리밍 불요).
+/**
+ * 브리지가 붙인 **실행 차단 헤더** — 바이트 프록시가 그대로 옮긴다 (2026-10-09 적대 검토).
+ *
+ * ★종전엔 타입·캐시 두 개만 옮겨서 브리지가 첨부에 단 nosniff·CSP sandbox·attachment 가
+ *  **대시보드 오리진에서 통째로 빠졌다.** 브라우저가 실제로 받는 건 이 응답이라, 첨부 파일을
+ *  `<script src=/api/attachments/..>` 로 부르면 같은 오리진 스크립트로 실행됐다(실측).
+ *  판정(어떤 파일을 막나)은 브리지가 한다 — 여기는 고르지 않고 **있는 것을 옮기기만** 한다.
+ * ★응답 헤더 전체를 넘기지 않는 이유: 길이·인코딩은 `fetch` 가 이미 풀었고, 모르는 헤더를
+ *  가장자리에서 열어 주는 것보다 이름을 아는 안전 헤더만 옮기는 쪽이 넓어지지 않는다.
+ */
+const RAW_SAFETY_HEADERS = [
+  "x-content-type-options",
+  "content-security-policy",
+  "content-disposition",
+] as const;
 const proxyRaw = async (
   res: http.ServerResponse,
   bridgePath: string,
@@ -200,10 +215,15 @@ const proxyRaw = async (
       headers: { Authorization: `Bearer ${TOKEN}` },
     });
     const buf = Buffer.from(await r.arrayBuffer());
-    res.writeHead(r.status, {
+    const headers: Record<string, string> = {
       "Content-Type": r.headers.get("content-type") ?? "application/octet-stream",
       "Cache-Control": r.headers.get("cache-control") ?? "private, max-age=86400",
-    });
+    };
+    for (const h of RAW_SAFETY_HEADERS) {
+      const v = r.headers.get(h);
+      if (v !== null) headers[h] = v;
+    }
+    res.writeHead(r.status, headers);
     res.end(buf);
   } catch (e) {
     // ★**로그에 «왜» 를 남긴다** — 종전엔 `fetch failed` 라는 껍데기만 응답에 있고
@@ -218,9 +238,29 @@ const proxySse = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> => {
+  // ★끊김 감지를 **브리지에 거는 것보다 먼저** 단다 (2026-10-09 적대 검토). 종전엔
+  //  `await fetch` 뒤에 붙여서, 그 사이에 떠난 브라우저의 `close` 는 이미 지나간 뒤였다 —
+  //  들을 사람이 없는 브리지 연결이 **영구히** 남았다(재연결이 잦을수록 쌓인다).
+  //  fetch 자체도 같은 신호로 끊는다(헤더를 기다리는 중에 떠나도 붙잡지 않는다).
+  const ac = new AbortController();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let cancelled = false;
+  const cancel = (): void => {
+    if (cancelled) return;
+    cancelled = true;
+    ac.abort();
+    if (reader !== null) {
+      reader.cancel().catch(() => {
+        /* ignore */
+      });
+    }
+  };
+  req.on("close", cancel);
+  req.on("error", cancel);
   try {
     const r = await fetch(bridgeUrl("/events"), {
       headers: { Authorization: `Bearer ${TOKEN}` },
+      signal: ac.signal,
     });
     if (!r.ok || r.body === null) {
       res.writeHead(r.status, { "Content-Type": "text/plain; charset=utf-8" });
@@ -232,18 +272,8 @@ const proxySse = async (
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     });
-    const reader = r.body.getReader();
+    reader = r.body.getReader();
     const decoder = new TextDecoder();
-    let cancelled = false;
-    const cancel = (): void => {
-      if (cancelled) return;
-      cancelled = true;
-      reader.cancel().catch(() => {
-        /* ignore */
-      });
-    };
-    req.on("close", cancel);
-    req.on("error", cancel);
     while (!cancelled) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -260,6 +290,15 @@ const proxySse = async (
       /* ignore */
     }
   } catch (e) {
+    // 브라우저가 떠나서 우리가 끊은 것 — 브리지 실패가 아니다(로그에 «unreachable» 을 남기지 않는다).
+    if (cancelled) {
+      try {
+        res.end();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     // ★SSE 는 헤더가 이미 나갔으면 응답을 못 고친다 — 그래서 **로그가 유일한 기록**이다.
     //  종전엔 그 자리에도 아무것도 안 남겼다.
     console.warn(bridgeFailureLog(`${BRIDGE_HOST}:${String(BRIDGE_PORT)}`, "/events", e));

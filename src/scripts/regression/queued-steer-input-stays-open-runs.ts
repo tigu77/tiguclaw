@@ -245,24 +245,28 @@ const scenarios = async (): Promise<Assertion[]> => {
       await nextUuid(); // 첫 시도가 입력 하나를 이미 넘겼다 — 그 프로세스는 죽는다(시작 신호 없음)
       throw new Error("Claude Code process exited with code 1");
     }
+    // ★죽은 시도에 넘긴 메시지는 **새 시도가 다시 받는다**(2026-10-09 전체 적대 검토 P3 — 종전엔 죽은 프로세스와 함께 사라졌다).
+    //  그래서 새 시도는 되돌려 받은 것 1 + 새로 온 것 1 = 둘을 당긴다.
+    const u0 = await nextUuid();
     steering.push({ text: "추가", raw: "추가", ts: Date.now() }); // 새 시도 중에 온 사용자 메시지
     const u = await nextUuid();
-    yield life(u, "queued");
+    const both = [u0, u].filter((x): x is string => x !== undefined);
+    for (const x of both) yield life(x, "queued");
     yield say("A1");
     yield done("A1");
-    yield life(u, "started");
+    for (const x of both) yield life(x, "started");
     yield init();
-    yield say("B2", u !== undefined ? [u] : []);
-    yield life(u, "completed");
+    yield say("B2", both);
+    for (const x of both) yield life(x, "completed");
     yield done("B2");
     atEnd9 = await closedNow();
   }, { threadKey: TK, attempts });
   const oldPulled = attempts[0]?.pulled.length ?? -1;
   const newPulled = attempts[1]?.pulled.length ?? -1;
   out.push({
-    name: "★⑨ 재시도 뒤 온 메시지는 새 시도가 받는다(옛 시도가 가로채 죽은 프로세스에 쓰지 않는다)",
-    ok: attempts.length === 2 && oldPulled === 1 && newPulled === 1 && r9.text === "A1\n\nB2",
-    got: `시도 ${attempts.length}회 · 옛 시도가 당김=${oldPulled}(재시도 전 1) · 새 시도가 당김=${newPulled} ${JSON.stringify(r9)}`,
+    name: "★⑨ 재시도 뒤 온 메시지는 새 시도가 받는다(옛 시도가 가로채 죽은 프로세스에 쓰지 않는다) · 죽은 시도에 넘긴 것도 새 시도가 다시 받는다",
+    ok: attempts.length === 2 && oldPulled === 1 && newPulled === 2 && r9.text === "A1\n\nB2",
+    got: `시도 ${attempts.length}회 · 옛 시도가 당김=${oldPulled}(재시도 전 1) · 새 시도가 당김=${newPulled}(되돌린 1 + 새 1) ${JSON.stringify(r9)}`,
   });
   out.push({
     name: "⑨ 죽은 시도에 넘긴 입력이 새 시도의 줄에 남지 않는다 — 새 시도의 result 에서 바로 닫힌다",

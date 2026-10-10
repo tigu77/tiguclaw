@@ -307,6 +307,10 @@
         renderedNoticeKeys.clear();
         cardByThread.clear();          // 진행 카드 참조(제거된 DOM) — 새 세션서 재빌드.
         pendingQueued.length = 0;      // 낙관적 대기 버블(active DOM 참조) — 승격 대상 초기화.
+        // ★보류된 그리기도 버린다 (2026-10-09) — 보류분은 **도착 당시 활성 탭**에 붙일 그리기라
+        //  (세션 판정은 도착 때 끝났다) 탭을 옮긴 뒤 흘리면 다른 세션 리스트에 붙는다. 원본은
+        //  chat_log 에 있고 새 탭은 자기 이력을 다시 받는다 = 손실 아님.
+        heldSseEvents.length = 0;
         localChatCount = 0;
         setOldestCursor([], null); // 두 축 함께 리셋(안 하면 옛 세션 id 가 샌다).
         reachedOldest = false;
@@ -417,7 +421,8 @@
           void (already ? Promise.resolve() : lastHistoryLoad)
             .then(() => (window.jumpToMessageTs ? window.jumpToMessageTs(ts) : "no-api"))
             .then((r) => {
-              if (r !== "ok" && typeof window.notifyJumpMiss === "function") window.notifyJumpMiss(r);
+              // "switched" = 점프 도중 사용자가 다른 탭으로 갔다 — 실패가 아니라 떠난 것이라 알리지 않는다.
+              if (r !== "ok" && r !== "switched" && typeof window.notifyJumpMiss === "function") window.notifyJumpMiss(r);
             })
             .catch(() => {});
         }

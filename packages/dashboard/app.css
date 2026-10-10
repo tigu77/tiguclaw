@@ -851,8 +851,8 @@
       .prompt-option-btn:disabled { opacity:.5; cursor:default; }
       .prompt-option-btn.picked { background:rgb(var(--accent-2-rgb) / .18); border-color:var(--accent-2); color:var(--text); opacity:1; }
       /* "기타(직접 입력)" 인라인 행 — 옵션 버튼 아래 항상. 입력칸 + 보내기. */
-      .prompt-other-row { display:flex; gap:6px; margin-top:7px; align-items:center; }
-      .prompt-other-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border-strong); border-radius:11px; padding:8px 12px; font-size:0.75rem; }
+      .prompt-other-row { display:flex; gap:6px; margin-top:7px; align-items:flex-end; }
+      .prompt-other-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border-strong); border-radius:11px; padding:8px 12px; font-size:0.75rem; font-family:inherit; line-height:1.4; resize:none; max-height:10em; overflow-y:auto; }
       .prompt-other-input::placeholder { color:var(--text-dim); }
       .prompt-other-input:focus { outline:none; border-color:rgb(var(--accent-rgb) / .55); }
       .prompt-other-send { flex:none; background:var(--card); color:var(--text); border:1px solid var(--border-strong); border-radius:11px; padding:8px 13px; font-size:0.75rem; font-weight:750; cursor:pointer; transition:background .12s, border-color .12s; }
@@ -1561,6 +1561,7 @@
       .slash-item.active { background:rgb(var(--accent-rgb) / .14); }
       .slash-group { padding:8px 10px 3px; font-size:0.65625rem; font-weight:650; color:var(--text-mute); border-top:1px solid var(--border); margin-top:4px; }
       .slash-name { color:var(--accent); font-weight:750; font-size:0.75rem; white-space:nowrap; }
+      .slash-folder { color:var(--text-dim); font-size:0.71875rem; white-space:nowrap; }
       .slash-desc { color:var(--text-mute); font-size:0.6875rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       #chat-form { display:flex; gap:8px; align-items:flex-end; }
       /* CSS-only 자동 높이 — 매 키입력마다 height=auto + scrollHeight 읽기(강제 동기 리플로우,
@@ -1847,6 +1848,9 @@
       .cm-kebab { flex:none; border:1px solid transparent; background:transparent; color:var(--text-mute); cursor:pointer; font-size:0.8125rem; line-height:1; padding:2px 6px; border-radius:8px; opacity:.7; }
       .cm-kebab:hover { opacity:1; background:var(--card-hover); color:var(--text); }
       .ctx-menu { position:fixed; z-index:400; min-width:160px; max-width:280px; background:var(--panel-solid); border:1px solid var(--border-strong); border-radius:12px; box-shadow:var(--shadow); padding:6px; display:flex; flex-direction:column; gap:1px; }
+      /* ★높이 상한 (2026-10-09 적대 검토) — 항목이 많으면(커맨드 30개 = 1220px) 아래 항목이 창 밖으로 나가 닿을 수 없었다.
+         창 안에 가두고 메뉴 **안에서** 스크롤한다. 끝에서 페이지로 스크롤이 번지면 «바깥 스크롤 = 닫기» 에 걸려 메뉴가 닫히므로 막는다. */
+      .ctx-menu { max-height:calc(100vh - 16px); max-height:calc(100dvh - 16px); overflow-y:auto; overscroll-behavior:contain; }
       .cm-item { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:8px; font-size:0.78125rem; color:var(--text); cursor:pointer; outline:none; }
       .cm-item:hover, .cm-item:focus { background:var(--card-hover); }
       .cm-item.cm-danger { color:var(--bad); }
@@ -1854,6 +1858,8 @@
       .cm-item.cm-disabled { color:var(--text-dim); cursor:default; opacity:.55; }
       .cm-item .cm-icon { flex:none; font-size:0.8125rem; width:16px; text-align:center; }
       .cm-item .cm-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .cm-item .cm-sub-arrow { flex:none; margin-left:auto; color:var(--text-dim); }
+      .cm-item.cm-open { background:var(--card-hover); }
       .cm-sep { height:1px; margin:5px 4px; background:var(--border); flex:none; }
       .cm-header { padding:6px 10px 4px; font-size:0.6875rem; font-weight:650; color:var(--text-mute); }
       @media (max-width: 900px) {

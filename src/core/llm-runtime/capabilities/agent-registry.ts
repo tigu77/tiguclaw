@@ -25,6 +25,8 @@
  *    `discoverAgents(cwd)` 결과를 SDK `options.agents` 로 주입 → native Task tool
  *    이 발견·실행. 이전 "SDK 자동 발견 — 본 모듈 호출 0" 전제는 거짓이었다.
  */
+import { untrustedDelegationNote } from "../../project-trust.js";
+import { coreMcpServer } from "./_core-server.js";
 import { tierDescription, unresolvableTierText } from "./tier-description.js";
 import { getEventBus } from "../../eventbus.js";
 import { DAEMON_SUBAGENT_TOOL } from "../subagent-tools.js";
@@ -34,7 +36,6 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -368,7 +369,7 @@ const errText = (text: string) => ({
  *  - 프롬프트 조립(`정의 + [Subagent Task]`)
  *  - `toolPolicy`: `tools: none` → {mode:"none"} / 콤마 리스트 → allow / 미지정 → undefined
  *  - `leanMemory`: `tools: none` 에이전트는 메모리 생략(단순작업 child)
- *  - `presentOptions` 전파: 없으면 자식이 선택지를 못 낸다(부모와 동일 능력이 원칙)
+ *  - `presentOptions` 는 **넘기지 않는다**(아래 주석 — 답이 돌아올 자리가 없다)
  */
 const buildAgentChildInput = (o: {
   jobId: string;
@@ -393,13 +394,10 @@ const buildAgentChildInput = (o: {
     abortSignal: o.abortSignal,
     ...(toolPolicy !== undefined ? { toolPolicy } : {}),
     ...(leanMemory ? { leanMemory: true } : {}),
-    // presentOptions 전파(2026-07-17, AskUserQuestion 차단 파리티) — 부모 채널의
-    // 인터랙티브 선택지 렌더 클로저를 자식에도 상속. 이게 없으면 prompt-options MCP 가
-    // 자식 turn 에 미등록(claude-agent-sdk.ts 게이트 = presentOptions!==undefined) →
-    // 자식이 "선택지 제시 불가"로 저하한다.
-    ...(o.parentInput.presentOptions !== undefined
-      ? { presentOptions: o.parentInput.presentOptions }
-      : {}),
+    // ★presentOptions 는 **전파하지 않는다** (2026-10-09 적대 검토 — 2026-07-17 전파를 되돌림). 자식이 띄운 선택지는
+    //  어댑터가 `agent:<jobId>` 좌표로 대기 답을 기억하는데, 사용자의 답은 **사람의 세션**으로 들어온다 — 그 답을 받을
+    //  자리가 자식에게 없어 보기만 뜨고 고른 값은 아무에게도 안 갔다. 서브는 물을 게 생기면 결과로 **부모에게 보고**하고,
+    //  사용자에게 묻는 것은 사람과 대화 중인 부모가 한다(prompt-options 미등록 = 그 도구가 안 보인다).
     ...(o.steering !== undefined ? { steering: o.steering } : {}),
   };
 };
@@ -823,7 +821,8 @@ export const createSpawnAgentMcpServer = (
           return okText(
             `'${args.name}' 를 백그라운드로 시작했습니다 (jobId=${jobId}).\n` +
               `기다리지 않고 계속 진행하세요 — 끝나면 결과가 당신에게 돌아옵니다.\n` +
-              `진행 상황은 list_workers, 중지는 cancel_worker 로 볼 수 있습니다.`,
+              `진행 상황은 list_workers, 중지는 cancel_worker 로 볼 수 있습니다.` +
+              untrustedDelegationNote(targetCwd),
           );
 
 
@@ -1054,7 +1053,7 @@ export const createSpawnAgentMcpServer = (
     },
   );
 
-  return createSdkMcpServer({
+  return coreMcpServer({
     name: "agents",
     version: "1.1.0",
     tools: onDemand([spawnTool, waitForWorker, readWorkerResult, findAgentsTool], ["find_agents"]),

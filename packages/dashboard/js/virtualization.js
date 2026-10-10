@@ -84,9 +84,15 @@
       //  replay 빈도가 올라 눈에 띄기 시작했다.
       //  ★플래그로 최신 ts 를 들고 다니면 탭 전환·이력 재빌드마다 초기화 지점이 늘어난다
       //   (오늘 stickBottom 에서 겪은 실패). 리스트 끝에서 읽으면 언제나 참이다.
+      //  ★**브라우저 시계로 찍은 항목은 건너뛴다** (2026-10-09 적대 검토). 낙관적 버블·로컬
+      //   안내는 서버 ts 가 없어 `Date.now()` 를 쓰는데, 브라우저 시계가 데몬보다 5초+ 빠르면
+      //   그 값이 «최신» 이 되어 **진행 중 턴의 도구 스텝·최종 답이 stale replay 로 버려졌다.**
+      //   순서 판정은 같은 시계(서버)끼리만 비교한다 — 그런 항목엔 `data-clock="local"` 이 붙는다.
       const vtNewestTs = () => {
         for (let i = vtItems.length - 1; i >= 0; i--) {
-          const t = vtTsOf(vtItems[i].node);
+          const n = vtItems[i].node;
+          if (n && n.dataset && n.dataset.clock === "local") continue;
+          const t = vtTsOf(n);
           if (t !== null && Number.isFinite(t)) return t;
         }
         return 0;
@@ -1133,6 +1139,7 @@
         // 매니저/서브 스폰 칩(.act-bg-link)과 클릭 핸들러 패턴 동형 — 스텝 펼침 클릭과 분리.
         killBtn.addEventListener("click", (ev) => {
           ev.stopPropagation();
+          // ★확인은 `requestKillShell` 안에서 한 번 묻는다(view-shells.js) — 여기서 또 물으면 두 번 묻는다(2026-10-09 재검토).
           if (typeof requestKillShell === "function") void requestKillShell(shellId);
         });
         chip.appendChild(dot); chip.appendChild(txt); chip.appendChild(sdkNote); chip.appendChild(killBtn);

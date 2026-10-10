@@ -49,6 +49,7 @@
  *  - 위험 명령·위험 경로 차단은 *LLM 측 정책* (sysprompt prompt-gated). MCP server
  *    본체는 DISALLOWED_TOOLS/DISALLOWED_URLS 만 차단 (정책 진실 소스 hook) — 경로 벽 0.
  */
+import { coreMcpServer } from "./_core-server.js";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
@@ -58,7 +59,6 @@ import { withFileMutation } from "./_file-mutation.js";
 import { promisify } from "node:util";
 import { z } from "zod";
 import {
-  createSdkMcpServer,
   tool,
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -82,6 +82,26 @@ import {
 } from "../../../store/bg-shells.js";
 
 const execFileP = promisify(execFile);
+
+/**
+ * rg 결과 받기 — 매칭 없음(1)은 빈 결과, **출력 상한에 걸리면 받은 데까지** 준다 (2026-10-09 적대 검토).
+ * ★종전엔 상한을 넘으면 통째로 오류였다 — `head_limit:5` 를 줘도 매칭이 12MB 면 «maxBuffer 초과» 하나만 돌아왔다.
+ *  잘린 마지막 줄은 버리고, `overflowed` 로 «더 있다» 를 알린다(조용히 자르면 모델이 그게 전부로 읽는다).
+ */
+const rgCollect = async (args: string[], maxBuffer: number): Promise<{ stdout: string; overflowed: boolean }> => {
+  try {
+    const { stdout } = await execFileP(rgPath(), args, { maxBuffer });
+    return { stdout, overflowed: false };
+  } catch (e) {
+    const err = e as { stdout?: string; code?: number | string };
+    if (err.code === 1) return { stdout: "", overflowed: false };
+    if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && typeof err.stdout === "string") {
+      const cut = err.stdout.lastIndexOf("\n");
+      return { stdout: cut < 0 ? "" : err.stdout.slice(0, cut), overflowed: true };
+    }
+    throw e;
+  }
+};
 
 // 셸 선택 — env 블록(runtime-env.ts formatEnvContext)의 Shell 힌트와 단일 소스
 // (계약 §0 핵심통찰: 모델이 뱉는 문법 = 도구가 실행하는 셸 = 항상 일치). 모듈 로드
@@ -436,11 +456,11 @@ export const killAllBgShellsSync = (): number => {
 
 // baseCwd 주입(3b) — 백그라운드 셸도 턴 cwd 기준으로 실행(포그라운드 Bash 와 대칭).
 // threadKey(ADR Phase 2 §1) — 어느 대화 턴이 이 셸을 띄웠나(관측용, 미전파 시 "" 폴백).
+// ★env 는 받지 않는다 — 셸은 **늘** 시크릿을 지운 env 로 뜬다(아래 spawn 의 `buildChildEnv()`, 판정 한 곳).
 const launchBgShell = async (
   command: string,
   cwd: string,
   threadKey: string,
-  env?: NodeJS.ProcessEnv,
 ): Promise<string> => {
   // 끝난 셸 하나 정리해 상한 압박 완화(전부 running 이면 그대로 진행 — 20 이면 충분).
   if (BG_SHELLS.size >= BG_MAX) {
@@ -456,7 +476,9 @@ const launchBgShell = async (
   // 않는다: 데몬이 child 핸들을 계속 들고 stdout/stderr/close 를 추적해야 BashOutput/
   // KillShell 이 정상 동작(unref 는 이벤트루프 이탈만 막을 뿐 추적엔 무관하나, 명시로
   // "추적 유지 의도"를 박아둔다 — ADR §3-1).
-  const child = spawn(SHELL.bin, SHELL.argsFor(command), shellSpawnOptions(SHELL, env === undefined ? { cwd } : { cwd, env }, { processGroup: true }));
+  // ★데몬의 시크릿은 물려주지 않는다 (2026-10-08 `run:` · 2026-10-09 Bash 도구 — 적대 검토). 비서가 띄우는 셸이 봇 토큰·
+  //  API 키·OAuth 를 그대로 받았다(`env` 한 줄이면 대화·로그로 샌다). 판정은 외부 MCP 자식과 같은 `buildChildEnv`.
+  const child = spawn(SHELL.bin, SHELL.argsFor(command), shellSpawnOptions(SHELL, { cwd, env: buildChildEnv() }, { processGroup: true }));
   const pgid = child.pid ?? -1;
   const startedAt = Date.now();
   const shell: BgShell = {
@@ -586,8 +608,8 @@ export const startBackgroundShell = async (
   threadKey: string,
 ): Promise<{ shellId: string; done: Promise<BgShellResult> }> => {
   // ★데몬의 시크릿은 물려주지 않는다 (2026-10-08 적대 검토) — 연결한 프로젝트의 스크립트(남의 레포일 수 있다)가 봇 토큰·
-  //  API 키를 받던 것. 판정은 외부 MCP 자식과 같은 `buildChildEnv`(이름으로 시크릿을 가른다).
-  const shellId = await launchBgShell(command, cwd, threadKey, buildChildEnv());
+  //  API 키를 받던 것. 판정은 `launchBgShell` 안의 `buildChildEnv` 한 곳(Bash 도구 셸과 같다).
+  const shellId = await launchBgShell(command, cwd, threadKey);
   const s = BG_SHELLS.get(shellId)!;
   const done = new Promise<BgShellResult>((resolve) => {
     let settled = false;
@@ -844,6 +866,10 @@ export const reapPreviousGeneration = async (): Promise<void> => {
     return;
   }
   for (const row of rows) {
+    // ★이 프로세스가 띄워 지금 들고 있는 셸은 «이전 세대» 가 아니다 (2026-10-09 적대 검토 P3). 종전엔 status='running'
+    //  행을 라벨만 보고 전부 죽여, 리퍼가 채널 뒤에 돌면 방금 띄운 `/project run`·백그라운드 셸까지 SIGKILL 했다.
+    //  런타임 진실은 BG_SHELLS 다 — 여기 있으면 내 것이다.
+    if (BG_SHELLS.has(row.bashId)) continue;
     try {
       const nowLabel = await captureProcessLabel(row.pid);
       const identityMatch =
@@ -1075,6 +1101,8 @@ const makeFileOpsTools = (
   includeWebSearch: boolean,
   /** 턴/매니저 중단 신호 — /stop·취소가 실행 중인 포그라운드 셸까지 끊게 한다(G, 2026-07-28). */
   abortSignal?: AbortSignal,
+  /** 주어지면 `Read` 는 **이 경로들만** 연다(중립 턴의 첨부 — 아래 `readsOnly`). */
+  readAllow?: ReadonlySet<string>,
 ) => {
   // ★이 Map 이 곧 "턴 스코프" — createFileOpsMcpServer 가 턴마다 새로 호출되므로
   //  (openai-codex-oauth.ts:490) 클로저 하나가 그 턴의 수명과 정확히 일치한다.
@@ -1099,6 +1127,10 @@ const makeFileOpsTools = (
     async (args) => {
       try {
         const abs = resolvePath(args.path);
+        // ★허용 목록이 있으면 그 밖은 열지 않는다 — **stat 도 하기 전에**(존재 여부도 새면 안 된다).
+        if (readAllow !== undefined && !readAllow.has(path.resolve(abs))) {
+          return errText(`이 턴에서는 첨부된 파일만 읽을 수 있습니다: ${args.path}`);
+        }
         const stat = await fs.stat(abs);
         if (!stat.isFile()) {
           return errText(`path 가 파일이 아닙니다: ${abs}`);
@@ -1215,16 +1247,7 @@ const makeFileOpsTools = (
       try {
         const cwd = args.cwd !== undefined ? resolvePath(args.cwd) : base;
         // rg `--files` = cwd 내 모든 파일 나열 (.gitignore 존중), `-g <pattern>` 으로 필터.
-        const { stdout } = await execFileP(
-          rgPath(),
-          ["--files", "-g", args.pattern, cwd],
-          { maxBuffer: GLOB_MAX_BUFFER },
-        ).catch(
-          (e: NodeJS.ErrnoException & { stdout?: string; code?: number }) => {
-            if (e.code === 1) return { stdout: "" };
-            throw e;
-          },
-        );
+        const { stdout, overflowed } = await rgCollect(["--files", "-g", args.pattern, cwd], GLOB_MAX_BUFFER);
         const lines = stdout.split("\n").filter((l) => l.length > 0);
         // ★**최근 수정 순**으로 준다 (2026-08-09). claude 빌트인 Glob 이 그렇게 주고, 그게
         //  실제로 유용하다 — "방금 건드린 파일" 이 위로 온다. rg 는 파일시스템 순서라
@@ -1248,8 +1271,8 @@ const makeFileOpsTools = (
         //  원칙이 갈린다. 조용한 절단은 모델이 "그게 전부" 로 읽는다.
         return okText(
           JSON.stringify(
-            withMtime.length > files.length
-              ? { results: files, truncated: true, total: withMtime.length }
+            withMtime.length > files.length || overflowed
+              ? { results: files, truncated: true, total: overflowed ? `${String(withMtime.length)}+` : withMtime.length }
               : files,
           ),
         );
@@ -1374,27 +1397,17 @@ const makeFileOpsTools = (
           }
         }
         rgArgs.push("-e", args.pattern, searchPath);
-        const { stdout } = await execFileP(rgPath(), rgArgs, {
-          maxBuffer: GREP_MAX_BUFFER,
-        }).catch(
-          (e: NodeJS.ErrnoException & { stdout?: string; code?: number }) => {
-            // ripgrep exit code 1 = no matches (정상). code !== 0 && stdout 부재면 오류.
-            if (e.code === 1) {
-              return { stdout: "" };
-            }
-            throw e;
-          },
-        );
+        const { stdout, overflowed } = await rgCollect(rgArgs, GREP_MAX_BUFFER); // 1 = 매칭 없음(정상) · 상한이면 받은 데까지
         const lines = stdout.split("\n").filter((l) => l.length > 0);
         // ★상한이 둘이다: 모델이 지정한 head_limit(의도)과 우리 안전망(GREP_MAX_LINES).
         //  둘 중 작은 쪽을 쓰고, **잘렸으면 말한다** — 조용히 자르면 모델이 "그게 전부" 로 읽는다.
         const cap = Math.min(args.head_limit ?? GREP_MAX_LINES, GREP_MAX_LINES);
         const sliced = lines.slice(0, cap);
-        const truncated = lines.length > sliced.length;
+        const truncated = lines.length > sliced.length || overflowed;
         return okText(
           JSON.stringify(
             truncated
-              ? { mode, results: sliced, truncated: true, total: lines.length }
+              ? { mode, results: sliced, truncated: true, total: overflowed ? `${String(lines.length)}+` : lines.length }
               : sliced,
           ),
         );
@@ -1454,7 +1467,16 @@ const makeFileOpsTools = (
           if (!stat.isFile()) {
             return errText(`path 가 파일이 아닙니다: ${abs}`);
           }
-          const original = await fs.readFile(abs, "utf8");
+          const raw = await fs.readFile(abs);
+          const original = raw.toString("utf8");
+          // ★UTF-8 이 아닌 파일(CP949 등)은 고치지 않는다 — 풀었다 다시 쓰면 못 읽은 바이트가 U+FFFD 로 바뀌어 **영구 손상**된다
+          //  (2026-10-09 적대 검토: 한글 CP949 파일이 «성공» 보고와 함께 깨졌다). 무손실로 되돌아오는지만 본다.
+          if (!Buffer.from(original, "utf8").equals(raw)) {
+            return errText(
+              `UTF-8 이 아닌 파일이라 Edit 로 고치지 않습니다(그대로 다시 쓰면 글자가 깨집니다): ${abs}. ` +
+                "인코딩을 아는 도구(예: iconv 로 변환 후 수정)로 다뤄 주세요.",
+            );
+          }
           // 매칭 카운트 — split 길이 - 1 = 발생 횟수.
           const occurrences = original.split(args.old_string).length - 1;
           if (occurrences === 0) {
@@ -1470,7 +1492,7 @@ const makeFileOpsTools = (
           }
           const next = replaceAll
             ? original.split(args.old_string).join(args.new_string)
-            : original.replace(args.old_string, args.new_string);
+            : original.replace(args.old_string, () => args.new_string); // ★함수로 넘긴다 — 문자열이면 `$&`·`$'` 가 치환 패턴으로 해석돼 파일 뒷부분이 끼어든다
           await fs.writeFile(abs, next, "utf8");
           return okText(
             `Edited ${abs} — replaced ${replaceAll ? occurrences : 1} occurrence(s).`,
@@ -1488,7 +1510,7 @@ const makeFileOpsTools = (
   // 밖 접근은 벽 없이 허용, 위험 경로는 sysprompt prompt-gated).
   const bashTool = tool(
     "Bash",
-    `셸 명령을 실행합니다 (${SHELL.label} 로 실행). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. 각 호출은 기본 작업폴더에서 시작합니다. Read로 다른 폴더의 파일을 읽거나 이전 Bash에서 cd해도 다음 호출의 cwd는 바뀌지 않습니다. 다른 폴더의 명령은 같은 호출에서 cd한 뒤 실행하거나 절대경로를 사용하세요. **긴 명령(빌드·서버·스크립트)은 \`run_in_background: true\` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput(wait_seconds) 로 기다리고, KillShell 로 종료.**`,
+    `셸 명령을 실행합니다 (${SHELL.label} 로 실행). timeout 디폴트 120s / max 600s. stdout/stderr 각 1MB cap. 각 호출은 기본 작업폴더에서 시작합니다. Read로 다른 폴더의 파일을 읽거나 이전 Bash에서 cd해도 다음 호출의 cwd는 바뀌지 않습니다. 다른 폴더의 명령은 같은 호출에서 cd한 뒤 실행하거나 절대경로를 사용하세요. **긴 명령(빌드·서버·스크립트)은 \`run_in_background: true\` 로 띄우면 즉시 bash_id 를 받고 막히지 않는다 — 이후 BashOutput(wait_seconds) 로 기다리고, KillShell 로 종료.** 데몬의 비밀 환경변수(이름에 KEY·TOKEN·SECRET·PASSWORD 등)는 셸에 넘어가지 않습니다 — 키가 꼭 필요하면 **명령 텍스트에 적지 말고**(대화 기록에 남는다) 키 파일 경로를 쓰거나, 사용자가 직접 실행하도록 알리세요.`,
     {
       command: z.string().min(1),
       timeout: z.number().int().min(1).optional().describe("타임아웃 (초 단위, 기본 120, 최대 600)"),
@@ -1534,16 +1556,22 @@ const makeFileOpsTools = (
       const child = spawn(
         SHELL.bin,
         SHELL.argsFor(args.command),
-        shellSpawnOptions(SHELL, { cwd: base }, { processGroup: true }),
+        // 시크릿을 지운 env — 백그라운드 셸(launchBgShell)과 같은 판정(`buildChildEnv`).
+        shellSpawnOptions(SHELL, { cwd: base, env: buildChildEnv() }, { processGroup: true }),
       );
       const childPid = child.pid ?? -1;
       if (childPid > 1) {
         FOREGROUND_SHELL_PIDS.add(childPid);
         ensureBgShellExitHook();
       }
+      // 셸은 끝났는데 같은 그룹에 남은 자식 때문에 출력을 더 기다리는 중일 때만 채워진다 — 그때 그룹을 죽이면 여기서 끝낸다.
+      let finishAfterKill: (() => void) | undefined;
       const killGroup = (): void => {
         if (childPid > 1) void killTree(childPid, "SIGKILL");
         else child.kill("SIGKILL"); // spawn 실패(pid 미할당) 방어 — 그룹 시그널 금지.
+        // ★셸이 먼저 끝나 그룹의 남은 자식을 기다리던 중이면, 그룹을 죽여도 새 세션으로 빠진 손자가 파이프를 쥐어 `close` 가
+        //  영영 안 온다 — 남은 자식과 setsid 손자가 함께 있을 때 시한·/stop 이 듣지 않았다(2026-10-10 재검토). 죽였으면 끝낸다.
+        finishAfterKill?.();
       };
 
       // stdout/stderr 수집 — cap 초과 시 즉시 죽이고 maxBuffer 로 보고(execFile 동형).
@@ -1570,6 +1598,34 @@ const makeFileOpsTools = (
         (resolve) => {
           child.once("error", (err) => resolve({ code: null, signal: null, err }));
           child.once("close", (code, signal) => resolve({ code, signal }));
+          // ★`close` 는 **모든 출력 파이프가 닫혀야** 온다 — 새 세션으로 빠진 손자(setsid·데몬화)가 파이프를 쥐면 영영 안 온다.
+          //  그러면 시한·/stop 이 그룹을 죽여도 이 도구가 끝나지 않았다(2026-10-09 적대 검토: timeout 3초에 12초+ 매달림).
+          //  셸이 끝났으면 짧게 기다렸다가 파이프를 끊고 끝낸다 — 백그라운드 셸이 이미 쓰는 «종료 + 200ms» 와 같다.
+          // ★단, **같은 그룹에 아직 남은 자식**이 있으면(`cmd &` 처럼 셸이 띄우고 먼저 끝난 것) 종전대로 출력이 끝나기(또는 시한)를
+          //  기다린다 — 끊으면 그 출력을 잃고 «exit 0» 으로 보고했다(2026-10-09 재검토). 끊는 것은 새 세션으로 **빠져나간** 손자뿐이다.
+          child.once("exit", (code, signal) => {
+            if (process.platform !== "win32" && childPid > 1) {
+              try {
+                process.kill(-childPid, 0);
+                finishAfterKill = () => {
+                  finishAfterKill = undefined;
+                  setTimeout(() => {
+                    child.stdout?.destroy();
+                    child.stderr?.destroy();
+                    resolve({ code, signal });
+                  }, 200).unref?.();
+                };
+                return; // 그룹에 남은 게 있다 — close·시한·/stop 이 끝낸다
+              } catch {
+                /* 그룹이 비었다 — 파이프를 쥔 건 그룹 밖(새 세션)이다 */
+              }
+            }
+            setTimeout(() => {
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+              resolve({ code, signal });
+            }, 200).unref?.();
+          });
         },
       );
       clearTimeout(timer);
@@ -2008,11 +2064,14 @@ export const createFileOpsMcpServer = (
      * cwd 를 홈 밖으로 옮기자 **첨부가 cwd 밖이 되어 비전이 죽었다**(2026-08-09 실측:
      * 모델이 Read 를 부르려다 실패). 그래서 첨부가 있는 중립 턴에만 Read 를 되돌려준다 —
      * 셸·검색·쓰기는 없다.
+     * ★값은 **이 턴의 첨부 경로 목록**이다 (2026-10-09 적대 검토 P4). 종전엔 `true` 로 Read 하나만 남겼을 뿐 경로
+     *  제한이 없어, 외부 앱이 시킨 중립 턴이 `/etc/hosts`·홈의 `.env` 까지 읽을 수 있었다. 첨부를 보여주려고
+     *  돌려준 도구이니 첨부만 연다.
      */
-    readsOnly?: boolean;
+    readsOnly?: readonly string[];
   },
 ): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+  coreMcpServer({
     name: "file-ops",
     version: "1.9.0",
     tools: (() => {
@@ -2023,8 +2082,9 @@ export const createFileOpsMcpServer = (
         // 검색이 없는 어댑터(openai)만 명시적으로 켠다.
         opts?.includeWebSearch === true,
         opts?.abortSignal,
+        opts?.readsOnly === undefined ? undefined : new Set(opts.readsOnly.map((p) => path.resolve(p))),
       );
-      if (opts?.readsOnly === true) {
+      if (opts?.readsOnly !== undefined) {
         return all.filter((t) => ((t as { name?: string }).name ?? "") === "Read");
       }
       if (opts?.shellsOnly !== true) return all;

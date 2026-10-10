@@ -509,6 +509,8 @@ export const planRejection = (why: PlanReject, detail?: string): string => {
       // ★**장부가 거짓이 되는 것**을 막는 거절이다(계약 2). 안 누른 키를 뗀다고 적으면,
       //  정리할 때 **우리 것이 아닌 키**를 놓게 된다 — 사용자가 누르고 있던 것을 깬다.
       return "누르지 않은 키를 떼려고 했습니다. `keydown` 과 `keyup` 은 **같은 열 안에서** 짝을 맞춰 주세요.";
+    case "type-while-held":
+      return `수식키(${detail ?? "?"})를 누른 채로는 글자를 넣을 수 없습니다 — 단축키로 바뀝니다. \`type\` 앞에서 \`keyup\` 으로 떼거나, 단축키가 목적이면 \`keydown\`/\`keyup\` 으로 그 키를 누르세요.`;
   }
 };
 
@@ -626,7 +628,8 @@ export type PlanReject =
   | "too-many"
   | "unbalanced-key"
   | "unsupported-key"
-  | "scroll-too-big";
+  | "scroll-too-big"
+  | "type-while-held";
 
 /**
  * **이 플랫폼에 없는 키 이름** — 순수 (2026-09-19, 아스트라 외부 검토 5-2).
@@ -699,6 +702,19 @@ export const supportedKey = (rawName: string, platform?: string): boolean => {
   //  ★보충 평면 문자를 **넣을** 길이 없어지는 것은 아니다 — 그건 `key` 가 아니라
   //   **`type` 원소**가 진다(유니코드 주입은 거기가 정본이다).
   return name.length === 1;
+};
+
+/**
+ * **열을 쏘는 자식의 시한** — 열이 허용한 시간만큼은 기다린다 (2026-10-09 전체 적대 검토).
+ *
+ * ★종전엔 고정 시한(맥 4초 · 윈도우 8초)인데, 도구는 `wait` 를 원소마다 5초까지·여러 개 허용했고 맥 `type` 은 원소마다
+ *  붙여넣기 지연(~0.33초)이 붙는다. 그래서 **허용한 열이 시한에 죽어** «불명 · 다시 보내지 마세요» 로 보고됐고, 맥은
+ *  붙여넣기 도중 죽으면 사용자 클립보드를 되돌리지 못했다. 판정은 여기 하나 — 두 실행부가 같이 쓴다.
+ */
+export const postTimeoutMs = (events: readonly LowEvent[], baseMs: number): number => {
+  let ms = baseMs;
+  for (const e of events) ms += e.t === "wait" ? e.ms : e.t === "unicode" ? 500 : 20;
+  return ms;
 };
 
 /**
@@ -831,6 +847,10 @@ export const planSteps = (
       }
       case "type": {
         if (st.text.length === 0) return { ok: false, why: "empty" };
+        // ★수식키를 누른 채로는 글자를 넣지 않는다 — 맥은 붙여넣기(⌘V)에 눌린 수식키가 얹혀 ⌘⇧V·⌥⌘V 같은 **딴 단축키**가
+        //  나가고 «완료» 로 보고됐다(2026-10-09 전체 적대 검토). 키 원소는 같은 경우를 실행부에서 막았는데 이 진입점만 비어 있었다.
+        const heldMods = heldKeys.filter((k) => isModifier(normalizeKey(k))); // 수식키만 — 다른 키를 누른 채 입력은 단축키가 되지 않는다
+        if (heldMods.length > 0) return { ok: false, why: "type-while-held", detail: heldMods.join("+") };
         guard();
         events.push({ t: "unicode", text: st.text });
         describes.push(`${st.text.length}자를 입력했습니다`);

@@ -65,7 +65,7 @@ export const check: RegressionCheck = {
         const context = vm.createContext({
           exports, process: { env }, args, adapterForTest: undefined, sdkQuery: sdkStop,
           enrichTranscripts: stop("enrichment"), resolveTier: stop("auth"),
-          claudeAuthAvailable: stop("auth"), resolveProviderConn: stop("auth"),
+          claudeAuthAvailable: stop("auth"), resolveProviderConn: stop("auth"), pickOpenAiConn: stop("auth"),
           getAuthProvider: stop("auth"), query: sdkStop, fetch: stop("network"),
           randomUUID: () => "dummy-uuid", buildSummarizeRequestBody: () => ({}),
           AbortController, setTimeout, clearTimeout, SUMMARY_TIMEOUT_MS: 10,

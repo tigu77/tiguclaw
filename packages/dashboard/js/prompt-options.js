@@ -58,8 +58,9 @@
         //  applyPick 이 참조하므로 먼저 생성(행 자체는 버튼 아래에 append).
         const otherRow = document.createElement("div");
         otherRow.className = "prompt-other-row";
-        const otherInput = document.createElement("input");
-        otherInput.type = "text";
+        // ★여러 줄 답을 쓸 수 있게 textarea 다(2026-10-10 정태님: 한 줄 input 이라 Shift+Enter 줄바꿈이 안 되고 바로 보내졌다).
+        const otherInput = document.createElement("textarea");
+        otherInput.rows = 1;
         otherInput.className = "prompt-other-input";
         otherInput.placeholder = i18n("opts.other");
         const otherSend = document.createElement("button");
@@ -89,8 +90,14 @@
           submitOptionValue(v);
         };
         otherSend.addEventListener("click", submitOther);
+        // Enter 규칙은 메인 입력창(perf.js)과 같다 — Shift+Enter 줄바꿈 · 한글 조합 중 Enter 는 조합 확정 · 터치 기기는 버튼으로 보낸다.
         otherInput.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") { e.preventDefault(); submitOther(); }
+          if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isTouchPrimary()) { e.preventDefault(); submitOther(); }
+        });
+        // 줄이 늘면 칸도 는다(상한은 CSS max-height — 넘으면 칸 안에서 스크롤).
+        otherInput.addEventListener("input", () => {
+          otherInput.style.height = "auto";
+          otherInput.style.height = otherInput.scrollHeight + "px";
         });
         for (const opt of options) {
           const val = String(opt.value != null ? opt.value : (opt.label || ""));

@@ -1,3 +1,9 @@
+// ★**반드시 첫 줄** — 다른 모듈이 env 를 읽기 전에 <home>/.env(레포 폴백)를 올린다 (2026-10-09 적대 검토).
+//  종전엔 «가장 먼저» 라는 주석을 단 채 16번째 줄에 있었다. ESM 은 앞선 import 를 **의존성째 먼저 평가**하므로
+//  reply-command·slash-commands 가 끌고 온 worker-jobs·codex 압축·idle-timeout 등이 모듈 상단에서 env 를 이미
+//  읽어 굳혔고, 홈 .env 의 29개 키(WORKER_TIMEOUT_MS·MCP_CALL_TIMEOUT_MS·CODEX_* 등)가 **조용히 무시**됐다.
+//  회귀 `env-loads-before-any-read` 가 이 파일의 import 순서 그대로 모듈을 올려 «로드 전에 읽힌 키 0» 을 잰다.
+import "./core/load-env.js";
 import { EVENT_TEXT_MAX, replyCommand } from "./core/entry/reply-command.js";
 import { migrateLegacyModelEnv } from "./core/legacy-model-env.js";
 import { turnSpend } from "./core/llm-runtime/turn-spend.js";
@@ -13,7 +19,8 @@ import {
   handleStatus,
 } from "./core/entry/slash-commands.js";
 import { formatResetAt, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
-import { flushEnvLoadLog } from "./core/load-env.js"; // ★가장 먼저 — 다른 모듈이 env 읽기 전 <home>/.env(레포 폴백) 로드.
+import { flushEnvLoadLog } from "./core/load-env.js";
+import { endTurn, refuseWhileClosing } from "./core/entry/turn-lifecycle.js";
 import { repairRipgrepAtBoot } from "./core/ripgrep.js";
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
 import os from "node:os";
@@ -154,6 +161,7 @@ import {
 } from "./core/restart.js";
 import { initFileLogging, logFatal } from "./core/logging.js";
 import { backupInfo } from "./store/backup.js";
+import { acquireHomeLock } from "./store/home-lock.js";
 import { startEventPersistence } from "./core/event-persist.js";
 import {
   enqueueThreadTurn,
@@ -179,7 +187,6 @@ import { deliverOutbound } from "./core/outbound.js";
 import { withReplyQuote } from "./core/reply-quote.js";
 import {
   closeWhenStopped,
-  reinjectUnlessStopped,
   stopReplyText,
   stoppedByUser,
   toSteeringInput,
@@ -332,6 +339,23 @@ if (logFile !== null) console.log(`tiguclaw logs: ${logFile}`);
 await ensureHome();
 console.log(`tiguclaw home: ${getPaths().home}`);
 
+// ★홈 하나에 데몬 하나 (2026-10-09 적대 검토 P4) — 홈이 생긴 직후·홈에 쓰기 시작하기(마이그레이션·DB) **전**.
+//  종전엔 두 번째 데몬이 막히지 않고 반쯤 살아, 부팅 복구가 첫 데몬의 돌던 잡을 «재시작으로 중단» 으로 덮고
+//  리퍼가 그 셸을 죽이고 스케줄이 두 번 발화했다. 이미 살아 있으면 **분명히 말하고** 나간다 — 감독자가 있으면
+//  스로틀대로 다시 시도하고, 첫 데몬이 내려가면 그때 쥔다. `logFatal` = 동기 기록(곧바로 exit 해도 남는다).
+{
+  const lock = acquireHomeLock(getPaths().home);
+  if (!lock.ok) {
+    logFatal(
+      `tiguclaw daemon: 이 홈(${getPaths().home})은 이미 다른 데몬${lock.holderPid > 0 ? `(pid ${lock.holderPid})` : ""}이 쓰고 있습니다 — ` +
+        `시작하지 않고 종료합니다(${lock.why}). 두 데몬이 한 홈을 쓰면 서로의 작업·셸·스케줄을 덮습니다. ` +
+        `그 데몬이 이미 꺼졌다면 ${getPaths().home}/daemon.lock 을 지우고 다시 시작하세요.`,
+    );
+    process.exit(1);
+  }
+  if (lock.reclaimed !== undefined) console.log(`[home-lock] 남은 잠금 회수 — ${lock.reclaimed}`);
+}
+
 // V9.4 — readAgent 경로가 홈으로 전환되므로, 레포 ./AGENT.md(사용자 인격)를 홈으로 1회
 // 마이그레이션 (홈이 untouched 시드일 때만 — 멱등·비클로버, 원본 보존). ensureHome 직후 필수.
 await migrateLegacyAgent(process.cwd());
@@ -405,6 +429,23 @@ setHookObserver((ev) => {
     payload: ev as unknown as Record<string, unknown>,
   });
 });
+
+// 백그라운드 셸(file-ops run_in_background) 부팅 reaper — ADR 2026-07-17 §4, Unit 1 Phase 1.
+// 이전 세대(재시작 전 데몬)가 띄운 detached 셸이 `daemon:restart`(kickstart -k) 잡그룹 이탈·hard-kill·크래시·
+// 전원상실로 살아남았을 수 있는 고아를 PID 재사용 신원검증 후 정리한다. never-throw — 실패해도 부팅 계속.
+// ★자리: **플러그인·채널을 열기 전** (2026-10-09 적대 검토 P3). 종전엔 채널 start 뒤에 돌아, 그 사이 이 세대가
+//  띄운 셸(스케줄·`/project run`)까지 «running 잔류 = 이전 세대» 로 보고 SIGKILL 했다. 지금은 아직 아무도 셸을
+//  못 띄운 자리에서 돌고, 리퍼 자신도 메모리에 있는 셸(=이 세대)은 건너뛴다(두 겹).
+try {
+  const { reapPreviousGeneration } = await import(
+    "./core/llm-runtime/capabilities/file-ops-mcp.js"
+  );
+  await reapPreviousGeneration();
+} catch (e) {
+  console.error(
+    `bg-shells reaper failed (부팅 계속): ${e instanceof Error ? e.message : String(e)}`,
+  );
+}
 
 const channels: Channel[] = [];
 
@@ -1402,58 +1443,17 @@ const handler: MessageHandler = async (msg) => {
   } finally {
     // 활동 표시 해제 — 마지막 참조일 때만 실제로 멈춘다(좌표 단위 refcount).
     releaseActivity();
-    // 등록 해제 — 단, 그 사이 새 턴이 덮어썼으면(직렬 큐라 이론상 없지만 방어) 건드리지 않음.
-    if (inflightTurns.get(msg.threadKey) === turnEntry) {
-      inflightTurns.delete(msg.threadKey);
-    }
-    // steering 채널 종료(ADR 2026-07-16 §5) — 턴 종료 시 close(멱등 — pending stream 대기자
-    // unblock)+삭제. flag off 면 steeringCh=undefined → no-op(회귀 0). 위 방어와 동형으로 그
-    // 사이 새 턴이 덮어썼으면 건드리지 않음.
-    if (steeringCh !== undefined) {
-      // close 를 먼저 — 이후 도착 push 는 false 반환 → 개입점이 새 턴으로 fall-through(손실 0).
-      steeringCh.close();
-      if (steeringChannels.get(msg.threadKey) === steeringCh) {
-        steeringChannels.delete(msg.threadKey);
-      }
-      // ★미소비 steering 재주입(2026-07-25 라이브 실측 스킵 버그) — 턴의 마지막 model-call
-      // *이후*·close *이전* 창에 push 된 입력은 소비할 경계(drain/stream)가 없어 buffer 에
-      // 남는다. 그런데 push 는 true 를 반환했으므로 개입점(serializedHandler)은 새 턴도 안
-      // 만들었다 → 그대로 두면 사용자 메시지가 대기도 처리도 아닌 채 조용히 스킵된다. close
-      // *후* 남은 buffer 를 drain 해 새 턴으로 재주입한다. ★원자성: close 전 push=버퍼(여기서
-      // drain 회수) / close 후 push=false(개입점이 새 턴) → 두 경로 어디로도 손실 0.
-      //
-      // ★단, 그 "손실 0" 은 **어댑터가 안 쓴 입력을 buffer 에 남겨줄 때만** 참이다
-      //  (2026-08-11 실사고). codex·openai 는 `drain()` 으로 당겨 쓰니 저절로 성립하지만,
-      //  claude 는 `stream()` 이 도착 즉시 **꺼내간다** — 그래서 마지막 model-call 이후
-      //  도착분이 SDK 새 턴으로 들어갔다가 턴 경계 가드에 버려지고, 여기 drain 은 빈 배열
-      //  이라 재주입도 안 돼 **사용자 메시지가 통째로 증발**했다. 지금은 claude 쪽
-      //  `steeringContents` 가 턴 종료 후 받은 입력을 push 로 되돌려 놓아 전제를 복원한다.
-      //  ★새 stream 소비형 어댑터를 붙일 때 같은 책임을 진다(회귀 steering-leftover-recovered).
-      const leftover = steeringCh.drain();
-      if (leftover.length > 0) {
-        // ★원문(raw)으로 재주입한다 (2026-07-27 라이브 버그 수정). 종전엔 framing 으로 감싼
-        //  `s.text` 를 그대로 써서 (a) 사용자 화면에 "내가 보낸 메시지" 로 framing 전문이
-        //  노출되고 (b) 새 턴엔 "이어갈 작업" 이 없는데 "하던 작업을 계속하라" 는 틀린 문맥이
-        //  모델에 들어갔다. framing 은 *진행 중 턴에 끼워넣을 때* 만 유효하다.
-        // 조립은 `buildReinjectMessage`(core/steering.ts) 한 곳 — 메시지마다 자기 답글 원문, 그 턴을 연 메시지의 원문은
-        //  비움, 재-echo 금지(synthetic: 끼워넣을 때 이미 화면에 떴다 — 사용자 지적 «같은 메시지가 두 번 보인다»).
-        //  ★`/stop` 으로 끝났으면 다시 태우지 않는다(어댑터 무관하게 버린다 — 건수는 /stop 답이 알렸다).
-        const reinject = reinjectUnlessStopped(turnAc.signal, msg, leftover);
-        if (reinject === null && stoppedByUser(turnAc.signal)) {
-          console.log(`[steer] /stop — 이 턴에 남은 끼워넣기 ${leftover.length}건은 다시 태우지 않고 버린다 thread=${msg.threadKey}`);
-        }
-        if (reinject !== null) {
-          // serializedHandler 경유 = thread 직렬 큐 합류(이 턴 finally 종료 후 실행) + 정상 턴
-          // 시맨틱. 재주입 시점엔 이 채널이 이미 close+삭제라 재-steer 안 됨(새 턴으로 처리).
-          void Promise.resolve(serializedHandler(reinject)).catch((e) => {
-            console.error(
-              "steering re-inject failed:",
-              e instanceof Error ? e.message : String(e),
-            );
-          });
-        }
-      }
-    }
+    // 출구 정리 — in-flight 해제 · 끼워넣기 채널 닫기 · 남은 끼워넣기 재주입. 판정은 `core/entry/turn-lifecycle.ts`
+    //  한 곳(그물 `turn-lifecycle-ends-cleanly` 가 실제로 돌려 본다). 재주입은 serializedHandler 경유 = 직렬 큐 합류.
+    endTurn({
+      msg,
+      entry: turnEntry,
+      inflight: inflightTurns,
+      steering: steeringCh,
+      steeringChannels,
+      signal: turnAc.signal,
+      reinject: (m) => serializedHandler(m),
+    });
   }
 };
 
@@ -1626,7 +1626,10 @@ const inboundLine = (msg: IncomingMessage, route: InboundRoute): string =>
     synthetic: msg.synthetic === true,
   });
 
-const serializedHandler: MessageHandler = (msg) => {
+// ★종료가 시작되면 새 턴을 열지 않는다(아래 `serializedHandler` 가 이 값을 본다 — 판정은 turn-lifecycle).
+let shuttingDown = false;
+
+const queueHandler: MessageHandler = (msg) => {
   // 아웃오브밴드 /restart — enqueueThreadTurn 직렬 큐를 건너뛰고 즉시 재시작.
   // 멈춘 턴(앞 턴 미완)이 있어도 큐 무관하게 프로세스를 죽여 respawn. /restart 는 프로세스를
   // 종료하므로 인플라이트 턴과 race 없음(다른 상태변경 명령 /clear 등은 in-band 유지).
@@ -1807,11 +1810,13 @@ const serializedHandler: MessageHandler = (msg) => {
   });
 };
 
+// 채널·재주입이 받는 입구 — 종료 중이면 맨 앞에서 거절한다(2026-10-09 적대 검토: 종료 중 도착한 메시지가 새 턴을
+//  열어 셸·잡을 만들다 force-exit 에 잘렸고, 종료 통지는 이미 지나가 그 턴은 아무에게도 «중단» 을 말하지 못했다).
+const serializedHandler: MessageHandler = refuseWhileClosing(() => shuttingDown, queueHandler);
+
 // 완료 재주입(onWorkerComplete)이 메인 핸들러를 재진입할 수 있게 등록 (W-I1 단일 인격).
 // 재주입도 직렬 큐를 타도록 serializedHandler 를 넘긴다(완료-turn ↔ 유저 turn 직렬).
 registerWorkerHandler(serializedHandler);
-
-let shuttingDown = false;
 
 const shutdown = async (signal: string): Promise<void> => {
   if (shuttingDown) return;
@@ -1982,7 +1987,10 @@ for (const ch of channels) {
     channels.map(async (c) => ({
       name: c.name,
       kind: c.name,
-      status: c.status ?? "up",
+      // ★지금 값을 읽는다 — 채널이 뒤에 status 를 내려도(폴링 사망 등) 부팅 때 값으로 굳지 않게(2026-10-09 적대 검토).
+      get status() {
+        return c.status ?? "up";
+      },
       // 이 채널을 제공하는 플러그인 — **나르기만** 한다(2026-09-08). 화면이 아이콘을
       // 부르려면 필요하다. 표시 이름은 카탈로그가 만든다(별도 필드 없음).
       ...((): { plugin?: string } => {
@@ -1997,24 +2005,6 @@ for (const ch of channels) {
 
 // 재시작으로 중단된 백그라운드 매니저를 사용자에게 정직 통지 (채널 start 후 — raw 아웃바운드).
 await recoverInterruptedJobs();
-
-// 백그라운드 셸(file-ops run_in_background) 부팅 reaper — ADR 2026-07-17 §4, Unit 1
-// Phase 1. `recoverInterruptedJobs` 와 동형 위치·논리: 이전 세대(재시작 전 데몬)가 띄운
-// detached 셸이 `daemon:restart`(kickstart -k) 잡그룹 이탈·hard-kill·크래시·전원상실로
-// 살아남았을 수 있는 고아를 PID 재사용 신원검증 후 정리한다(killAllBgShells 의 graceful
-// 경로가 못 미친 나머지 절반). never-throw(내부 완전 격리) — await 실패해도 부팅 불가 X.
-// 통지 없음(셸은 사용자 통지 대상 아님, ADR §4 — 매니저와 달리 조용히 reap). 사용자 turn 처리
-// 시작 전(채널 start 이후) 실행 — 신규 셸이 아직 없어 status='running' 잔류=전부 이전 세대.
-try {
-  const { reapPreviousGeneration } = await import(
-    "./core/llm-runtime/capabilities/file-ops-mcp.js"
-  );
-  await reapPreviousGeneration();
-} catch (e) {
-  console.error(
-    `bg-shells reaper failed (부팅 계속): ${e instanceof Error ? e.message : String(e)}`,
-  );
-}
 
 // 자가 업데이트 실패 통지 — 위임 CLI update(telegram /update)가 실패·롤백하면 조용히 옛
 // 버전으로 재가동될 뿐 요청자는 원인을 못 봤다(윈도우 "빌드 실패"). CLI 가 롤백 전 남긴

@@ -985,6 +985,15 @@ export const check: RegressionCheck = {
       await fsp.rm(ldir, { recursive: true, force: true });
     }
     out.push(assert("★엔드포인트 시계 검사는 CLI 를 실제로 못 쓰는 채로 돌았다(번들 실행기가 안 떴다)", cliSpawnsBlocked > 0, `막은 claude 실행 ${cliSpawnsBlocked}회`));
+    // ★오래된 값은 «N시간 전 측정» 과 함께 — 새로 못 재면 마지막 값을 보이는데, 시각이 없으면 며칠 전 숫자가 «지금» 으로 읽혔다
+    //  (2026-10-10 정태님: «한도가 항상 똑같이 나오네»). 최근 값엔 붙이지 않는다(소음).
+    {
+      const nowT = Date.now();
+      const w = [{ windowSeconds: 18_000, remainingPercent: 27 }];
+      const old = formatUsageLine({ windows: w, measuredAt: nowT - 5 * 3_600_000 }, nowT);
+      const fresh = formatUsageLine({ windows: w, measuredAt: nowT - 5 * 60_000 }, nowT);
+      out.push(assert("★오래된 한도 값엔 «N시간 전 측정» 이 붙고, 최근 값엔 안 붙는다", old.includes("5시간 전 측정") && !fresh.includes("전 측정"), { 오래된: old, 최근: fresh }));
+    }
     return out;
   },
 };

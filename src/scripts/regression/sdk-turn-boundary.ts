@@ -83,7 +83,7 @@ export const check: RegressionCheck = {
       // 이어 받은 턴의 «내용 있음» 은 **그 턴의 조각만** 센다(08-09 빈 result 보호가 두 번째 턴에도).
       /chunks: assistantTextChunks\.length - chunkBase,\s*\n\s*deltas: ownTextDeltas - deltaBase,/,
       // 이어 받던 턴의 에러 result 가 **앞 답까지** 버리지 않는다(07-28 규칙).
-      /if \(msg\.is_error === true\) \{[\s\S]{0,300}if \(settledAnswer !== undefined\) \{[\s\S]{0,400}continue;\s*\n\s*\}\s*\n\s*throw new Error/,
+      /if \(msg\.is_error === true\) \{[\s\S]{0,300}if \(settledAnswer !== undefined\) \{[\s\S]{0,400}continue;\s*\n\s*\}\s*\n\s*throw (?:withRateLimitUntil\()?new Error/, // 한도 신호를 싣는 감쌈(2026-10-10)은 같은 throw 다
       // 마감은 앞 답 + 이 턴(실패면 안내).
       /: settleAnswer\(settledAnswer, currentText, steerTurnFailed\);/,
       // ★던진 실패(에러 result 뒤 CLI 종료 코드 1 → SDK throw)도 확정된 답을 버리지 않는다 — **resume 재시도보다 앞**에서.

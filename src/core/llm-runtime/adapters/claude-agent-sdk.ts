@@ -38,7 +38,8 @@ import {
   slotHashes,
 } from "../prefix-fingerprint.js";
 import { createHash, randomUUID } from "node:crypto";
-import { parseRateLimit } from "../rate-limit-view.js";
+import { noteTurnRateLimit, parseRateLimit } from "../rate-limit-view.js";
+import { withRateLimitUntil } from "../rate-limit.js";
 import { ProviderUnavailableError } from "../rate-limit.js";
 import { createFastModeReporter } from "../fast-mode-view.js";
 import { claudeAuthAvailable } from "../provider-availability.js";
@@ -1466,6 +1467,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   let resumeRetried = false;
 
   let resultText: string | undefined;
+  /** 이 턴에 SDK 가 «거절» 한도 이벤트를 줬으면 풀리는 시각(epoch ms) — 실패 오류에 실어 보낸다(`withRateLimitUntil`). */
+  let rateLimitRejectedUntil: number | undefined;
   let assistantTextChunks: string[] = [];
   let lastSessionId: string | undefined;
   let lastModel: string | null = null;
@@ -1759,6 +1762,9 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     if (msg.type === "rate_limit_event") {
       try {
         const view = parseRateLimit((msg as { rate_limit_info?: unknown }).rate_limit_info);
+        // 거절이면 «언제까지» 를 기억한다 — 이 턴이 실패로 끝나면 오류에 실어 쿨다운이 문구 대신 이 시각을 쓴다(2026-10-10).
+        if (view.rejectedUntilMs !== undefined) rateLimitRejectedUntil = view.rejectedUntilMs;
+        noteTurnRateLimit(view); // 토큰 자신의 사용률 — 한도 화면이 CLI 대신 이걸 먼저 쓴다.
         // 같은 값을 매 턴 찍으면 배경소음이 된다 — **바뀔 때만** 남기고, 경고·거절은 항상
         // 남긴다([[feedback_logs_must_stand_alone]] 「반복은 세라」).
         if (view.line !== null && (view.status !== "allowed" || view.signature !== lastRateLimitSig)) {
@@ -1969,7 +1975,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
             );
             continue;
           }
-          throw new Error(`claude-agent-sdk error: ${msg.result}`);
+          throw withRateLimitUntil(new Error(`claude-agent-sdk error: ${msg.result}`), rateLimitRejectedUntil);
         }
         resultText = msg.result;
         succeeded = true;
@@ -2023,7 +2029,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
           }
           continue;
         }
-        throw new Error(`claude-agent-sdk error: ${errs}`);
+        throw withRateLimitUntil(new Error(`claude-agent-sdk error: ${errs}`), rateLimitRejectedUntil);
       }
     } else if (msg.type === "assistant") {
       // ★앱 도구 호출 캡처 (externalTools, 2026-08-09) — 이 assistant 메시지에 든 tool_use

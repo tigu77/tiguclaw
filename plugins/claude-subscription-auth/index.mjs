@@ -280,8 +280,51 @@ const fetchClaudeUsage = async (force = false) => {
   return inflight;
 };
 
+/**
+ * **이 설치의 토큰이 어느 조직인가** — 모델 목록 조회(무료)의 응답 머리 `anthropic-organization-id` (2026-10-10 실측: CLI `auth status` 의
+ * `orgId` 와 같은 값). 토큰마다 한 번만 묻는다. 못 알아내면 `undefined`(모름 — 막지 않는다).
+ */
+let tokenOrg; // { token, org }
+const tokenOrgId = async () => {
+  const t = token();
+  if (t === "") return undefined;
+  if (tokenOrg !== undefined && tokenOrg.token === t) return tokenOrg.org;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/models?limit=1", {
+      headers: { Authorization: `Bearer ${t}`, "anthropic-version": "2023-06-01", "anthropic-beta": "oauth-2025-04-20", "User-Agent": "tiguclaw" },
+      // 시한 — 응답 머리가 안 오면 공유 조회(inflight)가 통째로 묶여 모든 한도 조회가 기다렸다(적대 검토 F8). 아래 엔드포인트와 같은 5초.
+      signal: AbortSignal.timeout(5000),
+    });
+    const org = res.headers.get("anthropic-organization-id") ?? undefined;
+    tokenOrg = { token: t, org };
+    return org;
+  } catch {
+    return undefined;
+  }
+};
+/** CLI 로그인 조직 — 10분 묻지 않는다(새로고침마다 CLI 를 한 번 더 띄우지 않게, 적대 검토 F10④). 로그인을 바꾸면 10분 안에 따라온다. */
+let cliOrgMemo; // { at, org }
+const cliOrgCached = async () => {
+  if (cliOrgMemo !== undefined && Date.now() - cliOrgMemo.at < 10 * 60_000) return cliOrgMemo.org;
+  const org = await cliModRef?.fetchCliOrgId?.(noteUsage);
+  cliOrgMemo = { at: Date.now(), org };
+  return org;
+};
+/** 턴에서 받은 값은 이 시간 안이면 그대로 쓴다 — 그 뒤엔 CLI 에 다시 묻는다(턴이 없으면 사용률도 안 온다). */
+const TURN_FRESH_MS = 30 * 60_000;
+const fromTurns = () => {
+  const u = textHost && typeof textHost.claudeUsageFromTurns === "function" ? textHost.claudeUsageFromTurns() : undefined;
+  return u && Array.isArray(u.windows) && u.windows.length > 0 ? { windows: u.windows, measuredAt: u.measuredAt } : undefined;
+};
+
 const fetchClaudeUsageInner = async (force = false) => {
   const now = Date.now();
+  // ★토큰 자신의 사용률(턴에서 받은 값)이 최근이면 그게 정답이다 — CLI 는 다른 계정일 수 있다(2026-10-10).
+  const turns = fromTurns();
+  if (turns !== undefined && now - turns.measuredAt < TURN_FRESH_MS) {
+    noteUsage(describeWindows(turns.windows, "턴"));
+    return turns;
+  }
   // ★중복 접기만 한다(30초). 새로고침을 눌렀으면 연타 하한만 남긴다.
   const gap = force ? FORCE_MIN_GAP_MS : DEDUP_MS;
   if (lastOk !== undefined && now - lastOk.at < gap) return lastOk.value;
@@ -294,6 +337,13 @@ const fetchClaudeUsageInner = async (force = false) => {
     const viaCli = await cliModRef.fetchUsageViaCli(noteUsage);
     cliNeedsLogin = viaCli?.needsLogin === true;
     if (viaCli !== undefined && viaCli.needsLogin !== true) {
+      // ★CLI 가 **다른 계정**이면 그 숫자를 보이지 않는다(정태님 결정) — 턴에서 받은 값이 있으면 그것(낡았어도 측정 시각과 함께),
+      //  없으면 «표시할 수 없다» 와 이유. 둘 중 하나라도 모르면 막지 않는다(종전대로 CLI 값).
+      const [tokOrg, cliOrg] = await Promise.all([tokenOrgId(), cliOrgCached()]);
+      if (tokOrg !== undefined && cliOrg !== undefined && tokOrg !== cliOrg) {
+        noteUsage("CLI 로그인 계정이 이 설치의 토큰 계정과 다르다 — CLI 한도를 쓰지 않는다");
+        return turns ?? { windows: [], measuredAt: now, unavailable: true, reason: say(textHost ?? {}, "accountMismatch") };
+      }
       noteUsage(describeWindows(viaCli.windows ?? [], "CLI"));
       lastOk = { at: now, value: viaCli };
       refusedAfterWaiting = 0;
@@ -380,17 +430,21 @@ const fetchClaudeUsageInner = async (force = false) => {
 const TEXT = {
   ko: {
     needsLogin: "이 기계의 Claude Code 로그인이 필요합니다 — 터미널에서 claude 를 실행해 /login 하면 표시됩니다.",
+    accountMismatch: "이 기계의 Claude CLI 가 이 설치의 인증과 다른 계정으로 로그인돼 있어 한도를 표시할 수 없습니다 — Claude 로 대화하면 그 결과로 표시됩니다.",
     label: "구독 토큰 발급",
     summaryWeb: "새 탭에서 Claude 에 로그인하면 코드가 나옵니다. 그 코드를 아래에 붙여넣으면 발급·저장까지 끝납니다(재시작 없음).",
     hintWeb: "로그인 뒤 나온 코드 (이미 받은 토큰도 됩니다)",
+    summaryConsole: "발급기를 새 창으로 띄웠습니다 — 열린 브라우저에서 Claude 에 로그인하면 그 창이 토큰을 받아 자동으로 저장합니다(재시작 없음). 자동 저장이 안 되면 창에 나온 토큰(sk-ant-…)을 아래에 붙여넣으세요.",
     summaryTerminal: "이 기계에선 화면 안에서 발급기를 띄울 수 없습니다 — 아래 명령을 그 기계 터미널에서 실행하면 발급·저장까지 됩니다(재시작 없음). 이미 받은 토큰이 있으면 붙여넣으세요.",
     hintTerminal: "발급된 토큰 (sk-ant- 로 시작합니다)",
   },
   en: {
     needsLogin: "Claude Code isn't signed in on this machine — run claude in a terminal and use /login to show the limits.",
+    accountMismatch: "The Claude CLI on this machine is signed in to a different account than this install's credential, so limits can't be shown — they'll appear after a Claude conversation.",
     label: "Get subscription token",
     summaryWeb: "Sign in to Claude in the new tab and you'll get a code. Paste that code below to issue and save the token (no restart).",
     hintWeb: "Code shown after sign-in (an existing token works too)",
+    summaryConsole: "The issuer opened in a new window — sign in to Claude in the browser it opens and that window saves the token automatically (no restart). If it can't, paste the token (sk-ant-…) shown there below.",
     summaryTerminal: "This machine can't run the issuer inside the dashboard — run the command below in a terminal on that machine to issue and save a token (no restart). If you already have a token, paste it.",
     hintTerminal: "Issued token (starts with sk-ant-)",
   },
@@ -434,6 +488,10 @@ export default class ClaudeSubscriptionAuth {
         //  못 띄우는 기계(Windows·python3 없음)나 옛 코어면 종전 방식(그 기계 터미널 한 줄 + 토큰 붙여넣기)으로.
         begin: async () => {
           const r = typeof host.beginClaudeTokenIssue === "function" ? await host.beginClaudeTokenIssue() : { ok: false, reason: "" };
+          if (r.ok && r.console === true) {
+            // 윈도우 — 발급기가 새 콘솔 창에서 브라우저를 연다. 그 창에 나온 토큰을 붙여넣으면 끝.
+            return { summary: say(host, "summaryConsole"), pasteHint: say(host, "hintTerminal"), needsRestart: false };
+          }
           if (r.ok) {
             return {
               summary: say(host, "summaryWeb"),

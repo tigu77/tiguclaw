@@ -175,6 +175,23 @@ const resolveClaude = async (log) => {
 };
 
 /**
+ * **이 기계 CLI 가 어느 조직으로 로그인돼 있나** (`claude auth status` 의 `orgId`, 2026-10-10 정태님: «cli 로그인이랑 인증된 거랑 다른 걸 알 수 있나?»).
+ * `/usage` 는 CLI **자기 로그인 계정**의 한도를 말한다 — 이 설치가 쓰는 토큰과 다른 계정이면 남의 숫자다. 못 알아내면 `undefined`(모름 — 막지 않는다).
+ */
+export const fetchCliOrgId = async (log) => {
+  try {
+    const cmd = await resolveClaude(log);
+    if (cmd === null) return undefined;
+    const raw = await run(cmd, ["auth", "status"], 15_000);
+    if (raw === undefined || raw === "") return undefined;
+    const j = JSON.parse(raw);
+    return j && j.loggedIn === true && typeof j.orgId === "string" && j.orgId !== "" ? j.orgId : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
  * CLI 를 띄워 `/usage` 를 받는다. 못 하면 `undefined`(모름) — 던지지 않는다.
  * ★CLI 가 없거나 로그인이 안 돼 있을 수 있다. 그건 결함이 아니라 그냥 이 길이 없는 것이다.
  */

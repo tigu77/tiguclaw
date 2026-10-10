@@ -290,6 +290,12 @@ const walkCommandsDir = async (
   return [...seen.values()];
 };
 
+/** 한 폴더(전역 `<home>/commands` 또는 프로젝트 `.tiguclaw/commands`)의 커맨드 — 묶음 경로(`folder`)와 함께. 관리 도구의 목록이 쓴다. */
+export const listCommandsIn = async (dir: string): Promise<Command[]> => walkCommandsDir(dir, "user");
+
+/** 묶음(하위 폴더) 깊이 상한 — 관리 도구가 만들 때도 탐색과 같은 상한을 지킨다(더 깊이 두면 목록에서 안 보인다). */
+export const maxCommandFolderDepth = (): number => MAX_COMMAND_FOLDER_DEPTH;
+
 /**
  * 한 commands 폴더에서 이름으로 파일을 찾는다(하위 폴더 포함 — 목록과 **같은 규칙**: 겹치면 얕은 쪽).
  * ★만들기·지우기 도구가 `<dir>/<name>.md` 만 보면 하위 폴더의 커맨드를 못 지우고, 같은 이름을 맨 위에 또 만든다.

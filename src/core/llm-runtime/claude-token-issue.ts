@@ -15,7 +15,10 @@
  *  열므로, 안 막으면 데몬 기계에 탭이 하나 더 뜬다(원격이면 엉뚱한 기계에).
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { findBundledClaude, bundledClaudeMissingHint } from "../claude-cli.js";
+import { getPaths, sourceRoot } from "../paths.js";
 import { acceptClaudeToken, claudeTokenCandidates } from "./claude-token.js";
 
 /**
@@ -100,7 +103,62 @@ const waitFor = (s: IssueSession, done: (text: string) => boolean, ms: number): 
     tick();
   });
 
-export type ClaudeIssueBegin = { ok: true; url: string } | { ok: false; reason: string };
+export type ClaudeIssueBegin = { ok: true; url: string } | { ok: true; console: true } | { ok: false; reason: string };
+
+/**
+ * **윈도우 — 발급기를 새 콘솔 창으로 띄운다** (2026-10-10 정태님: «당연히 발급기를 새 콘솔창으로 띄워야지»).
+ * ★발급기(`claude setup-token`)는 TTY 가 있어야 돈다. 맥·리눅스는 위 파이썬 가짜 터미널로 감싸 화면 안에서 끝내지만 윈도우 파이썬엔
+ *  `pty` 가 없다 — 그래서 종전엔 «그 기계 터미널에서 명령을 치라» 고만 했다. 새 콘솔 창은 **진짜 터미널**이라 발급기가 그대로 돌고,
+ *  스스로 브라우저를 연다. 로그인하면 그 창에 토큰이 나오고, 사용자는 그걸 화면에 붙여넣는다(저장·확인은 `finishClaudeTokenIssue`).
+ * ★창은 `cmd /k` 로 남긴다 — 발급기가 끝나자마자 창이 닫히면 토큰을 복사할 틈이 없다.
+ * ★우리 자격은 물려주지 않는다 — 이미 든 토큰을 본 발급기는 새로 발급하지 않고 엉뚱하게 굴 수 있다(한도 조회 CLI 와 같은 규칙).
+ * ★데몬이 사용자 데스크톱 세션에서 돌 때만 창이 보인다(작업 스케줄러 로그온 실행 = 그렇다). 서비스(세션 0)면 안 보인다.
+ */
+/**
+ * 새 창에서 돌릴 명령 — `node <소스 루트>/bin/tiguclaw.mjs claude-auth`. ★`appRoot()` 가 아니라 `sourceRoot()` 다: 설치 기본값(built)에선
+ * appRoot 가 `dist` 라 그 아래엔 `bin/` 이 없다(2026-10-10 적대 검토 F1 — 새 창이 MODULE_NOT_FOUND 로 죽는데 화면은 «성공» 이었다).
+ * `self-update.ts` 가 `bin/daemon.mjs` 를 찾는 것과 같은 기준이다.
+ */
+export const consoleIssuerCommand = (): { bin: string; args: string[] } => ({
+  bin: process.execPath,
+  args: [path.join(sourceRoot(), "bin", "tiguclaw.mjs"), "claude-auth"],
+});
+
+const launchConsoleIssuer = async (issuer?: readonly string[]): Promise<ClaudeIssueBegin> => {
+  // ★창 안에서는 날것의 `claude setup-token` 이 아니라 **우리 `claude-auth`** 를 돌린다 (2026-10-10 정태님: «터미널 claude-auth 는
+  //  마지막에 토큰도 자동으로 들어가던데»). 그게 발급기 출력에서 토큰을 집어 확인·저장까지 한다 — 붙여넣을 일이 없다.
+  //  자동이 안 되면 그 창이 붙여넣기를 묻고, 화면의 붙여넣기 칸도 예비로 남는다. 홈은 이 데몬의 홈으로 못박는다.
+  //  (claude-auth 는 홈 .env 를 스스로 다시 읽는다 — 아래 자격 env 제거는 «데몬 프로세스의 것을 창에 섞지 않는다» 까지다.)
+  if (issuer === undefined && findBundledClaude() === null) return { ok: false, reason: bundledClaudeMissingHint() };
+  const cmd = issuer === undefined ? consoleIssuerCommand() : { bin: issuer[0]!, args: issuer.slice(1) };
+  if (!existsSync(cmd.bin) || (issuer === undefined && !existsSync(cmd.args[0]!))) {
+    return { ok: false, reason: `발급 명령 파일이 없습니다: ${issuer === undefined ? cmd.args[0] : cmd.bin}` };
+  }
+  const env: NodeJS.ProcessEnv = { ...process.env, TIGUCLAW_HOME: getPaths().home };
+  delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  delete env.ANTHROPIC_API_KEY;
+  delete env.ANTHROPIC_AUTH_TOKEN;
+  // ★명령줄은 **바깥 cmd 가 해석하지 않게** 환경변수로 넘기고 새 창 cmd 의 지연 확장(`/v:on` · `!이름!`)으로 꺼낸다 (적대 검토 F7).
+  //  지연 확장은 특수문자 해석이 끝난 뒤에 일어나서, 경로의 `&`·`^`·`%`(예 `C:\Users\R&D\…`)가 명령을 쪼개거나 글자를 삼키지 않는다.
+  //  따옴표로 감싼 경로는 공백(`Program Files`·`Jane Doe`)을 지킨다.
+  env.TIGUCLAW_ISSUER_CMDLINE = [cmd.bin, ...cmd.args].map((a) => `"${a.replace(/"/g, "")}"`).join(" ");
+  const line = `start "Claude token (tiguclaw claude-auth)" cmd /v:on /k !TIGUCLAW_ISSUER_CMDLINE!`;
+  return await new Promise<ClaudeIssueBegin>((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", line], { env, stdio: "ignore", detached: true, windowsVerbatimArguments: true });
+    } catch (e) {
+      resolve({ ok: false, reason: `새 콘솔 창을 띄우지 못했습니다: ${e instanceof Error ? e.message : String(e)}` });
+      return;
+    }
+    child.once("error", (e) => resolve({ ok: false, reason: `새 콘솔 창을 띄우지 못했습니다: ${e.message}` }));
+    child.once("spawn", () => {
+      child.unref();
+      console.log("[auth] Claude 구독 토큰 발급기를 새 콘솔 창으로 띄웠습니다");
+      resolve({ ok: true, console: true });
+    });
+  });
+};
 
 /**
  * 발급기를 띄우고 로그인 URL 을 돌려준다. 이미 떠 있던 발급은 치운다(버튼을 다시 눌렀다).
@@ -109,7 +167,7 @@ export type ClaudeIssueBegin = { ok: true; url: string } | { ok: false; reason: 
  */
 export const beginClaudeTokenIssue = async (issuer?: readonly string[]): Promise<ClaudeIssueBegin> => {
   closeSession();
-  if (process.platform === "win32") return { ok: false, reason: "이 기계(Windows)에선 화면 안에서 발급기를 띄울 수 없습니다" };
+  if (process.platform === "win32") return launchConsoleIssuer(issuer);
   const bin = issuer === undefined ? findBundledClaude() : issuer[0]!;
   if (bin === null) return { ok: false, reason: bundledClaudeMissingHint() };
   const child = spawn("python3", ["-c", PTY_RELAY, bin, ...(issuer === undefined ? ["setup-token"] : issuer.slice(1))], {

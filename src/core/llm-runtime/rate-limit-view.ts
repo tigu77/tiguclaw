@@ -20,6 +20,8 @@
  *  `claude` CLI(v2.1.261)와 번들 SDK(0.3.222)가 **다른 페이로드**를 준다:
  *    CLI  → `unifiedWindows: { five_hour: {utilization 0.1}, seven_day: {utilization 0.34} }`
  *    SDK  → `{status, resetsAt, rateLimitType, overage*}` — **사용률이 아예 없다**
+ *  ★(2026-10-10 정정) 지금은 SDK 도 `unifiedWindows` 사용률을 준다 — 9-23~10-02 돌쇠 로그에 «five_hour 24% · seven_day 93%» 가
+ *   남아 있다. 그래서 아래 `noteTurnRateLimit` 이 그 값을 토큰 자신의 한도로 기억해 한도 화면에 쓴다. 아래 두 줄은 그 이전의 기록이다.
  *  즉 **우리 경로에서는 «몇 % 썼나» 를 알 수 없다.** 아는 것은 «어느 창이 걸려 있나 ·
  *  언제 리셋되나 · allowed / allowed_warning / rejected» 셋이다.
  *  ★그래도 값이 있다: `allowed_warning` 은 **거절 전에** 오는 신호다. 종전엔 부딪힌 뒤
@@ -29,6 +31,7 @@
  * ★모르면 «모른다» 고 말한다 — 값이 없는 창은 아예 안 적는다(빈 자리가 «모름» 이라는 뜻이
  *  되게 둔다). 숫자를 지어내면 그 숫자로 판단하게 된다.
  */
+import { createHash } from "node:crypto";
 
 /** 초 단위 epoch 도 ms 도 받는다 — 업스트림이 어느 쪽인지 약속하지 않는다. */
 const toDate = (v: unknown): Date | undefined => {
@@ -54,6 +57,11 @@ export interface RateLimitView {
   readonly line: string | null;
   /** 같은 값 반복을 접기 위한 서명 — 사용률은 5%p 버킷으로 접는다. */
   readonly signature: string;
+  /**
+   * **거절됐으면 언제 풀리나**(epoch ms) — `status === "rejected"` 일 때만. 최상위 `resetsAt`(걸린 창)이 정본이고, 없으면 창들 중 가장 늦은
+   * 리셋(가장 보수적). 쿨다운이 문구 대신 이 값을 쓴다(`rate-limit.ts` `withRateLimitUntil`).
+   */
+  readonly rejectedUntilMs?: number;
 }
 
 export const parseRateLimit = (raw: unknown): RateLimitView => {
@@ -112,5 +120,40 @@ export const parseRateLimit = (raw: unknown): RateLimitView => {
     ),
   ].join("|");
 
-  return { status, windows, usingOverage, line, signature: sig };
+  // ★«거절이지만 초과분으로 진행 중» 은 막힌 게 아니다 — 요청은 정상으로 통과한다(번들 CLI 의 `isUsingOverage` 판정과 같다).
+  //  그걸 거절로 기억하면 그 턴의 무관한 실패가 주간 리셋까지 쉬게 됐다(적대 검토 F3).
+  const overageOk = usingOverage || info.overageStatus === "allowed" || info.overageStatus === "allowed_warning";
+  // 풀리는 시각은 걸린 창(rateLimitType)의 것 — 없으면 최상위, 그것도 없으면 가장 늦은 창(보수).
+  const typed = typeof info.rateLimitType === "string" ? windows.find((w) => w.name === info.rateLimitType)?.resetsAt?.getTime() : undefined;
+  const rejectedUntilMs =
+    status !== "rejected" || overageOk
+      ? undefined
+      : (toDate(info.resetsAt)?.getTime() ??
+        typed ??
+        windows.reduce<number | undefined>((m, w) => (w.resetsAt === undefined ? m : Math.max(m ?? 0, w.resetsAt.getTime())), undefined));
+  return { status, windows, usingOverage, line, signature: sig, ...(rejectedUntilMs !== undefined ? { rejectedUntilMs } : {}) };
 };
+
+
+/**
+ * **턴에서 받은 마지막 사용률** — 인증된 토큰 **자신의 계정** 값이다 (2026-10-10 정태님: «셋업토큰 정보로 한도정보를 가져올 수 없나?»).
+ * ★한도 화면은 이 기계의 Claude Code CLI 에 `/usage` 를 물어 왔는데, CLI 는 **자기 로그인 계정**을 말한다 — 토큰과 다른 계정이면
+ *  남의 숫자다. SDK 의 `rate_limit_event` 는 턴마다 그 토큰으로 받은 사용률을 준다(2026-09 이후 실측 — 9월 초엔 없었다). 사용률이
+ *  하나라도 있을 때만 기억한다(«모름» 을 0 으로 덮지 않는다). 메모리에만 둔다 — 재시작 뒤엔 다음 턴이 다시 채운다.
+ */
+let lastTurnUsage: { readonly at: number; readonly token: string; readonly windows: readonly RateLimitWindow[] } | undefined;
+/** 지금 쓰는 토큰의 표지(해시 앞부분) — 토큰을 바꾸면 옛 계정의 사용률을 «최신» 으로 보이지 않게(적대 검토 F5). 값 자체는 안 둔다. */
+const tokenKey = (): string =>
+  createHash("sha256").update(process.env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? "").digest("hex").slice(0, 12);
+export const noteTurnRateLimit = (view: RateLimitView, at: number = Date.now()): void => {
+  const fresh = view.windows.filter((w) => w.utilization !== undefined);
+  if (fresh.length === 0) return;
+  const token = tokenKey();
+  // ★일부 창만 담긴 이벤트가 앞 창들을 지우지 않게 이름별로 합친다(적대 검토 F9 — 각 창은 선택 항목이다). 토큰이 바뀌었으면 새로 시작.
+  const prev = lastTurnUsage !== undefined && lastTurnUsage.token === token ? lastTurnUsage.windows : [];
+  const merged = new Map(prev.map((w) => [w.name, w] as const));
+  for (const w of fresh) merged.set(w.name, w);
+  lastTurnUsage = { at, token, windows: [...merged.values()] };
+};
+export const turnRateLimitSnapshot = (): { readonly at: number; readonly windows: readonly RateLimitWindow[] } | undefined =>
+  lastTurnUsage !== undefined && lastTurnUsage.token === tokenKey() ? lastTurnUsage : undefined;

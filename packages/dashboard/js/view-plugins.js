@@ -80,13 +80,29 @@ function usagePendingLine(usage, now) {
   return when === "" ? "" : i18n("plugins.auth.usage.pending", { when });
 }
 
+/**
+ * **언제 잰 값인가** — 오래된 값이면 그렇다고 말한다 (2026-10-10 정태님: «한도가 항상 똑같이 나오네»). 새로 못 재면 마지막 값을
+ * 보이는데, 시각이 없으면 몇 시간·며칠 전 숫자가 «지금» 으로 읽혔다. 30분 안이면 말하지 않는다(소음).
+ */
+function usageAgeLine(usage, now) {
+  if (!usage || !Array.isArray(usage.windows) || usage.windows.length === 0 || typeof usage.measuredAt !== "number") return "";
+  const ago = (typeof now === "number" ? now : Date.now()) - usage.measuredAt;
+  if (!(ago >= 30 * 60_000)) return "";
+  const min = Math.floor(ago / 60_000);
+  if (min < 60) return i18n("plugins.auth.usage.ago.minutes", { n: min });
+  const h = Math.floor(min / 60);
+  if (h < 48) return i18n("plugins.auth.usage.ago.hours", { n: h });
+  return i18n("plugins.auth.usage.ago.days", { n: Math.floor(h / 24) });
+}
+
 function formatUsageLine(usage, now) {
   const rows = usageRows(usage, now);
   if (rows.length === 0) return usagePendingLine(usage, now);
   const parts = rows.map(
     (r) => r.name + (r.left === "" ? "" : " " + r.left) + (r.reset === "" ? "" : " (" + r.reset + ")"),
   );
-  return parts.join(" · ") + (usage.limitReached === true ? i18n("plugins.auth.usage.limitReached") : "");
+  const age = usageAgeLine(usage, now);
+  return parts.join(" · ") + (usage.limitReached === true ? i18n("plugins.auth.usage.limitReached") : "") + (age === "" ? "" : " — " + age);
 }
 
       /**
@@ -637,6 +653,13 @@ function formatUsageLine(usage, now) {
               row.appendChild(rs);
             }
             u.appendChild(row);
+          }
+          const ageLine = usageAgeLine(usage);
+          if (ageLine !== "") {
+            const ag = document.createElement("div");
+            ag.className = "usage-win-pending usage-win-age";
+            ag.textContent = ageLine;
+            u.appendChild(ag);
           }
           if (pendingLine !== "") {
             const pw = document.createElement("div");

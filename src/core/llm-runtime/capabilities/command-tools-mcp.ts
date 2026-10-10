@@ -43,6 +43,8 @@ import { getEventBus } from "../../eventbus.js";
 import {
   discoverCommands,
   findCommandFile,
+  listCommandsIn,
+  maxCommandFolderDepth,
   formatCommandIndex,
   BUILTIN_COMMANDS as BUILTIN_COMMANDS_ARRAY,
   UNLISTED_BUILTIN_COMMANDS,
@@ -113,12 +115,75 @@ const commandsDirFor = (project: string | undefined): { dir: string; label: stri
   return { dir: projectScope(found.project.path).commands, label: `프로젝트 ${found.project.name}` };
 };
 
+/**
+ * 묶음(하위 폴더) 경로 — `배포/스테이징` 처럼 `/` 로 단을 나눈다. 빈 문자열 = 맨 위(묶음 해제). 이름은 한글도 된다(메뉴에 그대로 보인다).
+ * ★폴더 밖으로 못 나간다 — `..`·절대 경로·숨김(`.`)·윈도우 금지 글자를 거절하고, 탐색 상한보다 깊게는 안 만든다(만들어도 목록에서 안 보인다).
+ */
+const parseGroup = (raw: string): { segments: string[] } | { error: string } => {
+  const segments = raw.split("/").map((x) => x.trim()).filter((x) => x !== "");
+  if (segments.length > maxCommandFolderDepth()) return { error: `묶음은 ${maxCommandFolderDepth()}단까지입니다 — '${raw}'` };
+  for (const seg of segments) {
+    if (seg === "." || seg === ".." || seg.startsWith(".") || /[\\:*?"<>|\x00-\x1f]/.test(seg) || seg.length > 64) {
+      return { error: `묶음 이름 '${seg}' 은(는) 쓸 수 없습니다(점으로 시작·\\ : * ? " < > | 금지).` };
+    }
+  }
+  return { segments };
+};
+
+/** 묶음별 목록 — 맨 위 먼저, 그다음 묶음 경로 순. 한 줄 = `- /이름 — 설명`. */
+const formatGrouped = (cmds: ReadonlyArray<{ name: string; description: string; folder?: string }>): string => {
+  const by = new Map<string, string[]>();
+  for (const c of cmds) {
+    const k = c.folder ?? "";
+    const line = `- /${c.name}${c.description ? ` — ${c.description}` : ""}`;
+    by.set(k, [...(by.get(k) ?? []), line]);
+  }
+  return [...by.keys()]
+    .sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)))
+    .map((k) => `${k === "" ? "(맨 위)" : `[${k.split("/").join(" › ")}]`}\n${by.get(k)!.join("\n")}`)
+    .join("\n\n");
+};
+
+/**
+ * 같은 파일인가 — **실제 경로로** 본다(적대 검토 F2). 탐색은 실제 경로를 주고 우리는 조립한 경로를 써서, 심링크 아래 홈(맥 `/tmp`→
+ * `/private/tmp` · 외장 디스크로 링크한 `~/work`)에선 같은 파일을 «다르다» 로 보고 방금 쓴 파일을 지웠다. 없는 파일은 폴더만 실제로 푼다.
+ */
+const samePath = async (a: string, b: string): Promise<boolean> => {
+  const real = async (p: string): Promise<string> => {
+    try {
+      return await fs.realpath(p);
+    } catch {
+      const dir = await fs.realpath(path.dirname(p)).catch(() => path.resolve(path.dirname(p)));
+      return path.join(dir, path.basename(p));
+    }
+  };
+  const [x, y] = await Promise.all([real(a), real(b)]);
+  return process.platform === "win32" || process.platform === "darwin" ? x.toLowerCase() === y.toLowerCase() : x === y;
+};
+
+/** 비면 지운다 — 묶음을 옮기고 남은 빈 폴더가 메뉴엔 안 보이지만 파일로는 남아 헷갈린다. 묶음 뿌리(commands)까지만. */
+const pruneEmptyDirs = async (fromRaw: string, rootRaw: string): Promise<void> => {
+  // 실제 경로로 비교한다 — 같은 폴더가 두 모양(맥 `/var` ↔ `/private/var`)이면 «뿌리 안인가» 가 어긋나 아무것도 안 치웠다.
+  const real = async (p: string): Promise<string> => fs.realpath(p).catch(() => path.resolve(p));
+  const root = await real(rootRaw);
+  for (let d = await real(fromRaw); path.relative(root, d) !== "" && !path.relative(root, d).startsWith("..") && !path.isAbsolute(path.relative(root, d)); d = path.dirname(d)) {
+    try {
+      await fs.rmdir(d); // 비어 있지 않으면 던진다 — 거기서 멈춘다
+    } catch {
+      return;
+    }
+  }
+};
+
 export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance => {
   const registerCommand = tool(
     "register_command",
     "커스텀 슬래시 명령을 만듭니다. 두 종류: ①프롬프트형(prompt) — '/name' 이 비서에게 그 글을 보낸다($ARGUMENTS 로 인자). " +
       "②실행형(run, project 필수) — 비서 턴 없이 그 프로젝트 폴더에서 셸 한 줄을 돌리고 결과를 보낸다(배포·빌드·테스트). " +
       "project 를 주면 그 프로젝트의 .tiguclaw/commands 에, 없으면 전역(<home>/commands)에 만든다. 재시작 불요. " +
+      "★묶음: group('배포/스테이징')을 주면 그 하위 폴더에 둔다 — 메뉴에 배포 › 스테이징 › /이름 으로 보인다(전역·프로젝트 둘 다). " +
+      "이미 있는 명령에 group 만 주면(prompt·run 없이) 내용은 그대로 두고 그 묶음으로 **옮긴다**(group '' = 맨 위로). " +
+      "부르는 이름은 묶음과 무관하게 /이름 이라 폴더가 달라도 이름은 겹칠 수 없다. 지금 묶음은 list_commands 로 본다. " +
       "실행형을 만들 땐 project-commands 스킬의 요령을 따른다(저장 전에 내용을 보여 주고 확인). " +
       `빌트인 네이티브 명령(${RESERVED_NAMES})과 같은 이름은 만들 수 없습니다.`,
     {
@@ -150,6 +215,10 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         .boolean()
         .optional()
         .describe("true 면 같은 이름의 기존 명령을 덮어씁니다. 기본 false(충돌 시 거부)."),
+      group: z
+        .string()
+        .optional()
+        .describe("묶음(하위 폴더) 경로 — 예 '배포' · '배포/스테이징'. '' 는 맨 위. 안 주면 새 명령은 맨 위, 기존 명령은 제자리."),
     },
     async (args) => {
       try {
@@ -172,11 +241,37 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
           );
         }
 
+        // 2a) 묶음 — 주면 검사(폴더 밖 탈출·깊이).
+        const group = args.group === undefined ? undefined : parseGroup(args.group);
+        if (group !== undefined && "error" in group) return errText(group.error);
+        const whereEarly = commandsDirFor(args.project);
+        if ("error" in whereEarly) return errText(whereEarly.error);
+
         // 2b) 종류 — 프롬프트형·실행형 중 하나. 실행형은 프로젝트에서만(어느 폴더에서 돌지가 곧 프로젝트다).
         const prompt = (args.prompt ?? "").trim();
         const run = (args.run ?? "").trim();
+        // ★옮기기만 — 내용 없이 group 만 주면 기존 명령을 그 묶음으로 옮긴다(내용을 다시 쓰게 하면 비서가 본문을 옮겨 적다 바꾼다).
+        if (prompt === "" && run === "" && group !== undefined) {
+          const from = await findCommandFile(whereEarly.dir, name);
+          if (from === undefined) {
+            return errText(`옮길 명령 '/${name}' 이 없습니다(${whereEarly.label}). 새로 만들려면 prompt 나 run 을 주세요. list_commands 로 목록을 볼 수 있습니다.`);
+          }
+          const to = path.join(whereEarly.dir, ...group.segments, `${name}.md`);
+          if (!(await samePath(from, to))) {
+            // ★그 자리에 같은 이름의 **다른** 파일이 이미 있으면 덮지 않는다 — 손으로 둔 것일 수 있다(적대 검토 F6: rename 이 조용히 덮었다).
+            if (await fs.stat(to).then(() => true, () => false)) {
+              return errText(`'${to}' 에 같은 이름의 명령 파일이 이미 있어 옮기지 않았습니다 — 둘 중 하나를 delete_command 로 지우거나 이름을 바꾸세요.`);
+            }
+            await fs.mkdir(path.dirname(to), { recursive: true });
+            await fs.rename(from, to);
+            await pruneEmptyDirs(path.dirname(from), whereEarly.dir);
+            getEventBus().publish({ type: "commands.changed", ts: Date.now(), payload: {} });
+          }
+          const shown = group.segments.length === 0 ? "맨 위" : group.segments.join(" › ");
+          return okText(`'/${name}' 을(를) ${shown} 로 옮겼습니다(${whereEarly.label}). 부르는 이름은 그대로 /${name} 입니다.`);
+        }
         if ((prompt === "") === (run === "")) {
-          return errText("prompt(프롬프트형)와 run(실행형) 중 **하나만** 주세요.");
+          return errText("prompt(프롬프트형)와 run(실행형) 중 **하나만** 주세요(기존 명령을 묶음으로 옮기기만 하려면 group 만 주세요).");
         }
         if (run !== "" && (args.project ?? "").trim() === "") {
           return errText("실행형(run)은 project 가 필요합니다 — 그 프로젝트 폴더에서 돈다.");
@@ -188,9 +283,11 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         if ("error" in where) return errText(where.error);
 
         // 3) 기존 name 충돌 거부(overwrite 명시 시에만 덮어쓰기). ★하위 폴더(묶음)에 있는 같은 이름도 본다 — 덮어쓰면 그 자리에 쓴다.
+        //  group 을 주면 그 묶음에 쓴다(덮어쓰기면 옛 자리의 파일은 지운다 — 같은 이름이 두 폴더에 남으면 앞의 것만 쓰인다).
         const commandsDir = where.dir;
         const existing = await findCommandFile(commandsDir, name);
-        const filePath = existing ?? path.join(commandsDir, `${name}.md`);
+        const filePath =
+          group !== undefined ? path.join(commandsDir, ...group.segments, `${name}.md`) : existing ?? path.join(commandsDir, `${name}.md`);
         if (args.overwrite !== true && existing !== undefined) {
           return errText(
             `슬래시 명령 '${name}' 가 이미 존재합니다(${filePath}). 덮어쓰려면 overwrite: true 를 지정하거나, 먼저 delete_command 로 삭제하세요.`,
@@ -212,8 +309,12 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         const fileBody = `---\n${fm.length > 0 ? `${fm.join("\n")}\n` : ""}---\n${prompt !== "" ? `${prompt}\n` : ""}`;
 
         // 5) 디렉터리 ensure(백스톱 — ensureHome 이 이미 만들지만 멱등) + 쓰기.
-        await fs.mkdir(commandsDir, { recursive: true });
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
         await fs.writeFile(filePath, fileBody, "utf8");
+        if (existing !== undefined && !(await samePath(existing, filePath))) {
+          await fs.unlink(existing).catch(() => undefined);
+          await pruneEmptyDirs(path.dirname(existing), commandsDir);
+        }
 
         // 6) ★ 메뉴 즉시 반영 — 쓰기 성공 후 commands.changed publish.
         //    telegram 채널이 구독해 setMyCommands 재설정(daemon 파트).
@@ -240,16 +341,28 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
 
   const listCommands = tool(
     "list_commands",
-    "등록된 커스텀 슬래시 명령 목록을 조회합니다. 사용자가 '어떤 슬래시 명령이 있어?' 류로 물을 때 사용하세요.",
-    {},
-    async () => {
+    "등록된 커스텀 슬래시 명령 목록을 조회합니다. 사용자가 '어떤 슬래시 명령이 있어?' 류로 물을 때 사용하세요. " +
+      "project 를 주면 그 프로젝트의 명령을 **묶음(하위 폴더)과 함께** 보여 줍니다 — 묶거나 정리하기 전에 보세요.",
+    { project: z.string().optional().describe("등록된 프로젝트 이름 또는 경로 — 주면 그 프로젝트의 명령(묶음 포함). 안 주면 전체 목록 + 전역 명령의 묶음.") },
+    async (args) => {
       try {
+        if (args.project !== undefined && args.project.trim() !== "") {
+          const where = commandsDirFor(args.project);
+          if ("error" in where) return errText(where.error);
+          const own = await listCommandsIn(where.dir);
+          if (own.length === 0) return okText(`${where.label} 에 커스텀 슬래시 명령이 없습니다.`);
+          return okText(`## ${where.label} 슬래시 명령\n\n${formatGrouped(own)}`);
+        }
+        const globals = await listCommandsIn(getPaths().commonCommands);
         const commands = await discoverCommands();
         const index = formatCommandIndex(commands);
         if (index === "") {
           return okText("등록된 커스텀 슬래시 명령이 없습니다.");
         }
-        return okText(`## 커스텀 슬래시 명령\n\n${index}`);
+        const grouped = globals.some((c) => c.folder !== undefined && c.folder !== "")
+          ? `\n\n## 전역 명령 묶음\n\n${formatGrouped(globals)}`
+          : "";
+        return okText(`## 커스텀 슬래시 명령\n\n${index}${grouped}`);
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
       }

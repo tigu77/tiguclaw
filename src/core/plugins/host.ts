@@ -24,6 +24,7 @@ import path from "node:path";
 import { readLocale } from "../i18n.js";
 import { getPaths } from "../paths.js";
 import { getEventBus } from "../eventbus.js";
+import { turnRateLimitSnapshot } from "../llm-runtime/rate-limit-view.js";
 import { deliverOutbound } from "../outbound.js";
 import {
   getAuthProvider,
@@ -373,7 +374,13 @@ export interface PluginHost {
    * 그 뒤 사용자가 붙여넣은 로그인 코드는 `saveClaudeToken` 이 받는다(토큰 모양이면 토큰으로, 아니면 코드로 — 판단은 코어
    * `llm-runtime/claude-token-issue.ts` 한 곳). Windows·python3 없음이면 `ok:false` + 이유 — 화면은 종전 방식으로.
    */
-  beginClaudeTokenIssue(): Promise<{ ok: true; url: string } | { ok: false; reason: string }>;
+  beginClaudeTokenIssue(): Promise<{ ok: true; url: string } | { ok: true; console: true } | { ok: false; reason: string }>;
+
+  /**
+   * **턴에서 받은 Claude 구독 사용률** — 인증된 토큰 자신의 계정 값(2026-10-10). 아직 claude 턴이 없었으면 `undefined`.
+   * 창은 5시간·7일만(모델별 창은 이름을 못 나른다 — `ProviderUsage` 는 창 길이로 이름을 짓는다). `needs.auth` 에 `claude-subscription`.
+   */
+  claudeUsageFromTurns(): { measuredAt: number; windows: { windowSeconds: number; remainingPercent?: number; resetAt?: number }[] } | undefined;
 
   /**
    * 모델에게 묻는다 (`needs.llm`).
@@ -584,6 +591,21 @@ export const createPluginHost = (
     const r = await finishClaudeTokenIssue(pasted);
     console.log(`[plugin:${plugin}] Claude 구독 토큰: ${r.ok ? "저장" : "저장 안 함"} — ${r.message}`);
     return r;
+  },
+  claudeUsageFromTurns: () => {
+    if (needs.auth?.includes("claude-subscription") !== true) return undefined;
+    const snap = turnRateLimitSnapshot();
+    if (snap === undefined) return undefined;
+    const SECONDS: Record<string, number> = { five_hour: 18_000, seven_day: 604_800 };
+    const windows = snap.windows
+      .filter((w) => SECONDS[w.name] !== undefined && w.utilization !== undefined)
+      .map((w) => ({
+        windowSeconds: SECONDS[w.name]!,
+        remainingPercent: Math.max(0, Math.min(100, 100 - w.utilization! * 100)),
+        ...(w.resetsAt !== undefined ? { resetAt: w.resetsAt.getTime() } : {}),
+      }))
+      .sort((a, b) => a.windowSeconds - b.windowSeconds);
+    return windows.length === 0 ? undefined : { measuredAt: snap.at, windows };
   },
   beginClaudeTokenIssue: async () => {
     if (needs.auth?.includes("claude-subscription") !== true) {

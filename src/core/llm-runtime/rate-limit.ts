@@ -30,6 +30,44 @@ export const isRateLimited = (errStr: string): boolean =>
   );
 
 /**
+ * **구조화된 한도 신호** — 어댑터가 오류에 «언제까지 막혔나» 를 실어 보낸다 (2026-10-10 정태님: «메시지로 인식하는 거였어? 다른 좋은 방법은?»).
+ * ★문구 판독(위 `isRateLimited`·아래 `parseCooldownMs`)은 업스트림이 문장을 조금만 바꿔도 놓친다 — v0.68 이 «hit your **weekly** limit»
+ *  을 못 읽어 주간 한도 동안 매 턴 claude 를 다시 두드렸다. claude SDK 는 턴 중에 `rate_limit_event`(status·resetsAt epoch)를 주므로
+ *  거절(`rejected`)이면 그 시각을 그대로 쓴다. 문구 판독은 신호가 없을 때(다른 어댑터·옛 SDK)의 보조로 남는다.
+ */
+export const RATE_LIMIT_UNTIL_KEY = "rateLimitUntilMs";
+export const withRateLimitUntil = <E extends Error>(err: E, untilMs: number | undefined): E => {
+  // 이미 지난 시각은 싣지 않는다 — 무관한 실패가 «한도» 로 읽혀 기본 쿨다운이 걸렸다(적대 검토 F10①).
+  if (untilMs === undefined || !Number.isFinite(untilMs) || untilMs <= Date.now()) return err;
+  // 인증 거부는 재로그인이 할 일이다 — 남아 있던 거절 신호로 «한도» 를 덧씌우지 않는다(적대 검토 F3 부수).
+  if (isAuthRejected(err.message)) return err;
+  (err as unknown as Record<string, unknown>)[RATE_LIMIT_UNTIL_KEY] = untilMs;
+  // ★문장에도 싣는다 — 사용자 답(`formatRegionAError`)·매니저 통지(`failureKind`)는 문자열만 받는다. 속성만 두면 쿨다운은 «한도» 인데
+  //  답은 «요청 처리 중 오류: 원문» 이 나가 한 턴에 판정이 갈렸다(적대 검토 F4). 이 꼬리는 `isRateLimited`·`parseCooldownMs` 가 읽는다.
+  err.message += ` (rate limit reached — resets ${new Date(untilMs).toISOString()})`;
+  return err;
+};
+export const rateLimitUntilOf = (e: unknown): number | undefined => {
+  const v = e !== null && typeof e === "object" ? (e as Record<string, unknown>)[RATE_LIMIT_UNTIL_KEY] : undefined;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+};
+/** 이 실패가 한도인가·인증 거부인가 — 쿨다운 등록과 턴 오류 기록이 **같은 판정**을 쓴다(두 곳에 적으면 갈린다). */
+export const classifyCooldown = (e: unknown, detail: string): "limit" | "auth" | null => {
+  if (isRateLimited(detail)) return "limit";
+  // 인증 거부가 남아 있던 한도 신호보다 먼저다 — «401 + 거절 신호» 는 재로그인이 할 일이다(적대 검토 F3 부수).
+  if (isAuthRejected(detail)) return "auth";
+  const until = rateLimitUntilOf(e);
+  return until !== undefined && until > Date.now() ? "limit" : null;
+};
+/** 한도 쿨다운 길이와 그 출처 — 구조화 신호가 있으면 그것(문구보다 먼저), 없으면 문구 판독, 둘 다 없으면 null(호출자가 기본값). */
+export const limitCooldownMs = (e: unknown, detail: string, now: number = Date.now()): { ms: number; source: "event" | "text" } | null => {
+  const until = rateLimitUntilOf(e);
+  if (until !== undefined && until > now) return { ms: Math.min(until - now, MAX_COOLDOWN_MS), source: "event" };
+  const parsed = parseCooldownMs(detail);
+  return parsed === null ? null : { ms: parsed, source: "text" };
+};
+
+/**
  * **인증 거부 판정** (2026-09-26) — 한도(계정 사용량)와 **다른 축**이다.
  *
  * ★사고(돌쇠 9/26 08:00~08:10): Codex 가 `401 invalid_api_key` 를 6턴 연속 냈다. 한도가 아니라
@@ -90,6 +128,12 @@ export const isModelOverloaded = (errStr: string): boolean =>
   /server_is_overloaded|servers are currently overloaded|overloaded_error/i.test(errStr);
 
 export const parseCooldownMs = (errStr: string): number | null => {
+  // 어댑터가 실은 구조화 신호의 꼬리(`withRateLimitUntil`) — 정확한 시각이라 먼저 본다.
+  const iso = /rate limit reached — resets (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/.exec(errStr);
+  if (iso !== null) {
+    const ms = Date.parse(iso[1]!) - Date.now();
+    if (Number.isFinite(ms) && ms > 0) return Math.min(ms, MAX_COOLDOWN_MS);
+  }
   const m =
     errStr.match(/"resets_in_seconds"\s*:\s*(\d+)/) ||
     errStr.match(/retry[-_ ]?after["'\s:=]+(\d+)/i);

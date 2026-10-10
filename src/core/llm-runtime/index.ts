@@ -73,6 +73,8 @@ import {
   DEFAULT_COOLDOWN_MS,
   MAX_COOLDOWN_MS,
   isRateLimited,
+  classifyCooldown,
+  limitCooldownMs,
   parseCooldownMs,
   AUTH_COOLDOWN_MS,
   isAuthRejected,
@@ -995,8 +997,7 @@ const publishTurnError = (
       adapter: adapterLabel(spec.adapter),
       ...(remainMs > 0 ? { cooldownUntilTs: Date.now() + remainMs } : {}),
       // 등록과 같은 판정(`registerCooldownIfRateLimited`) — 이 턴의 오류가 어느 쪽인지 모르면 싣지 않는다.
-      ...(remainMs > 0 && isRateLimited(raw) ? { cooldownReason: "limit" as const } : {}),
-      ...(remainMs > 0 && !isRateLimited(raw) && isAuthRejected(raw) ? { cooldownReason: "auth" as const } : {}),
+      ...(remainMs > 0 && classifyCooldown(e, raw) !== null ? { cooldownReason: classifyCooldown(e, raw)! } : {}),
       durationMs,
       ok: false,
       errorKind: classifyTurnError(e),
@@ -1301,11 +1302,13 @@ export const registerCooldownIfRateLimited = (
   //  (`rate_limit_status` 같은 이름이면 아래 패턴이 «한도» 로 읽고 그 모델을 쉬게 한다). 분류 전에 뺀다.
   if (e instanceof ToolHangError) return null;
   const detail = errorDetail(e);
-  const limited = isRateLimited(detail);
   // ★인증 거부도 쉬게 한다 (2026-09-26) — 재로그인 전까지 매 턴 다시 해도 같은 401 이다.
-  const auth = !limited && isAuthRejected(detail);
-  if (!limited && !auth) return null;
-  const parsed = limited ? parseCooldownMs(detail) : null;
+  //  판정은 `classifyCooldown` 한 곳 — 어댑터의 구조화 한도 신호(SDK rate_limit_event)가 문구보다 먼저다(2026-10-10).
+  const kind = classifyCooldown(e, detail);
+  if (kind === null) return null;
+  const auth = kind === "auth";
+  const limitMs = auth ? null : limitCooldownMs(e, detail);
+  const parsed = limitMs?.ms ?? null;
   const ms = auth ? AUTH_COOLDOWN_MS : parsed ?? DEFAULT_COOLDOWN_MS;
   const key = cooldownKey(spec);
   const untilTs = Date.now() + ms;
@@ -1316,7 +1319,7 @@ export const registerCooldownIfRateLimited = (
     //  인지, 비정상 값이 7일 상한에 잘린 건지 로그만으로는 구분이 안 됐다. 상수를 외워야
     //  산술로 추론해야 했고, 그게 "6일 공백" 사고에서 답을 못 낸 질문이었다.
     `llm-runtime: '${key}' ${auth ? "인증 거부" : "rate-limited"} — ${Math.ceil(ms / 60000)}분 쿨다운 등록 ` +
-      `(${auth ? "인증 거부 기본값 — 재로그인·성공·4시간 탐침이 먼저 푼다" : parsed === null ? "기본값" : ms >= MAX_COOLDOWN_MS ? "상한 클램프" : "백엔드 지정"}, ` +
+      `(${auth ? "인증 거부 기본값 — 재로그인·성공·4시간 탐침이 먼저 푼다" : parsed === null ? "기본값" : ms >= MAX_COOLDOWN_MS ? "상한 클램프" : limitMs?.source === "event" ? "SDK 한도 신호" : "백엔드 지정(문구)"}, ` +
       `해제 ${new Date(untilTs).toLocaleString("ko-KR")}).`,
   );
   publishCooldownEvent("enter", key, ms);

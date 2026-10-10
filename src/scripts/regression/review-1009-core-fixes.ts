@@ -16,7 +16,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, skip, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
   name: "review-1009-core-fixes",
@@ -65,8 +65,15 @@ export const check: RegressionCheck = {
       const big = path.join(dir, "big");
       await import("node:fs/promises").then((m) => m.mkdir(big));
       await writeFile(path.join(big, "huge.txt"), "needle-line-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n".repeat(200_000)); // ≈13MB
-      const g = JSON.stringify(await ops.callTool("Grep", { pattern: "needle", path: big, output_mode: "content", head_limit: 5 }));
-      out.push(assert("⑥ Grep 출력이 상한을 넘어도 앞부분을 «잘렸다» 와 함께 준다", g.includes("needle-line") && g.includes("truncated") && !/maxBuffer/i.test(g), g.slice(0, 160)));
+      // ripgrep 이 없는 설치(깨끗한 설치·CI — `npm run doctor` 가 받는다)에선 Grep 자체가 «rg 없음» 이다 — 비대상으로 센다(조용한 통과 X).
+      const { findRipgrep } = await import("../../core/ripgrep.js");
+      const { getPaths } = await import("../../core/paths.js");
+      if (findRipgrep(getPaths().home) === null) {
+        out.push(skip("⑥ Grep 출력이 상한을 넘어도 앞부분을 «잘렸다» 와 함께 준다", "ripgrep 없음 — 이 설치에선 Grep 이 «rg 를 못 찾았습니다» 로 답한다(doctor 가 받는다)"));
+      } else {
+        const g = JSON.stringify(await ops.callTool("Grep", { pattern: "needle", path: big, output_mode: "content", head_limit: 5 }));
+        out.push(assert("⑥ Grep 출력이 상한을 넘어도 앞부분을 «잘렸다» 와 함께 준다", g.includes("needle-line") && g.includes("truncated") && !/maxBuffer/i.test(g), g.slice(0, 160)));
+      }
 
       // ⑦ invoke_skill 은 기준 폴더를 같이 준다 — 번들 스킬의 상대경로(references/·scripts/)가 풀리게
       const { createSkillInvokeMcpServer } = await import("../../core/llm-runtime/capabilities/skill-registry.js");

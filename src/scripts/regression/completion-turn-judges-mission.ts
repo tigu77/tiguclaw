@@ -130,6 +130,17 @@ export const check: RegressionCheck = {
     out.push(assert("정확히 4,000자 임무는 접지 않는다(경계)", edge.prompt.includes("가".repeat(4_000)) && !edge.prompt.includes("자 생략"), edge.prompt.length));
     // 취소로 끝났는데 늦은 지시가 왔다 — 취소 턴에도 실리고, «새로 시작하지 마라» 가 그 지시와 부딪치지 않는다
     const cancelLate = await drive({ cancel: true, error: "aborted", late: ["회귀-늦은-지시4: 대신 B 를 해 줘"], onTurn: async (m) => { await m.reply("회귀-답장"); } });
+    // 알림 안의 글(비서·작업자가 쓴 것)은 답할 언어의 기준이 아니다 — 완료·취소 둘 다, 알림 블록 **밖**(지시부)에(2026-10-11 윈도우 돌쇠: 위임 지시의
+    //  일본어가 알림으로 되돌아와 다음 답 전체가 일본어였다).
+    const langNote = (p: string): boolean => {
+      const after = p.slice(p.indexOf("〔/알림〕"));
+      return p.indexOf("〔/알림〕") > 0 && after.includes("답할 언어의 기준이 아닙니다") && after.includes("사용자가 이 대화에서 쓰는 언어로");
+    };
+    out.push(assert(
+      "★완료·취소 알림 모두 «알림 안의 글은 답할 언어의 기준이 아니다 · 사용자가 쓰는 언어로» 를 알림 블록 밖에 싣는다",
+      langNote(ok.prompt) && langNote(cancelLate.prompt),
+      { 완료: langNote(ok.prompt), 취소: langNote(cancelLate.prompt) },
+    ));
     out.push(assert(
       "취소 완료 턴에도 늦은 지시가 실리고, «새로 시작 금지» 는 그 지시가 원하는 경우를 열어 둔다",
       cancelLate.prompt.includes("회귀-늦은-지시4") && cancelLate.prompt.includes("아래 지시가 원하는 게 아니면 새로 시작하지 마세요") && cancelLate.raws.length === 0,

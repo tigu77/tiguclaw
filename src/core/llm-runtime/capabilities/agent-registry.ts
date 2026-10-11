@@ -654,14 +654,14 @@ export const createSpawnAgentMcpServer = (
       // `model` 은 Claude Code Agent 도구의 인자 이름이다 — 모델이 습관으로 그렇게 부르면 `tier` 로 받는다(`subagent_type` 과 같은 처리).
       //  종전 안내문이 `model` 이라고 시켰던 것도 있다: 받지 않으면 모르는 키로 걸러져 **조용히 기본 모델**이 됐다(적대 검토 P-1).
       model: z.string().min(1).optional(),
-      prompt: z.string().min(1),
+      prompt: z.string().min(1).describe("서브에이전트에게 줄 작업 지시 — 사용자의 언어로(코드·식별자·인용은 원문)."),
       // ★작업 제목 (2026-09-01) — 매니저의 `run_in_background({label})` 과 같은 자리.
       //  없으면 잡 카드가 전부 `deep`·`general` 로만 보여 여럿을 동시에 띄우면 구분이 안 된다.
       label: z
         .string()
         .optional()
         .describe(
-          "이 작업이 무엇인지 한 줄(예: 'Q6-5b 회귀 감사'). 백그라운드 작업 카드에 에이전트 이름과 함께 표시됩니다. 미지정이면 에이전트 이름만 보입니다.",
+          "이 작업이 무엇인지 한 줄, 사용자의 언어로(예: 'Q6-5b 회귀 감사'). 백그라운드 작업 카드에 에이전트 이름과 함께 표시됩니다. 미지정이면 에이전트 이름만 보입니다.",
         ),
       path: z.string().optional(),
       // ★`wait` 인자는 **없앴다** (2026-09-03). 실사용 잡 21건이 전부 `wait:true` 였다 —

@@ -64,10 +64,10 @@
             return chip;
           });
 
-        // ★등록된 프로젝트가 하나도 없어도 버튼은 보인다 — 숨기면 이 기능도, 등록하는 법도 화면에서 알 길이 없다(2026-10-08 정태님).
-        //  연결할 게 더 없는 경우(전부 이미 연결)만 숨긴다.
+        // ★버튼은 **늘** 보인다 — 숨기면 이 기능도, 등록하는 법도 화면에서 알 길이 없다(2026-10-08 정태님: 등록된 게 없을 때).
+        //  전부 연결된 뒤에도 같다(2026-10-11 정태님: 하나뿐인 프로젝트를 연결하자 버튼이 사라졌다). 누르면 «모두 연결됨» +
+        //  등록하는 법이 뜬다 — 텔레그램 `/project link` 도 이 경우 숨기지 않고 «연결할 프로젝트가 없다» 고 답한다.
         const addButton = () => {
-          if (state.available.length === 0 && state.linked.length > 0) return null;
           const b = document.createElement("button");
           b.type = "button";
           b.className = "ctx-chip ctx-add ctx-link-add";
@@ -82,16 +82,16 @@
           if (!row) return;
           row.innerHTML = "";
           for (const chip of linkedChips()) row.appendChild(chip);
-          const add = addButton();
-          if (add) row.appendChild(add);
+          row.appendChild(addButton());
         };
 
         // ── 메뉴 ──────────────────────────────────────────────────────────
         // 등록된 프로젝트가 없을 때의 안내 — 프로젝트 페이지의 빈 화면과 **같은 문구 키**(한 곳에서 같은 말을 한다).
+        //  이미 전부 연결했으면 첫 줄만 «모두 연결됨» 으로 — 더 연결하려면 새로 등록해야 하니 등록하는 법은 그대로 보인다.
         const emptyGuide = () => {
           const name = typeof assistantName === "string" ? assistantName : "tiguclaw";
           return [
-            i18n("proj.empty.title"),
+            state.linked.length > 0 ? i18n("sproj.allLinked") : i18n("proj.empty.title"),
             i18n("proj.empty.lead", { name }),
             i18n("proj.empty.ex1", { quote: i18n("proj.empty.ex1.text", { path: "~/work/myapp" }) }),
             i18n("proj.empty.ex2", { quote: i18n("proj.empty.ex2.text") }),

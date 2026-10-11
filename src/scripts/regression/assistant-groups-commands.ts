@@ -101,6 +101,58 @@ export const check: RegressionCheck = {
       rmSync(at("regr-top.md"), { force: true });
     }
 
+    // ③''' 다른 묶음으로 옮기며 덮어쓸 때 옛 자리를 못 비우면 «등록했습니다» 라고 하지 않는다(2026-10-11 아스트라 검토 P2).
+    //  종전엔 새 자리에 쓰고 옛 파일 삭제 실패를 삼켜 같은 이름이 두 곳에 남았고, 더 얕은 옛 파일이 계속 쓰였다.
+    {
+      const { chmodSync, mkdirSync, writeFileSync, accessSync, constants } = await import("node:fs");
+      const { listCommandsIn } = await import("../../core/entry/command-registry.js");
+      const picked = async (): Promise<string> => {
+        const c = (await listCommandsIn(root)).find((x) => x.name === "regr-lock");
+        return c === undefined ? "(없음)" : readFileSync(c.filePath, "utf8").trim().split("\n").pop() ?? "";
+      };
+      // ⓐ 옛 자리 폴더가 쓰기 금지 → 옮기기 실패: 아무것도 안 바뀌고 실패로 답한다
+      mkdirSync(at("잠김"), { recursive: true });
+      writeFileSync(at("잠김", "regr-lock.md"), "---\n---\nOLD\n");
+      chmodSync(at("잠김"), 0o555);
+      let enforced = true;
+      try {
+        accessSync(at("잠김"), constants.W_OK);
+        enforced = false; // root·윈도우 — 권한으로 실패를 못 만든다
+      } catch {
+        /* 쓰기 금지가 먹는다 */
+      }
+      if (enforced) {
+        const r = await call("register_command", { name: "regr-lock", prompt: "NEW", group: "새/깊이", overwrite: true });
+        const pick = await picked();
+        chmodSync(at("잠김"), 0o755);
+        out.push(
+          assert(
+            "★③''' 옛 자리를 못 옮기면 «등록했습니다» 가 아니라 실패로 답하고, 아무것도 안 바뀐다(같은 이름 두 곳 X · 쓰이는 것은 옛 내용 그대로)",
+            !/등록했습니다/.test(r) && /옮기지 못해/.test(r) && !existsSync(at("새", "깊이", "regr-lock.md")) && pick === "OLD",
+            { 답: r.slice(0, 160), 새자리: existsSync(at("새", "깊이", "regr-lock.md")), 쓰이는내용: pick },
+          ),
+        );
+        // ⓑ 옮기기는 됐는데 새 내용 쓰기가 실패(읽기 전용 파일) — 옮겼다는 사실과 옛 내용으로 동작함을 말한다
+        chmodSync(at("잠김", "regr-lock.md"), 0o444);
+        const r2 = await call("register_command", { name: "regr-lock", prompt: "NEW", group: "새/깊이", overwrite: true });
+        const pick2 = await picked();
+        const moved = existsSync(at("새", "깊이", "regr-lock.md"));
+        if (moved) chmodSync(at("새", "깊이", "regr-lock.md"), 0o644);
+        out.push(
+          assert(
+            "③''' 옮긴 뒤 새 내용을 못 쓰면 «옮겼지만 쓰지 못했다» 로 답하고, 파일은 하나뿐이며 그 답대로 옛 내용이 쓰인다",
+            !/등록했습니다/.test(r2) && /쓰지 못했습니다/.test(r2) && moved && !existsSync(at("잠김", "regr-lock.md")) && pick2 === "OLD",
+            { 답: r2.slice(0, 160), 새자리: moved, 옛자리: existsSync(at("잠김", "regr-lock.md")), 쓰이는내용: pick2 },
+          ),
+        );
+      } else {
+        chmodSync(at("잠김"), 0o755);
+        out.push(assert("③''' (이 환경은 권한으로 쓰기 실패를 만들 수 없다 — root·윈도우. 판정 대상 아님을 명시한다)", true, "skip"));
+      }
+      rmSync(at("잠김"), { recursive: true, force: true });
+      rmSync(at("새"), { recursive: true, force: true });
+    }
+
     // ④ 탈출·깊이
     const esc = await call("register_command", { name: "regr-esc", prompt: "x", group: "../밖" });
     const deep = await call("register_command", { name: "regr-deep", prompt: "x", group: "a/b/c/d" });

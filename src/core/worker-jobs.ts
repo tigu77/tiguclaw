@@ -2748,6 +2748,15 @@ const boundedTask = (task: string): string =>
     : `${task.slice(0, TASK_HEAD)}\n…(${(task.length - TASK_HEAD - TASK_TAIL).toLocaleString()}자 생략 — 원문은 이 대화의 위임 호출에 있다)…\n${task.slice(-TASK_TAIL)}`;
 
 /**
+ * 알림 안의 글은 답할 언어의 기준이 아니다 (2026-10-11, 윈도우 돌쇠 실측). 이 알림은 사용자 메시지 자리로 들어가는데 작업 이름·임무·
+ * 결과는 **비서·작업자가 쓴 글**이다 — 모델이 위임 지시를 한·일 혼합으로 쓰자(«TiguEngine pullと次ステップ確認») 그 글이 알림으로
+ * 7~8천 자씩 되돌아와 쌓였고, 뒤이은 13자 한국어 요청에 답 전체가 일본어로 나왔다. 헌법의 «사용자가 쓰는 언어» 규칙은 있었다 —
+ * 착각이 생기는 이 자리에서 그 글이 사용자 말이 아님을 밝힌다.
+ */
+const NOTICE_LANGUAGE_NOTE =
+  "(이 알림 안의 작업 이름·임무·결과는 비서·작업자가 쓴 글이라 답할 언어의 기준이 아닙니다 — 보고는 사용자가 이 대화에서 쓰는 언어로 하세요.)";
+
+/**
  * 완료(done)·취소(cancelled) 재주입 prompt — 메인이 결과를 맥락 입혀 다루게 하는 내부 스캐폴딩.
  * failed 는 onWorkerComplete 가 LLM 무경유 raw 통지(buildRawNotice)로 직행한다. 방어로 그 밖의 상태도 일반 문구 반환.
  */
@@ -2781,6 +2790,7 @@ const buildCompletionPrompt = (
       `작업: "${job.label}"\n` +
       `사용자가 이 작업을 취소했습니다(실패가 아닙니다).\n` +
       `〔/알림〕\n\n` +
+      `${NOTICE_LANGUAGE_NOTE}\n` +
       `취소됐음을 한 줄로 알리고, 이 작업에 걸려 있던 후속이 있으면 어떻게 할지 물어보세요. ` +
       (late.length === 0
         ? `이미 한 일을 되돌리거나 새로 시작하지 마세요.`
@@ -2813,6 +2823,7 @@ const buildCompletionPrompt = (
     `맡긴 임무:\n${boundedTask(job.task)}\n` +
     `결과:\n${job.result ?? ""}\n` +
     `〔/알림〕\n\n` +
+    `${NOTICE_LANGUAGE_NOTE}\n` +
     `위 결과를 사용자에게 자연스럽게 보고하세요. 단, 결과가 맡긴 임무를 다 하지 못했거나 중간에 멈췄다면 보고로 끝내지 마세요:\n` +
     `- 멈춘 원인을 확인하고, 이 임무로 이미 받은 권한 안에서 바로잡을 수 있으면 고쳐서 남은 일을 끝까지 하세요. ` +
     `남은 일이 짧으면 직접 하고, 길면 다시 맡긴 뒤 이 턴은 무엇을 왜 다시 하는지 한 줄 알리고 끝내세요` +

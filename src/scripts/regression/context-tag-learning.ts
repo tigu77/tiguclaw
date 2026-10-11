@@ -137,7 +137,7 @@ const run = async (): Promise<Assertion[]> => {
   //  커서 자리에 `#[]` 를 넣는다. 오탐 0, 예외 0.
   {
     const vp = await readFile(new URL("view-projects.js", JS_DIR), "utf8");
-    const hasAdd = /ctx-add/.test(vp) && /＋ 새 태그/.test(vp);
+    const hasAdd = /ctx-add/.test(vp) && /i18n\("proj\.tag\.add"\)/.test(vp);
     const insertsAtCaret = /ta\.selectionStart[\s\S]{0,400}?"#\[\]"/.test(vp);
     const padsWord = /!\/\\s\$\/\.test\(v\.slice\(0, a\)\)/.test(vp);
     out.push({

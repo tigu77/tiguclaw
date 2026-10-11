@@ -317,11 +317,29 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         const fileBody = `---\n${fm.length > 0 ? `${fm.join("\n")}\n` : ""}---\n${prompt !== "" ? `${prompt}\n` : ""}`;
 
         // 5) 디렉터리 ensure(백스톱 — ensureHome 이 이미 만들지만 멱등) + 쓰기.
+        // ★다른 묶음으로 옮기며 덮어쓰면 **먼저 옮기고 나서 쓴다** (2026-10-11 아스트라 검토 P2). 종전엔 새 자리에 쓰고 옛 파일을
+        //  지웠는데 지우기 실패를 삼켜, 같은 이름이 두 곳에 남고 **더 얕은 옛 파일이 계속 쓰이는데** «등록했습니다» 라고 답했다.
+        //  rename 은 되거나 안 되거나다 — 안 되면 아무것도 안 바뀌었고, 되면 파일이 하나뿐이다(되돌리기 로직이 필요 없다).
+        const moving = existing !== undefined && !(await samePath(existing, filePath));
         await fs.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.writeFile(filePath, fileBody, "utf8");
-        if (existing !== undefined && !(await samePath(existing, filePath))) {
-          await fs.unlink(existing).catch(() => undefined);
+        if (moving) {
+          try {
+            await fs.rename(existing, filePath);
+          } catch (e) {
+            return errText(
+              `'/${name}' 을(를) 옛 자리(${existing})에서 옮기지 못해 아무것도 바꾸지 않았습니다 — ${e instanceof Error ? e.message : String(e)}. 지금은 옛 내용 그대로 동작합니다.`,
+            );
+          }
           await pruneEmptyDirs(path.dirname(existing), commandsDir);
+        }
+        try {
+          await fs.writeFile(filePath, fileBody, "utf8");
+        } catch (e) {
+          if (!moving) throw e;
+          getEventBus().publish({ type: "commands.changed", ts: Date.now(), payload: {} });
+          return errText(
+            `'/${name}' 을(를) ${filePath} 로 옮겼지만 새 내용을 쓰지 못했습니다 — ${e instanceof Error ? e.message : String(e)}. 지금은 옛 내용으로 동작합니다.`,
+          );
         }
 
         // 6) ★ 메뉴 즉시 반영 — 쓰기 성공 후 commands.changed publish.

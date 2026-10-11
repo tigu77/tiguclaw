@@ -542,11 +542,11 @@ export const createWorkerMcpServer = (
       task: z
         .string()
         .min(1)
-        .describe("매니저가 수행할 자연어 작업 지시 (필요한 맥락 포함)."),
+        .describe("매니저가 수행할 자연어 작업 지시 (필요한 맥락 포함) — 사용자의 언어로(코드·식별자·인용은 원문)."),
       label: z
         .string()
         .min(1)
-        .describe("사람이 읽는 짧은 작업 이름 (예 '월간 리포트 생성')."),
+        .describe("사람이 읽는 짧은 작업 이름 (예 '월간 리포트 생성') — 사용자의 언어로."),
       path: z
         .string()
         .optional()

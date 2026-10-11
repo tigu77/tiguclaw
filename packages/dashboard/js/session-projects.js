@@ -88,10 +88,11 @@
         // ── 메뉴 ──────────────────────────────────────────────────────────
         // 등록된 프로젝트가 없을 때의 안내 — 프로젝트 페이지의 빈 화면과 **같은 문구 키**(한 곳에서 같은 말을 한다).
         //  이미 전부 연결했으면 첫 줄만 «모두 연결됨» 으로 — 더 연결하려면 새로 등록해야 하니 등록하는 법은 그대로 보인다.
+        //  ★연결만 남고 등록이 해제된 것은 세지 않는다 — 등록된 게 0개인데 «모두 연결됨» 이라 하면 거짓이다(릴리스 검토 #9).
         const emptyGuide = () => {
           const name = typeof assistantName === "string" ? assistantName : "tiguclaw";
           return [
-            state.linked.length > 0 ? i18n("sproj.allLinked") : i18n("proj.empty.title"),
+            state.linked.some((p) => p.registered === true) ? i18n("sproj.allLinked") : i18n("proj.empty.title"),
             i18n("proj.empty.lead", { name }),
             i18n("proj.empty.ex1", { quote: i18n("proj.empty.ex1.text", { path: "~/work/myapp" }) }),
             i18n("proj.empty.ex2", { quote: i18n("proj.empty.ex2.text") }),

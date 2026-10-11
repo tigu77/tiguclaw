@@ -320,26 +320,39 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         // ★다른 묶음으로 옮기며 덮어쓰면 **먼저 옮기고 나서 쓴다** (2026-10-11 아스트라 검토 P2). 종전엔 새 자리에 쓰고 옛 파일을
         //  지웠는데 지우기 실패를 삼켜, 같은 이름이 두 곳에 남고 **더 얕은 옛 파일이 계속 쓰이는데** «등록했습니다» 라고 답했다.
         //  rename 은 되거나 안 되거나다 — 안 되면 아무것도 안 바뀌었고, 되면 파일이 하나뿐이다(되돌리기 로직이 필요 없다).
+        // ★새 내용은 **같은 폴더의 임시 파일에 다 쓴 뒤 rename 으로 바꿔 끼운다** (2026-10-12 아스트라 후속 P2). 제자리에 바로 쓰면
+        //  쓰기가 파일을 먼저 비우므로, 그 뒤 디스크 부족·I/O 오류가 나면 빈 파일·반쪽 파일이 남는데 «옛 내용으로 동작» 이라고 답했다.
+        //  임시 파일은 `.` 으로 시작하고 `.md` 로 끝나지 않아 커맨드 탐색에 안 잡힌다. 실패하면 임시 파일만 치운다.
         const moving = existing !== undefined && !(await samePath(existing, filePath));
+        const why = (e: unknown): string => (e instanceof Error ? e.message : String(e));
         await fs.mkdir(path.dirname(filePath), { recursive: true });
+        // 이름에 무작위를 붙인다 — 같은 이름을 같은 밀리초에 두 번 등록하면 임시 파일이 겹쳐 답과 내용이 어긋났다(릴리스 검토 #1,
+        //  `env-file.ts` 가 먼저 겪은 것과 같다).
+        const tmp = path.join(path.dirname(filePath), `.${name}.md.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+        const dropTmp = (): Promise<void> => fs.unlink(tmp).catch(() => undefined);
+        const unchanged = existing === undefined ? "등록하지 않았습니다" : "지금은 옛 내용 그대로 동작합니다";
+        try {
+          await fs.writeFile(tmp, fileBody, "utf8");
+        } catch (e) {
+          await dropTmp();
+          return errText(`'/${name}' 의 새 내용을 쓰지 못해 아무것도 바꾸지 않았습니다 — ${why(e)}. ${unchanged}.`);
+        }
         if (moving) {
           try {
             await fs.rename(existing, filePath);
           } catch (e) {
-            return errText(
-              `'/${name}' 을(를) 옛 자리(${existing})에서 옮기지 못해 아무것도 바꾸지 않았습니다 — ${e instanceof Error ? e.message : String(e)}. 지금은 옛 내용 그대로 동작합니다.`,
-            );
+            await dropTmp();
+            return errText(`'/${name}' 을(를) 옛 자리(${existing})에서 옮기지 못해 아무것도 바꾸지 않았습니다 — ${why(e)}. ${unchanged}.`);
           }
           await pruneEmptyDirs(path.dirname(existing), commandsDir);
         }
         try {
-          await fs.writeFile(filePath, fileBody, "utf8");
+          await fs.rename(tmp, filePath);
         } catch (e) {
-          if (!moving) throw e;
+          await dropTmp();
+          if (!moving) return errText(`'/${name}' 의 새 내용으로 바꾸지 못해 아무것도 바꾸지 않았습니다 — ${why(e)}. ${unchanged}.`);
           getEventBus().publish({ type: "commands.changed", ts: Date.now(), payload: {} });
-          return errText(
-            `'/${name}' 을(를) ${filePath} 로 옮겼지만 새 내용을 쓰지 못했습니다 — ${e instanceof Error ? e.message : String(e)}. 지금은 옛 내용으로 동작합니다.`,
-          );
+          return errText(`'/${name}' 을(를) ${filePath} 로 옮겼지만 새 내용으로 바꾸지 못했습니다 — ${why(e)}. 지금은 옛 내용으로 동작합니다.`);
         }
 
         // 6) ★ 메뉴 즉시 반영 — 쓰기 성공 후 commands.changed publish.

@@ -17,7 +17,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, skip, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
   name: "assistant-groups-commands",
@@ -132,25 +132,97 @@ export const check: RegressionCheck = {
             { 답: r.slice(0, 160), 새자리: existsSync(at("새", "깊이", "regr-lock.md")), 쓰이는내용: pick },
           ),
         );
-        // ⓑ 옮기기는 됐는데 새 내용 쓰기가 실패(읽기 전용 파일) — 옮겼다는 사실과 옛 내용으로 동작함을 말한다
-        chmodSync(at("잠김", "regr-lock.md"), 0o444);
-        const r2 = await call("register_command", { name: "regr-lock", prompt: "NEW", group: "새/깊이", overwrite: true });
-        const pick2 = await picked();
-        const moved = existsSync(at("새", "깊이", "regr-lock.md"));
-        if (moved) chmodSync(at("새", "깊이", "regr-lock.md"), 0o644);
-        out.push(
-          assert(
-            "③''' 옮긴 뒤 새 내용을 못 쓰면 «옮겼지만 쓰지 못했다» 로 답하고, 파일은 하나뿐이며 그 답대로 옛 내용이 쓰인다",
-            !/등록했습니다/.test(r2) && /쓰지 못했습니다/.test(r2) && moved && !existsSync(at("잠김", "regr-lock.md")) && pick2 === "OLD",
-            { 답: r2.slice(0, 160), 새자리: moved, 옛자리: existsSync(at("잠김", "regr-lock.md")), 쓰이는내용: pick2 },
-          ),
-        );
       } else {
         chmodSync(at("잠김"), 0o755);
-        out.push(assert("③''' (이 환경은 권한으로 쓰기 실패를 만들 수 없다 — root·윈도우. 판정 대상 아님을 명시한다)", true, "skip"));
+        out.push(skip("③''' 옛 자리를 못 옮기면 실패로 답한다", "이 환경은 권한으로 이동 실패를 만들 수 없다(root·윈도우)"));
       }
       rmSync(at("잠김"), { recursive: true, force: true });
       rmSync(at("새"), { recursive: true, force: true });
+    }
+
+    // ③'''' 새 내용 쓰기가 **중간에** 실패해도 옛 내용은 그대로이고, 답은 실제 상태를 말한다(2026-10-12 아스트라 후속 P2).
+    //  종전엔 제자리에 바로 써서, 쓰기가 파일을 비운 뒤 실패하면 빈 파일·반쪽 파일이 남는데 «옛 내용으로 동작» 이라고 답했다.
+    //  디스크 부족을 실제로 만들 수는 없어 파일 쓰기에 실패를 주입한다 — «비운 뒤 실패» · «반쯤 쓰고 실패» · «바꿔 끼우기 실패».
+    {
+      const { mkdirSync, writeFileSync, readdirSync, promises: fsp } = await import("node:fs");
+      const { listCommandsIn } = await import("../../core/entry/command-registry.js");
+      const body = (p: string): string => (existsSync(p) ? readFileSync(p, "utf8").trim().split("\n").pop() ?? "" : "(없음)");
+      const pickedW = async (n: string): Promise<string> => {
+        const c = (await listCommandsIn(root)).find((x) => x.name === n);
+        return c === undefined ? "(없음)" : body(c.filePath);
+      };
+      const tmpLeft = (dir: string): string[] => (existsSync(dir) ? readdirSync(dir).filter((f) => f.includes(".tmp-")) : []);
+      const realWrite = fsp.writeFile;
+      const realRename = fsp.rename;
+      const enospc = (): Error => Object.assign(new Error("ENOSPC: no space left on device (회귀 주입)"), { code: "ENOSPC" });
+      try {
+        // ⓒ 옮기며 바꾸기 — 쓰기가 파일을 비운 뒤 실패
+        mkdirSync(at("쓰기옛"), { recursive: true });
+        writeFileSync(at("쓰기옛", "regr-w.md"), "---\n---\nOLD\n");
+        fsp.writeFile = (async (f: Parameters<typeof realWrite>[0]) => {
+          await realWrite(f, "");
+          throw enospc();
+        }) as typeof realWrite;
+        const rc = await call("register_command", { name: "regr-w", prompt: "NEW", group: "쓰기새", overwrite: true });
+        fsp.writeFile = realWrite;
+        const c1 = { 답: rc.slice(0, 160), 옛자리: body(at("쓰기옛", "regr-w.md")), 새자리: body(at("쓰기새", "regr-w.md")), 쓰이는내용: await pickedW("regr-w"), 임시파일: [...tmpLeft(at("쓰기옛")), ...tmpLeft(at("쓰기새"))] };
+        // ⓓ 같은 자리 덮어쓰기 — 반쯤 쓰고 실패
+        writeFileSync(at("regr-w2.md"), "---\n---\nOLD2\n");
+        fsp.writeFile = (async (f: Parameters<typeof realWrite>[0], data: unknown) => {
+          const t = String(data);
+          await realWrite(f, t.slice(0, Math.floor(t.length / 2)));
+          throw enospc();
+        }) as typeof realWrite;
+        const rd = await call("register_command", { name: "regr-w2", prompt: "NEW2", overwrite: true });
+        fsp.writeFile = realWrite;
+        const c2 = { 답: rd.slice(0, 160), 내용: body(at("regr-w2.md")), 쓰이는내용: await pickedW("regr-w2"), 임시파일: tmpLeft(root) };
+        // ⓔ 옮긴 뒤 바꿔 끼우기(임시 → 제자리)가 실패 — 옮긴 것은 사실이고 옛 내용으로 동작한다
+        fsp.rename = (async (from: Parameters<typeof realRename>[0], to: Parameters<typeof realRename>[1]) => {
+          if (path.basename(String(from)).startsWith(".")) throw enospc();
+          return realRename(from, to);
+        }) as typeof realRename;
+        const re = await call("register_command", { name: "regr-w", prompt: "NEW", group: "쓰기새", overwrite: true });
+        fsp.rename = realRename;
+        const c3 = { 답: re.slice(0, 160), 옛자리: existsSync(at("쓰기옛", "regr-w.md")), 새자리: body(at("쓰기새", "regr-w.md")), 쓰이는내용: await pickedW("regr-w"), 임시파일: tmpLeft(at("쓰기새")) };
+        out.push(
+          assert(
+            "★③'''' 옮기며 바꾸다 쓰기가 파일을 비운 뒤 실패해도 옛 자리·옛 내용 그대로 · «아무것도 바꾸지 않았다» · 임시 파일 안 남김",
+            /아무것도 바꾸지 않았습니다/.test(c1.답) && c1.옛자리 === "OLD" && c1.새자리 === "(없음)" && c1.쓰이는내용 === "OLD" && c1.임시파일.length === 0,
+            c1,
+          ),
+          assert(
+            "★③'''' 같은 자리 덮어쓰기가 반쯤 쓰고 실패해도 옛 내용 그대로(반쪽 파일 X) · «아무것도 바꾸지 않았다»",
+            /아무것도 바꾸지 않았습니다/.test(c2.답) && c2.내용 === "OLD2" && c2.쓰이는내용 === "OLD2" && c2.임시파일.length === 0,
+            c2,
+          ),
+          assert(
+            "③'''' 옮긴 뒤 바꿔 끼우기가 실패하면 «옮겼지만 바꾸지 못했다» 로 답하고, 그 답대로 새 자리에 옛 내용이 쓰인다",
+            /옮겼지만/.test(c3.답) && !c3.옛자리 && c3.새자리 === "OLD" && c3.쓰이는내용 === "OLD" && c3.임시파일.length === 0,
+            c3,
+          ),
+        );
+      } finally {
+        fsp.writeFile = realWrite;
+        fsp.rename = realRename;
+        for (const d of ["쓰기옛", "쓰기새"]) rmSync(at(d), { recursive: true, force: true });
+        rmSync(at("regr-w2.md"), { force: true });
+      }
+    }
+
+    // ③''''' 같은 이름을 동시에 등록해도 임시 파일이 겹치지 않는다 — 같은 밀리초면 이름이 같아 한쪽이 «아무것도 바꾸지 않았다» 고
+    //  답하면서 실제로는 그쪽 내용이 쓰였다(릴리스 검토 #1: 200쌍 중 189쌍 어긋남).
+    {
+      const pairs = await Promise.all(
+        Array.from({ length: 20 }, (_, i) =>
+          Promise.all([
+            call("register_command", { name: `regr-race${i}`, prompt: "A", overwrite: true }),
+            call("register_command", { name: `regr-race${i}`, prompt: "B", overwrite: true }),
+          ]),
+        ),
+      );
+      const failed = pairs.flat().filter((r) => !/등록했습니다/.test(r)).length;
+      out.push(assert("③''''' 같은 이름을 동시에 등록해도 둘 다 «등록했습니다»(임시 파일이 안 겹친다)", failed === 0, { 실패답: failed, 예: pairs.flat().find((r) => !/등록했습니다/.test(r))?.slice(0, 140) }));
+      for (let i = 0; i < 20; i++) rmSync(at(`regr-race${i}.md`), { force: true });
     }
 
     // ④ 탈출·깊이

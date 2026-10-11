@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.69.1] - 2026-10-12
+
+### Fixed
+
+- **The dashboard's "＋ Project" button disappeared once every registered project was linked to the conversation.** It now always shows, and tells you how to register another project.
+- **When the assistant moved a command to another group while changing its content, it reported success even if the old file couldn't be removed** — and the old content kept running. It now reports the failure.
+- **Fewer replies drifting into another language (such as Japanese) after background tasks.** Task names and instructions given to managers and agents are now written in your language too.
+
 ## [0.69.0] - 2026-10-11
 
 ### Added
@@ -939,7 +947,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...HEAD
+[0.69.1]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...v0.69.1
 [0.69.0]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...v0.67.0

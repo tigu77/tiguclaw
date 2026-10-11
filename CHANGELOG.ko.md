@@ -8,6 +8,14 @@
 
 ## [Unreleased]
 
+## [0.69.1] - 2026-10-12
+
+### Fixed
+
+- **등록된 프로젝트를 모두 대화에 연결하면 대시보드의 «＋ 프로젝트» 버튼이 사라지던 문제.** 이제 늘 보이고, 누르면 새 프로젝트를 등록하는 법을 알려 줍니다.
+- **비서가 커맨드를 다른 묶음으로 옮기며 내용을 바꿀 때, 옛 파일을 지우지 못해도 등록됐다고 답하던 문제.** 이때는 옛 내용이 계속 쓰였습니다. 이제 실패를 그대로 알립니다.
+- **백그라운드 작업 결과를 보고할 때 대화와 다른 언어(일본어 등)가 섞이던 경우를 줄였습니다.** 매니저·에이전트에게 맡기는 작업 이름과 지시도 사용자의 언어로 쓰게 했습니다.
+
 ## [0.69.0] - 2026-10-11
 
 ### Added
@@ -2489,7 +2497,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...HEAD
+[0.69.1]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...v0.69.1
 [0.69.0]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...v0.67.0

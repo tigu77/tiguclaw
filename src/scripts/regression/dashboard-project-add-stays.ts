@@ -39,10 +39,12 @@ export const check: RegressionCheck = {
   guards: "하나뿐인 등록 프로젝트를 대화에 연결하면 [+ 프로젝트] 버튼이 사라져, 더 연결하거나 새로 등록하는 길이 화면에서 안 보이던 것",
   run: async (): Promise<Assertion[]> => {
     const all = await rowAndMenu({
-      linked: [{ name: "alpha", path: "/p/alpha", exists: true, commands: [] }],
+      linked: [{ name: "alpha", path: "/p/alpha", exists: true, registered: true, commands: [] }],
       available: [],
     });
     const none = await rowAndMenu({ linked: [], available: [] });
+    // 연결만 남고 등록이 해제됐다 — 등록된 게 0개인데 «모두 연결됨» 이라 하면 거짓이다(릴리스 검토 #9)
+    const orphan = await rowAndMenu({ linked: [{ name: "beta", path: "/p/beta", exists: true, registered: false, commands: [] }], available: [] });
     const addLabel = i18nForContext("sproj.add");
     return [
       assert("★① 등록된 프로젝트를 전부 연결해도 [+ 프로젝트] 버튼이 남는다", all.buttons.includes(addLabel) && all.buttons.length === 2, all.buttons),
@@ -56,7 +58,12 @@ export const check: RegressionCheck = {
         none.buttons.includes(addLabel) && none.labels.includes(i18nForContext("proj.empty.title")) && !none.labels.includes(i18nForContext("sproj.allLinked")),
         { 버튼: none.buttons, 목록: none.labels },
       ),
-      assert("그 과정에 던진 것이 없다", all.errors.length + none.errors.length === 0, [...all.errors, ...none.errors].join(" | ") || "예외 0"),
+      assert(
+        "③ 연결만 남고 등록이 해제됐으면 «모두 연결됨» 이 아니라 «등록된 프로젝트가 없습니다» + 등록하는 법",
+        orphan.labels.includes(i18nForContext("proj.empty.title")) && !orphan.labels.includes(i18nForContext("sproj.allLinked")),
+        orphan.labels,
+      ),
+      assert("그 과정에 던진 것이 없다", all.errors.length + none.errors.length + orphan.errors.length === 0, [...all.errors, ...none.errors, ...orphan.errors].join(" | ") || "예외 0"),
     ];
   },
 };

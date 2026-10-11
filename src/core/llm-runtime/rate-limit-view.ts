@@ -141,7 +141,7 @@ export const parseRateLimit = (raw: unknown): RateLimitView => {
  *  남의 숫자다. SDK 의 `rate_limit_event` 는 턴마다 그 토큰으로 받은 사용률을 준다(2026-09 이후 실측 — 9월 초엔 없었다). 사용률이
  *  하나라도 있을 때만 기억한다(«모름» 을 0 으로 덮지 않는다). 메모리에만 둔다 — 재시작 뒤엔 다음 턴이 다시 채운다.
  */
-let lastTurnUsage: { readonly at: number; readonly token: string; readonly windows: readonly RateLimitWindow[] } | undefined;
+let lastTurnUsage: { readonly token: string; readonly windows: ReadonlyMap<string, { readonly w: RateLimitWindow; readonly at: number }> } | undefined;
 /** 지금 쓰는 토큰의 표지(해시 앞부분) — 토큰을 바꾸면 옛 계정의 사용률을 «최신» 으로 보이지 않게(적대 검토 F5). 값 자체는 안 둔다. */
 const tokenKey = (): string =>
   createHash("sha256").update(process.env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? "").digest("hex").slice(0, 12);
@@ -150,10 +150,24 @@ export const noteTurnRateLimit = (view: RateLimitView, at: number = Date.now()):
   if (fresh.length === 0) return;
   const token = tokenKey();
   // ★일부 창만 담긴 이벤트가 앞 창들을 지우지 않게 이름별로 합친다(적대 검토 F9 — 각 창은 선택 항목이다). 토큰이 바뀌었으면 새로 시작.
-  const prev = lastTurnUsage !== undefined && lastTurnUsage.token === token ? lastTurnUsage.windows : [];
-  const merged = new Map(prev.map((w) => [w.name, w] as const));
-  for (const w of fresh) merged.set(w.name, w);
-  lastTurnUsage = { at, token, windows: [...merged.values()] };
+  //  ★측정 시각은 **창마다** 둔다 — 하나만 두면 합친 옛 창도 «방금 잰 값» 이 됐다(릴리스 검토 F1).
+  const merged = new Map(lastTurnUsage !== undefined && lastTurnUsage.token === token ? lastTurnUsage.windows : []);
+  for (const w of fresh) merged.set(w.name, { w, at });
+  lastTurnUsage = { token, windows: merged };
 };
-export const turnRateLimitSnapshot = (): { readonly at: number; readonly windows: readonly RateLimitWindow[] } | undefined =>
-  lastTurnUsage !== undefined && lastTurnUsage.token === tokenKey() ? lastTurnUsage : undefined;
+/**
+ * 지금 토큰의 창들 — 리셋 시각이 지난 창은 뺀다(그 값은 이미 아니다). 측정 시각은 남은 창 중 **가장 오래된** 것(보수).
+ * ★`only` 는 **받는 쪽이 보여 줄 창** — 측정 시각은 그 창들로만 잰다 (2026-10-11 수정분 재검토 F1). 종전엔 화면에 안 나오는
+ *  창(sonnet·opus·overage)까지 넣어, 방금 잰 5시간·주간 값이 두 시간 전 sonnet 창 때문에 «낡음» 으로 판정돼 다른 계정 CLI 값으로 갔다.
+ */
+export const turnRateLimitSnapshot = (
+  now: number = Date.now(),
+  only?: readonly string[],
+): { readonly at: number; readonly windows: readonly RateLimitWindow[] } | undefined => {
+  if (lastTurnUsage === undefined || lastTurnUsage.token !== tokenKey()) return undefined;
+  const kept = [...lastTurnUsage.windows.values()].filter(
+    (x) => (only === undefined || only.includes(x.w.name)) && (x.w.resetsAt === undefined || x.w.resetsAt.getTime() > now),
+  );
+  if (kept.length === 0) return undefined;
+  return { at: Math.min(...kept.map((x) => x.at)), windows: kept.map((x) => x.w) };
+};

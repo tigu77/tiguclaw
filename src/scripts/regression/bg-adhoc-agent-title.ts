@@ -28,10 +28,11 @@ export const check: RegressionCheck = {
     const adhoc = label("a1", { agentName: "subagent(mid)", label: "B2 공통 레이아웃 구현", modelTier: "mid" });
     const named = label("a2", { agentName: "explore", label: "로그 조사", modelTier: "low" });
     const bare = label("a3", { agentName: "subagent(mid)", modelTier: "mid" });
+    const subNamed = label("a4", { agentName: "subtask-runner", label: "정리", modelTier: "low" });
     const registry = readFileSync("src/core/llm-runtime/capabilities/agent-registry.ts", "utf8");
     return [
       assert("★① 이름 없이 띄운 서브에이전트 + 제목 → 제목만(등급은 배지가 보인다)", adhoc.includes("B2 공통 레이아웃 구현") && !adhoc.includes("subagent("), adhoc),
-      assert("② 이름 있는 에이전트 + 제목 → «이름 · 제목» 그대로", named.includes("explore · 로그 조사"), named),
+      assert("② 이름 있는 에이전트 + 제목 → «이름 · 제목» 그대로(sub 로 시작하는 이름도)", named.includes("explore · 로그 조사") && subNamed.includes("subtask-runner · 정리"), { named, subNamed }),
       assert("③ 제목이 없으면 자리표시 이름이라도 보인다(빈 카드 X)", bare.includes("subagent(mid)"), bare),
       assert(
         "④ 서버가 이름 없는 서브에이전트에 `subagent(<등급>)` 을 붙인다 — 화면 판정과 같은 모양",

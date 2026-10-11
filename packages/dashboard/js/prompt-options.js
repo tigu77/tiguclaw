@@ -79,7 +79,8 @@
           }
           // 기타 행도 비활성. 매칭 버튼이 없으면(=자유입력/복원) 그 값을 기타 칸에 표시.
           otherInput.disabled = true; otherSend.disabled = true;
-          if (!matched) { otherInput.value = value; otherRow.classList.add("picked"); }
+          // 복원(새로고침·이력)은 화면에 붙기 전이라 높이를 못 잰다 — 줄 수만큼 연다(여러 줄 답이 첫 줄만 보이던 것, 릴리스 검토 F3).
+          if (!matched) { otherInput.value = value; otherInput.rows = Math.min(6, String(value).split("\n").length); otherRow.classList.add("picked"); }
         };
         const submitOther = () => {
           if (chosen) return;

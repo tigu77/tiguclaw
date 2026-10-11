@@ -134,6 +134,38 @@ export const check: RegressionCheck = {
           const merged = (v.turnRateLimitSnapshot()?.windows ?? []).map((w) => w.name).sort().join(",");
           process.env.CLAUDE_CODE_OAUTH_TOKEN = "regr-token-b";
           const afterSwap = v.turnRateLimitSnapshot();
+          // 토큰을 바꾼 뒤 첫 이벤트는 옛 계정 창과 섞이지 않는다(릴리스 검토 G1)
+          v.noteTurnRateLimit(v.parseRateLimit({ status: "allowed", unifiedWindows: { seven_day: { utilization: 0.7 } } }));
+          const bOnly = (v.turnRateLimitSnapshot()?.windows ?? []).map((w) => w.name).join(",");
+          // 창마다 측정 시각 — 리셋이 지난 옛 창은 빠지고, 스냅샷 시각은 남은 창 중 가장 오래된 것(릴리스 검토 F1)
+          process.env.CLAUDE_CODE_OAUTH_TOKEN = "regr-token-c";
+          const T = Date.now();
+          v.noteTurnRateLimit(v.parseRateLimit({ status: "allowed", unifiedWindows: { five_hour: { utilization: 0.95, resetsAt: Math.floor((T - 5 * 3_600_000) / 1000) } } }), T - 6 * 3_600_000);
+          v.noteTurnRateLimit(v.parseRateLimit({ status: "allowed", unifiedWindows: { seven_day: { utilization: 0.3 } } }), T - 2 * 3_600_000);
+          v.noteTurnRateLimit(v.parseRateLimit({ status: "allowed", unifiedWindows: { seven_day_opus: { utilization: 0.1 } } }), T);
+          const snapC = v.turnRateLimitSnapshot(T);
+          const cNames = (snapC?.windows ?? []).map((w) => w.name).sort().join(",");
+          // 측정 시각은 받는 쪽이 보여 줄 창으로만 — 두 시간 전에만 온 sonnet 창이 방금 잰 5시간·주간 값을 «낡음» 으로 만들지 않는다(수정분 재검토 F1)
+          process.env.CLAUDE_CODE_OAUTH_TOKEN = "regr-token-d";
+          v.noteTurnRateLimit(v.parseRateLimit({ status: "allowed", unifiedWindows: { five_hour: { utilization: 0.4 }, seven_day: { utilization: 0.5 }, seven_day_sonnet: { utilization: 0.2 } } }), T - 2 * 3_600_000);
+          v.noteTurnRateLimit(v.parseRateLimit({ status: "allowed", unifiedWindows: { five_hour: { utilization: 0.45 }, seven_day: { utilization: 0.52 } } }), T);
+          // 실제 소비처(host)로 잰다 — host 가 보여 줄 창을 넘기지 않으면(게으른 편집) 여기서 빨개진다.
+          const { createPluginHost } = await import("../../core/plugins/host.js");
+          const usageD = createPluginHost("regr-usage-d", { auth: ["claude-subscription"] } as never).claudeUsageFromTurns();
+          out.push(
+            assert(
+              "★⑥ 토큰을 바꾼 뒤 첫 이벤트는 옛 계정 창과 안 섞이고 · 리셋이 지난 창은 빠지며 · 측정 시각은 남은 창 중 가장 오래된 것",
+              bOnly === "seven_day" && cNames === "seven_day,seven_day_opus" && snapC?.at === T - 2 * 3_600_000,
+              { 바꾼뒤첫: bOnly, 남은창: cNames, 측정: snapC === undefined ? null : Math.round((T - snapC.at) / 60_000) + "분 전" },
+            ),
+          );
+          out.push(
+            assert(
+              "★⑥ 측정 시각은 보여 줄 창으로만 잰다 — 다시 잰 창은 새 시각, 안 보이는 옛 창이 «낡음» 을 정하지 않는다",
+              usageD?.measuredAt === T && usageD.windows.length === 2 && usageD.windows[0]?.remainingPercent === 55,
+              { 측정: usageD === undefined ? null : Math.round((T - usageD.measuredAt) / 60_000) + "분 전", 창: usageD?.windows },
+            ),
+          );
           out.push(
             assert(
               "★⑥ 일부 창만 담긴 이벤트가 앞 창을 지우지 않고, 토큰을 바꾸면 옛 계정의 사용률을 안 보인다",

@@ -1693,7 +1693,7 @@ export const runOpenAi = async (
   }
   } catch (e) {
     // 실패로 끝났다 — 이 턴이 꺼낸 끼워넣기를 채널에 되돌린다(코어가 새 턴으로, 폴백 후보가 있으면 그 후보가 먼저 받는다).
-    //  `/stop` 이면 채널이 닫혀 있어 push 가 거절된다 — 멈추라고 한 것은 되살리지 않는다.
+    //  `/stop` 이면 턴 출구가 버린다(`reinjectUnlessStopped`) — 멈추라고 한 것은 되살리지 않는다.
     const n = steeringLedger.giveBack();
     if (n > 0) console.warn(`[steer] ${input.threadKey} 실패한 턴이 꺼낸 끼워넣기 ${n}건을 채널에 되돌림 — 다음 후보나 새 턴이 받는다`);
     throw e;

@@ -15,8 +15,10 @@ import vm from "node:vm";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import { dashSource, dispatch, makeDomContext, makeEvent } from "./_mini-dom.js";
 
-const build = (touch: boolean) => {
+const build = (touch: boolean, saved?: string) => {
   const { ctx, document } = makeDomContext({ i18n: (k: string) => k });
+  const rawTs = Date.now();
+  if (saved !== undefined) (ctx.localStorage as { setItem: (k: string, v: string) => void }).setItem(`po:${rawTs}|어느 쪽?`, saved);
   vm.createContext(ctx);
   vm.runInContext(
     `let firstEvent = false; let localChatCount = 0; const refreshChatEmpty = () => {}; const currentView = "chat";
@@ -26,7 +28,7 @@ const build = (touch: boolean) => {
     ctx,
   );
   vm.runInContext(dashSource("prompt-options.js"), ctx, { filename: "prompt-options.js" });
-  const div = vm.runInContext(`buildPromptOptions({ question: "어느 쪽?", options: [{ label: "A", value: "a" }, { label: "B", value: "b" }] }, "10:00", ${String(Date.now())})`, ctx);
+  const div = vm.runInContext(`buildPromptOptions({ question: "어느 쪽?", options: [{ label: "A", value: "a" }, { label: "B", value: "b" }] }, "10:00", ${String(rawTs)})`, ctx);
   document.body.appendChild(div);
   const input = div.querySelector(".prompt-other-input");
   const submitted = (): string[] => vm.runInContext("submitted", ctx) as string[];
@@ -58,6 +60,8 @@ export const check: RegressionCheck = {
     t.input.value = "터치";
     t.key({});
     out.push(assert("③ 터치 기기에선 Enter 가 줄바꿈이다(보내기는 버튼) — 메인 입력창과 같은 판정", t.submitted().length === 0, { 전송: t.submitted() }));
+    const r = build(false, "첫째\n둘째\n셋째");
+    out.push(assert("④ 새로고침 뒤 복원한 여러 줄 답은 그 줄 수만큼 보인다(첫 줄만 보이던 것)", r.input.value === "첫째\n둘째\n셋째" && r.input.rows === 3, { 값: r.input.value, 줄: r.input.rows }));
     return out;
   },
 };

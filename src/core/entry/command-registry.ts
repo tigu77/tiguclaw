@@ -267,7 +267,7 @@ const walkCommandsDir = async (
     for (const e of entries) {
       if (e.name.startsWith(".")) continue;
       if (e.isFile() && e.name.endsWith(".md")) files.push({ filePath: path.join(dir, e.name), folder: rel, depth });
-      else if (e.isDirectory() && opts.nested !== false && depth < MAX_COMMAND_FOLDER_DEPTH && e.name !== "node_modules") subdirs.push(e.name);
+      else if (e.isDirectory() && opts.nested !== false && depth < MAX_COMMAND_FOLDER_DEPTH && isWalkedCommandFolder(e.name)) subdirs.push(e.name);
     }
     await Promise.all(subdirs.map((d) => walk(path.join(dir, d), rel === "" ? d : `${rel}/${d}`, depth + 1)));
   };
@@ -289,6 +289,10 @@ const walkCommandsDir = async (
   }
   return [...seen.values()];
 };
+
+/** 탐색이 들어가는 묶음 폴더인가 — 숨김(점)·`node_modules` 는 안 들어간다. 관리 도구가 묶음 이름을 받을 때도 **같은 판정**을 쓴다
+ *  (갈리면 «만들었습니다» 라고 답하고 목록·메뉴엔 안 보였다 — 2026-10-11 릴리스 검토 F4). */
+export const isWalkedCommandFolder = (name: string): boolean => !name.startsWith(".") && name !== "node_modules";
 
 /** 한 폴더(전역 `<home>/commands` 또는 프로젝트 `.tiguclaw/commands`)의 커맨드 — 묶음 경로(`folder`)와 함께. 관리 도구의 목록이 쓴다. */
 export const listCommandsIn = async (dir: string): Promise<Command[]> => walkCommandsDir(dir, "user");

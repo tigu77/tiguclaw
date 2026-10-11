@@ -296,7 +296,8 @@ const tokenOrgId = async () => {
       signal: AbortSignal.timeout(5000),
     });
     const org = res.headers.get("anthropic-organization-id") ?? undefined;
-    tokenOrg = { token: t, org };
+    // 성공 응답에서 조직을 얻었을 때만 기억한다 — 401·5xx·429 를 «조직 없음» 으로 기억하면 그 토큰은 영영 비교를 건너뛰었다(릴리스 검토 F8).
+    if (res.ok && org !== undefined) tokenOrg = { token: t, org };
     return org;
   } catch {
     return undefined;
@@ -339,6 +340,7 @@ const fetchClaudeUsageInner = async (force = false) => {
     if (viaCli !== undefined && viaCli.needsLogin !== true) {
       // ★CLI 가 **다른 계정**이면 그 숫자를 보이지 않는다(정태님 결정) — 턴에서 받은 값이 있으면 그것(낡았어도 측정 시각과 함께),
       //  없으면 «표시할 수 없다» 와 이유. 둘 중 하나라도 모르면 막지 않는다(종전대로 CLI 값).
+      //  (CLI 가 답한 뒤에 본다 — 앞에서 보면 CLI·엔드포인트를 그만큼 더 부른다: 재시작 뒤 «묻지 않는다» 계약과 부딪힌다.)
       const [tokOrg, cliOrg] = await Promise.all([tokenOrgId(), cliOrgCached()]);
       if (tokOrg !== undefined && cliOrg !== undefined && tokOrg !== cliOrg) {
         noteUsage("CLI 로그인 계정이 이 설치의 토큰 계정과 다르다 — CLI 한도를 쓰지 않는다");

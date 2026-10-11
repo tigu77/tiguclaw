@@ -854,6 +854,8 @@
       .prompt-other-row { display:flex; gap:6px; margin-top:7px; align-items:flex-end; }
       .prompt-other-input { flex:1; min-width:0; background:var(--card); color:var(--text); border:1px solid var(--border-strong); border-radius:11px; padding:8px 12px; font-size:0.75rem; font-family:inherit; line-height:1.4; resize:none; max-height:10em; overflow-y:auto; }
       .prompt-other-input::placeholder { color:var(--text-dim); }
+      /* iOS 는 16px 미만 입력칸에 초점이 가면 화면을 확대한다 — 메인 입력창과 같은 규칙(릴리스 검토 F3). */
+      @media (pointer: coarse) { .prompt-other-input { font-size:1rem; } }
       .prompt-other-input:focus { outline:none; border-color:rgb(var(--accent-rgb) / .55); }
       .prompt-other-send { flex:none; background:var(--card); color:var(--text); border:1px solid var(--border-strong); border-radius:11px; padding:8px 13px; font-size:0.75rem; font-weight:750; cursor:pointer; transition:background .12s, border-color .12s; }
       .prompt-other-send:hover:not(:disabled) { background:var(--card-hover); border-color:var(--accent-2); }

@@ -101,10 +101,12 @@
         const writeState = new WeakMap();
         const postProfile = async (tk, profile) => {
           try {
+            // ★시한 — 요청이 줄을 서므로 하나가 매달리면 그 탭의 다음 선택이 전부 기다렸다(릴리스 검토 F2). 넘기면 실패로 보고 다음이 간다.
             const r = await fetch("/api/set-session-profile", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ threadKey: tk, profile }),
+              ...(typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? { signal: AbortSignal.timeout(15_000) } : {}),
             });
             const data = await r.json().catch(() => ({}));
             if (!r.ok) {

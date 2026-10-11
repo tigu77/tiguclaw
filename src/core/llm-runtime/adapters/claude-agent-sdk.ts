@@ -2516,7 +2516,10 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   } // for(;;) — resume 폴백 재시도 루프
   } catch (e) {
     // 실패로 끝났다 — 넘긴 끼워넣기를 채널에 되돌린다(코어가 새 턴으로, 폴백 후보가 있으면 그 후보가 먼저).
-    //  `/stop` 이면 채널이 닫혀 push 가 거절된다 — 멈추라고 한 것은 되살리지 않는다.
+    //  `/stop` 이면 턴 출구가 버린다(`reinjectUnlessStopped`) — 멈추라고 한 것은 되살리지 않는다.
+    // ★되돌리기 **전에** 이 시도의 입력 스트림을 끊는다 (2026-10-11 릴리스 검토 F2). SDK 는 죽은 시도의 입력을 계속 당긴다 —
+    //  안 끊으면 `restore` 가 깨운 옛 생성기가 방금 되돌린 메시지를 다시 꺼내 죽은 프로세스에 넘겼다(resume 재시도 경로와 같은 순서).
+    attemptInputAc.abort(new Error("claude 턴 실패 — 이 시도의 입력 스트림을 닫는다"));
     giveBackSteering();
     throw e;
   } finally {

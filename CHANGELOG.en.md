@@ -8,12 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-10-11
+
 ### Added
 
+- **Codex now recovers by itself when the server drops the connection mid-reply.** If nothing came out yet it resends; if it was writing, it continues from where it was cut. If that still fails, you get the usual "continue" prompt as before.
 - **Commands can be grouped in subfolders.** `commands/aaa/bbb/ccc.md` opens as aaa › bbb › /ccc in the 📁 chip menu (hover or tap), and the `/` list shows the group too. It is still called as `/ccc`. Previously, commands in subfolders didn't show up at all.
+- **The assistant can create and move commands into groups.** Ask something like "put the deploy commands in a Deploy group" (global and project commands alike).
 
 ### Changed
 
+- **Claude subscription limits now reflect the account of the token this install uses.** Usage reported during conversations comes first; if the Claude CLI on this machine is signed in to a different account, you're told so instead of seeing its numbers. Older values show when they were measured.
+- **On Windows, getting a Claude subscription token opens the issuer in a new window.** Just sign in and it's saved (the same as `claude-auth` in a terminal).
+- **Background job cards show only the title for subagents started without a name.**
 - **Delegating work to a folder you haven't registered now runs with that folder's `.mcp.json` and hooks turned off, and asks first.** A repository someone else made can no longer run commands just by its settings. Registering it as a project turns them on.
 - **Shell commands the assistant runs no longer receive the daemon's secrets (tokens, API keys).**
 - **Computer use refuses to type text while a modifier key is held.** On macOS this used to fire a different shortcut instead.
@@ -24,12 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Starting a second daemon on the same home stopped the first one's jobs and shells.** The second one now exits right away and says why.
 - **Some settings in the home `.env` (job timeouts, shell, and others) were ignored.**
 - **Telegram:** replies could vanish during a brief outage (they are now resent in the background) · after a restart, an old choice button could send the value of a newer question · nobody knew when receiving had stopped (you are now notified).
-- **Claude's named usage limits (session, weekly, and others) weren't recognised as limits.** The pause and reset time are now reported properly.
+- **Claude's named usage limits (session, weekly, and others) weren't recognised, so every turn tried again.** It now waits until the reset time Claude reports and tells you when.
 - **Codex:** overlapping token refreshes could wrongly ask you to log in again · limit and auth errors after a tool ran were treated as success · answers cut off by overload were kept as final.
 - **On OpenRouter, Gemini, Ollama and similar, a task ended after ten tool calls.**
+- **An OpenAI-compatible server defined only in a project wasn't used for that project.**
+- **Messages sent while a task was running were lost if that turn failed.**
+- **The assistant's shell commands sometimes ignored the timeout and `/stop` · large Grep results failed outright · a stuck `/update` blocked later updates.**
+- **The "Other" field in choices didn't take Shift+Enter for a new line, and Enter sent text while composing Korean.**
 - **Edit could corrupt content containing `$&` and similar, and files that aren't UTF-8.**
 - **File watch:** results are now actually sent to the chosen channel · files created at the same moment could be missed.
-- **Dashboard:** late chat history could land in another tab · attachments could run as scripts · the 📁 menu overflowed the screen with many commands · on mobile, «Project details» landed on the list · the home page redrew on every event · fields you were typing in got cleared · ⏹ stopped jobs without asking.
+- **Dashboard:** late chat history could land in another tab · attachments could run as scripts · the 📁 menu overflowed the screen with many commands · on mobile, «Project details» landed on the list · the home page redrew on every event · fields you were typing in got cleared · ⏹ stopped jobs without asking · a failed model pick still looked applied · a fast browser clock dropped in-progress replies · switching tabs while history loaded left the default assistant name.
 - **An error in one plugin could stop every conversation, and a disabled plugin's code could still run.**
 - **The self-growth guidelines file could be wiped by a temporary read error.**
 
@@ -928,7 +939,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...HEAD
+[0.69.0]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/tigu77/tiguclaw/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/tigu77/tiguclaw/compare/v0.65.0...v0.66.0

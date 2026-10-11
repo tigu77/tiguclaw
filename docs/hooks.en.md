@@ -63,7 +63,7 @@ esac
 A few things worth knowing:
 
 - **The same config runs on every LLM.** One `settings.json` `hooks` block behaves identically whether the turn runs on `anthropic`, `codex`, or `openai` — a single hook engine drives all three, so there's nothing provider-specific to learn or maintain.
-- **Per-project hooks.** Put the same block in `<project>/.tiguclaw/settings.json` and it fires only while the assistant works in that folder. If the project already has Claude Code hooks in `<project>/.claude/settings.json`, those are read as-is — nothing to copy over. The two layers **stack; they don't override** — a safety hook set globally can't be silently switched off by a project's settings.
+- **Per-project hooks.** Put the same block in `<project>/.tiguclaw/settings.json` and it fires only while the assistant works in that folder. If the project already has Claude Code hooks in `<project>/.claude/settings.json`, those are read as-is — nothing to copy over. The two layers **stack; they don't override** — a safety hook set globally can't be silently switched off by a project's settings. In a folder you haven't registered as a project, its hooks stay off and the assistant asks before turning them on.
 - **You can watch them.** Hook runs show up in the dashboard's activity monitor (a blocked call is tinted red), and every registered hook is listed under the **🪝 Hooks** category in the dashboard inventory.
 
 Hooks **observe and block** tool calls. On top of that, whatever a `UserPromptSubmit` or `PreToolUse` hook writes to stdout becomes **context the assistant reads** before deciding. One thing is still missing: **rewriting a tool's input**. That comes later.

@@ -141,6 +141,53 @@ const claudeChecks = async (): Promise<Assertion[]> => {
     steering.close();
     out.push(assert("★⑤ claude: 넘긴 끼워넣기가 있는 채로 턴이 실패하면 **채널에 돌아온다**(코어가 새 턴으로 태운다)", threw && pulled === 1 && left.length === 1 && left[0] === "그것도 해줘", `실패=${threw} · SDK 가 가져감=${pulled} · 채널에 남음=${show(left)}`));
   }
+
+  // ⑤' 실행기가 그 끼워넣기를 **시작**한 뒤 오류 result 로 끝난다 — 어댑터가 result 에서 채널을 닫는 제품 순서다(한도 «hit your
+  //  limit» 이 이 길). 종전엔 닫힌 채널이라 되돌릴 곳이 없어 사라졌다(2026-10-11 릴리스 검토 F1).
+  // ⑤'' SDK 가 실패 뒤에도 입력을 계속 당긴다(실제 streamInput) — 되돌린 것을 죽은 시도가 다시 꺼내 가면 안 된다(F2).
+  for (const mode of ["startedThenError", "throwKeepPulling"] as const) {
+    const steering = createSteeringChannel();
+    steering.push({ text: "[끼워넣기] 그것도 해줘", raw: "그것도 해줘", ts: Date.now() });
+    const deadPulled: string[] = [];
+    const fake = ((args: { prompt: unknown }) =>
+      (async function* () {
+        const it = (args.prompt as AsyncIterable<{ uuid?: string; message?: { content?: unknown } }>)[Symbol.asyncIterator]();
+        await it.next();
+        const second = await it.next();
+        yield { type: "system", subtype: "init", session_id: "s", model: "claude-fake" };
+        if (mode === "startedThenError") {
+          yield { type: "command_lifecycle", command_uuid: second.value?.uuid, state: "started" };
+          yield { type: "result", subtype: "success", is_error: true, result: "API Error: 500 internal server error", num_turns: 1, session_id: "s", modelUsage: {}, usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        void (async () => {
+          for (;;) {
+            const r = await it.next();
+            if (r.done === true) break;
+            deadPulled.push(String(r.value?.message?.content));
+          }
+        })();
+        await new Promise((r) => setTimeout(r, 5));
+        throw new Error("claude-agent-sdk error: API Error: 500 internal");
+      })()) as never;
+    try {
+      await within(10_000, `claude steer ${mode}`, withFakeClaudeQuery(fake, () => runClaude({ text: "해줘", threadKey: `regr:afh-steer-${mode}`, channel: "cli", steering } as never)));
+    } catch {
+      /* 아래 단언이 말한다 */
+    }
+    await new Promise((r) => setTimeout(r, 30));
+    const left = steering.drain().map((s) => s.raw);
+    steering.close();
+    out.push(
+      assert(
+        mode === "startedThenError"
+          ? "★⑤' claude: 실행기가 시작한 끼워넣기가 오류 result 로 끝나도(어댑터가 채널을 이미 닫은 순서) 채널에 돌아온다"
+          : "★⑤'' claude: 실패 뒤에도 입력을 당기는 SDK 가 되돌린 끼워넣기를 다시 꺼내 가지 않는다",
+        show(left) === '["그것도 해줘"]' && deadPulled.length === 0,
+        { 채널에남음: left, 죽은시도가꺼냄: deadPulled },
+      ),
+    );
+  }
   return out;
 };
 
@@ -208,12 +255,24 @@ const ledgerChecks = async (): Promise<Assertion[]> => {
   const back = led.giveBack();
   const again = led.giveBack(); // 두 번 되돌리지 않는다
   const inCh = ch.drain().map((s) => s.raw);
-  const closed = createSteeringChannel();
-  closed.push({ text: "c", raw: "c", ts: 3 });
-  const led2 = createSteeringLedger(closed);
-  led2.drain();
-  closed.close(); // `/stop` — 닫힌 채널엔 되살리지 않는다
-  const backClosed = led2.giveBack();
+  // 닫힌 채널에도 되돌린다 — «닫힘» 은 /stop 만이 아니다(claude 는 result 에서 닫는다). /stop 판정은 턴 출구 한 곳이다(아래).
+  const { endTurn } = await import("../../core/entry/turn-lifecycle.js");
+  const { UserCancelledError } = await import("../../core/steering.js");
+  const exitWith = (stop: boolean): { back: number; reinjected: number } => {
+    const c = createSteeringChannel();
+    c.push({ text: "c", raw: "c", ts: 3 });
+    const l = createSteeringLedger(c);
+    l.drain();
+    const ac = new AbortController();
+    if (stop) ac.abort(new UserCancelledError());
+    c.close(); // /stop 의 closeWhenStopped · claude 의 result 닫기
+    const back = l.giveBack();
+    let reinjected = 0;
+    endTurn({ msg: { threadKey: "regr:afh-exit", channel: "cli", text: "x" } as never, entry: 1, inflight: new Map(), steering: c, steeringChannels: new Map(), signal: ac.signal, reinject: () => { reinjected += 1; } });
+    return { back, reinjected };
+  };
+  const exitStop = exitWith(true);
+  const exitFail = exitWith(false);
   // 되돌릴 수 없는 도구가 이미 돈 턴 — 끼워넣기를 되돌리면 새 턴이 같은 일을 또 한다(2026-10-09 재검토 P4).
   const { createReplayGuard, markToolDispatch } = await import("../../core/llm-runtime/replay-safety.js");
   const guard = createReplayGuard();
@@ -299,7 +358,11 @@ const ledgerChecks = async (): Promise<Assertion[]> => {
       { 부작용뒤되돌림: backAfterSideEffect, 채널잔여: leftover, 읽기만되돌림: backReadOnly },
     ),
     assert("⑤ 장부: 꺼낸 것·넘긴 것을 **한 번만** 채널에 되돌린다", took === 1 && back === 2 && again === 0 && show(inCh) === '["a","b"]', `꺼냄=${took} 되돌림=${back} 재호출=${again} 채널=${show(inCh)}`),
-    assert("⑤ 장부: 닫힌 채널(/stop)엔 되돌리지 않는다 — 멈추라고 한 것을 되살리지 않는다", backClosed === 0, `되돌림=${backClosed}`),
+    assert(
+      "★⑤ 장부: 닫힌 채널에도 되돌리고 턴 출구가 판정한다 — 실패면 새 턴으로 다시 태우고, /stop 이면 되살리지 않는다",
+      exitFail.back === 1 && exitFail.reinjected === 1 && exitStop.reinjected === 0,
+      { 실패: exitFail, 중단: exitStop },
+    ),
   ];
 };
 

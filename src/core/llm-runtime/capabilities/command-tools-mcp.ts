@@ -43,6 +43,7 @@ import { getEventBus } from "../../eventbus.js";
 import {
   discoverCommands,
   findCommandFile,
+  isWalkedCommandFolder,
   listCommandsIn,
   maxCommandFolderDepth,
   formatCommandIndex,
@@ -120,10 +121,12 @@ const commandsDirFor = (project: string | undefined): { dir: string; label: stri
  * ★폴더 밖으로 못 나간다 — `..`·절대 경로·숨김(`.`)·윈도우 금지 글자를 거절하고, 탐색 상한보다 깊게는 안 만든다(만들어도 목록에서 안 보인다).
  */
 const parseGroup = (raw: string): { segments: string[] } | { error: string } => {
-  const segments = raw.split("/").map((x) => x.trim()).filter((x) => x !== "");
+  // NFC 로 맞춘다 — 같은 한글 이름이 조합형/완성형으로 갈리면 맥에선 한 폴더, 리눅스에선 두 폴더가 됐다(릴리스 검토 F10).
+  const segments = raw.normalize("NFC").split("/").map((x) => x.trim()).filter((x) => x !== "");
   if (segments.length > maxCommandFolderDepth()) return { error: `묶음은 ${maxCommandFolderDepth()}단까지입니다 — '${raw}'` };
   for (const seg of segments) {
-    if (seg === "." || seg === ".." || seg.startsWith(".") || /[\\:*?"<>|\x00-\x1f]/.test(seg) || seg.length > 64) {
+    // 탐색이 안 들어가는 폴더(점·node_modules)·끝 점/공백(윈도우가 벗겨 다른 이름이 된다)도 거절한다(릴리스 검토 F4·F10).
+    if (seg === "." || seg === ".." || !isWalkedCommandFolder(seg) || /[. ]$/.test(seg) || /[\\:*?"<>|\x00-\x1f]/.test(seg) || seg.length > 64) {
       return { error: `묶음 이름 '${seg}' 은(는) 쓸 수 없습니다(점으로 시작·\\ : * ? " < > | 금지).` };
     }
   }
@@ -134,7 +137,8 @@ const parseGroup = (raw: string): { segments: string[] } | { error: string } => 
 const formatGrouped = (cmds: ReadonlyArray<{ name: string; description: string; folder?: string }>): string => {
   const by = new Map<string, string[]>();
   for (const c of cmds) {
-    const k = c.folder ?? "";
+    // 폴더 이름은 손으로 만든 것일 수 있다 — 제어 글자(줄바꿈)를 지워 도구 결과에 엉뚱한 줄이 끼지 않게(릴리스 검토 F7).
+    const k = (c.folder ?? "").replace(/[\x00-\x1f\x7f]/g, " ");
     const line = `- /${c.name}${c.description ? ` — ${c.description}` : ""}`;
     by.set(k, [...(by.get(k) ?? []), line]);
   }
@@ -252,6 +256,10 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         const run = (args.run ?? "").trim();
         // ★옮기기만 — 내용 없이 group 만 주면 기존 명령을 그 묶음으로 옮긴다(내용을 다시 쓰게 하면 비서가 본문을 옮겨 적다 바꾼다).
         if (prompt === "" && run === "" && group !== undefined) {
+          // 옮기기만이다 — 설명·확인·덮어쓰기를 같이 주면 조용히 버리지 않고 알린다(릴리스 검토 F6).
+          if (args.description !== undefined || args.confirm !== undefined || args.overwrite !== undefined) {
+            return errText("옮기기(group 만)에는 description·confirm·overwrite 를 같이 쓸 수 없습니다 — 내용까지 바꾸려면 prompt 나 run 과 overwrite: true 를 주세요.");
+          }
           const from = await findCommandFile(whereEarly.dir, name);
           if (from === undefined) {
             return errText(`옮길 명령 '/${name}' 이 없습니다(${whereEarly.label}). 새로 만들려면 prompt 나 run 을 주세요. list_commands 로 목록을 볼 수 있습니다.`);
@@ -290,7 +298,7 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
           group !== undefined ? path.join(commandsDir, ...group.segments, `${name}.md`) : existing ?? path.join(commandsDir, `${name}.md`);
         if (args.overwrite !== true && existing !== undefined) {
           return errText(
-            `슬래시 명령 '${name}' 가 이미 존재합니다(${filePath}). 덮어쓰려면 overwrite: true 를 지정하거나, 먼저 delete_command 로 삭제하세요.`,
+            `슬래시 명령 '${name}' 가 이미 존재합니다(${existing}). 덮어쓰려면 overwrite: true 를 지정하거나, 먼저 delete_command 로 삭제하세요.`,
           );
         }
 

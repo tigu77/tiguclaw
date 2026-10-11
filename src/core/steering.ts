@@ -144,8 +144,13 @@ export interface SteeringChannel {
   /** consumer(codex/openai) — 비블로킹 pull-all(버퍼 반환+클리어, 빈 배열 안전). */
   drain(): SteeringInput[];
   /**
-   * 이미 꺼냈던 것을 **맨 앞에** 되돌린다 — 닫혔으면 0. 꺼낸 것은 아직 안 꺼낸 대기분보다 **먼저 도착한 것**이라 앞에 둬야 도착 순서가
+   * 이미 꺼냈던 것을 **맨 앞에** 되돌린다. 꺼낸 것은 아직 안 꺼낸 대기분보다 **먼저 도착한 것**이라 앞에 둬야 도착 순서가
    * 지켜진다(2026-10-10 아스트라 검토: `push` 로 되돌리니 «A 소비 → 정정 B 대기 → 실패» 가 B, A 로 뒤집혔다).
+   * ★**닫혀 있어도 받는다** (2026-10-11 릴리스 검토 F1). «닫힘» 은 `/stop` 만이 아니라 claude 어댑터가 result 를 보고 스스로 닫는
+   *  것도 뜻한다 — 종전엔 닫힘이면 0 이라, 끼워넣은 메시지가 SDK 에 들어간 뒤 턴이 오류 result(한도 «hit your limit» 포함)로 끝나면
+   *  되돌릴 곳이 없어 **조용히 사라졌다.** 턴 출구는 늘 닫은 **뒤에** drain 하고(`endTurn`·매니저 정리), `/stop` 이면 거기서
+   *  버린다(`reinjectUnlessStopped`) — 그 판정은 그 한 곳에 둔다. 되돌리는 쪽은 그 전에 자기 입력 스트림을 끊어야 한다
+   *  (`stream()` 은 닫혀도 버퍼를 먼저 비운다).
    */
   restore(msgs: SteeringInput[]): number;
   /** consumer(claude) — 도착 시 yield, close/abort 시 종료(무한대기 0). */
@@ -195,7 +200,7 @@ export const createSteeringChannel = (): SteeringChannel => {
       return buffer.splice(0, buffer.length);
     },
     restore(msgs: SteeringInput[]): number {
-      if (closed || msgs.length === 0) return 0;
+      if (msgs.length === 0) return 0;
       buffer.unshift(...msgs);
       wake();
       return msgs.length;

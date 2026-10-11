@@ -594,9 +594,10 @@ export const createPluginHost = (
   },
   claudeUsageFromTurns: () => {
     if (needs.auth?.includes("claude-subscription") !== true) return undefined;
-    const snap = turnRateLimitSnapshot();
-    if (snap === undefined) return undefined;
     const SECONDS: Record<string, number> = { five_hour: 18_000, seven_day: 604_800 };
+    // 측정 시각은 여기서 보여 줄 창으로만 잰다 — 안 보이는 창이 «낡음» 을 정하지 않게.
+    const snap = turnRateLimitSnapshot(Date.now(), Object.keys(SECONDS));
+    if (snap === undefined) return undefined;
     const windows = snap.windows
       .filter((w) => SECONDS[w.name] !== undefined && w.utilization !== undefined)
       .map((w) => ({

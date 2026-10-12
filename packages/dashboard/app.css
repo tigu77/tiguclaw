@@ -1186,7 +1186,11 @@
       .bg-filter .bg-fcount { min-width:16px; height:16px; padding:0 5px; border-radius:8px; background:var(--accent-2); color:var(--on-accent); font-size:0.625rem; font-weight:900; display:inline-flex; align-items:center; justify-content:center; line-height:1; }
       .bg-filter .bg-fbtn[data-filter="all"] .bg-fcount,
       .bg-filter .bg-fbtn[data-filter="done"] .bg-fcount { background:var(--text-dim); color:var(--text); }
-      .bg-list { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
+      .bg-list { padding:12px; display:flex; flex-direction:column; gap:10px; }
+      /* ★두 그룹이 한 스크롤을 쓴다 (2026-10-12) — 목록은 자기 높이만 차지하고, 스크롤은 이 그릇 하나가 한다.
+         position:relative 는 팔로우 기준점(작업 그룹 끝)의 offsetTop 을 이 그릇 기준으로 재기 위해서다.
+         overflow-anchor:none — 팔로우는 래치가 정한다. 브라우저 앵커링이 scrollTop 을 따로 옮기면 래치 판정과 갈린다(#stream 과 같은 이유). */
+      .bg-scroll { flex:1; min-height:0; overflow-y:auto; position:relative; display:flex; flex-direction:column; overflow-anchor:none; }
       /* filter=running 이면 running 이 아닌 카드를 숨긴다(카드는 그대로 두고 표시만 토글 → 회귀 0). */
       .bg-list.filter-running .bg-job:not(.running) { display:none; }
       /* filter=done(완료·상호배타) — 진행 중 카드를 숨겨 종료된 잡만 보인다(진행중 탭의 대칭). */
@@ -1201,11 +1205,10 @@
       .bg-group-chevron { font-size:var(--caret-size); line-height:1; color:var(--text-mute); display:inline-block; width:11px; text-align:center; transition:transform .15s; }
       .bg-group-head.collapsed .bg-group-chevron { transform:rotate(-90deg); }
       .bg-group-head.collapsed + .bg-group-body { display:none; }
-      /* 작업 그룹 본문 — ★flex-grow:0 → 내용 높이만 차지(빈 공간을 안 먹어 셸 그룹이 바로 밑에
-         바짝 붙음). 작업이 많으면 flex-shrink:1+min-height:0 으로 #bg-list(flex:1,overflow-y:auto)
-         가 내부 스크롤 → 셸은 항상 보임. 클래스 선택자(0,1,0)라 collapse 규칙(0,3,0)이 이긴다
-         — ID(#bg-jobs-body,1,0,0,0)면 display:flex 가 collapse 의 display:none 을 눌러버림. */
-      .bg-jobs-body { flex:0 1 auto; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+      /* 작업 그룹 본문 — 내용 높이만 차지하고 스크롤은 바깥 .bg-scroll 이 한다(셸 그룹이 바로 밑에 이어진다).
+         클래스 선택자(0,1,0)라 collapse 규칙(0,3,0)이 이긴다 — ID(#bg-jobs-body,1,0,0,0)면 display:flex 가
+         collapse 의 display:none 을 눌러버림. */
+      .bg-jobs-body { flex:none; display:flex; flex-direction:column; }
       .bg-group-body .bg-filter { flex:none; }
       /* 세션 스코프(2026-07-16) — 기본은 활성 세션(activeThreadKey)이 띄운 잡만. 카드의 .bg-in-scope
          는 JS 가 세션 전환/카드 생성 때마다 갱신(threadKey==activeThreadKey 또는 threadKey 없음=레거시
@@ -1214,10 +1217,8 @@
       .bg-empty { color:var(--text-mute); font-style:italic; font-size:0.75rem; padding:20px 6px; text-align:center; }
       /* ── 셸/프로세스 그룹 본문(ADR 2026-07-17 §5, Phase 3b-2) — 매니저/에이전트 잡 리스트(#bg-list,
          위)와 물리적으로 분리된 별도 그룹(데이터 레인 분리 유지: shellRegistry ≠ jobCards).
-         작업 본문(#bg-jobs-body)이 내용 높이만 차지(flex-grow:0) → 이 셸 그룹이 바로 밑에 붙는다.
-         이 본문은 max-height 로 bound 되 셸이 많아지면 자체 스크롤 — 잡 리스트 로직은 무변경. */
-      .bg-shells-body { flex:0 0 auto; max-height:42%; min-height:0; display:flex; flex-direction:column; overflow:hidden; transition:outline-color .15s ease; }
-      .bg-shells-list { min-height:0; }
+         작업 본문(#bg-jobs-body) 바로 밑에 이어지고, 두 그룹이 같은 스크롤(.bg-scroll)을 쓴다. */
+      .bg-shells-body { flex:none; display:flex; flex-direction:column; transition:outline-color .15s ease; }
       /* showShells() 포커스 하이라이트(컴포저 스트립 클릭 등) — .bg-job.bg-flash/.agent-card.bg-flash 관례. */
       .bg-shells-body.bg-flash { outline:2px solid var(--accent-2); outline-offset:-2px; border-radius:10px; }
       /* 진행 중 뷰용 — 카드 헤더 밑에 경과시간 + 마지막 스텝(현재 무엇을 하는 중인지)을 인라인 표시.
@@ -1340,9 +1341,14 @@
       .bg-job-status { font-size:0.625rem; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:0.625rem; color:var(--text-dim); font-family:var(--font-mono); }
       .bg-job-todo { font-size:0.6875rem; color:var(--text-dim); margin-top:3px; }
-      .bg-job-todo-head { font-weight:700; }
+      .bg-job-todo-head { font-weight:700; cursor:pointer; display:flex; align-items:baseline; gap:4px; min-width:0; }
+      .bg-job-todo-head > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .bg-job-todo-head:hover { color:var(--text); }
+      /* 캐럿은 공용 .card-caret(기본 = 펼침 90°) — 접힌 할 일만 회전을 푼다. */
+      .bg-job-todo-head:not(.open) .card-caret { transform:none; }
+      .bg-job-todo-head:hover .card-caret { color:var(--accent); }
       .bg-job-todo-item { padding-left:2px; overflow-wrap:anywhere; }
-      .bg-job-todo-item.done { opacity:.6; text-decoration:line-through; }
+      .bg-job-todo-item.done { opacity:.6; } /* 끝난 항목은 앞의 ✓ 로 말한다 — 취소선은 «지운 것» 으로 읽혀 뺐다(2026-10-12 정태님). */
       .bg-job-todo-item.now { color:var(--text); font-weight:600; }
       /* 잡 토큰 합계 — 채팅 턴 비용(.turn-cost)과 **같은 모양**이어야 한다(2026-09-23 정태님).
          메타 줄이 고정폭이라 글꼴만 UI 로 되돌린다 — 나머지는 .turn-cost 가 정한다. */

@@ -1,14 +1,15 @@
 /**
- * 회귀: **백그라운드 작업 카드가 모델이 적은 할 일을 «📋 완료/전체» + 항목 전부(여러 줄)로 보인다 — LLM 호출·문장 해석 없이**
+ * 회귀: **백그라운드 작업 카드가 모델이 적은 할 일을 «▸ 📋 완료/전체» 로 보이고, 누르면 항목 전부(여러 줄)를 펼친다 — LLM 호출·문장 해석 없이**
  * (2026-10-12 정태님: «백그라운드 작업카드에서 뭘 하는 중인지 llm 사용하지 않고 지금 알 수 있는 방법이 있어?» →
- * «맨위에서 진행상황 todo 그냥 다 나오는게 어떨까 여러줄로»).
+ * «맨위에서 진행상황 todo 그냥 다 나오는게 어떨까 여러줄로» → «항상 펼쳐져있기보단 화살표로 접고펴고»).
  *
  * 재료: `update_todos` 가 내는 `todo.update`(threadKey + todos 구조 필드). 쓸지는 모델 판단이라 없는 작업이 더 많다 — 그땐 안 그린다.
  *
  * 지키는 것:
  *  ① 서버 — 돌고 있는 잡의 `todo.update` 를 활동 증거에 담아 `getJobActivity` 로 준다(새로고침 복원 재료). 남의 좌표·끝난 잡은 무시
- *  ② 화면(실시간) — SSE 가 부르는 `setJobTodos` 로 카드에 «📋 1/3 · 지금: <activeForm> · 다음: <첫 대기>»
- *  ③ 화면(새로고침) — 잡 목록 응답의 activity.todos 로 같은 줄
+ *  ② 화면(실시간) — SSE 가 부르는 `setJobTodos` 로 카드에 «▸ 📋 1/3 · <activeForm>» 한 줄(기본 접힘) →
+ *     머리 줄을 누르면 항목 셋이 한 줄씩(✓ 끝남 · ▶ activeForm · ○ 대기), 다시 누르면 접힘
+ *  ③ 화면(새로고침) — 잡 목록 응답의 activity.todos 로 같은 머리 줄
  *  ④ 할 일이 없으면 줄을 안 그린다(거짓값 금지)
  *
  * 등급: **동작**(이벤트 버스 · 미니 DOM).
@@ -57,6 +58,12 @@ export const check: RegressionCheck = {
     // 실시간 — SSE 가 넘긴 이벤트를 실제 처리기(sse.js renderEvent)로 태운다(카드 함수를 직접 부르면 그 배선이 무검사가 된다).
     dash.run(`renderEvent(${JSON.stringify({ type: "todo.update", ts: Date.now(), payload: { threadKey: "worker:j-live", todos: TODOS } })})`);
     const liveTxt = live.todoEl.textContent;
+    const collapsedRows = itemRows(live);
+    const clickHead = (id: string) => dash.run(`jobCards.get(${JSON.stringify(id)}).todoEl.children[0].click()`);
+    clickHead("j-live");
+    const openRows = itemRows(live);
+    clickHead("j-live");
+    const reclosedRows = itemRows(live);
     // 새로고침 — 잡 목록 응답(/api/worker-jobs)의 각 잡은 handleWorkerEvent 로 들어온다(activity 포함).
     dash.run(`handleWorkerEvent(${JSON.stringify({ jobId: "j-hyd", threadKey: "dashboard:default", kind: "worker", label: "작업", status: "running", activity: { lastActivityAt: 1, inFlight: [], todos: TODOS } })}, "10:00")`);
     const hydrated = dash.run(`jobCards.get("j-hyd")`) as TodoCard;
@@ -70,14 +77,15 @@ export const check: RegressionCheck = {
         { 할일: act?.todos?.length, 끝난잡: actDone },
       ),
       assert(
-        "★② 실시간 — 카드에 «📋 1/3» 아래 항목 전부가 한 줄씩(끝남·진행=activeForm·대기)",
-        liveTxt.includes("1/3") && JSON.stringify(itemRows(live)) === JSON.stringify(EXPECT) && live.todoEl.style.display !== "none",
-        { 글: liveTxt, 줄: itemRows(live) },
+        "★② 실시간 — 기본은 접힌 «📋 1/3 · <지금 하는 일>» 한 줄 · 머리 줄을 누르면 항목 전부(끝남·진행=activeForm·대기) · 다시 누르면 접힘",
+        liveTxt.includes("1/3") && liveTxt.includes("원문을 대조하는 중") && collapsedRows.length === 0 &&
+          JSON.stringify(openRows) === JSON.stringify(EXPECT) && reclosedRows.length === 0 && live.todoEl.style.display !== "none",
+        { 접힘글: liveTxt, 접힘줄: collapsedRows, 펼침줄: openRows, 다시접힘: reclosedRows },
       ),
       assert(
-        "★③ 새로고침 — 잡 목록 응답의 activity.todos 로 같은 목록",
-        hydTxt.includes("1/3") && JSON.stringify(itemRows(hydrated)) === JSON.stringify(EXPECT) && hydrated.todoEl.style.display !== "none",
-        { 글: hydTxt, 줄: itemRows(hydrated) },
+        "★③ 새로고침 — 잡 목록 응답의 activity.todos 로 같은 머리 줄",
+        hydTxt.includes("1/3") && hydTxt.includes("원문을 대조하는 중") && hydrated.todoEl.style.display !== "none",
+        hydTxt,
       ),
       assert(
         "④ 할 일이 없는 카드는 줄을 안 그린다 · 잡 좌표가 아닌 할 일은 카드에 안 붙는다",

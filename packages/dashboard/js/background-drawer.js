@@ -5,6 +5,9 @@
       // 토글 드로어(PC 우측 고정·모바일 슬라이드인+백드롭). 배지 = 실행 중 잡 수.
       const bgPanel = document.getElementById("bg-panel");
       const bgList = document.getElementById("bg-list");
+      // ★두 그룹(작업·셸)이 함께 쓰는 스크롤 그릇 (2026-10-12). 팔로우·점프는 이 그릇을 굴린다.
+      const bgScroll = document.getElementById("bg-scroll") || bgList;
+      const bgJobsBody = document.getElementById("bg-jobs-body");
       const bgEmpty = document.getElementById("bg-empty");
       const bgBadge = document.getElementById("bg-badge");
       // 컴포저(입력창 위) 인디케이터 — 현재 세션에 백그라운드 작업이 돌면 노출(runningScoped>0).
@@ -105,9 +108,15 @@
       //  이 목록만 위가 최신이라, 같은 드로어 안에서 시간축이 반대로 흘렀다.
       const bgJump = document.getElementById("bg-jump");
       const BG_JUMP_THRESHOLD = 40; // stickBottom 임계(ensureJobCard _bgNearBottom)와 동일.
-      /** 맨 아래(최신) 근처인가 — 팔로우와 점프 노출이 **같은 판정**을 쓴다(두 벌 금지). */
-      const bgNearBottom = () =>
-        bgList.scrollHeight - bgList.scrollTop - bgList.clientHeight < BG_JUMP_THRESHOLD;
+      // ★따라갈 자리 = **작업 그룹의 끝**이지 스크롤 바닥이 아니다 (2026-10-12) — 두 그룹이 한 스크롤을 쓰고
+      //  셸 그룹이 그 아래에 있다. 바닥에 붙이면 최신 잡이 셸 그룹 높이만큼 위로 밀려 화면 밖으로 나간다.
+      //  offsetTop 은 .bg-scroll(position:relative) 기준 · 스크롤과 무관한 내용 좌표다. 접혀 있으면(높이 0) 맨 위.
+      const bgFollowTop = () => {
+        const end = bgJobsBody && bgJobsBody !== bgScroll ? bgJobsBody.offsetTop + bgJobsBody.offsetHeight : bgScroll.scrollHeight;
+        return Math.max(0, Math.min(end, bgScroll.scrollHeight) - bgScroll.clientHeight);
+      };
+      /** 따라갈 자리(최신) 근처인가 — 팔로우와 점프 노출이 **같은 판정**을 쓴다(두 벌 금지). */
+      const bgNearBottom = () => Math.abs(bgScroll.scrollTop - bgFollowTop()) < BG_JUMP_THRESHOLD;
       // ── 팔로우는 **래치**다 (2026-09-10 적대 검토 P-1·P-2) ────────────────────────
       // ★종전엔 삽입할 때마다 «지금 바닥 근처인가» 를 **기하로 다시 유도**했다. 그런데
       //  스냅이 도는 시점에 카드는 아직 `.bg-in-scope` 가 없어 `display:none` → **높이 0**
@@ -128,17 +137,27 @@
       //  «하이드레이션 끝에 바닥으로» 를 따로 넣으면 그게 다섯 번째 손 목록이 된다.
       let bgStick = true;
       /** 래치가 켜져 있으면 바닥에 붙인다. 꺼져 있으면 아무것도 안 한다(yank 금지). */
-      const bgPin = () => { if (bgStick) bgList.scrollTop = bgList.scrollHeight; };
+      // ★우리가 옮긴 자리를 기억한다 (2026-10-12 헤드리스 실측) — 프로그램적 스크롤도 scroll 이벤트를 내는데, 그 이벤트가
+      //  도착하기 전에 카드가 더 자라면(라벨·할 일·live 줄) 따라갈 자리가 40px 넘게 밀려 래치가 **스스로 꺼졌다**
+      //  (실측: 카드 14장이 하나씩 오는 동안 맨 위 근처에 멈춤). «래치는 사용자 스크롤만 끈다» 를 지키려면 우리가 둔
+      //  그 자리에서 난 이벤트는 사용자 스크롤이 아니다 — 판정에서 뺀다.
+      let bgPinnedTop = -1;
+      const bgPin = () => {
+        if (!bgStick) return;
+        bgScroll.scrollTop = bgFollowTop();
+        bgPinnedTop = bgScroll.scrollTop;
+      };
       // 노출도 **래치와 같은 판정** — 팔로우는 래치, 버튼은 기하면 임계가 갈려 깜빡인다.
       const updateBgJump = () => { if (bgJump) bgJump.hidden = bgStick; };
       if (bgJump) bgJump.addEventListener("click", () => {
         // ★명시로 켠다 — 이미 바닥이면 scroll 이벤트가 안 나 래치가 꺼진 채 남는다.
         bgStick = true; bgPin(); updateBgJump();
       });
-      bgList.addEventListener("scroll", () => {
+      bgScroll.addEventListener("scroll", () => {
+        if (bgScroll.scrollTop === bgPinnedTop) return; // 우리가 둔 자리 — 사용자 스크롤이 아니다.
         bgStick = bgNearBottom(); updateBgJump();
       }, { passive: true });
-      // ★**카드마다** 관찰한다. `#bg-list` 는 `flex:1; overflow-y:auto` 라 오버플로 뒤엔
+      // ★**카드마다** 관찰한다. 스크롤 그릇(`.bg-scroll`)은 `flex:1; overflow-y:auto` 라 오버플로 뒤엔
       //  자기 높이가 안 변한다(실측 clientHeight 81→161→309→450→450…) — 컨테이너 관찰자는
       //  **정확히 문제가 되는 구간에서 한 번도 안 운다.** 가장 나쁜 종류의 관찰자다.
       //  카드별로 보면 `.bg-in-scope` 타이밍·늦게 붙는 라벨·필터 전환이 **전부 여기로**
@@ -382,26 +401,39 @@
         el.style.display = "";
         if (el.textContent !== txt) el.textContent = txt;
       };
-      // ★할 일 목록 (2026-10-12 정태님: «LLM 없이 지금 뭘 하는지» → «여러 줄로 다 나오게») — 모델이 `update_todos` 로
-      //  직접 적은 필드만 읽는다(문장 해석 0). 머리 줄 «📋 완료/전체» 아래 항목을 전부 한 줄씩: ✓ 끝남 · ▶ 진행(activeForm,
-      //  없으면 content) · ○ 대기. 할 일을 안 쓴 작업은 안 그린다. 본문은 모델 글이라 textContent 로만 넣는다.
+      // ★할 일 목록 (2026-10-12 정태님: «LLM 없이 지금 뭘 하는지» → «여러 줄로 다 나오게» → «화살표로 접고 펴게») —
+      //  모델이 `update_todos` 로 직접 적은 필드만 읽는다(문장 해석 0). 머리 줄 «▾ 📋 완료/전체» 를 누르면 항목 전부가
+      //  한 줄씩 펼쳐진다: ✓ 끝남 · ▶ 진행(activeForm, 없으면 content) · ○ 대기. 기본은 접힘이고, 접혀 있을 땐 머리 줄에
+      //  지금 하는 일 하나를 붙인다(접어도 «지금» 은 보인다). 할 일을 안 쓴 작업은 안 그린다. 본문은 모델 글이라 textContent 로만.
+      const todoNowText = (t) => (t.status === "in_progress" ? t.activeForm || t.content : t.content) || "";
       const renderTodos = (entry) => {
         const el = entry && entry.todoEl;
         if (!el) return;
         const todos = Array.isArray(entry.todos) ? entry.todos : [];
         if (todos.length === 0) { el.style.display = "none"; el.replaceChildren(); return; }
+        const open = entry.todoOpen === true;
         const done = todos.filter((t) => t.status === "completed").length;
         const head = document.createElement("div");
-        head.className = "bg-job-todo-head";
-        head.textContent = i18n("bg.todo.progress", { done, total: todos.length });
-        const rows = todos.map((t) => {
+        head.className = "bg-job-todo-head" + (open ? " open" : "");
+        head.setAttribute("role", "button");
+        head.setAttribute("aria-expanded", open ? "true" : "false");
+        head.tabIndex = 0;
+        head.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); entry.todoOpen = !open; renderTodos(entry); }
+        });
+        const chev = makeCardCaret(); // 도구·채팅 카드와 같은 캐럿(util.js) — 펼침/접힘은 CSS 회전이 말한다.
+        const sum = document.createElement("span");
+        const now = todos.find((t) => t.status === "in_progress");
+        sum.textContent = i18n("bg.todo.progress", { done, total: todos.length }) + (!open && now ? " · " + todoNowText(now) : "");
+        head.append(chev, sum);
+        onToggleClick(head, () => { entry.todoOpen = !open; renderTodos(entry); });
+        const rows = open ? todos.map((t) => {
           const row = document.createElement("div");
           const st = t.status === "completed" ? "done" : t.status === "in_progress" ? "now" : "wait";
           row.className = "bg-job-todo-item " + st;
-          const text = st === "now" ? t.activeForm || t.content : t.content;
-          row.textContent = (st === "done" ? "✓ " : st === "now" ? "▶ " : "○ ") + (text || "");
+          row.textContent = (st === "done" ? "✓ " : st === "now" ? "▶ " : "○ ") + todoNowText(t);
           return row;
-        });
+        }) : [];
         el.style.display = "";
         el.replaceChildren(head, ...rows);
       };
@@ -988,7 +1020,7 @@
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
             usageEl, usage: null, // 토큰 합계(서버 `usage`) — setJobUsage 가 채운다.
             doingEl, // "지금 무엇을 하는 중" 한 줄(서버 activity).
-            todoEl, // 할 일 «📋 2/5» + 항목 전부(모델이 적었을 때만).
+            todoEl, // 할 일 «▾ 📋 2/5» — 누르면 항목 전부(모델이 적었을 때만). 펼침 상태는 entry.todoOpen.
             todos: null,
             activity: null, // { lastActivityAt, inFlight:[{tool,since}] } — /api/worker-jobs.
             // ★경과시간 기준은 **서버가 준 잡 시작 시각**이다 (2026-08-20 적대 검토 C).

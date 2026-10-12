@@ -29,6 +29,9 @@
  *  그래서 지금은 **소스에서 핀 트리오를 떼어 실제로 돌린다.** `job-label-prefix` 가
  *  드로어 조각을 vm 에서 돌리는 것과 같은 방식이다.
  *
+ * ★두 그룹(작업·셸)이 한 스크롤을 쓴다 (2026-10-12 정태님) — 따라갈 자리는 스크롤 바닥이 아니라 **작업 그룹의 끝**이다.
+ *  셸 그룹이 그 아래에 있으므로 바닥에 붙이면 최신 잡이 셸 높이만큼 밀려 화면 밖이 된다(⑤).
+ *
  * ★«뒤늦게 자란다» 가 이 검사의 하중을 받는 부분이다 — append 직후 높이가 확정되는
  *  스텁이면 깨진 코드(기하 재유도)도 초록이다. 스텁 스크롤러는 **나중에** 자란다.
  */
@@ -45,10 +48,15 @@ interface Scroller {
   scrollTop: number;
   addEventListener(type: string, fn: () => void, opts?: unknown): void;
   __fire(type: string): void;
+  /** 따라갈 자리(작업 그룹 끝)까지 남은 거리. */
   __gap(): number;
+  /** 스크롤 바닥까지 남은 거리(셸 그룹이 있으면 그 높이만큼 남아야 맞다). */
+  __gapToBottom(): number;
+  /** 작업 그룹 본문 스텁 — 셸 그룹(shellsH)이 그 아래에 있다. */
+  jobsBody: { offsetTop: number; offsetHeight: number };
 }
 
-const makeScroller = (clientHeight: number): Scroller => {
+const makeScroller = (clientHeight: number, shellsH = 0): Scroller => {
   const handlers = new Map<string, Array<() => void>>();
   // ★`scrollTop` 은 **클램프된다** — 브라우저가 `scrollHeight - clientHeight` 를 넘겨
   //  쓰지 못하게 한다. 제품 코드가 `scrollTop = scrollHeight` 로 «바닥으로» 를 표현하는
@@ -73,10 +81,21 @@ const makeScroller = (clientHeight: number): Scroller => {
       for (const fn of handlers.get(type) ?? []) fn();
     },
     __gap(): number {
+      return Math.max(0, this.scrollHeight - shellsH - this.clientHeight) - top;
+    },
+    __gapToBottom(): number {
       return Math.max(0, this.scrollHeight - this.clientHeight) - top;
     },
   };
-  return sc as Scroller;
+  // 셸 그룹은 처음부터 shellsH 높이로 **아래**에 있다 — scrollHeight 는 «작업 + 셸» 이다.
+  sc.scrollHeight = shellsH;
+  (sc as unknown as Scroller).jobsBody = {
+    offsetTop: 0,
+    get offsetHeight(): number {
+      return sc.scrollHeight - shellsH;
+    },
+  };
+  return sc as unknown as Scroller;
 };
 
 /** 소스에서 핀 트리오를 떼어 **실제로** 돌린다(제품 코드를 재는 유일한 길). */
@@ -116,12 +135,14 @@ const loadPinTrio = (
 
   // eslint-disable-next-line no-new-func
   const factory = new Function(
-    "bgList",
+    "bgScroll",
+    "bgJobsBody",
     "bgJump",
     "ResizeObserver",
     `${slice}\nreturn { bgPin, bgObserveCard, bgUnobserveCard, updateBgJump };`,
   ) as (
     l: Scroller,
+    b: unknown,
     j: unknown,
     r: unknown,
   ) => {
@@ -130,7 +151,7 @@ const loadPinTrio = (
     bgUnobserveCard: (el: unknown) => void;
     updateBgJump: () => void;
   };
-  const api = factory(scroller, bgJump, FakeRO);
+  const api = factory(scroller, scroller.jobsBody, bgJump, FakeRO);
   return {
     pin: () => {
       api.bgPin();
@@ -264,6 +285,68 @@ export const check: RegressionCheck = {
           "★상한 정리가 카드를 지울 때 **그 자리에서** 관찰을 뗀다 — 정의만 있고 안 부르면 관찰자가 카드마다 쌓여 무한히 는다",
           /bgUnobserveCard\([a-zA-Z]+\);\s*[a-zA-Z]+\.remove\(\)/.test(capBlock),
           capFrom < 0 ? "★capBgList 를 못 찾음" : `제거 자리에서 unobserve 호출=${/bgUnobserveCard\(/.test(capBlock)}`,
+        ),
+      );
+    }
+
+    // ── ⑤ 셸 그룹이 아래에 있어도 **최신 잡**을 따라간다 — 스크롤 바닥이 아니라 작업 그룹 끝 ──
+    {
+      const SHELLS = 300;
+      const sc = makeScroller(450, SHELLS);
+      const t = loadPinTrio(src, sc);
+      for (let i = 0; i < 12; i++) {
+        t.observeCard({ id: i });
+        t.pin();
+        for (const grow of [107, 60]) {
+          sc.scrollHeight += grow;
+          for (const cb of t.roCallbacks) cb();
+        }
+      }
+      out.push(
+        assert(
+          "★★두 그룹이 한 스크롤을 쓸 때 팔로우는 **작업 그룹 끝**에 선다 — 바닥(셸 그룹 아래)에 붙이면 최신 잡이 셸 높이만큼 밀려 화면 밖이 된다",
+          sc.__gap() === 0 && sc.__gapToBottom() === SHELLS,
+          `작업 끝까지 ${sc.__gap()}px · 바닥까지 ${sc.__gapToBottom()}px (셸 ${SHELLS}px)`,
+        ),
+      );
+      // 사용자가 셸 그룹까지 내려 보면 팔로우가 꺼진다(셸을 보는 중에 위로 끌어올리지 않는다).
+      sc.scrollTop = sc.scrollHeight;
+      sc.__fire("scroll");
+      const parked = sc.scrollTop;
+      t.observeCard({ id: "new" });
+      t.pin();
+      sc.scrollHeight += 167;
+      for (const cb of t.roCallbacks) cb();
+      out.push(
+        assert(
+          "★셸 그룹을 보려고 내려간 사이 새 잡이 와도 **끌어올리지 않는다** · «↓ 최신» 이 보인다",
+          sc.scrollTop === parked && t.jumpHidden() === false,
+          `내려둔 위치 ${parked} → 삽입 뒤 ${sc.scrollTop} · 버튼 hidden=${t.jumpHidden()}`,
+        ),
+      );
+    }
+
+    // ── ⑥ 우리가 옮긴 스크롤의 이벤트가 카드가 더 자란 **뒤에** 와도 래치가 안 꺼진다 ──
+    // 실측(2026-10-12 헤드리스): 프로그램적 scrollTop 도 scroll 이벤트를 내고, 그 이벤트는 다음 프레임에 온다.
+    // 그 사이 카드가 자라면(할 일·라벨·live 줄) 따라갈 자리가 40px 넘게 밀려, 이벤트가 «사용자가 위로 올렸다» 로
+    // 읽혔다 — 카드 14장이 오는 동안 맨 위 근처에 멈췄다.
+    {
+      const sc = makeScroller(450, 200);
+      const t = loadPinTrio(src, sc);
+      for (let i = 0; i < 12; i++) {
+        t.observeCard({ id: i });
+        t.pin();
+        sc.scrollHeight += 107; // 핀 직후 자람(아직 RO 전)
+        sc.__fire("scroll"); // 핀이 낸 이벤트가 이제 도착 — 위치는 핀 자리 그대로
+        for (const cb of t.roCallbacks) cb();
+        sc.scrollHeight += 60;
+        for (const cb of t.roCallbacks) cb();
+      }
+      out.push(
+        assert(
+          "★★핀이 낸 scroll 이벤트가 카드가 자란 뒤 도착해도 팔로우가 유지된다 — 래치는 **사용자** 스크롤만 끈다",
+          sc.__gap() === 0 && t.jumpHidden() === true,
+          `작업 끝까지 ${sc.__gap()}px · 버튼 hidden=${t.jumpHidden()}`,
         ),
       );
     }

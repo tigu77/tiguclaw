@@ -52,7 +52,7 @@
   "bg.filter.doneAdj": "finished",
   "bg.filter.running": "Running",
   "bg.filter.runningAdj": "running",
-  "bg.todo.progress": "📋 {done}/{total}",
+  "bg.todo.progress": "📋 To-do {done}/{total}",
   "bg.inFlight": "{tool} for {elapsed}",
   "bg.job.untitled": "(job)",
   "bg.jobs.head": "⚙️ Managers / Agents",

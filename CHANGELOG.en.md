@@ -8,11 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.70.0] - 2026-10-12
+## [0.70.0] - 2026-10-13
 
 ### Added
 
-- **Background task cards show the task's to-do list.** When a manager or agent writes one, a single line shows "📋 done/total" and the current step; click the arrow to expand every item.
+- **Background task cards show the task's to-do list.** When a manager or agent writes one, a single line shows "📋 To-do done/total" and the current step; click the arrow to expand every item.
 
 ### Fixed
 

@@ -430,8 +430,8 @@ export const replyAndRecord = async (
 // 제거(per-chat 격리 대신 단순 전역 cap — 작고 견고). id 는 단조 증가 카운터로 충돌 0.
 //
 // ★값과 **함께 물어본 세션**을 들고 있는다 (2026-08-12) — 대시보드에서 시작한 턴이
-//  텔레그램에 물었을 때, 사용자가 누른 답이 *일하던 세션*으로 돌아가게. 없으면(인바운드
-//  텔레그램 턴이 물은 경우) 종전대로 이 대화가 묶인 세션으로 간다 — 그 경우엔 둘이 같다.
+//  텔레그램에 물었을 때, 사용자가 누른 답이 *일하던 세션*으로 돌아가게. 텔레그램에서 받은 턴도
+//  자기 세션을 싣는다(2026-10-12 — 답글로 다른 세션에서 돈 턴이 있어 «묶인 세션과 같다» 가 거짓이었다).
 const PROMPT_OPTION_CAP = 500;
 interface PromptOptionEntry {
   value: string;
@@ -484,14 +484,17 @@ const pickExt = (mime: string | undefined, filePath: string | undefined): string
 // 렌더하고 즉시 반환(비차단). 각 보기의 value 는 promptOptionMap 에 저장하고 짧은 id 만
 // callback_data 로 싣는다(64바이트 제한 회피). note 가 있으면 질문 아래 덧붙인다. 렌더
 // 실패(텔레그램 API 등)는 {ok:false,error} — MCP 도구가 재시도/텍스트 폴백 판단.
+// ★`session` = 이 턴이 도는 세션 — 버튼에 실어 클릭이 **물어본 세션**으로 돌아가게 한다 (2026-10-12). 종전엔 텔레그램에서 받은 턴은
+//  안 실었다(«이 채팅이 묶인 세션과 같다» 가정). 그런데 다른 세션의 메시지에 **답글**로 말하면 턴은 그 세션에서 돌아, 그 턴이 띄운
+//  버튼의 답이 기본 세션으로 갔다(재현: 물은 턴 dashboard:X → 답 dashboard:default).
 const buildPresentOptions =
-  (ctx: Context): NonNullable<IncomingMessage["presentOptions"]> =>
+  (ctx: Context, session: string): NonNullable<IncomingMessage["presentOptions"]> =>
   async (question, options, opts) =>
     renderOptions(
       (text, extra) => ctx.reply(text, extra),
       question,
       options,
-      opts,
+      { ...opts, replyToSession: session },
     );
 
 /**
@@ -970,7 +973,7 @@ export default class TelegramChannel implements Channel {
           sendDocumentTo(ctx.api, ctx.chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
         // 축1 선택지 제시 — inline keyboard 로 1회 렌더 후 즉시 반환(비차단). 사용자 선택은
         // callback_query 핸들러가 *다음 인바운드*로 흘려보낸다(같은 chat=같은 thread·인격).
-        presentOptions: buildPresentOptions(ctx),
+        presentOptions: buildPresentOptions(ctx, sessionId),
       };
       // 텔레그램 "입력 중…" 표시. 한 번 보내면 5 초 유지 → 4 초 간격 갱신.
       // 응답 지연 동안 사용자가 비서가 살아있다는 신호를 받는다.
@@ -1090,7 +1093,7 @@ export default class TelegramChannel implements Channel {
             sendAttachment: (filePath, opts) =>
               sendDocumentTo(ctx.api, ctx.chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
             // 축1 선택지 제시 — message:text 핸들러와 동일(parity). inline keyboard 1회 렌더.
-            presentOptions: buildPresentOptions(ctx),
+            presentOptions: buildPresentOptions(ctx, sessionId),
           };
           // ── 비차단 발사 (text 핸들러·cli.ts 동형) ─────────────────────────
           // 폴러는 턴을 *기다리지 않는다*. await handler 로 직렬화하면 사진+긴 캡션 한 턴이
@@ -1168,7 +1171,7 @@ export default class TelegramChannel implements Channel {
         },
         // 아웃바운드 첨부·후속 선택지 — 같은 chat 컨텍스트라 message:text 와 동일하게 지원.
         sendAttachment: (filePath, opts) => sendDocumentTo(ctx.api, chat.id, filePath, { ...opts, recordSession: sessionId }),
-        presentOptions: buildPresentOptions(ctx),
+        presentOptions: buildPresentOptions(ctx, sessionId),
       };
       // typing heartbeat — 선택 후 후속 턴 동안 살아있음 신호. message:text 동형.
       void ctx.replyWithChatAction("typing").catch(() => {});

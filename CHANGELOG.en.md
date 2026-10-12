@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-10-12
+
+### Added
+
+- **Background task cards show the task's to-do list.** When a manager or agent writes one, a single line shows "📋 done/total" and the current step; click the arrow to expand every item.
+
+### Fixed
+
+- **Codex kept repeating the same web search after using it.** Scheduled jobs such as a morning briefing could keep going until the iteration limit and arrive very late.
+- **A manager waiting on its subtasks did not receive instructions sent in the meantime.** It now wakes up and acts on them right away.
+- **On Telegram, after replying to a message from another session, tapping an option shown by that turn sent the answer to the default session.**
+- **On Windows, changing a command file failed if the file was briefly locked.** It now retries briefly.
+- **Clicking a task card on the project page opened the background panel but scrolled back to the bottom, leaving that card out of view.**
+
 ## [0.69.1] - 2026-10-12
 
 ### Fixed
@@ -947,7 +961,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...HEAD
+[0.70.0]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...v0.70.0
 [0.69.1]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...v0.69.1
 [0.69.0]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...v0.68.0

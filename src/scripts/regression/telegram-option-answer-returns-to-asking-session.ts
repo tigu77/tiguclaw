@@ -9,6 +9,8 @@
  * 재는 것(가짜 Bot API — 네트워크 0):
  *  ① 세션 X 메시지에 답글 → 그 턴이 X 에서 돌고 선택지를 띄운다 → 버튼 클릭이 X 로 간다
  *  ② 대조 — 답글 아닌 평소 메시지의 턴이 띄운 버튼은 종전대로 이 채팅의 세션으로 간다
+ *  ③ ★평소 턴의 버튼은 세션을 **싣지 않는다** — 실으면 클릭이 명시 세션을 달고 들어가 `/sessions` 의 «선택기 채널» 가드에
+ *     걸려, 텔레그램 세션 목록 버튼으로 세션을 **바꿀 수 없었다**(같은 날 릴리스 적대 검토 F1, 실측). 실제 `/sessions use` 로 잰다.
  *
  * 등급: **동작**.
  */
@@ -18,7 +20,7 @@ import { callbackUpdate, fakeChannel, loadTelegram, settle, startWithOwners, tex
 const OWNER = 222;
 const SESSION_X = "dashboard:regr-asking-session";
 
-type Seen = { text: string; threadKey: string; explicit?: string; present?: (q: string, o: { label: string; value: string }[]) => Promise<unknown> };
+type Seen = { text: string; threadKey: string; explicit?: string; present?: (q: string, o: { label: string; value: string }[]) => Promise<unknown>; msg: unknown };
 
 export const check: RegressionCheck = {
   name: "telegram-option-answer-returns-to-asking-session",
@@ -33,7 +35,7 @@ export const check: RegressionCheck = {
     const seen: Seen[] = [];
     await startWithOwners(channel, String(OWNER), async (msg) => {
       const m = msg as unknown as { text: string; threadKey: string; session?: { explicitSessionId?: string }; presentOptions?: Seen["present"] };
-      seen.push({ text: m.text, threadKey: m.threadKey, explicit: m.session?.explicitSessionId, present: m.presentOptions });
+      seen.push({ text: m.text, threadKey: m.threadKey, explicit: m.session?.explicitSessionId, present: m.presentOptions, msg });
     });
     const lastButton = (): string => {
       const last = [...calls].reverse().find((c) => c.method === "sendMessage" && c.payload.reply_markup !== undefined);
@@ -63,6 +65,28 @@ export const check: RegressionCheck = {
       await settle();
       const answeredPlain = seen.find((s) => s.text === "회귀-선택B");
 
+      // ③ 평소 턴이 띄운 «세션 고르기» 버튼 → 실제 `/sessions use` 가 바인딩을 바꾼다
+      const { saveSession } = await import("../../store/sessions.js");
+      const { getChannelSessionBinding } = await import("../../store/channel-session.js");
+      const { handleSessions } = await import("../../core/entry/slash-commands.js");
+      const TARGET = "dashboard:regr-sessions-pick";
+      saveSession({ channel: "http-bridge", threadKey: TARGET, claudeSessionId: "regr-pick", model: null, systemPromptHash: null });
+      const pickTurn = textUpdate(OWNER, "/sessions");
+      await bot.handleUpdate(pickTurn as never);
+      await settle();
+      const pickAsked = seen.find((s) => s.text === "/sessions");
+      await pickAsked?.present?.("어느 세션?", [{ label: "고르기", value: `/sessions use ${TARGET}` }]);
+      await bot.handleUpdate(callbackUpdate(OWNER, lastButton()) as never);
+      await settle();
+      const picked = seen.find((s) => s.text === `/sessions use ${TARGET}`);
+      const replies: string[] = [];
+      if (picked !== undefined) {
+        const pm = picked.msg as { reply?: (t: string) => Promise<void> };
+        pm.reply = async (t: string) => { replies.push(t); };
+        await handleSessions({ msg: picked.msg as never, args: `use ${TARGET}`, trimmed: `/sessions use ${TARGET}`, sidChannel: "telegram" as never });
+      }
+      const boundAfter = getChannelSessionBinding("telegram", String(OWNER));
+
       return [
         assert(
           "★① 답글로 세션 X 에서 돈 턴이 띄운 선택지를 누르면 답이 X 로 간다",
@@ -73,6 +97,11 @@ export const check: RegressionCheck = {
           "② 대조 — 평소 메시지의 턴이 띄운 선택지는 그 턴과 같은 세션으로 간다",
           plainTurn !== undefined && answeredPlain?.threadKey === plainTurn.threadKey,
           { 물은턴: plainTurn?.threadKey, 답: answeredPlain?.threadKey },
+        ),
+        assert(
+          "★③ 평소 턴의 버튼은 세션을 싣지 않는다 — 그래서 텔레그램 세션 목록 버튼(`/sessions use`)이 거절되지 않고 바인딩이 바뀐다",
+          picked !== undefined && picked.explicit === undefined && boundAfter === TARGET,
+          { 클릭명시세션: picked?.explicit, 바인딩: boundAfter, 답: replies.map((r) => r.slice(0, 60)) },
         ),
       ];
     } finally {

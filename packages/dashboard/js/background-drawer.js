@@ -5,9 +5,6 @@
       // 토글 드로어(PC 우측 고정·모바일 슬라이드인+백드롭). 배지 = 실행 중 잡 수.
       const bgPanel = document.getElementById("bg-panel");
       const bgList = document.getElementById("bg-list");
-      // ★두 그룹(작업·셸)이 함께 쓰는 스크롤 그릇 (2026-10-12). 팔로우·점프는 이 그릇을 굴린다.
-      const bgScroll = document.getElementById("bg-scroll") || bgList;
-      const bgJobsBody = document.getElementById("bg-jobs-body");
       const bgEmpty = document.getElementById("bg-empty");
       const bgBadge = document.getElementById("bg-badge");
       // 컴포저(입력창 위) 인디케이터 — 현재 세션에 백그라운드 작업이 돌면 노출(runningScoped>0).
@@ -108,15 +105,9 @@
       //  이 목록만 위가 최신이라, 같은 드로어 안에서 시간축이 반대로 흘렀다.
       const bgJump = document.getElementById("bg-jump");
       const BG_JUMP_THRESHOLD = 40; // stickBottom 임계(ensureJobCard _bgNearBottom)와 동일.
-      // ★따라갈 자리 = **작업 그룹의 끝**이지 스크롤 바닥이 아니다 (2026-10-12) — 두 그룹이 한 스크롤을 쓰고
-      //  셸 그룹이 그 아래에 있다. 바닥에 붙이면 최신 잡이 셸 그룹 높이만큼 위로 밀려 화면 밖으로 나간다.
-      //  offsetTop 은 .bg-scroll(position:relative) 기준 · 스크롤과 무관한 내용 좌표다. 접혀 있으면(높이 0) 맨 위.
-      const bgFollowTop = () => {
-        const end = bgJobsBody && bgJobsBody !== bgScroll ? bgJobsBody.offsetTop + bgJobsBody.offsetHeight : bgScroll.scrollHeight;
-        return Math.max(0, Math.min(end, bgScroll.scrollHeight) - bgScroll.clientHeight);
-      };
-      /** 따라갈 자리(최신) 근처인가 — 팔로우와 점프 노출이 **같은 판정**을 쓴다(두 벌 금지). */
-      const bgNearBottom = () => Math.abs(bgScroll.scrollTop - bgFollowTop()) < BG_JUMP_THRESHOLD;
+      /** 맨 아래(최신) 근처인가 — 팔로우와 점프 노출이 **같은 판정**을 쓴다(두 벌 금지). */
+      const bgNearBottom = () =>
+        bgList.scrollHeight - bgList.scrollTop - bgList.clientHeight < BG_JUMP_THRESHOLD;
       // ── 팔로우는 **래치**다 (2026-09-10 적대 검토 P-1·P-2) ────────────────────────
       // ★종전엔 삽입할 때마다 «지금 바닥 근처인가» 를 **기하로 다시 유도**했다. 그런데
       //  스냅이 도는 시점에 카드는 아직 `.bg-in-scope` 가 없어 `display:none` → **높이 0**
@@ -137,27 +128,17 @@
       //  «하이드레이션 끝에 바닥으로» 를 따로 넣으면 그게 다섯 번째 손 목록이 된다.
       let bgStick = true;
       /** 래치가 켜져 있으면 바닥에 붙인다. 꺼져 있으면 아무것도 안 한다(yank 금지). */
-      // ★우리가 옮긴 자리를 기억한다 (2026-10-12 헤드리스 실측) — 프로그램적 스크롤도 scroll 이벤트를 내는데, 그 이벤트가
-      //  도착하기 전에 카드가 더 자라면(라벨·할 일·live 줄) 따라갈 자리가 40px 넘게 밀려 래치가 **스스로 꺼졌다**
-      //  (실측: 카드 14장이 하나씩 오는 동안 맨 위 근처에 멈춤). «래치는 사용자 스크롤만 끈다» 를 지키려면 우리가 둔
-      //  그 자리에서 난 이벤트는 사용자 스크롤이 아니다 — 판정에서 뺀다.
-      let bgPinnedTop = -1;
-      const bgPin = () => {
-        if (!bgStick) return;
-        bgScroll.scrollTop = bgFollowTop();
-        bgPinnedTop = bgScroll.scrollTop;
-      };
+      const bgPin = () => { if (bgStick) bgList.scrollTop = bgList.scrollHeight; };
       // 노출도 **래치와 같은 판정** — 팔로우는 래치, 버튼은 기하면 임계가 갈려 깜빡인다.
       const updateBgJump = () => { if (bgJump) bgJump.hidden = bgStick; };
       if (bgJump) bgJump.addEventListener("click", () => {
         // ★명시로 켠다 — 이미 바닥이면 scroll 이벤트가 안 나 래치가 꺼진 채 남는다.
         bgStick = true; bgPin(); updateBgJump();
       });
-      bgScroll.addEventListener("scroll", () => {
-        if (bgScroll.scrollTop === bgPinnedTop) return; // 우리가 둔 자리 — 사용자 스크롤이 아니다.
+      bgList.addEventListener("scroll", () => {
         bgStick = bgNearBottom(); updateBgJump();
       }, { passive: true });
-      // ★**카드마다** 관찰한다. 스크롤 그릇(`.bg-scroll`)은 `flex:1; overflow-y:auto` 라 오버플로 뒤엔
+      // ★**카드마다** 관찰한다. `#bg-list` 는 `flex:1; overflow-y:auto` 라 오버플로 뒤엔
       //  자기 높이가 안 변한다(실측 clientHeight 81→161→309→450→450…) — 컨테이너 관찰자는
       //  **정확히 문제가 되는 구간에서 한 번도 안 운다.** 가장 나쁜 종류의 관찰자다.
       //  카드별로 보면 `.bg-in-scope` 타이밍·늦게 붙는 라벨·필터 전환이 **전부 여기로**
@@ -406,6 +387,27 @@
       //  한 줄씩 펼쳐진다: ✓ 끝남 · ▶ 진행(activeForm, 없으면 content) · ○ 대기. 기본은 접힘이고, 접혀 있을 땐 머리 줄에
       //  지금 하는 일 하나를 붙인다(접어도 «지금» 은 보인다). 할 일을 안 쓴 작업은 안 그린다. 본문은 모델 글이라 textContent 로만.
       const todoNowText = (t) => (t.status === "in_progress" ? t.activeForm || t.content : t.content) || "";
+      // ★머리 줄은 **한 번 만들고 계속 쓴다** (2026-10-12 아스트라 P3, 헤드리스 재현) — 렌더마다 새로 만들어 갈아 끼우면
+      //  포커스된 버튼이 DOM 에서 빠져 포커스가 body 로 날아갔다: Enter 로 펼친 뒤 두 번째 Enter·Space 가 안 먹고, 갱신
+      //  (SSE·복원)만 와도 포커스를 잃었다. 그래서 노드는 두고 글자·aria·목록만 바꾼다. 처리기는 «그때의» entry.todoOpen 을 읽는다.
+      const todoHead = (entry) => {
+        if (entry.todoHeadEl) return entry.todoHeadEl;
+        const head = document.createElement("div");
+        head.className = "bg-job-todo-head";
+        head.setAttribute("role", "button");
+        head.tabIndex = 0;
+        const chev = makeCardCaret(); // 도구·채팅 카드와 같은 캐럿(util.js) — 펼침/접힘은 CSS 회전이 말한다.
+        const sum = document.createElement("span");
+        head.append(chev, sum);
+        const toggle = () => { entry.todoOpen = entry.todoOpen !== true; renderTodos(entry); };
+        onToggleClick(head, toggle);
+        head.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+        });
+        entry.todoHeadEl = head;
+        entry.todoSumEl = sum;
+        return head;
+      };
       const renderTodos = (entry) => {
         const el = entry && entry.todoEl;
         if (!el) return;
@@ -413,29 +415,22 @@
         if (todos.length === 0) { el.style.display = "none"; el.replaceChildren(); return; }
         const open = entry.todoOpen === true;
         const done = todos.filter((t) => t.status === "completed").length;
-        const head = document.createElement("div");
-        head.className = "bg-job-todo-head" + (open ? " open" : "");
-        head.setAttribute("role", "button");
+        const head = todoHead(entry);
+        head.classList.toggle("expanded", open); // 카드 펼침(.open, setJobOpen 소관)과 다른 이름 — 할 일 머리 줄만의 상태.
         head.setAttribute("aria-expanded", open ? "true" : "false");
-        head.tabIndex = 0;
-        head.addEventListener("keydown", (e) => {
-          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); entry.todoOpen = !open; renderTodos(entry); }
-        });
-        const chev = makeCardCaret(); // 도구·채팅 카드와 같은 캐럿(util.js) — 펼침/접힘은 CSS 회전이 말한다.
-        const sum = document.createElement("span");
         const now = todos.find((t) => t.status === "in_progress");
-        sum.textContent = i18n("bg.todo.progress", { done, total: todos.length }) + (!open && now ? " · " + todoNowText(now) : "");
-        head.append(chev, sum);
-        onToggleClick(head, () => { entry.todoOpen = !open; renderTodos(entry); });
-        const rows = open ? todos.map((t) => {
+        entry.todoSumEl.textContent = i18n("bg.todo.progress", { done, total: todos.length }) + (!open && now ? " · " + todoNowText(now) : "");
+        // 머리 줄은 그 자리에 두고(포커스 유지) 그 뒤의 항목 줄만 바꾼다.
+        if (head.parentNode !== el) el.insertBefore(head, el.firstChild);
+        while (el.lastChild && el.lastChild !== head) el.removeChild(el.lastChild);
+        if (open) for (const t of todos) {
           const row = document.createElement("div");
           const st = t.status === "completed" ? "done" : t.status === "in_progress" ? "now" : "wait";
           row.className = "bg-job-todo-item " + st;
           row.textContent = (st === "done" ? "✓ " : st === "now" ? "▶ " : "○ ") + todoNowText(t);
-          return row;
-        }) : [];
+          el.appendChild(row);
+        }
         el.style.display = "";
-        el.replaceChildren(head, ...rows);
       };
       // SSE `todo.update` 가 부른다(sse.js) — 잡 좌표(worker:/agent:<jobId>)가 아니면 무시(메인 대화는 도구 카드로 이미 보인다).
       window.setJobTodos = (p) => {
@@ -614,6 +609,10 @@
         requestAnimationFrame(() => {
           const entry = jobCards.get(jobId);
           if (!entry || !entry.el) return;
+          // ★이 카드로 가겠다는 **명시 이동**이다 — 따라가기를 먼저 끈다 (2026-10-12 릴리스 재검토, 0.69.1 부터 있던 것).
+          //  안 끄면 펼침이 일으킨 카드 크기 변화에 핀이 맨 아래(최신)로 되돌려 목표 카드가 화면 밖에 남았다(헤드리스: 3/3).
+          //  «↓ 최신» 이 보이고, 누르면 다시 따라간다.
+          bgStick = false; updateBgJump();
           if (!entry.el.classList.contains("open")) setJobOpen(jobId, entry, true);
           if (entry.el.scrollIntoView) entry.el.scrollIntoView({ block: "center" });
         });

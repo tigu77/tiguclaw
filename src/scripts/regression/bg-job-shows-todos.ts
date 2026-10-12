@@ -59,11 +59,18 @@ export const check: RegressionCheck = {
     dash.run(`renderEvent(${JSON.stringify({ type: "todo.update", ts: Date.now(), payload: { threadKey: "worker:j-live", todos: TODOS } })})`);
     const liveTxt = live.todoEl.textContent;
     const collapsedRows = itemRows(live);
+    // ★머리 줄은 같은 노드로 남아야 한다 — 갈아 끼우면 포커스된 버튼이 DOM 에서 빠져 키보드 조작이 끊긴다(아스트라 P3,
+    //  헤드리스 실측: Enter 한 번 뒤 포커스가 body 로). 미니 DOM 은 포커스를 모르므로 «노드가 그대로 붙어 있나» 를 잰다 —
+    //  브라우저에서 포커스가 빠지는 유일한 길이 노드 제거라서 같은 판정이다. 실제 포커스는 _todo_focus_cdp.mjs 로 확인.
+    const headOf = () => dash.run(`jobCards.get("j-live").todoEl.children[0]`);
+    const head0 = headOf();
     const clickHead = (id: string) => dash.run(`jobCards.get(${JSON.stringify(id)}).todoEl.children[0].click()`);
     clickHead("j-live");
     const openRows = itemRows(live);
     clickHead("j-live");
     const reclosedRows = itemRows(live);
+    dash.run(`window.setJobTodos(${JSON.stringify({ threadKey: "worker:j-live", todos: TODOS })})`);
+    const headKept = headOf() === head0 && dash.run(`jobCards.get("j-live").todoEl.children[0].parentNode === jobCards.get("j-live").todoEl`) === true;
     // 새로고침 — 잡 목록 응답(/api/worker-jobs)의 각 잡은 handleWorkerEvent 로 들어온다(activity 포함).
     dash.run(`handleWorkerEvent(${JSON.stringify({ jobId: "j-hyd", threadKey: "dashboard:default", kind: "worker", label: "작업", status: "running", activity: { lastActivityAt: 1, inFlight: [], todos: TODOS } })}, "10:00")`);
     const hydrated = dash.run(`jobCards.get("j-hyd")`) as TodoCard;
@@ -81,6 +88,11 @@ export const check: RegressionCheck = {
         liveTxt.includes("1/3") && liveTxt.includes("원문을 대조하는 중") && collapsedRows.length === 0 &&
           JSON.stringify(openRows) === JSON.stringify(EXPECT) && reclosedRows.length === 0 && live.todoEl.style.display !== "none",
         { 접힘글: liveTxt, 접힘줄: collapsedRows, 펼침줄: openRows, 다시접힘: reclosedRows },
+      ),
+      assert(
+        "★②' 펼침·접힘·갱신을 거쳐도 머리 줄은 **같은 노드**로 붙어 있다 — 갈아 끼우면 포커스가 빠져 Enter·Space 연속 조작이 끊긴다",
+        headKept,
+        `같은 노드=${headKept}`,
       ),
       assert(
         "★③ 새로고침 — 잡 목록 응답의 activity.todos 로 같은 머리 줄",

@@ -8,6 +8,20 @@
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-10-12
+
+### Added
+
+- **백그라운드 작업 카드에 할 일 목록이 보입니다.** 매니저·에이전트가 할 일을 적으면 «📋 완료/전체» 와 지금 하는 일이 한 줄로 나오고, 화살표를 누르면 항목 전부가 펼쳐집니다.
+
+### Fixed
+
+- **Codex 가 웹 검색을 쓴 뒤 같은 검색을 계속 되풀이하던 문제.** 아침 브리핑 같은 스케줄 작업이 반복 상한에 닿을 때까지 이어져 크게 늦어질 수 있었습니다.
+- **하위 작업을 기다리는 매니저가 그 사이 보낸 지시를 받지 못하던 문제.** 이제 지시가 오면 바로 깨어나 반영합니다.
+- **텔레그램에서 다른 세션의 메시지에 답글로 이어 말한 뒤, 그 턴이 띄운 선택지를 누르면 답이 기본 세션으로 가던 문제.**
+- **Windows 에서 커맨드 파일을 바꿀 때 파일이 잠깐 잠겨 있으면 실패하던 문제.** 이제 짧게 다시 시도합니다.
+- **프로젝트 화면에서 작업 카드를 눌러 백그라운드 패널의 그 작업으로 가도, 패널이 다시 맨 아래로 내려가 그 카드가 안 보이던 문제.**
+
 ## [0.69.1] - 2026-10-12
 
 ### Fixed
@@ -2497,7 +2511,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...HEAD
+[0.70.0]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...v0.70.0
 [0.69.1]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...v0.69.1
 [0.69.0]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/tigu77/tiguclaw/compare/v0.67.0...v0.68.0

@@ -152,6 +152,26 @@ const formatGrouped = (cmds: ReadonlyArray<{ name: string; description: string; 
  * 같은 파일인가 — **실제 경로로** 본다(적대 검토 F2). 탐색은 실제 경로를 주고 우리는 조립한 경로를 써서, 심링크 아래 홈(맥 `/tmp`→
  * `/private/tmp` · 외장 디스크로 링크한 `~/work`)에선 같은 파일을 «다르다» 로 보고 방금 쓴 파일을 지웠다. 없는 파일은 폴더만 실제로 푼다.
  */
+/**
+ * 윈도우에서 rename 이 잠깐 잠긴 파일에 걸리면(`EPERM`·`EACCES`·`EBUSY`) 짧게 다시 시도한다 (2026-10-12 윈도우 검증대 실측: 같은 이름을
+ * 동시에 등록하면 바꿔 끼우기가 40회 중 1회 EPERM — 같은 파일을 동시에 교체하면 잠시 잠근다. 백신이 막 쓴 파일을 붙잡을 때도 같은 오류다).
+ * 다른 오류·다른 플랫폼은 그대로 던진다. 합계 최대 ~0.6초.
+ */
+const renameRetrying = async (from: string, to: string): Promise<void> => {
+  const waits = process.platform === "win32" ? [50, 150, 400] : [];
+  for (let i = 0; ; i += 1) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      const wait = waits[i];
+      if (wait === undefined || (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")) throw e;
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+};
+
 const samePath = async (a: string, b: string): Promise<boolean> => {
   const real = async (p: string): Promise<string> => {
     try {
@@ -271,7 +291,7 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
               return errText(`'${to}' 에 같은 이름의 명령 파일이 이미 있어 옮기지 않았습니다 — 둘 중 하나를 delete_command 로 지우거나 이름을 바꾸세요.`);
             }
             await fs.mkdir(path.dirname(to), { recursive: true });
-            await fs.rename(from, to);
+            await renameRetrying(from, to);
             await pruneEmptyDirs(path.dirname(from), whereEarly.dir);
             getEventBus().publish({ type: "commands.changed", ts: Date.now(), payload: {} });
           }
@@ -339,7 +359,7 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         }
         if (moving) {
           try {
-            await fs.rename(existing, filePath);
+            await renameRetrying(existing, filePath);
           } catch (e) {
             await dropTmp();
             return errText(`'/${name}' 을(를) 옛 자리(${existing})에서 옮기지 못해 아무것도 바꾸지 않았습니다 — ${why(e)}. ${unchanged}.`);
@@ -347,7 +367,7 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
           await pruneEmptyDirs(path.dirname(existing), commandsDir);
         }
         try {
-          await fs.rename(tmp, filePath);
+          await renameRetrying(tmp, filePath);
         } catch (e) {
           await dropTmp();
           if (!moving) return errText(`'/${name}' 의 새 내용으로 바꾸지 못해 아무것도 바꾸지 않았습니다 — ${why(e)}. ${unchanged}.`);

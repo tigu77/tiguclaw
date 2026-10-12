@@ -382,22 +382,28 @@
         el.style.display = "";
         if (el.textContent !== txt) el.textContent = txt;
       };
-      // ★할 일 한 줄 (2026-10-12 정태님: «LLM 없이 지금 뭘 하는지») — 모델이 `update_todos` 로 직접 적은 필드만 읽는다
-      //  (문장 해석 0). 진행 중 항목의 activeForm(없으면 content)이 «지금», 첫 대기 항목이 «다음». 할 일을 안 쓴 작업은 안 그린다.
+      // ★할 일 목록 (2026-10-12 정태님: «LLM 없이 지금 뭘 하는지» → «여러 줄로 다 나오게») — 모델이 `update_todos` 로
+      //  직접 적은 필드만 읽는다(문장 해석 0). 머리 줄 «📋 완료/전체» 아래 항목을 전부 한 줄씩: ✓ 끝남 · ▶ 진행(activeForm,
+      //  없으면 content) · ○ 대기. 할 일을 안 쓴 작업은 안 그린다. 본문은 모델 글이라 textContent 로만 넣는다.
       const renderTodos = (entry) => {
         const el = entry && entry.todoEl;
         if (!el) return;
         const todos = Array.isArray(entry.todos) ? entry.todos : [];
-        if (todos.length === 0) { el.style.display = "none"; return; }
+        if (todos.length === 0) { el.style.display = "none"; el.replaceChildren(); return; }
         const done = todos.filter((t) => t.status === "completed").length;
-        const now = todos.find((t) => t.status === "in_progress");
-        const next = todos.find((t) => t.status === "pending");
-        let txt = i18n("bg.todo.progress", { done, total: todos.length });
-        if (now) txt += i18n("bg.todo.now", { text: now.activeForm || now.content });
-        if (next) txt += i18n("bg.todo.next", { text: next.content });
+        const head = document.createElement("div");
+        head.className = "bg-job-todo-head";
+        head.textContent = i18n("bg.todo.progress", { done, total: todos.length });
+        const rows = todos.map((t) => {
+          const row = document.createElement("div");
+          const st = t.status === "completed" ? "done" : t.status === "in_progress" ? "now" : "wait";
+          row.className = "bg-job-todo-item " + st;
+          const text = st === "now" ? t.activeForm || t.content : t.content;
+          row.textContent = (st === "done" ? "✓ " : st === "now" ? "▶ " : "○ ") + (text || "");
+          return row;
+        });
         el.style.display = "";
-        if (el.textContent !== txt) el.textContent = txt;
-        el.title = todos.map((t) => (t.status === "completed" ? "✓ " : t.status === "in_progress" ? "▶ " : "· ") + t.content).join("\n");
+        el.replaceChildren(head, ...rows);
       };
       // SSE `todo.update` 가 부른다(sse.js) — 잡 좌표(worker:/agent:<jobId>)가 아니면 무시(메인 대화는 도구 카드로 이미 보인다).
       window.setJobTodos = (p) => {
@@ -925,7 +931,7 @@
           doingEl.className = "bg-job-doing";
           doingEl.style.display = "none";
           meta.appendChild(doingEl);
-          // 할 일 한 줄 — 모델이 할 일을 적었을 때만(renderTodos).
+          // 할 일 목록(여러 줄) — 모델이 할 일을 적었을 때만(renderTodos).
           const todoEl = document.createElement("div");
           todoEl.className = "bg-job-todo";
           todoEl.style.display = "none";
@@ -982,7 +988,7 @@
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
             usageEl, usage: null, // 토큰 합계(서버 `usage`) — setJobUsage 가 채운다.
             doingEl, // "지금 무엇을 하는 중" 한 줄(서버 activity).
-            todoEl, // 할 일 «📋 2/5 · 지금 · 다음» 한 줄(모델이 적었을 때만).
+            todoEl, // 할 일 «📋 2/5» + 항목 전부(모델이 적었을 때만).
             todos: null,
             activity: null, // { lastActivityAt, inFlight:[{tool,since}] } — /api/worker-jobs.
             // ★경과시간 기준은 **서버가 준 잡 시작 시각**이다 (2026-08-20 적대 검토 C).

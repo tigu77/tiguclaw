@@ -908,6 +908,11 @@ interface CheckinEvidence {
   inFlight: Map<string, { tool: string; at: number }>;
   /** 마지막 활동 시각. */
   lastActivityAt: number;
+  /**
+   * 모델이 `update_todos` 로 적은 최신 할 일 — 작업 카드의 «📋 2/5 · 지금 · 다음» 재료 (2026-10-12 정태님: «LLM 없이 지금 뭘 하는지»).
+   * 모델이 이미 쓴 구조화 필드라 추가 호출·문장 해석 0. 쓸지는 모델 판단이라 없는 작업이 더 많다(그땐 안 그린다).
+   */
+  todos?: ReadonlyArray<{ content: string; status: string; activeForm?: string }>;
   /** 다음 점검까지 미룬 시각(주기 계산 기준). */
   lastCheckinAt: number;
   /** 점검 회차. */
@@ -1234,6 +1239,19 @@ const startCheckinScanner = (): void => {
   if (checkinTimer !== undefined) return;
   if (!Number.isFinite(JOB_CHECKIN_INTERVAL_MS)) return; // 점검 꺼짐 — 시계 자체를 안 만든다.
   activityUnsub = getEventBus().subscribe((ev) => {
+    // 할 일 — 활동 시각은 같은 호출의 llm.activity 가 민다(여기선 목록만 둔다). 상한 50 — 모델이 쓰는 목록이라 바운드.
+    if (ev.type === "todo.update") {
+      const t = ev.payload as { threadKey?: unknown; todos?: unknown } | undefined;
+      const tid = typeof t?.threadKey === "string" ? parentJobIdOf(t.threadKey) : undefined;
+      if (tid === undefined || !Array.isArray(t?.todos) || jobs.get(tid)?.status !== "running") return;
+      const rec = evidence.get(tid) ?? freshEvidence(Date.now());
+      evidence.set(tid, rec);
+      rec.todos = (t.todos as Array<{ content?: unknown; status?: unknown; activeForm?: unknown }>)
+        .slice(0, 50)
+        .filter((x) => typeof x?.content === "string" && typeof x?.status === "string")
+        .map((x) => ({ content: x.content as string, status: x.status as string, ...(typeof x.activeForm === "string" ? { activeForm: x.activeForm } : {}) }));
+      return;
+    }
     if (ev.type !== "llm.activity") return;
     const p = ev.payload as
       | { threadKey?: unknown; kind?: unknown; phase?: unknown; label?: unknown; seq?: unknown }
@@ -1293,13 +1311,18 @@ const stopCheckinScanner = (): void => {
  */
 export const getJobActivity = (
   jobId: string,
-): { lastActivityAt: number; inFlight: { tool: string; since: number }[] } | undefined => {
+): {
+  lastActivityAt: number;
+  inFlight: { tool: string; since: number }[];
+  todos?: ReadonlyArray<{ content: string; status: string; activeForm?: string }>;
+} | undefined => {
   const ev = evidence.get(jobId);
   if (ev === undefined) return undefined;
   return {
     lastActivityAt: ev.lastActivityAt,
     // 호출 단위 키는 내부 사정이라 밖으로 안 낸다 — 소비처가 원하는 건 "무슨 도구가 언제부터".
     inFlight: [...ev.inFlight.values()].map((f) => ({ tool: f.tool, since: f.at })),
+    ...(ev.todos !== undefined ? { todos: ev.todos } : {}),
   };
 };
 

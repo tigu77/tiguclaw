@@ -195,6 +195,8 @@
         }
         // 커맨드가 생기거나 지워졌다(비서가 register_command 로 만든 직후 📁 메뉴에 바로 보이게).
         if (ev.type === "commands.changed" && window.refreshSessionProjects) window.refreshSessionProjects();
+        // 할 일 — 백그라운드 작업 카드의 «📋 지금 · 다음» 한 줄(메인 대화는 도구 카드로 이미 보인다).
+        if (ev.type === "todo.update") { if (typeof window.setJobTodos === "function") window.setJobTodos(ev.payload); return; }
         // 턴 시작 «이 모델 · 이 강도» — 채팅 카드와 잡 카드가 turn_done 전에도 같은 값을 보인다(2026-09-30).
         if (ev.type === "llm.turn_meta") {
           const tk = ev.payload && ev.payload.threadKey;

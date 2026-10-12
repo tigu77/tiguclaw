@@ -31,6 +31,7 @@ import {
   createSteeringChannel,
   partitionSteering,
   shouldKeepReaping,
+  type SteeringChannel,
   type SteeringInput,
 } from "../../steering.js";
 import {
@@ -310,21 +311,45 @@ export const runWorkerJob = (
             steerCh = rot.channel;
             for (const m of rot.leftover) steerCh.push(m); // 미소비 사용자 지시 보존.
           }
+          /**
+           * 기다리는 중 도착한 **지시**(사용자·소환자 끼워넣기) — 결과와 똑같이 **턴 입력에 직접 싣는다**. 어댑터의 끼워넣기에
+           *  맡기면 claude 는 그걸 줄 선 두 번째 메시지로 받아, 첫 응답이 본문 없는 머리말에만 반응할 수 있다(적대 검토 F4) —
+           *  입력에 실으면 어댑터와 무관하다. 턴이 실패하면 채널에 되돌려 finally 의 «반영 못 한 지시» 통지가 받는다.
+           */
+          const steers: SteeringInput[] = [];
           if (arrived.length === 0) {
             const live = listLiveChildJobs(`worker:${job.jobId}`);
             console.log(
               `worker-registry: '${job.label}' 턴이 끝났지만 백그라운드 자식 ${live.length}건이 ` +
                 `아직 진행 중 — 거두고 마무리합니다 (${live.map((j: { label: string }) => j.label).join(", ")})`,
             );
-            // 다음 결과를 **이벤트로** 기다린다(폴링 아님) — deliverToSummoner 가 큐에 넣으면
-            // stream 이 깨어난다. close/abort 면 제너레이터가 끝나 arrived 가 비고 탈출한다.
-            for await (const m of resultBox.stream(abort.signal)) {
-              arrived.push(m);
-              break; // 첫 도착으로 깨어난 뒤, 같은 순간 도착분은 아래 drain 으로 합류.
-            }
-            arrived.push(...resultBox.drain());
+            // 다음 결과를 **이벤트로** 기다린다(폴링 아님) — deliverToSummoner 가 큐에 넣으면 stream 이 깨어난다.
+            // ★끼워넣기도 같이 지켜본다 (2026-10-12 맥돌쇠). 종전엔 결과 수신함만 봐서, 자식이 폭주하는 2시간 동안 소환자의
+            //  «더 기다리지 말고 종료하라» 세 번이 채널에 쌓이기만 했다(«전달됨» 기록, 매니저 모델 호출 0). 지시가 오면 턴을 열고
+            //  그 지시를 입력에 싣는다(자식 취소·마무리는 매니저가 판단).
+            // ★둘이 같은 순간에 오면 진 쪽이 이미 꺼낸 것도 버리지 않는다(아래 Promise.all).
+            const waitAc = new AbortController();
+            const stopWaiting = (): void => waitAc.abort();
+            abort.signal.addEventListener("abort", stopWaiting, { once: true });
+            if (abort.signal.aborted) waitAc.abort();
+            const firstOf = async (ch: SteeringChannel | undefined): Promise<SteeringInput | undefined> => {
+              if (ch === undefined) return new Promise<undefined>((r) => waitAc.signal.addEventListener("abort", () => r(undefined), { once: true }));
+              for await (const m of ch.stream(waitAc.signal)) return m;
+              return undefined;
+            };
+            const pResult = firstOf(resultBox);
+            const pSteer = firstOf(steerCh);
+            await Promise.race([pResult, pSteer]);
+            waitAc.abort();
+            abort.signal.removeEventListener("abort", stopWaiting);
+            const [gotResult, gotSteer] = await Promise.all([pResult, pSteer]);
+            if (gotResult !== undefined) arrived.push(gotResult);
+            if (gotSteer !== undefined) steers.push(gotSteer);
+            arrived.push(...resultBox.drain()); // 같은 순간 도착분 합류.
+            // 지시로 깨어났으면 그 뒤에 쌓인 지시도 같이 — 도착 순서 그대로(앞의 것이 먼저 꺼내졌다).
+            if (steers.length > 0 && steerCh !== undefined) steers.push(...steerCh.drain());
           }
-          if (arrived.length === 0) break; // 채널 종료·취소 — 안전망(유령좌표 환원)이 받는다.
+          if (arrived.length === 0 && steers.length === 0) break; // 채널 종료·취소 — 안전망(유령좌표 환원)이 받는다.
           rounds += 1;
           // ★**이 턴이 거두기 턴이라고 로그에 적는다** (2026-09-01). 이 줄이 없어서 사고
           //  재구성에 몇 시간이 갔다: 로그엔 `[codex-turn-end]` 만 있고 «그게 구현 턴인지
@@ -337,7 +362,7 @@ export const runWorkerJob = (
           //   폭주는 `[tool-slow]` 가 드러낸다(적대 검토 G-2·2라운드 정정).
           console.log(
             `worker-registry: '${job.label}' **거두기 턴** ${rounds}회째 시작 — ` +
-              `반영할 자식 결과 ${arrived.length}건 · 남은 자식 ` +
+              `${arrived.length === 0 ? "끼워넣은 지시로 깨어남 · " : ""}반영할 자식 결과 ${arrived.length}건 · 남은 자식 ` +
               `${listLiveChildJobs(`worker:${job.jobId}`).length}건 · ` +
               `thread=worker:${job.jobId}`,
           );
@@ -374,10 +399,15 @@ export const runWorkerJob = (
               //  뒤) codex 는 히스토리를 압축하므로, 완료조건이 맥락에서 흐려질 수 있다.
               //  판단 기준을 눈앞에 두는 것이 이 장치의 전부다.
               text:
-                `[백그라운드 작업 결과 도착]\n\n` +
+                (arrived.length === 0
+                  ? `[자식 작업을 기다리는 중 지시 도착 — 아래 지시를 먼저 반영하세요. 더 기다릴 필요가 없으면 남은 자식을 cancel_worker 로 정리하고 마무리하세요]\n\n`
+                  : `[백그라운드 작업 결과 도착]\n\n`) +
                 `원래 맡은 일: "${job.task}"\n\n` +
                 `${HARVEST_SCOPE_GUIDANCE}\n\n` +
-                arrived.map((m) => m.raw).join("\n\n"),
+                arrived.map((m) => m.raw).join("\n\n") +
+                (steers.length === 0
+                  ? ""
+                  : `${arrived.length > 0 ? "\n\n" : ""}〔기다리는 중 도착한 지시〕\n${steers.map((m) => m.text).join("\n\n")}\n〔/지시〕`),
               threadKey: `worker:${job.jobId}`,
               turnOrigin: "worker",
               channel: job.channel,
@@ -409,6 +439,8 @@ export const runWorkerJob = (
             //  실패가 «완료» 로 보고돼 대시보드·부모 매니저·통지가 전부 오독한다
             //  ([[feedback_scope_of_a_fix]] 조건반전→도달 입력 전수). 실패는 실패로 두고,
             //  **이미 완성된 본 보고서를 그 안에 실어** 잃지 않게만 한다.
+            // 실은 지시는 되돌린다 — 턴이 못 받았으니 finally 의 «반영 못 한 지시» 통지가 받는다(조용히 사라지지 않게).
+            if (steers.length > 0) steerCh?.restore(steers);
             harvestFailure = e instanceof Error ? e.message : String(e);
             if (e instanceof Error) harvestFailureName = e.name;
             break;

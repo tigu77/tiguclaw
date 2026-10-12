@@ -25,18 +25,51 @@ export const check: RegressionCheck = {
         const malformed = await parse([{ type: "response.completed", response: { status: "completed", output: [{ ...reasoning, encrypted_content: 123 }, message, call] } }]);
         const malformedOutput = await parse([...events, { type: "response.completed", response: { status: "completed", output: "bad" } }]);
         const compatible = { ...full, text: "확인 중" };
+        // action 없는 검색 항목은 다듬을 수 없다 — 재주입하지 않고 안전하게 빠진다(적대 검토 F6: 검사를 넓히면 다듬기가 던져 요청이 실패)
+        const badSearch = await parse([{ type: "response.completed", response: { status: "completed", output: [reasoning, { type: "web_search_call", id: "ws_x", status: "completed" }, message, call] } }]);
         const r = await spawnWithin(60000, "추론 상태 실제 어댑터", ["--import", "tsx", fileURLToPath(new URL("./_codex-reasoning-replay-child.ts", import.meta.url))]);
         const capped = await spawnWithin(60000, "한도 마무리 미실행 호출", ["--import", "tsx", fileURLToPath(new URL("./_codex-reasoning-replay-child.ts", import.meta.url)), "cap"]);
         const capLine = capped.out.split(/\r?\n/).find(l => l.startsWith("REPLAY_RESULT "));
         const capResult = capLine ? JSON.parse(capLine.slice(14)) : {};
         const line = r.out.split(/\r?\n/).find(l => l.startsWith("REPLAY_RESULT "));
         const result = line ? JSON.parse(line.slice(14)) : {};
+        // 웹 검색이 섞인 응답(2026-10-12 맥돌쇠 2시간 반복): 다음 요청에 추론과 검색 항목(id·출처 목록 뺀 공식 모양)을 싣고,
+        //  검색 도구가 없는 마무리 요청엔 검색 항목을 뺀다(서버가 «response protection is unavailable» 로 거부 — 실측).
+        const runSearch = async (extra: string[]) => {
+            const s = await spawnWithin(60000, "웹 검색 섞인 응답", ["--import", "tsx", fileURLToPath(new URL("./_codex-reasoning-replay-child.ts", import.meta.url)), "search", ...extra]);
+            const l = s.out.split(/\r?\n/).find(x => x.startsWith("SEARCH_RESULT "));
+            return { line: l ?? s.err.slice(-800), r: l ? JSON.parse(l.slice(14)) : {} };
+        };
+        // 상한 마무리(검색 항목을 거른 사본을 보내는 요청)가 끊겼을 때 이어 쓰기 본문이 사본에도 실리는가(적대 검토 F3)
+        const fc = await spawnWithin(60000, "상한 마무리 중 끊김", ["--import", "tsx", fileURLToPath(new URL("./_codex-flush-cut-child.ts", import.meta.url))]);
+        const fcLine = fc.out.split(/\r?\n/).find(x => x.startsWith("FLUSH_CUT "));
+        const fcR = fcLine ? JSON.parse(fcLine.slice(10)) : {};
+        const searchNormal = await runSearch([]);
+        const searchCap = await runSearch(["cap"]);
         const retried = await spawnWithin(60000, "재시도 사용량 관측", ["--import", "tsx", fileURLToPath(new URL("./_codex-reasoning-replay-child.ts", import.meta.url)), "retry"]);
         const retryLine = retried.out.split(/\r?\n/).find(l => l.startsWith("RETRY_USAGE "));
         const retryUsage = retryLine ? JSON.parse(retryLine.slice(12)) : [];
         return [
             assert("실제 503 재시도 후 성공은 관측 토큰만 합산하고 미보고 1회 보존·다음 실행 격리", retryUsage[0]?.unreportedRequests === 1 && retryUsage[0]?.inputTokensTotal === 40 && retryUsage[0]?.requestUsageEntries?.length === 2 && retryUsage[1]?.unreportedRequests === 0, retryLine ?? retried.err.slice(-1000)),
             assert("한도 때문에 실행하지 않은 호출을 다음 요청에 남기지 않음", capResult.capNoOrphan === true, capLine ?? capped.err.slice(-1000)),
+            assert(
+                "★웹 검색이 섞인 반복도 다음 요청에 추론과 검색 항목을 싣는다 — 검색 항목은 id·출처 목록 없이 {type,status,action}",
+                searchNormal.r.reasoningKept === true && searchNormal.r.searchKept === true && searchNormal.r.searchTool === true &&
+                    searchNormal.r.searchShape === JSON.stringify({ type: "web_search_call", status: "completed", action: { type: "search", query: "리야드 공항" } }),
+                searchNormal.line,
+            ),
+            assert(
+                "★검색 도구가 없는 마무리 요청(tools:[])엔 검색 항목을 싣지 않는다(서버 거부) — 그 앞 요청엔 실려 있었고, 추론은 남는다",
+                searchCap.r.cap === true && searchCap.r.searchKept === true && searchCap.r.flushNoTools === true &&
+                    searchCap.r.flushHasSearch === false && searchCap.r.flushHasReasoning === true,
+                searchCap.line,
+            ),
+            assert(
+                "★상한 마무리 중 끊기면 이어 쓰기 재전송에 흘린 글과 «이어서 쓰세요» 가 실리고 검색 항목은 여전히 빠진다",
+                fcR.flushNoTools === true && fcR.retryNoTools === true && fcR.retryHasPartial === true && fcR.retryHasNudge === true && fcR.retryHasSearch === false,
+                fcLine ?? fc.err.slice(-800),
+            ),
+            assert("action 없는 검색 항목이 섞이면 재주입하지 않는다(기존 재구성으로 안전하게)", replay(badSearch) === undefined, replay(badSearch)),
             assert("완료 응답은 reasoning/message/function 순서를 그대로 보존", JSON.stringify(replay(full)) === JSON.stringify(items), replay(full)),
             assert("빈 completed.output은 실제 done 항목을 버리지 않음", JSON.stringify(replay(emptyOutput)) === JSON.stringify(items), replay(emptyOutput)),
             assert("미완료 응답은 추론 재사용 없음", replay(incomplete) === undefined, replay(incomplete)),

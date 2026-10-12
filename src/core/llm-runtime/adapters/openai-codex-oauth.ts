@@ -1556,12 +1556,18 @@ export const runOpenAiCodex = async (
         );
       }
 
+      // ★웹 검색 도구가 없는 요청엔 다시 실은 검색 항목을 빼고 보낸다 (2026-10-12). 상한 마무리(`tools: []`)·검색이 꺼진 턴에
+      //  검색 항목이 있으면 서버가 «response protection is unavailable» 로 거부한다(실측 2/2, 빼면 200). 검색 도구가 있으면
+      //  `inputArray` **그 배열**을 그대로 쓴다 — 끊김 복구가 같은 배열에 덧붙인 뒤 본문을 다시 만든다(아래 `requestInput()`).
+      const searchToolOn = webSearchEnabled && !finalFlushRequested;
+      const requestInput = (): ResponseInputItem[] =>
+        searchToolOn ? inputArray : inputArray.filter((it) => it.type !== "web_search_call");
       const body: Record<string, unknown> = {
         model,
         // persistence 보강 — 공유 헌법 + codex 전용 persistence delta (claude 무영향)
         // + 안정 스캐폴딩(위에서 1회 조립). 중립 override 시 그 값이 전부 대체.
         instructions,
-        input: inputArray,
+        input: requestInput(),
         stream: true,
         store: false,
         prompt_cache_key: sessionIdentity ?? input.threadKey,
@@ -1573,7 +1579,7 @@ export const runOpenAiCodex = async (
         // 빈 배열 우선 (function tools shape 와 동일 키 보존, 안전한 1차 시도).
         tools: finalFlushRequested ? [] : responsesTools,
         // 검색 출처(URL 목록)는 요청해야 온다 — 카드의 «출력» 자리(위 onWebSearchCompleted). 검색을 켠 요청에만 건다
-        //  (실측 2026-09-28: gpt-6-sol·gpt-6-astra·gpt-5.6-terra 200, 도구 없는 요청도 200). 항목은 재주입하지 않아 토큰 0.
+        //  (실측 2026-09-28: gpt-6-sol·gpt-6-astra·gpt-5.6-terra 200, 도구 없는 요청도 200). 다음 요청에 검색 항목을 다시 실을 땐 출처 목록을 뺀다(`toReplayItem`).
         ...(webSearchEnabled && !finalFlushRequested ? { include: ["web_search_call.action.sources"] } : {}),
         // ★프로파일이 «빠르게» 라고 했을 때만 (2026-09-10). 중립 의도(`speed:"fast"`)를
         //  이 백엔드의 낱말로 옮긴다 — 공용 계약에 `service_tier` 를 박지 않는 이유는
@@ -2142,6 +2148,7 @@ export const runOpenAiCodex = async (
               { type: "message", role: "assistant", content: [{ type: "output_text", text: partial }] },
               { type: "message", role: "user", content: [{ type: "input_text", text: CODEX_CUT_CONTINUE_NUDGE }] },
             );
+            body.input = requestInput();
             bodyJson = JSON.stringify(body);
             measureRequest(); // 마지막 전송 본문 기준으로 — 첫 호출 프리픽스 비교 상태는 건드리지 않는다(목적이 다르다).
           }
@@ -2765,7 +2772,7 @@ export const runOpenAiCodex = async (
         // 이 줄이 없으면 진단 재료가 "걸렸다/안 걸렸다" 둘뿐이다. 25회 간격이라 소음 아님.
         console.log(
           `[codex-tool-progress] iter=${iterLabel(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)} ` +
-            `thread=${input.threadKey} model=${model} — 계속 진행 nudge.`,
+            `thread=${input.threadKey} model=${model} — 진행 점검 안내(남았으면 계속 · 끝났으면 마무리).`,
         );
         inputArray.push({
           type: "message",
@@ -2773,7 +2780,9 @@ export const runOpenAiCodex = async (
           content: [
             {
               type: "input_text",
-              text: `지금까지 도구를 ${iteration}회 사용했습니다. 작업이 실제로 끝나지 않았으면 계속 진행하세요 — 중단하지 마세요. 진행 상황은 update_todos 로 추적하고, 정말 다 끝났을 때에만 요약으로 마무리하세요.`,
+              // ★양쪽을 다 말한다 (2026-10-12). 종전 «중단하지 마세요 · 정말 다 끝났을 때에만» 은 한쪽(조기 종료)만 막아서, 할 일이
+              //  «3/3 완료» 인데도 같은 검증·같은 쓰기를 1시간 반 되풀이하던 아침 브리핑 턴을 25회마다 더 밀었다.
+              text: `지금까지 도구를 ${iteration}회 사용했습니다. 남은 일이 있으면 이어서 하세요. 이미 끝났으면 같은 확인이나 같은 쓰기를 되풀이하지 말고 지금 결과를 요약해 마무리하세요. 진행 상황은 update_todos 로 추적하세요.`,
             },
           ],
         });

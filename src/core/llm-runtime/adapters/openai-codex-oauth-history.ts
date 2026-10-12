@@ -652,7 +652,7 @@ export const parseCodexSse = async (
     ? completedOutput
     : [...doneItems.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
   const replayOutput = completed && failure === undefined && rawOutput.length > 0 &&
-    rawOutput.every(isReplayableOutput) ? rawOutput : undefined;
+    rawOutput.every(isReplayableOutput) ? rawOutput.map(toReplayItem) : undefined;
   // lastEvent — 빈 응답 진단용(2026-07-30). `response.completed` 가 안 왔는지 로그로 가른다.
   return {
     text,
@@ -752,7 +752,30 @@ export type ResponseInputItem =
   | ResponseInputMessage
   | ResponseInputFunctionCall
   | ResponseInputFunctionCallOutput
-  | ResponseInputReasoning;
+  | ResponseInputReasoning
+  | ResponseInputWebSearchCall;
+
+/**
+ * 서버 내장 웹 검색 한 번 — **같은 턴의 다음 요청에 다시 싣는다** (2026-10-12 맥돌쇠 2시간 반복의 근본 원인).
+ * ★검색 결과 내용은 어디에도 남지 않는다(`store:false` · 이 항목엔 «무엇을 검색했나» 만 있다). 종전엔 이 항목을 «재주입 대상이
+ *  아니다» 로 봤는데, 판정이 «응답 항목 전부가 재주입 가능해야» 라서 검색이 섞인 반복은 **추론까지 통째로** 버리고 함수 호출만
+ *  재구성했다. 실측(gpt-6.1-sol, 실제 백엔드): 검색 항목이 없으면 모델이 «아직 안 찾았다» 고 보고 **같은 검색과 같은 기록을 반복**
+ *  한다(4/4) — 아침 브리핑 턴이 검색 ~260회·같은 파일 쓰기 162회로 반복 상한까지 돌았다. 다시 실으면 다시 찾지 않는다(4/4).
+ * ★공식 Codex 프로토콜과 같은 모양 `{type, status, action}` — `id` 는 뺀다(`store:false` 라 서버에 없는 항목이다; 실측 둘 다 200).
+ *  `action.sources`(출처 URL 목록, 검색당 ~3KB)는 뺀다 — 화면 카드용으로 받는 것이고, 빼도 다시 찾지 않았다(실측 2/2).
+ */
+export type ResponseInputWebSearchCall = {
+  type: "web_search_call";
+  status: "completed";
+  action: Record<string, unknown>;
+};
+
+/** 다음 요청에 실을 모양으로 — 검색 항목만 다듬고 나머지는 받은 그대로. */
+const toReplayItem = (item: ResponseInputItem): ResponseInputItem => {
+  if (item.type !== "web_search_call") return item;
+  const { sources: _sources, ...action } = item.action;
+  return { type: "web_search_call", status: "completed", action };
+};
 
 export type ResponseInputReasoning = {
   type: "reasoning";
@@ -781,6 +804,8 @@ const isReplayableOutput = (raw: unknown): raw is ResponseInputItem => {
     case "function_call":
       return typeof item.call_id === "string" && typeof item.name === "string" &&
         typeof item.arguments === "string";
+    case "web_search_call":
+      return item.action !== null && typeof item.action === "object" && !Array.isArray(item.action);
     default:
       return false;
   }

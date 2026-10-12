@@ -382,6 +382,31 @@
         el.style.display = "";
         if (el.textContent !== txt) el.textContent = txt;
       };
+      // ★할 일 한 줄 (2026-10-12 정태님: «LLM 없이 지금 뭘 하는지») — 모델이 `update_todos` 로 직접 적은 필드만 읽는다
+      //  (문장 해석 0). 진행 중 항목의 activeForm(없으면 content)이 «지금», 첫 대기 항목이 «다음». 할 일을 안 쓴 작업은 안 그린다.
+      const renderTodos = (entry) => {
+        const el = entry && entry.todoEl;
+        if (!el) return;
+        const todos = Array.isArray(entry.todos) ? entry.todos : [];
+        if (todos.length === 0) { el.style.display = "none"; return; }
+        const done = todos.filter((t) => t.status === "completed").length;
+        const now = todos.find((t) => t.status === "in_progress");
+        const next = todos.find((t) => t.status === "pending");
+        let txt = i18n("bg.todo.progress", { done, total: todos.length });
+        if (now) txt += i18n("bg.todo.now", { text: now.activeForm || now.content });
+        if (next) txt += i18n("bg.todo.next", { text: next.content });
+        el.style.display = "";
+        if (el.textContent !== txt) el.textContent = txt;
+        el.title = todos.map((t) => (t.status === "completed" ? "✓ " : t.status === "in_progress" ? "▶ " : "· ") + t.content).join("\n");
+      };
+      // SSE `todo.update` 가 부른다(sse.js) — 잡 좌표(worker:/agent:<jobId>)가 아니면 무시(메인 대화는 도구 카드로 이미 보인다).
+      window.setJobTodos = (p) => {
+        const m = p && typeof p.threadKey === "string" ? /^(?:worker|agent):(.+)$/.exec(p.threadKey) : null;
+        const entry = m ? jobCards.get(m[1]) : undefined;
+        if (!entry || !Array.isArray(p.todos)) return;
+        entry.todos = p.todos;
+        renderTodos(entry);
+      };
       const fmtDur = (ms) => {
         if (ms == null) return "";
         if (ms < 1000) return Math.round(ms) + "ms";
@@ -900,6 +925,10 @@
           doingEl.className = "bg-job-doing";
           doingEl.style.display = "none";
           meta.appendChild(doingEl);
+          // 할 일 한 줄 — 모델이 할 일을 적었을 때만(renderTodos).
+          const todoEl = document.createElement("div");
+          todoEl.className = "bg-job-todo";
+          todoEl.style.display = "none";
           // ★소속 세션 배지 (2026-08-06) — "이 잡을 어느 대화가 띄웠나". 종전엔 원시 좌표
           //  (`dashboard:1784…`)만 있어 사람이 읽을 수 없었고, 스코프 필터로 거를 수는 있어도
           //  전체를 볼 땐 구분이 안 됐다. 이름은 공유 해석기(서버 정본)에서 가져오고,
@@ -934,7 +963,7 @@
           const steps = document.createElement("div"); steps.className = "bg-job-steps";
           const result = document.createElement("div"); result.className = "bg-job-result"; result.style.display = "none";
           detail.appendChild(task); detail.appendChild(steps); detail.appendChild(result);
-          el.appendChild(top); el.appendChild(meta); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
+          el.appendChild(top); el.appendChild(meta); el.appendChild(todoEl); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
           // 텍스트 드래그는 접기로 안 친다(2026-09-10 적대 검토 P-4) — 이 머리줄엔
           // `user-select:none` 이 없어 라벨을 끌어 고를 수 있다.
           onToggleClick(top, () => { setJobOpen(jobId, entry); });
@@ -953,6 +982,8 @@
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
             usageEl, usage: null, // 토큰 합계(서버 `usage`) — setJobUsage 가 채운다.
             doingEl, // "지금 무엇을 하는 중" 한 줄(서버 activity).
+            todoEl, // 할 일 «📋 2/5 · 지금 · 다음» 한 줄(모델이 적었을 때만).
+            todos: null,
             activity: null, // { lastActivityAt, inFlight:[{tool,since}] } — /api/worker-jobs.
             // ★경과시간 기준은 **서버가 준 잡 시작 시각**이다 (2026-08-20 적대 검토 C).
             //  종전엔 무조건 `Date.now()`(카드가 생긴 시각)라, 2시간째 자식을 기다리는
@@ -1209,6 +1240,7 @@
         if (p.activity && typeof p.activity === "object") {
           entry.activity = p.activity;
           renderDoing(entry);
+          if (Array.isArray(p.activity.todos)) { entry.todos = p.activity.todos; renderTodos(entry); }
         }
         // ★잡 상태는 **단조**다 — running → 종료, 되돌아가지 않는다 (2026-07-28).
         //  종전엔 마지막 이벤트가 무조건 이겨서, 재연결 replay 가 흘린 옛 worker.started 가

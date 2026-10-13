@@ -321,26 +321,28 @@
        * 이력 활동 중 **진행 중 턴**의 것만 떼어 실시간 경로로 넘긴다 — 순수 판정 (2026-10-13 정태님 신고).
        *
        * 사고: «응답이 와서 세션을 눌러 들어가니 같은 답이 두 개 떠 있다 · 새로고침하면 하나».
-       *  종전엔 진행 중 표시만 보고 **마지막 활동 묶음**을 떼어 갔다. 답이 끝났는데도 표시가 켜져
-       *  있으면(작업 완료 보고 턴이 줄을 섰거나 막 시작해 아직 활동이 없을 때) **끝난 턴의 답 조각**이
-       *  떼어졌고, 이력은 짝 조각을 잃어 같은 답(chat_log 행)을 중복으로 못 지워 말풍선으로 그렸다 —
-       *  떼어 간 조각도 실시간 경로가 또 그렸다.
-       *  ★기준: 진행 중 턴의 활동은 **마지막 답 행보다 뒤**에 온 것뿐이다. 답 행이 곧 턴의 끝이다.
-       *   선택지(kind)·시스템 통지·첨부 행은 턴 중간에도 오므로 끝 표식이 아니다.
+       *  진행 중 표시만 보고 **마지막 활동 묶음**을 떼어 갔는데, 답이 끝났는데도 표시가 켜져 있으면
+       *  (작업 완료 보고 턴이 줄을 섰거나 막 시작해 아직 활동이 없을 때) **끝난 턴**이 떼어졌다 —
+       *  이력은 짝 조각을 잃어 같은 답(chat_log 행)을 말풍선으로 그렸고, 실시간 경로도 또 그렸다.
+       *  ★판정: 마지막 묶음이 **답이 달린 채 끝났나** — 마지막 활동이 텍스트 조각이고 그 뒤(같은 시각 포함)에
+       *   답 행이 있다. 그러면 끝난 턴이라 전부 이력으로 보낸다. 아니면 종전대로 마지막 묶음을 넘긴다.
+       *  ★«아무 비서 행 뒤» 를 끝으로 세면 안 된다(적대 검토 F2) — 스케줄 배달·매니저 실패 보고처럼 턴 중간에도
+       *   평범한 비서 행이 오고, 그걸 끝으로 세면 진행 턴 앞부분이 이력으로 가 그 행이 중복으로 버려졌다.
+       *   선택지(kind)·시스템 통지·첨부 행은 답이 아니다.
        * @returns {{hist: any[], live: any[]}}
        */
       const splitLiveResume = (activities, entries, turnActive) => {
         if (!turnActive || activities.length === 0) return { hist: activities, live: [] };
+        const last = activities[activities.length - 1];
+        const isAnswerRow = (e) =>
+          !!e && e.role === "assistant" && typeof e.ts === "number" &&
+          !(typeof e.kind === "string" && e.kind !== "") && e.notice !== true &&
+          !(e.attachments && e.attachments.length);
+        if (last.kind === "text" && entries.some((e) => isAnswerRow(e) && e.ts >= (last.ts ?? 0))) {
+          return { hist: activities, live: [] };
+        }
         let start = activities.length - 1;
         while (start > 0 && (activities[start].seq ?? 0) > (activities[start - 1].seq ?? 0)) start--;
-        let doneTs = -Infinity;
-        for (const e of entries) {
-          if (!e || e.role !== "assistant" || typeof e.ts !== "number") continue;
-          if ((typeof e.kind === "string" && e.kind !== "") || e.notice === true) continue;
-          if (e.attachments && e.attachments.length) continue;
-          if (e.ts > doneTs) doneTs = e.ts;
-        }
-        while (start < activities.length && (activities[start].ts ?? 0) <= doneTs) start++;
         return { hist: activities.slice(0, start), live: activities.slice(start) };
       };
 

@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.70.1] - 2026-10-13
+
 ### Fixed
 - 답이 온 세션을 눌러 들어가면 같은 답이 두 번 이어서 보이던 문제를 고쳤습니다. 새로고침하면 하나로 돌아오던 표시 문제입니다.
 - 백그라운드 작업 카드의 할 일 머리 줄을 눌러 접거나 펼 때 글자 커서가 남던 문제를 고쳤습니다.
@@ -2515,7 +2517,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...HEAD
+[0.70.1]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...v0.70.1
 [0.70.0]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...v0.70.0
 [0.69.1]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...v0.69.1
 [0.69.0]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...v0.69.0

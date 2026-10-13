@@ -13,7 +13,9 @@
  *  ① 끝난 턴 + 진행 중 표시(다음 턴은 아직 활동 없음) → 답 1개, 실시간 0
  *  ② 대조 — 진행 중 표시가 없으면 답 1개
  *  ③ 진짜 진행 중 턴(답 행 뒤 활동)은 그대로 실시간으로 넘긴다 — 끝난 턴의 답은 1개
- *  ④ 턴 중간의 선택지·시스템 통지·첨부 행은 턴의 끝이 아니다 — 진행 중 턴을 떼어 간다
+ *  ①' 끝난 턴이 둘 — «마지막» 답을 본다(적대 검토 F1)
+ *  ④ 진행 턴 중간의 평범한 비서 행(스케줄 배달·매니저 실패 보고)이 사라지지 않는다(적대 검토 F2)
+ *  ⑤⑥ 마지막 조각 뒤에 답 행이 없으면(선택지·통지·첨부뿐이어도) 아직 진행 중
  *
  * 등급: **동작**.
  */
@@ -80,18 +82,48 @@ export const check: RegressionCheck = {
     const r1 = shown(entries, doneTurn, true);
     const r2 = shown(entries, doneTurn, false);
 
+    // ①' 끝난 턴이 둘 — «마지막» 답을 본다(적대 검토 F1: 첫 답 행을 써도 통과하던 그물)
+    const A1 = "첫 턴 답";
+    const two: Act[] = [
+      { ts: 50, threadKey: TK, kind: "tool", seq: 0 },
+      { ts: 60, threadKey: TK, kind: "text", seq: 1, text: A1 },
+      ...doneTurn,
+    ];
+    const twoEntries: Entry[] = [
+      { ts: 40, role: "user", threadKey: TK, text: "첫 질문" },
+      { ts: 61, role: "assistant", threadKey: TK, text: A1 },
+      ...entries,
+    ];
+    const r1b = shown(twoEntries, two, true);
+    const r1bFirst = shown(twoEntries, two, true, A1);
+
     // ③ 다음 턴이 실제로 돌고 있다(답 행 뒤 활동, seq 가 다시 0부터)
     const running: Act[] = [...doneTurn, { ts: 200, threadKey: TK, kind: "tool", seq: 0 }, { ts: 210, threadKey: TK, kind: "tool", seq: 1 }];
     const r3 = shown(entries, running, true);
 
-    // ④ 진행 중 턴 중간에 선택지·통지·첨부 행이 와도 진행 중 턴은 떼어 간다
-    const midRows: Entry[] = [
-      ...entries,
-      { ts: 205, role: "assistant", threadKey: TK, text: "선택지", kind: "prompt.options" },
-      { ts: 206, role: "assistant", threadKey: TK, text: "⏳ 통지", notice: true },
-      { ts: 207, role: "assistant", threadKey: TK, text: "", attachments: [{ rel: "x" }] },
+    // ④ ★진행 턴 중간의 **평범한 비서 행**(스케줄 배달·매니저 실패 보고 — notice 표식 없음)은 턴의 끝이 아니다
+    //  (적대 검토 F2): 진행 턴이 텍스트 조각으로 시작했으면, 끝으로 세는 순간 그 행이 «조각의 중복» 으로 버려졌다.
+    const SCHED = "⏰ 스케줄 배달 — 회귀";
+    const runningWithText: Act[] = [
+      ...doneTurn,
+      { ts: 200, threadKey: TK, kind: "text", seq: 0, text: "살펴볼게요" },
+      { ts: 210, threadKey: TK, kind: "tool", seq: 1 },
+      { ts: 230, threadKey: TK, kind: "tool", seq: 2 },
     ];
-    const r4 = shown(midRows, running, true);
+    const midEntries: Entry[] = [...entries, { ts: 190, role: "user", threadKey: TK, text: "다음 질문" }, { ts: 220, role: "assistant", threadKey: TK, text: SCHED }];
+    const r4 = shown(midEntries, runningWithText, true, SCHED);
+
+    // ⑤ 진행 턴의 마지막 활동이 텍스트 조각이어도 **답 행이 아직 없으면** 진행 중이다(«텍스트면 끝» 으로 좁히는 편집을 막는다)
+    const runningEndsText: Act[] = [...doneTurn, { ts: 200, threadKey: TK, kind: "tool", seq: 0 }, { ts: 210, threadKey: TK, kind: "text", seq: 1, text: "중간 말" }];
+    const r5 = shown(entries, runningEndsText, true, "중간 말");
+
+    // ⑥ 선택지·통지·첨부 행은 답이 아니다 — 마지막 조각(210) **뒤에** 그것만 있으면 아직 진행 중
+    const nonAnswerRows: Entry[] = [
+      { ts: 215, role: "assistant", threadKey: TK, text: "선택지", kind: "prompt.options" },
+      { ts: 216, role: "assistant", threadKey: TK, text: "⏳ 통지", notice: true },
+      { ts: 217, role: "assistant", threadKey: TK, text: "", attachments: [{ rel: "x" }] },
+    ];
+    const r6 = shown([...entries, ...nonAnswerRows], runningEndsText, true, "중간 말");
 
     return [
       assert("판정과 병합을 실제로 뽑아 돌렸다(문자열 검사 아님)", ctx.split !== undefined && ctx.group !== undefined, sp === null ? "★splitLiveResume 추출 실패" : "OK"),
@@ -101,8 +133,11 @@ export const check: RegressionCheck = {
         r1,
       ),
       assert("② 대조 — 진행 중 표시가 없으면 답은 한 번", r2.n === 1 && r2.live === 0, r2),
+      assert("★①' 끝난 턴이 둘이어도 «마지막» 답을 본다 — 각 답이 한 번씩", r1b.n === 1 && r1bFirst.n === 1 && r1b.live === 0, { 마지막: r1b, 첫: r1bFirst }),
       assert("★③ 진짜 진행 중 턴의 활동은 실시간으로 넘기고, 끝난 턴의 답은 한 번", r3.n === 1 && r3.live === 2, r3),
-      assert("④ 턴 중간의 선택지·통지·첨부 행은 턴의 끝으로 보지 않는다", r4.live === 2, r4),
+      assert("★④ 진행 턴 중간의 평범한 비서 행(스케줄 배달 등)은 사라지지 않고, 진행 턴은 통째로 실시간", r4.n === 1 && r4.live === 3, r4),
+      assert("⑤ 마지막 활동이 텍스트여도 답 행이 아직 없으면 진행 중 — 실시간으로 넘긴다", r5.live === 2 && r5.n === 1, r5),
+      assert("⑥ 선택지·통지·첨부 행은 답이 아니다 — 진행 중으로 남는다", r6.live === 2, r6),
     ];
   },
 };

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.70.1] - 2026-10-13
+
 ### Fixed
 - Opening a session after its reply arrived no longer shows the same reply twice (a display issue that cleared on reload).
 - Clicking the to-do header on a background job card to collapse or expand it no longer leaves a text cursor behind.
@@ -965,7 +967,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...HEAD
+[0.70.1]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...v0.70.1
 [0.70.0]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...v0.70.0
 [0.69.1]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...v0.69.1
 [0.69.0]: https://github.com/tigu77/tiguclaw/compare/v0.68.0...v0.69.0

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Opening a session after its reply arrived no longer shows the same reply twice (a display issue that cleared on reload).
+- Clicking the to-do header on a background job card to collapse or expand it no longer leaves a text cursor behind.
+
 ## [0.70.0] - 2026-10-13
 
 ### Added

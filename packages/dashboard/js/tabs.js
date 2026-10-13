@@ -317,6 +317,33 @@
         loadingOlder = false;
       };
 
+      /**
+       * 이력 활동 중 **진행 중 턴**의 것만 떼어 실시간 경로로 넘긴다 — 순수 판정 (2026-10-13 정태님 신고).
+       *
+       * 사고: «응답이 와서 세션을 눌러 들어가니 같은 답이 두 개 떠 있다 · 새로고침하면 하나».
+       *  종전엔 진행 중 표시만 보고 **마지막 활동 묶음**을 떼어 갔다. 답이 끝났는데도 표시가 켜져
+       *  있으면(작업 완료 보고 턴이 줄을 섰거나 막 시작해 아직 활동이 없을 때) **끝난 턴의 답 조각**이
+       *  떼어졌고, 이력은 짝 조각을 잃어 같은 답(chat_log 행)을 중복으로 못 지워 말풍선으로 그렸다 —
+       *  떼어 간 조각도 실시간 경로가 또 그렸다.
+       *  ★기준: 진행 중 턴의 활동은 **마지막 답 행보다 뒤**에 온 것뿐이다. 답 행이 곧 턴의 끝이다.
+       *   선택지(kind)·시스템 통지·첨부 행은 턴 중간에도 오므로 끝 표식이 아니다.
+       * @returns {{hist: any[], live: any[]}}
+       */
+      const splitLiveResume = (activities, entries, turnActive) => {
+        if (!turnActive || activities.length === 0) return { hist: activities, live: [] };
+        let start = activities.length - 1;
+        while (start > 0 && (activities[start].seq ?? 0) > (activities[start - 1].seq ?? 0)) start--;
+        let doneTs = -Infinity;
+        for (const e of entries) {
+          if (!e || e.role !== "assistant" || typeof e.ts !== "number") continue;
+          if ((typeof e.kind === "string" && e.kind !== "") || e.notice === true) continue;
+          if (e.attachments && e.attachments.length) continue;
+          if (e.ts > doneTs) doneTs = e.ts;
+        }
+        while (start < activities.length && (activities[start].ts ?? 0) <= doneTs) start++;
+        return { hist: activities.slice(0, start), live: activities.slice(start) };
+      };
+
       // active 세션 이력 fetch → 기존 병합·인터리브·가상화 렌더 파이프 재실행(§3.2 3). 렌더러
       // 자체는 안 바꾼다 — 입력(entries/activities)이 threadKey 로 스코프될 뿐. token 으로 전환
       // 경합 방어(빠른 연속 전환 시 stale 배치가 다른 탭에 안 들어가게).
@@ -343,13 +370,7 @@
           // 도착하는 라이브 활동이 같은 turn-group 에 이어붙고, 한 턴이 hist-turn+turn-group
           // 두 카드로 쪼개지지 않는다(전환-복귀 시 도구 플랫/중복 나열의 근본). 완료된 앞선
           // 턴들은 그대로 hist-turn(N단계)으로. seq 리셋(비증가 경계)이 진행 중 턴의 시작.
-          let histActivities = activities, liveResume = [];
-          if (activeTurns.has(tk) && activities.length > 0) {
-            let start = activities.length - 1;
-            while (start > 0 && (activities[start].seq ?? 0) > (activities[start - 1].seq ?? 0)) start--;
-            histActivities = activities.slice(0, start);
-            liveResume = activities.slice(start);
-          }
+          const { hist: histActivities, live: liveResume } = splitLiveResume(activities, entries, activeTurns.has(tk));
           renderHistoryBatch(entries, histActivities, false);
           for (const a of liveResume) { try { renderActivity(a, fmtTime(a.ts)); } catch { /* best-effort 재개 */ } }
           setOldestCursor(entries, activities.length > 0 ? activities[0].ts : null);

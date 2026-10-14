@@ -614,7 +614,8 @@ export const check: RegressionCheck = {
         registered: /cmd === "\/compact"\) \{[\s\S]{0,600}target: msg\.channelAddress \?\? null,\s*command: true,[\s\S]{0,100}inflightTurns\.set\(msg\.threadKey, compactEntry\);[\s\S]{0,200}handleCompact\(\{ \.\.\.slashCtx, signal: compactEntry\.ac\.signal \}\);\s*\} finally \{\s*if \(inflightTurns\.get\(msg\.threadKey\) === compactEntry\) inflightTurns\.delete\(msg\.threadKey\);/.test(entry),
         handler: /compactThreadNow\([\s\S]{0,300}resolveReasoningEffort\("codex", codexModel\),\s*signal,\s*\)/.test(slash),
         summarizer: /const compactThreadNowUnlocked = [\s\S]{0,4000}runSummarizer\([\s\S]{0,200}turnReasoning,\s*anySignal\(signal, batch\),\s*threadKey,/.test(codexSrc),
-        keepsJobs: /const stopped = entry\.command === true \? 0 : cancelJobsForThread\(msg\.threadKey\);/.test(entry),
+        // ★/stop 은 이제 어떤 턴을 멈춰도 잡을 안 끊는다(2026-10-14) — /compact 를 멈출 때도 마찬가지.
+        keepsJobs: !/cancelJobsForThread\(/.test(entry),
         lock: /withThreadCompactionLock\(a\[1\], \(\) => compactThreadNowUnlocked\(\.\.\.a\), a\[6\]\)/.test(codexSrc),
       };
       out.push(

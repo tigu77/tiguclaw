@@ -23,7 +23,7 @@ import {
   type EventBusEvent,
 } from "../../../src/core/eventbus.js";
 import { runClaude } from "../../../src/core/claude.js";
-import { withExternalTurn } from "../../../src/core/inflight-turns.js";
+import { runExternalTurn } from "../../../src/core/external-turn.js";
 import {
   getWatch,
   listWatches,
@@ -178,7 +178,8 @@ const defaultRunClaude: WatcherDeps["runClaude"] = async (input) => {
   // 스케줄러와 **같은 이유·같은 처방** — 이 경로도 핸들러를 우회하므로 진행 중 등록이
   // 없으면 `/health` 가 0을 답하고 배포 가드가 도는 작업을 죽인다(`inflight-turns.ts` 주석).
   const ac = new AbortController();
-  return withExternalTurn(
+  // ★같은 스레드 줄에 선다 — 완료 재주입과 동시에 돌지 않게(`external-turn.ts`, 2026-10-14 아침 뉴스 두 번).
+  return runExternalTurn(
     input.threadKey,
     { ac, channel: input.channel, target: null, notifyDest: input.interruptDest },
     () =>

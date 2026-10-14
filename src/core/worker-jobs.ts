@@ -913,6 +913,22 @@ interface CheckinEvidence {
    * 모델이 이미 쓴 구조화 필드라 추가 호출·문장 해석 0. 쓸지는 모델 판단이라 없는 작업이 더 많다(그땐 안 그린다).
    */
   todos?: ReadonlyArray<{ content: string; status: string; activeForm?: string }>;
+  /** 최근 도구 행동(바운드 `PROGRESS_RECENT_CAP`) — 진행 알림의 원료(`job-progress.ts`). 점검 주기가 바뀌어도 **이월**한다. */
+  recent: ProgressAction[];
+  /** 마지막 진행 알림 시각 — 없으면 잡 시작부터 잰다. 이월한다. */
+  lastProgressAt?: number;
+  /**
+   * **실제** 마지막 활동 시각 — 활동 구독만 민다. `lastActivityAt` 은 무활동 점검이 같은 보고를 반복하지 않으려고 now 로 미는
+   * 앵커라(의미가 둘), 진행 알림의 «N째 새 활동 없음» 이 그걸 읽으면 실제보다 짧게 나왔다(2026-10-14 재검토 P1). 이월한다.
+   */
+  lastRealActivityAt?: number;
+  /** 마지막 진행 알림 이후 활동(도구·텍스트)이 있었나 — 알림을 보내면 내린다. 이월한다. */
+  activeSinceProgress?: boolean;
+  /**
+   * 마지막 진행 알림 이후 **오류로 끝난 도구 호출 수** — 종료 이벤트에서 센다(2026-10-14 아스트라 검토). 최근 행동 목록(40개)의
+   * 오류 표시로 세면 ①알림 전에 시작해 알림 뒤 실패한 호출 ②목록에서 밀려난 실패가 사라졌다. 알림을 보내면 0으로. 이월한다.
+   */
+  errorsSinceProgress?: number;
   /** 다음 점검까지 미룬 시각(주기 계산 기준). */
   lastCheckinAt: number;
   /** 점검 회차. */
@@ -947,6 +963,7 @@ const freshEvidence = (now: number): CheckinEvidence => ({
   toolEvents: 0,
   textEvents: 0,
   inFlight: new Map(),
+  recent: [],
   lastActivityAt: now,
   lastCheckinAt: now,
   rounds: 0,
@@ -1128,8 +1145,71 @@ const deliverCheckin = async (
  * 여기서 하는 판정은 딱 하나뿐이고 그것도 좁다: 완전 침묵 + 판단할 소환자 없음 + 2주기 →
  * 종료. 나머지는 전부 소환자가 정한다.
  */
-const checkinTick = (): void => {
-  const now = Date.now();
+/**
+ * **진행 알림** — 사용자 대화가 띄운 최상위 매니저가 오래 돌 때, 주기마다 사용자에게만 1방향으로(`job-progress.ts`).
+ * ★매니저·메인 컨텍스트엔 아무것도 넣지 않는다(steering·재주입 없음). ★요약을 만드는 사이 잡이 끝나면 **버린다** — 완료 알림 뒤에
+ *  진행 알림이 도착하는 역전을 막는다. ★설정(`jobs.progressNotice`)은 매번 새로 읽는다 — 끄기·간격 변경이 재시작 없이 반영.
+ */
+const maybeSendProgress = (job: WorkerJobRecord, ev: CheckinEvidence, now: number): void => {
+  if (job.kind !== "worker" || !job.detached || !isUserConversationThread(job.threadKey)) return;
+  const cfg = readProgressNoticeSettings();
+  if (!cfg.enabled) return;
+  const since = ev.lastProgressAt ?? job.startedAt;
+  // 진행 중인 도구가 있으면 그것도 «활동 중» 이다 — 긴 Bash 하나만 도는 잡이 첫 알림 뒤 조용해지던 것(2026-10-14 적대 검토 P1).
+  const inFlight = [...ev.inFlight.values()].map((f) => ({ tool: f.tool, at: f.at }));
+  const active = ev.activeSinceProgress === true || inFlight.length > 0;
+  if (!isProgressDue({ now, since, activeSince: active, intervalMs: cfg.intervalMinutes * 60_000 })) return;
+  ev.lastProgressAt = now; // 요약을 기다리는 동안 같은 잡이 다시 걸리지 않게 먼저 민다.
+  ev.activeSinceProgress = false;
+  const errors = ev.errorsSinceProgress ?? 0;
+  ev.errorsSinceProgress = 0;
+  const actions = actionsSince(ev.recent, since);
+  void (async (): Promise<void> => {
+    const composed = await composeProgressNotice({
+      errors,
+      now,
+      lastActivityAt: ev.lastRealActivityAt ?? job.startedAt,
+      inFlight,
+      jobId: job.jobId,
+      name: job.label,
+      task: job.task,
+      elapsedMs: now - job.startedAt,
+      actions,
+      todos: ev.todos,
+      language: readLocale() === "ko" ? "한국어" : "English",
+    });
+    if (composed === null) {
+      console.log(`[job-progress] '${job.label}' (${job.jobId}) — 도구 행동 없음(글만) · 진행 중 도구 없음 → 보내지 않음`);
+      return;
+    }
+    const { text, summarized } = composed;
+    if (jobs.get(job.jobId)?.status !== "running") {
+      console.log(`[job-progress] '${job.label}' (${job.jobId}) — 요약 사이 종료돼 버림`);
+      return;
+    }
+    console.log(
+      `[job-progress] '${job.label}' (${job.jobId}) 행동 ${actions.length} · 오류 ${errors} · ` +
+        `${summarized ? "요약" : "기계"} · ${text.length}자 · thread=${job.threadKey}`,
+    );
+    // ★시스템 통지로 보낸다 — 비서의 답이 아니다(2026-10-14 아스트라 검토: 표식이 없어 기록에 일반 답처럼 남았다).
+    //  무진전 재시도 알림과 같은 길(`deliverOutbound` notice:true). 완료·실패 보고(`notifyJobOwner`)는 그대로 둔다.
+    const dest = destForJob(job);
+    await deliverOutbound({
+      channel: dest.channel,
+      target: dest.target ?? null,
+      text,
+      label: "worker",
+      notice: true,
+      observeThreadKey: notifySessionThreadKey(job.threadKey),
+    });
+  })().catch((e: unknown) => {
+    console.error(`[job-progress] '${job.label}' (${job.jobId}) 알림 실패: ${e instanceof Error ? e.message : String(e)}`);
+  });
+};
+
+const checkinTick = (nowArg?: number): void => {
+  // 시계는 인자 없이 부른다(setInterval). 검사만 시각을 넣는다 — 10분 이상 간격을 실시간으로 기다리지 않으려고.
+  const now = nowArg ?? Date.now();
   const running = [...jobs.values()].filter((j) => j.status === "running");
   if (running.length === 0) {
     stopCheckinScanner();
@@ -1151,7 +1231,11 @@ const checkinTick = (): void => {
     //  활동이 있으면 마감이 계속 밀리므로 **건강한 잡은 점검에 아예 안 걸린다.**
     //  사용자: *"잘 돌고 있는 상황을 이상하게 판단하면 안 되잖아 … 문제가 없으면 마지막
     //  시간 기준으로 다시 잡을 수 있는 거 아니야?"*
-    if (now - ev.lastActivityAt < JOB_CHECKIN_INTERVAL_MS) continue;
+    if (now - ev.lastActivityAt < JOB_CHECKIN_INTERVAL_MS) {
+      // ★건강한 잡 — 무활동 점검 대신 **진행 알림**(주기가 됐고 그 사이 활동이 있을 때만). 같은 틱에 점검과 겹치지 않는다.
+      maybeSendProgress(job, ev, now);
+      continue;
+    }
 
     ev.rounds += 1;
     const silent = ev.toolEvents === 0 && ev.textEvents === 0 && ev.inFlight.size === 0;
@@ -1171,6 +1255,13 @@ const checkinTick = (): void => {
     next.inFlight = carried;
     next.rounds = ev.rounds;
     next.lastTool = ev.lastTool;
+    next.recent = ev.recent;
+    next.lastProgressAt = ev.lastProgressAt;
+    next.activeSinceProgress = ev.activeSinceProgress;
+    next.lastRealActivityAt = ev.lastRealActivityAt;
+    next.errorsSinceProgress = ev.errorsSinceProgress;
+    // 할 일도 이월한다 — 빠지면 점검 한 번 뒤 작업 카드 📋 와 진행 알림의 할 일 줄이 다음 update_todos 까지 사라졌다(2026-10-14 적대 검토 P1).
+    next.todos = ev.todos;
     evidence.set(job.jobId, next);
 
     console.log(
@@ -1269,6 +1360,8 @@ const startCheckinScanner = (): void => {
       evidence.set(id, rec);
     }
     rec.lastActivityAt = now;
+    rec.lastRealActivityAt = now;
+    rec.activeSinceProgress = true;
     if (p.kind === "tool") {
       rec.toolEvents += 1;
       const label = typeof p.label === "string" ? p.label : "(이름 없음)";
@@ -1277,13 +1370,27 @@ const startCheckinScanner = (): void => {
       //  start 만 오고 end 가 안 오면 그 도구를 **하는 중**이다(멈춘 게 아니다).
       //  ★키는 **호출 식별자**(`seq`)다 — 이름이면 병렬 동일 도구가 서로를 지운다.
       const callKey = typeof p.seq === "number" ? `#${p.seq}` : `name:${label}`;
-      if (p.phase === "start") rec.inFlight.set(callKey, { tool: label, at: now });
-      else if (p.phase === "end") rec.inFlight.delete(callKey);
+      // ★시작은 **`phase` 가 없는 이벤트**다 — 계약(`types.ts` ActivityEvent.phase: «미지정 = start»). 종전엔 `=== "start"` 로 읽어
+      //  세 어댑터의 시작 이벤트(전부 phase 없음)를 하나도 못 셌다: 진행 중 도구가 늘 비어 긴 Bash 하나만 도는 잡이 «완전 침묵» 으로
+      //  자동 종료될 수 있었고, 진행 알림은 «최근 행동 0건» 만 냈다(2026-10-14 돌쇠 실검증에서 발견 — 검사가 phase:"start" 를 손으로 넣어 못 봤다).
+      if (p.phase !== "end") {
+        rec.inFlight.set(callKey, { tool: label, at: now });
+        const detail = (p as { detail?: unknown }).detail;
+        pushRecentAction(rec.recent, { at: now, tool: label, key: callKey, ...(typeof detail === "string" ? { detail } : {}) });
+      } else {
+        rec.inFlight.delete(callKey);
+        // 오류로 끝난 호출은 진행 알림이 «오류 N건» 을 하네스 몫으로 붙인다(요약이 감춰도 남게).
+        if ((p as { output?: { isError?: unknown } }).output?.isError === true) {
+          rec.errorsSinceProgress = (rec.errorsSinceProgress ?? 0) + 1;
+          const hit = [...rec.recent].reverse().find((a) => a.key === callKey);
+          if (hit !== undefined) hit.error = true;
+        }
+      }
     } else if (p.kind === "text") {
       rec.textEvents += 1;
     }
   });
-  checkinTimer = setInterval(checkinTick, checkinTickMs());
+  checkinTimer = setInterval(() => checkinTick(), checkinTickMs());
   (checkinTimer as { unref?: () => void }).unref?.();
 };
 
@@ -1330,7 +1437,16 @@ export const getJobActivity = (
 export const __checkinEvidenceSizeForTest = (): number => evidence.size;
 
 /** 검사 전용 — 틱을 즉시 한 번 돌린다(시계를 기다리지 않게). */
-export const __checkinTickForTest = (): void => checkinTick();
+export const __checkinTickForTest = (now?: number): void => checkinTick(now);
+/** 검사용 — 그 잡의 점검 증거 중 이월돼야 하는 필드(무활동 분기 뒤에도 남는가). */
+export const __checkinEvidenceForTest = (
+  jobId: string,
+): { recent: number; todos: number; lastProgressAt?: number; activeSinceProgress?: boolean } | undefined => {
+  const ev = evidence.get(jobId);
+  return ev === undefined
+    ? undefined
+    : { recent: ev.recent.length, todos: ev.todos?.length ?? 0, lastProgressAt: ev.lastProgressAt, activeSinceProgress: ev.activeSinceProgress };
+};
 
 export const resolveOwnerThreadKey = (
   threadKey: string,
@@ -2176,35 +2292,6 @@ const cancelDescendants = (parentJobId: string, seen: Set<string>): number => {
   return n;
 };
 
-/**
- * **세션 턴이 끊길 때** 그 턴이 띄운 잡들을 같이 끊는다 (2026-08-19).
- *
- * ★잡↔잡 전파는 이미 있었다(`cancelDescendants`, 2026-07-31). 빠진 건 **세션 → 잡** 방향이다:
- *  `/stop` 은 `inflightTurns` 의 AbortController 만 abort 하고, 그 턴이 띄운 서브에이전트·
- *  매니저 잡은 **계속 돈다**. awaited 서브라면 부모는 이미 손을 뗐는데 자식은 자기 상한
- *  (SUBAGENT_TIMEOUT_MS)까지 살아서, 사용자는 "중단했습니다" 를 받고도 모델 호출이 계속 나간다.
- *  ★고아 잡은 조용하다 — 부모가 없으니 결과를 보고할 곳도 없고, 사용자는 끝난 줄 안다.
- *
- * 자식 판정은 `directChildJobs` 와 **같은 근거**(잡이 기록한 소환자 좌표 = `job.threadKey`)를
- * 쓴다. 세션 키는 접두사가 없으므로 정확히 일치하는 것만 고른다 — 다른 세션 잡을 건드리지
- * 않는다. 손자는 `cancelDescendants` 가 이어서 처리한다(같은 재귀 재사용, 중복 구현 0).
- *
- * @returns 끊은 잡 수(0 = 그 세션이 띄운 실행 중 잡 없음).
- */
-export const cancelJobsForThread = (threadKey: string): number => {
-  if (typeof threadKey !== "string" || threadKey === "") return 0;
-  let n = 0;
-  for (const job of [...jobs.values()]) {
-    if (job.threadKey !== threadKey || job.status !== "running") continue;
-    // 자손부터 — 부모를 먼저 죽이면 손자가 고아가 된다(cancelJob 과 같은 순서).
-    n += cancelDescendants(job.jobId, new Set([job.jobId]));
-    markCancelled(job.jobId, CASCADE_CANCEL_REASONS[1]);
-    const h = cancelHooks.get(job.jobId);
-    if (h !== undefined) h();
-    n += 1;
-  }
-  return n;
-};
 
 export const cancelJob = (jobId: string): boolean => {
   const job = jobs.get(jobId);
@@ -2387,9 +2474,13 @@ import { attachmentSenderFor, deliverOutbound, optionsPresenterFor } from "./out
 import type { ReplyOptions } from "../channels/types.js";
 import {
   canonicalSessionChannel,
+  isUserConversationThread,
   notifySessionThreadKey,
   telegramTargetFor,
 } from "../store/sessions.js";
+import { actionsSince, composeProgressNotice, isProgressDue, pushRecentAction, type ProgressAction } from "./job-progress.js";
+import { readProgressNoticeSettings } from "./settings.js";
+import { readLocale } from "./i18n.js";
 // 통지 문구는 판정과 같은 자리(tool-watchdog)에서 만든다 — 두 곳에 두면 한쪽만 늙는다.
 import { formatToolSlowNotice } from "./llm-runtime/tool-watchdog.js";
 

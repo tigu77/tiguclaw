@@ -96,6 +96,7 @@ import { isAuthRejected, isRateLimited } from "../rate-limit.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
 import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
+import { createDirectivesMcpServer } from "../capabilities/directives-mcp.js";
 import {
   createSkillInvokeMcpServer,
   discoverSkills,
@@ -806,6 +807,8 @@ export const runOpenAiCodex = async (
     createSessionToolsMcpServer(input.threadKey),
     "session-tools",
   );
+  // 확정 지침 쓰기(2026-10-13) — confirm_feedback. 등록은 아래에서 표를 거친다(메인만).
+  const directivesBridge = await adaptClaudeMcpServer(createDirectivesMcpServer(), "directives");
   // 프로젝트 레지스트리 (register/list/update/forget) — 양 어댑터 공통(#2). 진실은
   // 각 폴더 PROJECT.md, 이 도구는 파싱→얇은 store 인덱스 upsert(단방향, 코어 무참조).
   const projectBridge = await adaptClaudeMcpServer(
@@ -841,12 +844,13 @@ export const runOpenAiCodex = async (
     createMaintenanceMcpServer(),
     "maintenance",
   );
-  // 무조건 생성되는 bridge 8종 등록 (close 누락 방지).
+  // 무조건 생성되는 bridge 9종 등록 (close 누락 방지).
   allBridges.push(
     memoryBridge,
     fileOpsBridge,
     todoBridge,
     sessionToolsBridge,
+    directivesBridge,
     projectBridge,
     skillBridge,
     replyIntentBridge,
@@ -920,7 +924,7 @@ export const runOpenAiCodex = async (
   if (!toolsNone) {
     // ★여덟은 전부 `subagent` 라 **게이트가 오늘 아무것도 안 바꾼다** — codex 에만 달면
     //  «모델을 바꾸면 서브에이전트가 다른 권한을 갖는» 비대칭만 생긴다(원칙 #2). 등급이
-    //  갈리는 것만 게이트한다 — 지금은 `session-tools` 뿐이고, 아래에서 건다.
+    //  갈리는 것만 게이트한다 — 지금은 `session-tools`·`directives` 이고, 아래에서 건다.
     for (const b of [
       memoryBridge,
       fileOpsBridge,
@@ -939,6 +943,10 @@ export const runOpenAiCodex = async (
     //  보관 처리할 수 있었다. 크기가 아니라 **권한** 문제다. 세 어댑터 동일 게이트.
     if (reaches("session-tools", turnKind)) {
       await registerBridgeTools(sessionToolsBridge, toolBridgeMap, mcpTools);
+    }
+    // 확정 지침 쓰기 — 사용자가 확인한 것만 올라가므로 위임 턴엔 안 닿는다(세 어댑터 동일 게이트).
+    if (reaches("directives", turnKind)) {
+      await registerBridgeTools(directivesBridge, toolBridgeMap, mcpTools);
     }
 
     // send-file — 채널 전송 클로저가 있을 때만 등록 (claude 어댑터 조건부 주입과 parity).

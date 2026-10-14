@@ -17,6 +17,8 @@ import { dispatch } from "./dispatcher.js";
 import { DEFAULT_SESSION_ID } from "../../../src/core/threadkey.js";
 import { canonicalSessionChannel } from "../../../src/store/sessions.js";
 import { applyScheduleHistory } from "../../../src/store/thread-reset.js";
+import { enqueueThreadTurn } from "../../../src/core/worker-jobs.js";
+import { isUserCancelled } from "../../../src/core/steering.js";
 
 /**
  * 전달 실패 후 자동 재전송까지의 대기(2026-07-26). 채널 어댑터가 이미 transport 재시도를
@@ -56,6 +58,8 @@ export interface RunnerDeps {
 
 /** overlap skip 가드 — schedule id 별 in-flight 추적. 모듈 전역 (singleton 데몬). */
 const inFlight = new Set<number>();
+/** 줄에서 기다리는 사이 스케줄이 꺼지거나 지워졌다 — 발화하지 않는다. */
+const SKIPPED_IN_QUEUE = Symbol("skipped-in-queue");
 
 export const isInFlight = (id: number): boolean => inFlight.has(id);
 
@@ -259,10 +263,15 @@ export const runScheduleFiring = async (
       return;
     }
 
+    // ★이력 정책·발화 시각·모델 실행을 **스레드 줄 안에서 한 번에** 한다 (2026-10-14 적대 검토 P3).
+    //  줄은 같은 스레드의 앞 턴(완료 재주입·선택지 답)이 끝날 때까지 기다리게 한다(`external-turn.ts` — 동시에 돌던 사고).
+    //  그런데 정책을 줄 **밖**에서 먼저 적용하면, 앞 턴이 끝나며 이어가기(세션 해시)를 되살려 «매번 새로» 가 사라지고
+    //  발화 시각도 «줄에 선 시각» 이 된다 — 실측 재현. `/clear` 가 줄 안에 있는 것과 같은 이유다.
+    //  ★줄은 여기서 **한 번만** 선다 — 기본 실행기(`index.ts`)는 진행 중 등록만 한다(같은 스레드에 두 번 서면 교착).
     // ★이력 정책 (2026-09-26) — 발화 **직전**에 적용한다. 기본(null)은 종전대로 이어간다.
     //  매일 도는 스케줄이 이력을 계속 들고 가 첫 요청이 18만→29만 토큰으로 불었고, 하루 간격이라
     //  캐시도 못 탔다. 정책을 못 적용해도 발화는 한다(이력이 길 뿐 결과는 나간다).
-    {
+    const applyHistory = (): void => {
       const tk = `scheduler:${schedule.id}`;
       try {
         const applied = applyScheduleHistory(
@@ -289,25 +298,38 @@ export const runScheduleFiring = async (
           `[scheduler:${schedule.id}] 이력 정책 적용 실패 — 이어서 발화합니다: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
-    }
-    // 발화 시작 시각 — 대화가 남으면 발화 기록에 이 시각으로 적는다(«직전 N회» 경계가 이 실행을 통째로 품게).
-    const firedAt = Date.now();
+    };
+    let firedAt = Date.now();
     try {
-      const out = await deps.runClaude({
-        text: schedule.prompt,
-        threadKey: `scheduler:${schedule.id}`,
-        channel: "scheduler",
-        cwd: deps.cwd,
-        // 이 턴이 스케줄 발화 **그 자체**임을 싣는다 — 같은 세션의 완료 턴·선택지 답과 가르는 유일한 자리다.
-        scheduleRun: schedule.id,
-        // 매니저 통지 dest 주입 — 이 발화가 띄운 매니저가 스케줄의 실제 목적지(예 telegram/
-        // chatId)로 완료/실패를 통지하게 한다. channel="scheduler" 는 reacquireReply 가
-        // 모르는 채널이라(폴백 시 통지 미도달) generic dest 를 데이터로 흘려보낸다.
-        notifyDest: {
-          channel: schedule.destChannel,
-          target: schedule.destTarget,
-        },
+      const out = await enqueueThreadTurn(`scheduler:${schedule.id}`, async () => {
+        // ★줄에서 기다리는 사이 스케줄이 꺼지거나 지워지거나 목적지가 바뀔 수 있다 (2026-10-14 재검토 P2) — **줄 안에서 최신
+        //  행을 다시 읽는다**. 옛 행으로 돌면 끈 스케줄이 돌고, 바꾼 목적지가 아니라 옛 목적지로 간다(재전송의 09-14 규칙과 같은 병).
+        const latest = getSchedule(schedule.id);
+        if (latest === undefined || latest.enabled === false) return SKIPPED_IN_QUEUE;
+        Object.assign(schedule, { destChannel: latest.destChannel, destTarget: latest.destTarget, label: latest.label, prompt: latest.prompt });
+        applyHistory();
+        // 발화 시작 시각 — 대화가 남으면 발화 기록에 이 시각으로 적는다(«직전 N회» 경계가 이 실행을 통째로 품게).
+        firedAt = Date.now();
+        return deps.runClaude({
+          text: schedule.prompt,
+          threadKey: `scheduler:${schedule.id}`,
+          channel: "scheduler",
+          cwd: deps.cwd,
+          // 이 턴이 스케줄 발화 **그 자체**임을 싣는다 — 같은 세션의 완료 턴·선택지 답과 가르는 유일한 자리다.
+          scheduleRun: schedule.id,
+          // 매니저 통지 dest 주입 — 이 발화가 띄운 매니저가 스케줄의 실제 목적지(예 telegram/
+          // chatId)로 완료/실패를 통지하게 한다. channel="scheduler" 는 reacquireReply 가
+          // 모르는 채널이라(폴백 시 통지 미도달) generic dest 를 데이터로 흘려보낸다.
+          notifyDest: {
+            channel: schedule.destChannel,
+            target: schedule.destTarget,
+          },
+        });
       });
+      if (out === SKIPPED_IN_QUEUE) {
+        console.log(`[scheduler:${schedule.id}] '${schedule.label}' 줄에서 기다리는 사이 꺼지거나 지워짐 — 발화하지 않음`);
+        return;
+      }
       resultText = out.text;
       // ★대화가 남은 발화만 적는다 — 실패한 발화까지 세면 실제로 남는 대화가 N회보다 적어진다. 전달(dispatch) 실패와는
       //  무관하다(대화는 이미 남았다). 한계: Claude 는 실패한 발화도 SDK 기록에 남아 다음 턴에 색인될 수 있다 — 그때 창이
@@ -318,6 +340,13 @@ export const runScheduleFiring = async (
         }
       }
     } catch (e) {
+      // ★사용자가 `/stop` 으로 멈춘 건 실패가 아니다 (2026-10-14 재검토 P2) — 런타임·핸들러가 지키는 규칙을 실행기도 지킨다.
+      //  종전엔 «스케줄 실패» 로 기록돼 자가 진단이 «스케줄 '아침 뉴스' 실패 — user cancelled» 를 사용자에게 다시 보냈다.
+      //  기록(last_*)은 건드리지 않는다 — 겹침 건너뛰기와 같다(«이번엔 안 돌았다» 지 실패가 아니다).
+      if (isUserCancelled(e)) {
+        console.log(`[scheduler:${schedule.id}] '${schedule.label}' 사용자 중지(/stop) — 실패로 기록하지 않음`);
+        return;
+      }
       const reason = e instanceof Error ? e.message : String(e);
       // 영구 로그에 스케줄 맥락과 함께 남긴다(EventBus·DB last_error 외 사후 grep 용).
       console.error(

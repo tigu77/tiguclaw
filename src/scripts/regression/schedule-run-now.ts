@@ -11,6 +11,9 @@ import vm from "node:vm";
 import ts from "typescript";
 import { fileURLToPath } from "node:url";
 import * as inflight from "../../core/inflight-turns.js";
+import * as externalTurn from "../../core/external-turn.js";
+import * as workerJobs from "../../core/worker-jobs.js";
+import * as steering from "../../core/steering.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -46,6 +49,12 @@ export const check: RegressionCheck = {
         if (name.endsWith("/schedules.js")) return store;
         if (name.endsWith("/claude.js")) return { runClaude: model };
         if (name.endsWith("/inflight-turns.js")) return inflight;
+        // 스레드 줄 + 진행 중 등록(2026-10-14) — 실제 모듈. 그 안의 진행 중 등록은 위 `inflight` 와 같은 인스턴스다.
+        if (name.endsWith("/external-turn.js")) return externalTurn;
+        // 스케줄 실행기가 스레드 줄을 세운다(2026-10-14 P3) — 실제 줄.
+        if (name.endsWith("/worker-jobs.js")) return workerJobs;
+        // 사용자 중지 판정(2026-10-14) — 실제 모듈.
+        if (name.endsWith("/steering.js")) return steering;
         if (name.endsWith("/settings.js")) return { loadSchedulerRetryEnabled: () => false };
         if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
         if (name.endsWith("/store/sessions.js")) return { canonicalSessionChannel: (_tk: string, ch: string) => ch };

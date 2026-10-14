@@ -184,7 +184,13 @@ export const formatMemoryIndex = (
  * ★캡: 지침은 `DIRECTIVE_HARD_CAP`(50) + TTL 로 이미 바운드돼 있지만, 프롬프트에 싣는 쪽도
  *  독립 상한을 둔다 — 한 계층의 상한을 다른 계층이 믿지 않는다(오늘 여러 번 나온 부류).
  */
-const DIRECTIVE_INDEX_CAP_BYTES = 4096;
+export const DIRECTIVE_INDEX_CAP_BYTES = 4096;
+
+/**
+ * 확정 지침 한 줄이 프롬프트에 실리는 모양 — **여기 한 곳**이다. 쓰는 쪽(`confirm_feedback` 의 상한 판정)도
+ * 이 함수로 잰다: 싣는 모양과 재는 모양이 두 벌이면 «쓸 때는 들어간다 했는데 실을 때는 접히는» 틈이 생긴다.
+ */
+export const directivePromptLine = (d: { source: string; text: string }): string => `- [${d.source}] ${d.text.split("\n")[0]}`;
 
 export const formatSelfGrowthDirectives = (): string => {
   let body: string;
@@ -203,7 +209,7 @@ export const formatSelfGrowthDirectives = (): string => {
   // user 확정을 먼저(영구·사용자 의사) — auto 는 TTL 대상이라 뒤로.
   const userFirst = (a: (typeof directives)[number], b: (typeof directives)[number]): number =>
     a.source !== b.source ? (a.source === "user" ? -1 : 1) : 0;
-  const lineOf = (d: (typeof directives)[number]): string => `- [${d.source}] ${d.text.split("\n")[0]}`;
+  const lineOf = directivePromptLine;
   // ★상한에 닿으면 **최근에 다시 확인된 것**(updatedAt)을 남긴다 — 만든 순서로 고르면 재발로 계속 갱신되는 오래된 지침이
   //  먼저 빠졌다(2026-10-10 재검토). 고른 뒤 줄 순서는 **만든 순서**로 고정한다 — updatedAt 순서면 재발 갱신이 매번 줄을
   //  바꿔 안정 system 조각의 프리픽스 캐시가 깨진다(2026-10-09 재검토). 고르는 기준과 놓는 순서는 다른 질문이다.

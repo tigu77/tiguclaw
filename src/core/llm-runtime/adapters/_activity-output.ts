@@ -60,8 +60,10 @@ export function buildActivityOutput(
   text: string | undefined | null,
   isError?: boolean,
 ): ActivityOutput | undefined {
-  if (OUTPUT_EXCLUDED_TOOLS.has(toolName)) return undefined;
   if (typeof text !== "string" || text === "") return undefined;
+  // ★제외는 **성공 결과**의 잡음 때문이다 — 실패는 잡음이 아니다(2026-10-14 적대 검토). 종전엔 제외가 오류 표시까지 지워
+  //  Edit·Write 실패가 대시보드에도, 진행 알림의 «오류 N건» 에도 안 잡혔다(같은 실패 반복 = 대표적인 정체 형상인데).
+  if (OUTPUT_EXCLUDED_TOOLS.has(toolName) && !(isError === true || /^Error:\s/.test(text.trimStart()))) return undefined;
   try {
     // isError: 명시 플래그(claude tool_result.is_error·codex callTool throw) OR 내용 휴리스틱.
     // ★file-ops 도구는 에러를 throw/플래그 아니라 `Error: ...` *텍스트*로 반환(errText) → 세

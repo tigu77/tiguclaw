@@ -90,6 +90,15 @@ export const withExternalTurn = async <T>(
     unregisterExternalTurn(key);
   }
 };
+/**
+ * 이 대화에서 핸들러를 우회해 도는 턴(파일감시·스케줄) 중 **아직 안 끊긴 것** — `/stop` 이 끊을 대상(2026-10-14).
+ * 그 턴들이 스레드 줄에 서면서 같은 대화의 사용자 메시지가 뒤에서 기다리게 됐다 — 끊을 수단이 있어야 한다.
+ */
+export const activeExternalTurn = (key: string): InterruptedTurn | undefined => {
+  const t = externalTurns.get(key);
+  return t !== undefined && !t.ac.signal.aborted ? t : undefined;
+};
+
 /** 리포터가 합칠 때 쓴다(index.ts). 이 모듈 밖에서 직접 순회하지 않는다. */
 export const listExternalTurns = (): Array<[string, InterruptedTurn]> => [...externalTurns];
 

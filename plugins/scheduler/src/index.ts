@@ -325,6 +325,8 @@ const defaultRunClaude: RunnerDeps["runClaude"] = async (input) => {
   //  ★`signal` 을 **실제로 넘긴다** — 종료 경로가 `ac.abort()` 를 부르므로, 안 넘기면
   //   «끊었다» 가 거짓이 된다(등록만 하고 안 끊기는 것보다 나쁘다).
   const ac = new AbortController();
+  // ★줄은 실행기(`runner.ts`)가 이미 세웠다 — 이력 정책을 줄 안에서 적용하려고 거기 둔다(2026-10-14 P3). 여기서 또 서면 같은 스레드에
+  //  두 번 서서 교착이다. 여기선 진행 중 등록만.
   return withExternalTurn(
     input.threadKey,
     // 실행 채널은 scheduler지만 중단 통지는 설정된 배달 목적지로 보낸다.

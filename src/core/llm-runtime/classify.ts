@@ -24,6 +24,7 @@
  *    미정의면 일반 디폴트로 안전 degrade.
  */
 import { assertRuntimeModelAllowed, resolveTier, runRegionA, type ModelSpec } from "./index.js";
+import { beginSummaryUsage } from "./auxiliary-usage.js";
 
 /** 분류 결과 — 3진. 실패·타임아웃·파싱불가는 모두 "uncertain"(sentinel). */
 export type ContradictionVerdict = "yes" | "no" | "uncertain";
@@ -127,6 +128,45 @@ export const judgeContradiction = async (
   } catch {
     // 타임아웃·어댑터 실패·모델거부 등 — 모두 보수적 uncertain. 데몬·턴 안 죽음.
     return "uncertain";
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/**
+ * **오래 도는 매니저의 진행 요약** 1회 — `job-progress.ts` 가 주입받아 쓴다(2026-10-14).
+ * 판정 호출과 같은 경량 단발(internal·leanMemory·도구 0·싼 등급) — 다만 글을 쓰는 일이라 시한은 30초.
+ * 사용량은 그 잡의 «요약» 칸으로 남긴다(`llm.auxiliary_usage`, threadKey `worker:<jobId>` — 잡 장부가 그 키로 귀속한다).
+ * never-throw: 실패·시한 초과 → undefined(호출자가 기계 요약으로 대신 보낸다).
+ */
+export const summarizeJobProgress = async (prompt: string, ctx: { jobId: string }): Promise<string | undefined> => {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 30_000);
+  const finish = beginSummaryUsage(`worker:${ctx.jobId}`, "internal", "job-progress");
+  try {
+    const output = await runRegionA(
+      {
+        text: prompt,
+        threadKey: `job-progress:${ctx.jobId}`,
+        channel: "internal",
+        internal: true,
+        leanMemory: true,
+        toolPolicy: { mode: "none" },
+        abortSignal: ac.signal,
+      },
+      { specs: cheapInternalTierSpecs() },
+    );
+    const u = output.usage;
+    finish(true, u === undefined ? undefined : {
+      inputTokens: u.inputTokensTotal ?? u.inputTokens,
+      outputTokens: u.outputTokensTotal ?? u.outputTokens,
+      ...(u.cachedTokensTotal ?? u.cachedTokens) !== undefined ? { cachedTokens: (u.cachedTokensTotal ?? u.cachedTokens) as number } : {},
+      ...(u.requests !== undefined ? { requests: u.requests } : {}),
+    });
+    return output.text;
+  } catch {
+    finish(false);
+    return undefined;
   } finally {
     clearTimeout(timer);
   }

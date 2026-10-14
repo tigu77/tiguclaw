@@ -77,6 +77,7 @@ import { composeWorkerReport, harvestFailureNote } from "../../worker-report.js"
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 import { findDuplicateSpawn, rememberSpawn, spawnKey } from "../../spawn-dedupe.js";
 import { onDemand } from "../tool-load-policy.js";
+import { registerProgressSummarizer } from "../../job-progress.js";
 
 // ─── 매니저 실행 본체 (WorkerRunner — architect §9-a) ───────────────────────────
 // runRegionA 로 메인 동급 full capability. await 하지 않고 fire-and-forget — runner 는
@@ -532,6 +533,8 @@ export const runWorkerJob = (
 // 모듈 import 시 self-register — daemon 이 startWorkerJob 에서 이 runner 를 발사.
 // (index.ts 가 부팅 시 본 모듈을 import 하면 등록 — region/daemon 경계 명확.)
 registerWorkerRunner(runWorkerJob);
+// 진행 알림 요약기(2026-10-14) — 같은 경계로 주입한다. 동적 import 는 위 runner 와 같은 이유(region 순환 회피).
+registerProgressSummarizer(async (prompt, ctx) => (await import("../classify.js")).summarizeJobProgress(prompt, ctx));
 
 // ─── 발사 도구 MCP 서버 (architect §2 — spawn_agent 팩토리 동형) ──────────────
 // run_in_background: 비차단 발사(즉시 jobId). list_workers: 상태 조회(MVP 포함, §6·§12-2).

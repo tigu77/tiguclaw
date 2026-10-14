@@ -81,8 +81,12 @@ export const check: RegressionCheck = {
     const clearBoundary = getContextBoundary(ch, tkClear);
     const index = readFileSync(new URL("../../index.ts", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, "");
     const runner = readFileSync(new URL("../../../plugins/scheduler/src/runner.ts", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, "");
+    // ★정책 적용·실행은 **스레드 줄 안에서** 한다(2026-10-14 적대 검토 P3) — 줄 → applyHistory() → deps.runClaude 순서.
+    //  동작(줄 앞 턴이 이어가기를 되살려도 끊겨 있나)은 `external-turn-serializes` ⑤ 가 실제 실행기로 잰다.
     const applyAt = runner.indexOf("applyScheduleHistory(");
-    const runAt = runner.indexOf("await deps.runClaude({", applyAt < 0 ? 0 : applyAt);
+    const queueAt = runner.indexOf("enqueueThreadTurn(", applyAt < 0 ? 0 : applyAt);
+    const callApplyAt = runner.indexOf("applyHistory();", queueAt < 0 ? 0 : queueAt);
+    const runAt = callApplyAt < 0 ? -1 : runner.indexOf("deps.runClaude({", callApplyAt);
     const clearBlock = /if \(trimmed === "\/clear"\) \{[\s\S]*?\n  \}/.exec(index)?.[0] ?? "";
 
     // ⑥ 경계는 앞으로만(전체 검토 2026-09-28) — 사용자가 잘라 둔(/clear) 뒤 «직전 N회» 가 그보다 앞을 가리켜도 되돌리지 않는다.
@@ -214,7 +218,7 @@ export const check: RegressionCheck = {
       assert(
         "⑥ 스케줄 실행기가 **발화 직전**(runClaude 앞)에 정책을 적용하고 keepRuns 를 **그때 새로 읽으며**, 발화 기록을 볼 스케줄 id 를 넘긴다",
         applyAt > 0 && runAt > applyAt && /\(getSchedule\(schedule\.id\) \?\? schedule\)\.keepRuns,\s*Date\.now\(\),\s*schedule\.id,?\s*\)/.test(runner.slice(applyAt, runAt)),
-        `적용=${applyAt} 발화=${runAt}`,
+        `적용=${applyAt} 줄=${queueAt} 줄안적용=${callApplyAt} 발화=${runAt}`,
       ),
       assert(
         "⑤ `/clear` 는 스케줄과 같은 초기화 함수(resetThreadContext)를 지난다",

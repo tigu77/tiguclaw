@@ -2,8 +2,9 @@
  * self-growth V4 — SELF_GROWTH.md 확정 지침 층 (파일 관리 헬퍼).
  *
  * 위치: `<TIGUCLAW_HOME>/SELF_GROWTH.md` (getPaths().selfGrowthMd) — AGENT.md·SYSTEM.md
- *  와 동급 홈 markdown. 코어는 이 파일을 모른다 — self-growth 플러그인이 *데이터로만*
- *  쓰고, 비서는 `growth_directive_pointer` 메모 안내로 작업 시작 시 Read 한다(단방향).
+ *  와 동급 홈 markdown. 매 턴 프롬프트에 실린다(`formatSelfGrowthDirectives`, 08-02~).
+ *  쓰는 쪽은 둘 — self-growth 플러그인의 자율 교훈(auto)과 코어 도구 `confirm_feedback` 의
+ *  사용자 확정분(user, `capabilities/directives-mcp.ts`, 2026-10-13).
  *
  * 설계 (임무 §1):
  *  - **원자적 쓰기**: temp 파일(`SELF_GROWTH.md.tmp-<pid>-<n>`) write → 같은 dir 로 rename.
@@ -35,10 +36,10 @@ export const DIRECTIVE_TTL_DAYS = 120;
 /** 파일 헤더 — 비서가 1 Read 로 맥락을 잡게. */
 const FILE_HEADER = `# SELF_GROWTH.md — 확정 지침 층
 
-이 파일은 self-growth 가 자율(저위험) 또는 사용자 승격으로 확정한 *작업 지침*을 모은
-운영 메모리입니다. 작업을 시작할 때 이 파일을 읽고 해당 상황의 지침을 적용하세요.
+이 파일은 사용자 반응에서 배워 사용자가 확인한 규칙과, self-growth 가 자율(저위험)로 확정한
+*작업 지침*을 모은 운영 메모리입니다.
 
-- 코어(SYSTEM.md·AGENT.md·sysprompt)는 이 파일을 모릅니다 — self-growth 가 데이터로만 관리.
+- 확정 지침은 매 턴 프롬프트에 실립니다(사용자 확정분 먼저, 상한 있음). 쓰기는 \`confirm_feedback\` 도구로만.
 - 각 지침은 안정 키(상황 slug)로 식별되며 같은 상황 재확정 시 덮어쓰기됩니다(중복 누적 없음).
 - 자율 확정은 *저위험* 한정. 사용자 승격분은 \`source: user\` 로 표시됩니다.
 
@@ -68,8 +69,9 @@ export const ensureSelfGrowthFile = async (): Promise<void> => {
 };
 
 // 각 지침 블록 구분자 (machine-parse 가능 + 사람이 읽기 좋은 HTML 주석 마커).
-const BLOCK_BEGIN = "<!-- directive:";
-const BLOCK_END = "<!-- /directive -->";
+// 본문에 이 둘이 들어가면 파일 전체가 읽히지 않는다 — 쓰는 쪽(`confirm_feedback`)이 같은 값으로 거절한다.
+export const BLOCK_BEGIN = "<!-- directive:";
+export const BLOCK_END = "<!-- /directive -->";
 
 // ─── 데이터 모델 ──────────────────────────────────────────────────────────────
 
@@ -321,7 +323,12 @@ export interface UpsertDirectiveInput {
 /**
  * 확정 지침 upsert — 같은 key 있으면 본문·source·group 덮어쓰기(append 아님) + updatedAt
  * 갱신, 없으면 추가. 쓰기 후 cap·TTL 적용. 직렬화 + never-throw.
- * @returns 성공 시 최종 Directive, 실패 시 null.
+ *
+ * ★**사용자 확정분은 `source: "user"` 쓰기만 바꾼다** (2026-10-13 아스트라 검토). 자동 쪽은 읽고 → 판단(LLM, 수 초) → 쓰기라
+ *  그 사이에 사용자가 같은 key 를 고치면, 늦게 도착한 자동 쓰기가 본문을 옛 것으로 되돌리거나 출처를 `auto` 로 내렸다.
+ *  판정을 **잠금 안의 최신 항목**으로 하므로 언제 읽어 뒀든 닫힌다. 이때는 아무것도 안 쓰고 **기존 항목을 그대로** 돌려준다 —
+ *  호출자는 `result.source !== 요청한 source` 로 «안 바뀌었다» 를 안다(새로 적용했다고 알리지 않게).
+ * @returns 성공 시 최종 Directive(보호돼 안 바뀌었으면 기존 항목), 실패 시 null.
  */
 export const upsertDirective = (
   input: UpsertDirectiveInput,
@@ -334,11 +341,11 @@ export const upsertDirective = (
       let result: Directive;
       if (idx >= 0) {
         const prev = directives[idx]!;
+        if (prev.source === "user" && input.source !== "user") return { ...prev };
         result = {
           key: input.key,
           text: input.text,
-          // user 승격은 auto 로 강등 금지 — 한번 user 면 user 유지(명시 확정 보호).
-          source: input.source ?? (prev.source === "user" ? "user" : "auto"),
+          source: input.source ?? "auto",
           group: input.group ?? prev.group,
           createdAt: prev.createdAt,
           updatedAt: now,
@@ -362,6 +369,37 @@ export const upsertDirective = (
       const reason = e instanceof Error ? e.message : String(e);
       console.error(`self-growth-md: upsertDirective failed: ${reason}`);
       return null;
+    }
+  });
+
+/**
+ * 재발 갱신 — **본문·출처는 건드리지 않고** 만료 시계(updatedAt)만 다시 건다. 잠금 안에서 최신 항목을 찾는다.
+ * ★읽어 둔 본문을 `upsertDirective` 로 되쓰던 것을 대신한다 — 그 사이 사용자가 고친 본문이 옛 것으로 돌아갔다(아스트라 검토).
+ * ★없으면 **만들지 않는다**(null) — 그 사이 지워진 지침을 되살리지 않는다. never-throw.
+ */
+export const touchDirective = (key: string): Promise<Directive | null> =>
+  serialize(async () => {
+    try {
+      const directives = await readDirectivesRaw(true);
+      const d = directives.find((x) => x.key === key);
+      if (d === undefined) return null;
+      d.updatedAt = Date.now();
+      await atomicWrite(directives);
+      return { ...d };
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`self-growth-md: touchDirective failed: ${reason}`);
+      return null;
+    }
+  });
+
+/** 전체 목록 (읽기 실패면 빈 배열). never-throw. */
+export const listDirectives = (): Promise<Directive[]> =>
+  serialize(async () => {
+    try {
+      return await readDirectivesRaw();
+    } catch {
+      return [];
     }
   });
 

@@ -189,7 +189,7 @@ const main = async (): Promise<void> => {
       getEventBus().publish({
         type: "llm.activity",
         ts: Date.now(),
-        payload: { threadKey: childKey, kind: "tool", phase: "start", label: "Bash" },
+        payload: { threadKey: childKey, kind: "tool", label: "Bash" }, // 시작 = phase 없음(어댑터 실제 모양)
       } as never);
       getEventBus().publish({
         type: "llm.activity",
@@ -204,7 +204,7 @@ const main = async (): Promise<void> => {
     getEventBus().publish({
       type: "llm.activity",
       ts: Date.now(),
-      payload: { threadKey: childKey, kind: "tool", phase: "start", label: "Bash" },
+      payload: { threadKey: childKey, kind: "tool", label: "Bash" }, // 시작 = phase 없음(어댑터 실제 모양)
     } as never);
     await sleep(interval + 60);
   } else {

@@ -100,6 +100,12 @@ export const REACH = {
    * ★아무 글도 위임에게 이 셋을 시키지 않는다(skills·agents·SYSTEM.md·sysprompt grep 0).
    */
   "session-tools": "main",
+  /**
+   * `confirm_feedback` — 사용자가 확인한 행동 규칙을 확정 지침(매 턴 실림)에 올린다(2026-10-13).
+   * ★**메인만** — 올라가는 건 «사용자가 확인한 것» 뿐인데, 위임받아 도는 턴엔 확인해 줄 사용자가 없다.
+   *  거기서 쓰면 사용자 확인 없이 **모든 대화**에 실리는 규칙이 생긴다.
+   */
+  directives: "main",
   "send-file": "subagent",
   "prompt-options": "subagent",
   /**

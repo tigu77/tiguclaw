@@ -64,16 +64,19 @@ export const check: RegressionCheck = {
     );
 
     // ③ **표를 안 거치는 등록이 없다** — 이게 재발 방지의 본체다.
+    // ★«항상 켜지는 목록이 없다» 는 단언은 뺐다 — `subagent` 능력은 게이트가 오늘 아무것도 안
+    //  바꾸고, 한 어댑터에만 달면 **비대칭**만 생긴다. 재는 것은 «등급이 갈리는 능력에 게이트가 있나» 다.
+    // ★그 능력 목록은 **표에서 뽑는다**(2026-10-13) — 종전엔 `session-tools` 하나를 손으로 적어,
+    //  메인 전용 능력을 새로 더해도(`directives`) 이 검사가 그걸 몰랐다.
+    const gated = (Object.keys(REACH) as (keyof typeof REACH)[]).filter((n) => REACH[n] !== "subagent");
     for (const f of ADAPTERS) {
       const src = stripComments(readSourceSync(f));
-      // ★«항상 켜지는 목록이 없다» 는 단언은 뺐다 — 나머지 일곱은 전부 `subagent` 라
-      //  게이트가 오늘 아무것도 안 바꾸고, 한 어댑터에만 달면 **비대칭**만 생긴다.
-      //  재는 것은 «등급이 갈리는 능력에 게이트가 있나» 다.
+      const ungated = gated.filter((n) => !src.includes(`reaches("${n}"`));
       out.push(
         assert(
-          `★${f.split("/").pop()}: \`session-tools\` 등록이 \`reaches\` 를 거친다`,
-          /reaches\("session-tools"/.test(src),
-          /reaches\("session-tools"/.test(src) ? "게이트 있음" : "★무조건 등록",
+          `★${f.split("/").pop()}: 등급이 갈리는 능력(${String(gated.length)}종)의 등록이 전부 \`reaches\` 를 거친다`,
+          ungated.length === 0,
+          ungated.length === 0 ? `게이트 ${String(gated.length)}종` : `★무조건 등록: ${ungated.join(", ")}`,
         ),
       );
     }

@@ -21,6 +21,7 @@
  * ★종전엔 dispatcher 를 아무도 안 불렀다(«V1 = 발화 자체가 의도») (2026-10-09 사용자 결정으로 고침). 그런데 `add_watch` 는
  *  dest_channel 을 필수로 받고 README 예시도 «요약해서 cli/텔레그램으로» 였다 — 사용자는 아무것도 못 받는데 기록은 ok 였다.
  */
+import { isUserCancelled } from "../../../src/core/steering.js";
 import path from "node:path";
 import { type FSWatcher, watch } from "chokidar";
 import type { EventBus } from "../../../src/core/eventbus.js";
@@ -304,6 +305,11 @@ const fireWatch = async (
       },
     });
   } catch (e) {
+    // 사용자가 `/stop` 으로 멈춘 건 실패가 아니다(2026-10-14 재검토 P2) — 스케줄 실행기와 같은 규칙.
+    if (isUserCancelled(e)) {
+      console.log(`[file-watch:${row.id}] '${row.label}' 사용자 중지(/stop) — 실패로 기록하지 않음`);
+      return;
+    }
     const reason = e instanceof Error ? e.message : String(e);
     deps.recordFiring(row.id, {
       ok: false,

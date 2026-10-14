@@ -363,15 +363,20 @@ export const reinjectUnlessStopped = <M extends IncomingMessage>(
  * ★끼워 넣은 메시지는 처리하지 않고 버린다 — 조용히 버리지 않는다(진짜 지시가 섞였을 수 있다). claude 는 SDK 가 그중 무엇을
  *  이미 소화했는지 우리가 모르므로 «처리하지 못한 것은» 으로 말한다. 문장은 카탈로그(`srv.stop.*`)에 있다.
  */
-export const stopReplyText = (stoppedJobs: number, steeredMessages: number): string => {
+export const stopReplyText = (continuingJobs: number, steeredMessages: number): string => {
   // 문장 단위로 고르고 잇는다 — 단수/복수는 키가 갈린다(카탈로그에 로직 없음).
-  const first =
-    stoppedJobs > 0
-      ? translate(stoppedJobs === 1 ? "srv.stop.stoppedWithJobs.one" : "srv.stop.stoppedWithJobs.other", { count: stoppedJobs })
-      : translate("srv.stop.stopped");
+  // ★`/stop` 은 턴만 끊는다(2026-10-14) — 백그라운드 작업은 계속 돈다는 것을 **말한다**(조용한 동작은 «안 멈췄다» 로 읽힌다).
+  const continuing =
+    continuingJobs > 0
+      ? [translate(continuingJobs === 1 ? "srv.stop.jobsContinue.one" : "srv.stop.jobsContinue.other", { count: continuingJobs })]
+      : [];
   const dropped =
     steeredMessages > 0
       ? [translate(steeredMessages === 1 ? "srv.stop.dropped.one" : "srv.stop.dropped.other", { count: steeredMessages })]
       : [];
-  return [first, ...dropped, translate("srv.stop.next")].join(" ");
+  return [translate("srv.stop.stopped"), ...continuing, ...dropped, translate("srv.stop.next")].join(" ");
 };
+
+/** 끊을 턴은 없는데 백그라운드 작업은 돌고 있을 때 — «진행 중 없음» 은 거짓이다. */
+export const stopReplyIdleWithJobs = (continuingJobs: number): string =>
+  translate(continuingJobs === 1 ? "srv.stop.idleJobs.one" : "srv.stop.idleJobs.other", { count: continuingJobs });

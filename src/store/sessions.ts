@@ -1228,6 +1228,13 @@ export const INTERNAL_THREAD_PREFIXES = [
 export const SUBAGENT_THREAD_MARKER = "::sub::";
 
 /**
+ * 이 스레드가 **사람과의 대화**인가 — 위 SQL 조건(사용자에게 보이는 세션)과 **같은 상수**에서 파생한다(판정 두 벌 금지).
+ * 내부 파생(worker·agent·endpoint·gateway·scheduler)과 서브에이전트 파생이 아니면 참.
+ */
+export const isUserConversationThread = (threadKey: string): boolean =>
+  !INTERNAL_THREAD_PREFIXES.some((p) => threadKey.startsWith(p)) && !threadKey.includes(SUBAGENT_THREAD_MARKER);
+
+/**
  * **사용자에게 보이는 세션**의 SQL 조건 — 대시보드 목록·텔레그램 `/sessions`·대화 검색이
  * 전부 이걸 쓴다.
  *

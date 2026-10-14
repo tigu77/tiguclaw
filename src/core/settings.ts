@@ -1168,6 +1168,58 @@ export const readMemoryIndexCapBytes = (fallback: number, cwd?: string): number 
   return fallback;
 };
 
+/**
+ * **오래 도는 매니저의 진행 알림** 설정 — `jobs.progressNotice = { enabled, intervalMinutes }` (2026-10-14 정태님:
+ * *«시간은 변경 가능하고 켜고 끌 수도 있어야지»*). 설계 `docs/decisions/2026-10-14-job-progress-notice.md`.
+ *
+ * 기본: 켜짐 · 60분. 간격은 **10분~24시간**(분). 범위 밖·잘못된 값은 무시하고 기본값 — 오타 하나로 알림이 분 단위로 쏟아지거나
+ * 영영 안 오지 않게. 점검 틱마다 새로 읽으므로 **재시작 없이** 반영된다.
+ */
+export const PROGRESS_NOTICE_DEFAULT_MINUTES = 60;
+export const PROGRESS_NOTICE_MIN_MINUTES = 10;
+export const PROGRESS_NOTICE_MAX_MINUTES = 24 * 60;
+
+export const isProgressIntervalMinutes = (v: unknown): v is number =>
+  typeof v === "number" && Number.isInteger(v) && v >= PROGRESS_NOTICE_MIN_MINUTES && v <= PROGRESS_NOTICE_MAX_MINUTES;
+
+export const readProgressNoticeSettings = (cwd?: string): { enabled: boolean; intervalMinutes: number } => {
+  let enabled: boolean | undefined;
+  let intervalMinutes: number | undefined;
+  try {
+    for (const layer of loadSettingsLayers(cwd)) {
+      const j = (layer as { jobs?: unknown }).jobs;
+      if (typeof j !== "object" || j === null) continue;
+      const pn = (j as { progressNotice?: unknown }).progressNotice;
+      if (typeof pn !== "object" || pn === null) continue;
+      const e = (pn as { enabled?: unknown }).enabled;
+      if (enabled === undefined && typeof e === "boolean") enabled = e;
+      const m = (pn as { intervalMinutes?: unknown }).intervalMinutes;
+      if (intervalMinutes === undefined && isProgressIntervalMinutes(m)) intervalMinutes = m;
+    }
+  } catch {
+    /* 읽기·파싱 실패 = 없음(never throw) */
+  }
+  return { enabled: enabled ?? true, intervalMinutes: intervalMinutes ?? PROGRESS_NOTICE_DEFAULT_MINUTES };
+};
+
+/** 진행 알림 설정 쓰기 — `jobs.progressNotice` 의 **준 키만** 병합 수정(다른 키 보존). 간격 판정은 `isProgressIntervalMinutes` 한 곳. */
+export const setProgressNoticeSettings = (patch: { enabled?: boolean; intervalMinutes?: number }): void => {
+  if (patch.intervalMinutes !== undefined && !isProgressIntervalMinutes(patch.intervalMinutes)) {
+    throw new Error(`intervalMinutes 는 ${String(PROGRESS_NOTICE_MIN_MINUTES)}~${String(PROGRESS_NOTICE_MAX_MINUTES)} 사이 정수여야 합니다.`);
+  }
+  const file = getPaths().settings;
+  const root = readSettingsRootForWrite(file);
+  const obj = (v: unknown): Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const jobs = obj(root.jobs);
+  const pn = obj(jobs.progressNotice);
+  if (patch.enabled !== undefined) pn.enabled = patch.enabled;
+  if (patch.intervalMinutes !== undefined) pn.intervalMinutes = patch.intervalMinutes;
+  jobs.progressNotice = pn;
+  root.jobs = jobs;
+  writeSettingsRootAtomic(file, root);
+};
+
 export const readEgressChannels = (cwd?: string): string[] => {
   try {
     for (const layer of loadSettingsLayers(cwd)) {

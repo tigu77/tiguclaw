@@ -172,7 +172,9 @@ export const check: RegressionCheck = {
             const src2 = read(full.replace(`${REPO}/`, ""));
             if (!/from\s+["'][^"']*core\/claude\.js["']/.test(src2)) continue;
             scanned += 1;
-            if (!/withExternalTurn\s*\(/.test(src2)) offenders.push(full.replace(`${REPO}/`, ""));
+            // `runExternalTurn`(core/external-turn.ts, 2026-10-14)은 줄에 선 뒤 `withExternalTurn` 으로 등록한다 — 등록 자체는
+            //  `external-turn-serializes` ③이 동작으로 잰다.
+            if (!/(withExternalTurn|runExternalTurn)\s*\(/.test(src2)) offenders.push(full.replace(`${REPO}/`, ""));
           }
         }
       };

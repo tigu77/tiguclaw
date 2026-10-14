@@ -170,7 +170,6 @@ import {
   listJobs,
   getJobActivity,
   STEERED_TURN_RESULT,
-  cancelJobsForThread,
   threadHasQueuedTurn,
   failureKind,
 } from "./core/worker-jobs.js";
@@ -187,6 +186,7 @@ import { deliverOutbound } from "./core/outbound.js";
 import { withReplyQuote } from "./core/reply-quote.js";
 import {
   closeWhenStopped,
+  stopReplyIdleWithJobs,
   stopReplyText,
   stoppedByUser,
   toSteeringInput,
@@ -200,6 +200,7 @@ import {
 import {
   setInflightTurnReporter,
   notifyInterruptedTurns,
+  activeExternalTurn,
   listExternalTurns,
   DAEMON_RESTART_INTERRUPTED,
 } from "./core/inflight-turns.js";
@@ -1610,6 +1611,9 @@ bus.subscribe((event) => {
 //    /clear·/model 등은 큐로) → steering 대상 아님.
 //  - 합성(synthetic) turn(매니저 완료 재주입 등)은 사용자 메시지가 아니고 자체 프롬프트를 turn 으로
 //    처리해야 하므로 제외(steering 으로 새면 완료 통지 유실) — publishInboundEcho 스킵 대상과 정합.
+/** 이 대화가 띄워 아직 도는 백그라운드 작업 수 — `/stop` 이 끊지 않고 알린다. */
+const continuingJobs = (threadKey: string): number => listJobs({ runningOnly: true, ownerThreadKey: threadKey }).length;
+
 const steerable = (msg: IncomingMessage): boolean =>
   msg.synthetic !== true && !msg.text.trim().startsWith("/");
 
@@ -1724,20 +1728,28 @@ const queueHandler: MessageHandler = (msg) => {
       const entry = inflightTurns.get(msg.threadKey);
       if (entry !== undefined && !entry.ac.signal.aborted) {
         entry.ac.abort(new UserCancelledError());
-        // ★그 턴이 띄운 잡도 같이 끊는다 (2026-08-19). 종전엔 턴의 AbortController 만
-        //  abort 해서, 서브에이전트·매니저 잡은 **계속 돌았다** — 사용자는 "중단했습니다" 를
-        //  받는데 모델 호출은 자기 상한(WORKER_TIMEOUT_MS)까지 이어진다. 잡↔잡 전파는 이미 있었고
-        //  (cancelDescendants) **세션 → 잡** 방향만 비어 있었다.
-        //  ★몇 개를 끊었는지 말한다 — 조용한 조치는 사용자가 확인할 방법이 없다.
-        //  ★명령(`/compact`)을 멈출 땐 끊지 않는다 — 앞 턴이 띄워 둔 매니저 잡은 그 명령과 무관하다.
-        const stopped = entry.command === true ? 0 : cancelJobsForThread(msg.threadKey);
+        // ★**턴만 끊는다 — 백그라운드 작업(매니저·서브에이전트)은 계속 돈다** (2026-10-14 정태님: «/stop 이 비서 턴만 끊는 게 맞는
+        //  것 같아»). 2026-08-19 에는 «중단했습니다» 를 받았는데 작업이 계속 돌아 헷갈린다는 이유로 그 대화의 잡까지 끊었다.
+        //  그 혼란은 **말해서** 푼다 — 계속 도는 작업이 몇 개인지 답에 싣는다. 끊으려면 작업을 지목한다(카드 중지·«그 작업 멈춰»).
+        //  ★서브에이전트는 2026-09-03 부터 항상 비동기라 턴에 묶인 하위 작업이 따로 없다(Claude SDK 내장 Task 만 턴과 함께 멈춘다).
         const runs = await stopProjectRuns(msg.threadKey);
-        const text = stopReplyText(stopped, entry.steered ?? 0);
+        const text = stopReplyText(continuingJobs(msg.threadKey), entry.steered ?? 0);
+        await replyCommand(msg, runs > 0 ? `${text}\n${translate("srv.project.runsStopped", { n: runs })}` : text).catch(() => {});
+      } else if (activeExternalTurn(msg.threadKey) !== undefined) {
+        // ★핸들러를 우회한 턴(파일감시·스케줄)도 이 대화의 진행 중 턴이다 (2026-10-14 적대 검토 P2). 그 턴들이 스레드 줄에 서면서
+        //  같은 대화의 사용자 메시지가 그 뒤에서 기다리게 됐는데, `/stop` 은 핸들러 턴만 봐서 «진행 중 없음» 이라 답했다 — 막힘을
+        //  풀 수단이 없었다. 등록된 컨트롤러로 끊는다(종료 통지가 쓰는 바로 그 신호). 작업은 위와 같이 안 끊는다.
+        activeExternalTurn(msg.threadKey)?.ac.abort(new UserCancelledError());
+        const runs = await stopProjectRuns(msg.threadKey);
+        const text = stopReplyText(continuingJobs(msg.threadKey), 0);
         await replyCommand(msg, runs > 0 ? `${text}\n${translate("srv.project.runsStopped", { n: runs })}` : text).catch(() => {});
       } else {
         // 비서 턴은 없어도 이 대화에서 띄운 실행형 커맨드(`run:`)가 돌고 있을 수 있다 — 그것도 `/stop` 의 대상이다.
+        //  계속 도는 백그라운드 작업이 있으면 «진행 중 없음» 대신 그 사실을 말한다(턴이 없을 뿐 일은 돌고 있다).
         const runs = await stopProjectRuns(msg.threadKey);
-        await replyCommand(msg, runs > 0 ? translate("srv.project.runsStopped", { n: runs }) : translate("srv.stop.idle")).catch(() => {});
+        const jobsLeft = continuingJobs(msg.threadKey);
+        const idle = jobsLeft > 0 ? stopReplyIdleWithJobs(jobsLeft) : translate("srv.stop.idle");
+        await replyCommand(msg, runs > 0 ? translate("srv.project.runsStopped", { n: runs }) : idle).catch(() => {});
       }
     })();
     return Promise.resolve();

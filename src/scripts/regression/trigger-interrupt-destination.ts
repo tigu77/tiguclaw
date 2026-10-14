@@ -5,6 +5,9 @@ import vm from "node:vm";
 import ts from "typescript";
 import { fileURLToPath } from "node:url";
 import * as inflight from "../../core/inflight-turns.js";
+import * as externalTurn from "../../core/external-turn.js";
+import * as workerJobs from "../../core/worker-jobs.js";
+import * as steering from "../../core/steering.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -52,6 +55,12 @@ export const check: RegressionCheck = {
             if (name.endsWith("/schedules.js") || name.endsWith("/watches.js")) return store;
             if (name.endsWith("/claude.js")) return { runClaude: model };
             if (name.endsWith("/inflight-turns.js")) return inflight;
+        // 스레드 줄 + 진행 중 등록(2026-10-14) — 실제 모듈. 그 안의 진행 중 등록은 위 `inflight` 와 같은 인스턴스다.
+        if (name.endsWith("/external-turn.js")) return externalTurn;
+        // 스케줄 실행기가 스레드 줄을 세운다(2026-10-14 P3) — 실제 줄.
+        if (name.endsWith("/worker-jobs.js")) return workerJobs;
+        // 사용자 중지 판정(2026-10-14) — 실제 모듈.
+        if (name.endsWith("/steering.js")) return steering;
             if (name.endsWith("/settings.js")) return { loadSchedulerRetryEnabled: () => false };
             if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
             // 스케줄 이력 정책(2026-09-26) — 이 검사의 행은 keepRuns 가 없어 아무것도 안 한다.
@@ -75,6 +84,8 @@ export const check: RegressionCheck = {
           await plugin.startTrigger(bus, { cwd: "/fixture" });
           if (!fire) throw new Error(`${kind} 발화 콜백 미등록`);
           fire();
+          // 스레드 줄에 선 뒤에야 진행 중으로 등록된다(2026-10-14 `external-turn.ts`) — 한 틈 기다린다.
+          await new Promise<void>((resolve) => setImmediate(resolve));
           const entry = inflight.listExternalTurns().find(([k]) => k === key)?.[1];
           out.push(assert(`${kind}/${mode}: 실제 기본 실행과 레지스트리 연결`, !!entry && modelInput?.channel === kind && modelInput?.threadKey === key && modelInput?.abortSignal === entry.ac.signal, { entry: !!entry, channel: modelInput?.channel }));
           if (!entry) continue;

@@ -73,6 +73,7 @@ import { createOpenAiAgent } from "./_openai-agent.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
 import { createTodoMcpServer } from "../capabilities/todo-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
+import { createDirectivesMcpServer } from "../capabilities/directives-mcp.js";
 import {
   createSkillInvokeMcpServer,
   discoverSkills,
@@ -579,6 +580,10 @@ export const runOpenAi = async (
                 "session-tools",
               ),
             ]
+          : []),
+        // 확정 지침 쓰기(2026-10-13, claude/codex 와 parity) — 메인만(표가 정한다).
+        ...(reaches("directives", turnKindOf(input))
+          ? [await adaptClaudeMcpServer(createDirectivesMcpServer(), "directives")]
           : []),
         await adaptClaudeMcpServer(createProjectRegistryMcpServer(input.threadKey, discoveryCwd), "projects"),
         // 런타임 유지보수 detect (2026-07-12, P1) — maintenance_status. 읽기전용·저위험 =

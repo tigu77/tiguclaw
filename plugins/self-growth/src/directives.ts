@@ -6,14 +6,13 @@ import {
 import { getPaths } from "../../../src/core/paths.js";
 import {
   upsertDirective,
-  type DirectiveSource,
 } from "../../../src/store/self-growth-md.js";
 import {
   FAILURE_DIRECTIVE_GROUP,
   LEGACY_LESSON_PREFIX,
 } from "./constants.js";
 
-// ─── V4 — 확정 지침 층 포인터·마이그레이션·사람 승격 ──────────────────────────
+// ─── V4 — 확정 지침 층 포인터·마이그레이션 ──────────────────────────
 
 /**
  * V4 1회 마이그레이션 — V3 가 박아둔 `growth_failure_lesson_*` reference 메모를
@@ -60,27 +59,3 @@ export const migrateLegacyLessons = async (): Promise<number> => {
   }
   return migrated;
 };
-
-/**
- * V4 사람 승격 경로 (임무 §4) — 사용자가 확정/직접 교정한 지침을 SELF_GROWTH.md 에 올린다.
- * 자율 경로와 *같은 upsert 재사용* (동일 키 덮어쓰기·캡·TTL). 단 source 기본 "user" 라
- * 캡/TTL 자동 폐기에서 보호된다(명시 확정 보존). 비서가 사용자 승인 후 호출하는 진입점.
- *
- * 같은 키가 이미 auto 로 있으면 user 로 승격(덮어씀) — source 가 user 로 올라가면
- * 이후 자동 정리 대상에서 제외(applyCapAndTtl 의 user 보호). never-throw.
- */
-export const promoteDirective = (input: {
-  key: string;
-  text: string;
-  group?: string;
-  source?: DirectiveSource;
-}): Promise<boolean> =>
-  upsertDirective({
-    key: input.key,
-    text: input.text,
-    group: input.group,
-    source: input.source ?? "user",
-  }).then(
-    (d) => d !== null,
-    () => false,
-  );

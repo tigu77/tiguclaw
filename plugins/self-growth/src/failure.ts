@@ -7,7 +7,7 @@ import { listSkillUsage } from "../../../src/store/skill-usage.js";
 import { isStrongerSignal, upsertReflection } from "./analysis.js";
 import { homeFields, suggestHome } from "./home.js";
 import {
-  getDirective,
+  touchDirective,
   upsertDirective,
 } from "../../../src/store/self-growth-md.js";
 import {
@@ -94,11 +94,12 @@ export const analyzeFailurePattern = async (input: {
     // (upsertDirective 가 본질적으로 덮어쓰기라 매번 호출해도 무해하나, LLM 비용 절감 위해
     //  멱등 단락. 메타-재귀 (iii)는 별도로 닫혀 있다: SELF_GROWTH.md 쓰기는 이벤트 미발행 +
     //  handleTurnError 가 self-adapter 입력 skip — 박기는 허용·자기입력 루프는 차단.)
-    const already = await getDirective(directiveKey);
-    if (already !== null) {
-      // ★재발은 갱신이다 — 만료 시계를 다시 건다(안 그러면 계속 재발하는 실패의 지침도 120일 뒤 사라진다). 본문·출처는 그대로.
-      //  알림은 안 한다(`landedNow:false`) — 새로 바뀐 게 없다(종전엔 재발마다 «지침을 반영했습니다» 가 다시 나갔다, 2026-10-09 적대 검토).
-      await upsertDirective({ key: directiveKey, text: already.text, group: already.group });
+    // ★재발은 갱신이다 — 만료 시계를 다시 건다(안 그러면 계속 재발하는 실패의 지침도 120일 뒤 사라진다). 본문·출처는 그대로.
+    //  알림은 안 한다(`landedNow:false`) — 새로 바뀐 게 없다(종전엔 재발마다 «지침을 반영했습니다» 가 다시 나갔다, 2026-10-09 적대 검토).
+    // ★읽고 → 되쓰지 않는다(2026-10-13 아스트라 검토) — 읽어 둔 본문을 되쓰면 그 사이 사용자가 고친 본문이 옛 것으로 돌아갔다.
+    //  시각 갱신은 저장소 잠금 안에서 한 번에 하고, 없으면 만들지 않는다(그 사이 지워진 지침을 되살리지 않는다).
+    const touched = await touchDirective(directiveKey);
+    if (touched !== null) {
       return { memoryName: directiveKey, autoLanded: true, key, target: "directive", landedNow: false };
     }
     // ★이미 강등돼 사용자 확인을 기다리는 실패는 **LLM 을 부르기 전에** 돌려보낸다 — 종전엔 이 확인이 LLM 호출 뒤에 있어,
@@ -129,6 +130,10 @@ export const analyzeFailurePattern = async (input: {
         source: "auto",
         group: FAILURE_DIRECTIVE_GROUP,
       });
+      // ★판단을 기다리는 사이 사용자가 같은 key 를 확정했으면 저장소가 덮지 않고 그 항목을 돌려준다 — 새로 적용한 게 아니다.
+      if (landed !== null && landed.source === "user") {
+        return { memoryName: directiveKey, autoLanded: false, key, target: "directive", landedNow: false };
+      }
       if (landed === null) {
         // 파일 쓰기 실패(디스크·권한 등) → 신호 잃지 않게 reflection 강등으로 폴백.
         const created = peekMemory(reflectionName) === undefined;

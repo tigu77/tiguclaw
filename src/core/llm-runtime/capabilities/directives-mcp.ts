@@ -13,7 +13,7 @@
  * ★상한은 **쓸 때** 판정한다. 확정 지침은 프롬프트 몫(4KB)을 넘으면 조용히 접힌다 — 반드시 지켜야 할 사용자 규칙을
  *  접히게 두지 않고, 넘치는 추가는 거절해 «비슷한 것과 합치자» 로 돌려보낸다. 잴 때는 **싣는 쪽과 같은 함수**
  *  (`directivePromptLine`)를 쓴다 — 두 벌이면 «쓸 때는 들어간다 했는데 실을 때는 접히는» 틈이 생긴다.
- * ★매니저·에이전트 턴엔 **등록되지 않는다**(`REACH.directives = "main"`) — 사용자가 확인한 것만 올라가야 하는데,
+ * ★매니저·에이전트 턴엔 **등록되지 않는다**(`REACH.directives = "main"`) — 사용자 앞에서(밝히거나 물어서) 올라가야 하는데,
  *  그 턴엔 사용자가 없다. 판정은 표 한 곳에서 한다(도구 안에서 좌표를 다시 보지 않는다).
  */
 import { coreMcpServer } from "./_core-server.js";
@@ -132,8 +132,8 @@ const confirmFeedbackNow = async (
 export const createDirectivesMcpServer = (): McpSdkServerConfigWithInstance => {
   const confirmTool = tool(
     "confirm_feedback",
-    "사용자가 **확인한** 행동 규칙을 확정 지침(SELF_GROWTH.md — 매 턴 프롬프트에 실림)에 올리거나(set) 내린다(retire). " +
-      "호불호 반응을 한 줄 규칙으로 정리해 사용자에게 «이렇게 기억할까요?» 로 확인받은 **뒤에만** 부르세요 — 절차는 `feedback-capture` 스킬. " +
+    "사용자 반응에서 정리한 행동 규칙을 확정 지침(SELF_GROWTH.md — 매 턴 프롬프트에 실림)에 올리거나(set) 내린다(retire). " +
+      "호불호 반응을 한 줄 규칙으로 정리해 부르세요 — 판단이 분명하면 바로 부르고 사용자에게 한 줄로 밝히고, 무엇이 문제였는지·적용 범위가 애매할 때만 먼저 «이렇게 기억할까요?» 로 확인합니다. 절차는 `feedback-capture` 스킬. " +
       "같은 취지가 이미 있으면 새 key 를 만들지 말고 그 key 로 set 해 고칩니다 — 지금 있는 지침과 key 는 action:'list' 로 봅니다. " +
       "한 프로젝트에만 해당하는 규칙은 여기 말고 그 프로젝트 문서에.",
     {

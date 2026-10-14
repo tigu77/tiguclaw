@@ -53,7 +53,7 @@ import type {
   RegionATurnDonePayload,
   RegionATurnErrorPayload,
 } from "./types.js";
-import { builtinTierPool, builtinTierFor } from "./builtin-profiles.js";
+import { builtinTierPool, builtinTierFor, isSelectableProfile } from "./builtin-profiles.js";
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
 import { ToolHangError } from "./tool-watchdog.js";
@@ -555,6 +555,15 @@ export const poolDiversityWarning = (): string | null => {
 const TIER_NAMES: readonly string[] = ["high", "mid", "low", "nano"]; // nano = 가장 가벼운 풀 — 내부 단발 호출(분류·요약)이 먼저 찾는다
 /** 등급 이름 — 게이트웨이 목록이 «해석되는 등급만» 광고할 때 이 목록을 `resolveTier` 로 돌린다(사본을 두지 않는다). */
 export const LEGACY_TIERS: readonly string[] = TIER_NAMES;
+
+/**
+ * **세션 프로파일 → 풀** — 지금 **고를 수 있는 이름일 때만** 푼다(화면 목록과 같은 판정 `isSelectableProfile`).
+ * ★`resolveTier` 를 그냥 부르면 사용자 프로파일이 생긴 뒤에도 옛 등급 이름(`mid`)이 **빌트인** 풀로 풀린다 —
+ *  «사용자 설정이 통째로 이긴다» 가 세션 단위로 깨지고 화면(«기본»)과 실행이 조용히 갈렸다(2026-10-14 적대 검토 P3).
+ *  고를 수 없는 이름(지운 프로파일·전환 전 등급)은 빈 풀 → 라우터가 기본으로 간다(종전 동작).
+ */
+export const resolveSessionProfilePool = (name: string, cwd?: string): ModelSpec[] =>
+  isSelectableProfile(name, cwd) ? resolveTier(name, cwd) : [];
 
 export const resolveTier = (
   modelStr: string | undefined,

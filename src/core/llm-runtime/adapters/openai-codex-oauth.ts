@@ -944,7 +944,7 @@ export const runOpenAiCodex = async (
     if (reaches("session-tools", turnKind)) {
       await registerBridgeTools(sessionToolsBridge, toolBridgeMap, mcpTools);
     }
-    // 확정 지침 쓰기 — 사용자가 확인한 것만 올라가므로 위임 턴엔 안 닿는다(세 어댑터 동일 게이트).
+    // 확정 지침 쓰기 — 사용자 앞에서만 올라가므로 위임 턴엔 안 닿는다(세 어댑터 동일 게이트).
     if (reaches("directives", turnKind)) {
       await registerBridgeTools(directivesBridge, toolBridgeMap, mcpTools);
     }

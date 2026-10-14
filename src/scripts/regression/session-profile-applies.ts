@@ -81,12 +81,15 @@ const run = async (): Promise<Assertion[]> => {
   // ── ② 배선 — router 가 그 조합을 쓰는가 ───────────────────────────────────
   //  ★[소스 대조] 라우터를 실제로 돌리려면 LLM 이 필요하다. 여기선 **옛 왕복이 되살아나지
   //   않았는지**만 본다 — 그게 이 사고의 정확한 모양이었다.
+  //  ★2026-10-14: 라우터는 세션 프로파일을 `resolveTier` 로 푼다(빌트인 등급도 풀려고) — 그 안의 프로파일 갈래가
+  //   `poolToSpecs(profileChain[0]…)` 다. 그래서 «라우터가 resolveTier 를 부른다» + «resolveTier 가 poolToSpecs 로 푼다» 둘을 본다.
   const router = await readFile(new URL("../../core/router.ts", import.meta.url), "utf8");
-  const usesHelper = /poolToSpecs\(\s*chain\[0\]/.test(router);
+  const runtime = await readFile(new URL("../../core/llm-runtime/index.ts", import.meta.url), "utf8");
+  const usesHelper = /resolveSessionProfilePool\(\s*profileName/.test(router) && /poolToSpecs\(\s*profileChain\[0\]/.test(runtime);
   const revived = /chain\[0\]\.join\(/.test(router);
   out.push(
     assert(
-      "★[소스 대조] router 가 `poolToSpecs` 로 푼다(문자열 왕복이 되살아나지 않았다)",
+      "★[소스 대조] router 가 `resolveSessionProfilePool`→`resolveTier`→`poolToSpecs` 로 푼다(문자열 왕복이 되살아나지 않았다)",
       usesHelper && !revived,
       revived ? "★`chain[0].join(` 재등장 — 같은 사고가 되살아난다" : `helper=${usesHelper}`,
     ),

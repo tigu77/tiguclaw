@@ -1,5 +1,5 @@
       /**
-       * 프로파일 배지 색 — `settings.json` 의 `models.profiles.<name>.color`(`#rrggbb`).
+       * 프로파일 배지 색 — `settings.json` 의 `models.profiles.<name>.color`(`#rrggbb`), 빌트인이면 `models.builtinColors.<등급>`(서버가 `color` 로 합쳐 준다).
        *
        * ★손목록을 **없애려고** 만들었다 (2026-08-24 사용자 요청). 종전엔 색이 CSS 에
        *  `[data-tier="low"|"mid"|"high"]` **세 이름만** 적혀 있어서, 사용자가 만든 프로파일

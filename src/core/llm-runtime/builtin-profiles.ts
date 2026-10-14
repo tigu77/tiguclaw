@@ -22,7 +22,7 @@
 import { providerAuthAvailable } from "./provider-availability.js";
 import { catalogTierModel } from "./model-catalog.js";
 import { PROVIDER_REGISTRY } from "./provider-registry.js";
-import { loadModelProfiles, type ModelProfile } from "../settings.js";
+import { getDefaultProfileName, loadModelProfiles, readBuiltinProfileColors, setBuiltinProfileColor, setProfileColor, isBadgeColor, type ModelProfile } from "../settings.js";
 
 /** 빌트인이 아는 세 등급. 사용자 프로파일 이름은 자유지만 빌트인은 이 셋뿐이다. */
 export const BUILTIN_TIERS = ["high", "mid", "low"] as const;
@@ -111,14 +111,18 @@ export const builtinModelProfiles = (
   cwd?: string,
 ): Record<string, ModelProfile> => {
   const out: Record<string, ModelProfile> = {};
+  // ★«메인 턴» 은 **지금 기본인 등급**에 붙인다 — 종전엔 high 고정이라, 기본을 mid 로 바꾸면 한 화면에 기본 표시(mid)와
+  //  «메인 턴» 설명(high)이 갈렸다(2026-10-14 적대 검토).
+  const mainTier = builtinTierFor(getDefaultProfileName(cwd));
+  const role: Record<BuiltinTier, string> = { high: "무거운 추론·분석", mid: "일반", low: "단순·대량" };
   for (const tier of BUILTIN_TIERS) {
     const pool = builtinTierPool(tier, cwd);
     if (pool.length === 0) continue;
     out[tier] = {
       description:
-        tier === BUILTIN_DEFAULT_TIER
+        tier === mainTier
           ? "빌트인 기본 — 메인 턴 · 인증된 provider 로 자동 조립"
-          : `빌트인 — ${tier === "mid" ? "일반" : "단순·대량"} 작업`,
+          : `빌트인 — ${role[tier]} 작업`,
       // 빌트인은 강도를 안 정한다 — 카탈로그 기본이 곧 벤더 설계값이다(오버라이드 0).
       pool: pool.map((spec) => ({ spec })),
     };
@@ -159,5 +163,38 @@ export const resolveModelProfiles = (
 } => {
   const user = loadModelProfiles(cwd);
   if (Object.keys(user).length > 0) return { profiles: user, builtin: false };
-  return { profiles: builtinModelProfiles(cwd), builtin: true };
+  // 빌트인의 배지 색은 프로파일 밖 칸에 있다(`readBuiltinProfileColors` — 프로파일로 쓰면 자동 조립이 꺼진다).
+  const colors = readBuiltinProfileColors(cwd);
+  const profiles = builtinModelProfiles(cwd);
+  for (const [name, p] of Object.entries(profiles)) if (colors[name] !== undefined) p.color = colors[name];
+  return { profiles, builtin: true };
+};
+
+/**
+ * **고를 수 있는 프로파일인가** — 화면이 보여 주는 목록(`resolveModelProfiles`)과 **같은 판정**.
+ * ★종전엔 기본·세션 프로파일 지정이 `loadModelProfiles`(파일에 적힌 것만)로 검사해, 설정 파일이 없는 빌트인 상태에서
+ *  화면에 보이는 high/mid/low 를 고르면 «존재하지 않는 프로파일» 400 이었다(2026-10-14, 색 신고와 같은 부류).
+ */
+export const isSelectableProfile = (name: string, cwd?: string): boolean =>
+  resolveModelProfiles(cwd).profiles[name] !== undefined;
+
+/**
+ * **실제로 쓰이는 기본 프로파일 이름** — 실행(`resolveModelSpecs`)과 같은 판정: 사용자 프로파일이 있으면
+ * `models.default` 그대로, 빌트인이면 그 값을 등급으로 정규화(`builtinTierFor` — 미설정·모르는 이름은 high).
+ * ★종전 화면은 빌트인이면 무조건 high 라고 표시해, `models.default: mid` 로 실제로는 mid 가 도는데 high 를 기본이라 말했다.
+ */
+export const effectiveDefaultProfileName = (cwd?: string): string =>
+  resolveModelProfiles(cwd).builtin ? builtinTierFor(getDefaultProfileName(cwd)) : getDefaultProfileName(cwd);
+
+/**
+ * **지금 보이는 프로파일의 배지 색을 쓴다** — 사용자 프로파일이면 그 안에, 빌트인이면 빌트인 색 칸에
+ * (2026-10-14 정태님 신고: 설정 파일이 없는 상태에서 색을 고르면 «프로파일을 못 찾음» 400).
+ * 어느 쪽인지는 `resolveModelProfiles` 와 **같은 판정**(사용자 프로파일이 하나라도 있나)으로 가른다.
+ * @returns 그런 프로파일이 없거나 색 형식이 틀리면 `false`.
+ */
+export const setResolvedProfileColor = (name: string, color: string | undefined): boolean => {
+  if (color !== undefined && !isBadgeColor(color)) return false;
+  if (Object.keys(loadModelProfiles()).length > 0) return setProfileColor(name, color);
+  if (!(BUILTIN_TIERS as readonly string[]).includes(name)) return false;
+  return setBuiltinProfileColor(name, color);
 };

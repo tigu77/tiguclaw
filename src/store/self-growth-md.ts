@@ -36,7 +36,7 @@ export const DIRECTIVE_TTL_DAYS = 120;
 /** 파일 헤더 — 비서가 1 Read 로 맥락을 잡게. */
 const FILE_HEADER = `# SELF_GROWTH.md — 확정 지침 층
 
-이 파일은 사용자 반응에서 배워 사용자가 확인한 규칙과, self-growth 가 자율(저위험)로 확정한
+이 파일은 사용자 반응에서 배운 규칙과, self-growth 가 자율(저위험)로 확정한
 *작업 지침*을 모은 운영 메모리입니다.
 
 - 확정 지침은 매 턴 프롬프트에 실립니다(사용자 확정분 먼저, 상한 있음). 쓰기는 \`confirm_feedback\` 도구로만.

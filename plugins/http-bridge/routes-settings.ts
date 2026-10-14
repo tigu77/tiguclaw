@@ -10,14 +10,14 @@
  * ★조건(`if (pathname === …)`)은 `index.ts` 에 남겼다. 본문의 `return;` 을 한 글자도
  *  안 건드리려는 것이다(자세한 이유는 `routes-gateway.ts` 머리말).
  */
-import { setDashboardTitle, setLocale, setProfileColor, setTheme } from "../../src/core/settings.js";
+import { setDashboardTitle, setLocale, setTheme } from "../../src/core/settings.js";
 import { listOutboundChannels } from "../../src/core/channel-outbound.js";
-import { BUILTIN_DEFAULT_TIER, resolveModelProfiles } from "../../src/core/llm-runtime/builtin-profiles.js";
+import { effectiveDefaultProfileName, isSelectableProfile, resolveModelProfiles, setResolvedProfileColor } from "../../src/core/llm-runtime/builtin-profiles.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { readSuggestionSettings } from "../../src/core/next-message-suggestion.js";
 import { collectInventory, isCoreModule, isSelfReferentialModule } from "../../src/core/plugins/inventory.js";
 import { collectModules } from "../../src/core/plugins/providers.js";
-import { setDefaultProfile, getDefaultProfileName, loadModelProfiles, readEgressChannels, setEgressChannels, setModuleDisabled, setSuggestionEnabled, setMemoryIndexCapBytes, isMemoryIndexCapValue, readMemoryIndexCapBytes, MEMORY_INDEX_CAP_MIN, MEMORY_INDEX_CAP_MAX } from "../../src/core/settings.js";
+import { setDefaultProfile, readEgressChannels, setEgressChannels, setModuleDisabled, setSuggestionEnabled, setMemoryIndexCapBytes, isMemoryIndexCapValue, readMemoryIndexCapBytes, MEMORY_INDEX_CAP_MIN, MEMORY_INDEX_CAP_MAX } from "../../src/core/settings.js";
 import { MEMORY_INDEX_CAP_BYTES } from "../../src/core/prompt-assembly.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { SESSION_STORAGE_CHANNEL, clearSessionModelProfile, setSessionModelProfile } from "../../src/store/sessions.js";
@@ -42,11 +42,10 @@ export const handleSetDefaultProfile = async (ctx: RouteCtx): Promise<void> => {
     writeJson(res, 400, { error: "name required" });
     return;
   }
-  const profiles = loadModelProfiles();
-  if (profiles[name] === undefined) {
+  if (!isSelectableProfile(name)) {
     writeJson(res, 400, {
       error: `존재하지 않는 프로파일: ${name}`,
-      available: Object.keys(profiles),
+      available: Object.keys(resolveModelProfiles().profiles),
     });
     return;
   }
@@ -80,7 +79,7 @@ export const handleSetProfileColor = async (ctx: RouteCtx): Promise<void> => {
     return;
   }
   try {
-    const ok = setProfileColor(name, raw === null ? undefined : raw);
+    const ok = setResolvedProfileColor(name, raw === null ? undefined : raw);
     if (!ok) {
       writeJson(res, 400, {
         error: `'${name}' 프로파일을 못 찾았거나 색 형식이 '#rrggbb' 가 아닙니다`,
@@ -303,7 +302,7 @@ export const handleSetSessionProfile = async (ctx: RouteCtx): Promise<void> => {
   const isInherit =
     rawProfile === "" ||
     rawProfile === "default" ||
-    rawProfile === getDefaultProfileName();
+    rawProfile === effectiveDefaultProfileName();
   if (isInherit) {
     try {
       clearSessionModelProfile(SESSION_STORAGE_CHANNEL, sessionId);
@@ -315,11 +314,10 @@ export const handleSetSessionProfile = async (ctx: RouteCtx): Promise<void> => {
     return;
   }
   // 실존 프로파일 검증(댕글링 차단 = constraint 2 방어심).
-  const profiles = loadModelProfiles();
-  if (profiles[rawProfile] === undefined) {
+  if (!isSelectableProfile(rawProfile)) {
     writeJson(res, 400, {
       error: `존재하지 않는 프로파일: ${rawProfile}`,
-      available: Object.keys(profiles),
+      available: Object.keys(resolveModelProfiles().profiles),
     });
     return;
   }
@@ -412,7 +410,7 @@ export const handleGetModelProfiles = async (ctx: RouteCtx): Promise<void> => {
     //  에는 넣었는데 여기와 프롬프트 인벤토리는 빠졌다 — 그래서 폴백을 소비처마다
     //  적지 않고 `resolveModelProfiles` 한 곳으로 모았다.
     const { profiles: map, builtin } = resolveModelProfiles();
-    const defaultName = builtin ? BUILTIN_DEFAULT_TIER : getDefaultProfileName();
+    const defaultName = effectiveDefaultProfileName();
     const names = Object.keys(map);
     const rest = names.filter((n) => n !== defaultName);
     const ordered = names.includes(defaultName)

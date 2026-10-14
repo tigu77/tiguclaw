@@ -1360,8 +1360,8 @@
         vertical-align:middle; cursor:pointer; }
       .bg-job-session:hover { background:rgb(var(--accent-rgb) / .22); border-color:rgb(var(--accent-rgb) / .45); }
       .bg-job-err { font-size:0.6875rem; color:var(--danger-soft); word-break:break-word; }
-      /* 중지 버튼 — running+worker 카드에만(updateStopBtn). danger 톤(cm-danger 과 정합, var(--bad)),
-         기존 배지들과 같은 줄에 자연스럽게 얹히도록 컴팩트. 모바일 터치타깃 확보(min 28px). */
+      /* 위험 동작 버튼(셸 카드 ⏹ Kill) — danger 톤(cm-danger 과 정합, var(--bad)), 컴팩트.
+         모바일 터치타깃 확보(min 28px). 잡 카드 중지는 ⋯ 메뉴로 옮겨 이 버튼을 안 쓴다(2026-10-14). */
       .bg-job-stop {
         flex:none; font-size:0.625rem; font-weight:800; line-height:1; white-space:nowrap;
         padding:3px 8px; min-height:24px; border-radius:999px;

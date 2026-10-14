@@ -129,7 +129,8 @@ import { getFirstUserText } from "./store/chat-log.js";
 import { resetThreadContext } from "./store/thread-reset.js";
 import {
   builtinModelProfiles,
-  BUILTIN_DEFAULT_TIER,
+  builtinTierFor,
+  effectiveDefaultProfileName,
 } from "./core/llm-runtime/builtin-profiles.js";
 import {
   parseModelSpec,
@@ -969,8 +970,8 @@ const handler: MessageHandler = async (msg) => {
       const poolSource = base.source === "profile"
         ? translate("srv.model.source.profile", { profile: base.profile ?? "" })
         : base.profileUnresolved !== undefined
-          ? translate("srv.model.source.builtinUnresolved", { tier: BUILTIN_DEFAULT_TIER, profile: base.profileUnresolved })
-          : translate("srv.model.source.builtin", { tier: BUILTIN_DEFAULT_TIER });
+          ? translate("srv.model.source.builtinUnresolved", { tier: builtinTierFor(getDefaultProfileName()), profile: base.profileUnresolved })
+          : translate("srv.model.source.builtin", { tier: builtinTierFor(getDefaultProfileName()) }); // 실행(`resolveModelSpecs`)과 같은 판정 — 종전엔 high 고정
       const basePool = base.specs
         .map((s) => `${s.provider ?? s.adapter}:${s.model === "" ? translate("srv.model.adapterDefault") : s.model}`)
         .join(" → ") || translate("srv.model.poolNone");
@@ -1041,7 +1042,7 @@ const handler: MessageHandler = async (msg) => {
     //  `/models` 로는 알 수 없었다(화면과 실행이 갈림).
     const builtin = Object.keys(userProfiles).length === 0;
     const profiles = builtin ? builtinModelProfiles() : userProfiles;
-    const defaultName = builtin ? BUILTIN_DEFAULT_TIER : getDefaultProfileName();
+    const defaultName = effectiveDefaultProfileName();
     const sessionOverride = getSessionModelOverride(sidChannel, msg.threadKey);
     const overrideNote = sessionOverride !== null ? unresolvedOverrideNote(sessionOverride) : "";
     await replyCommand(

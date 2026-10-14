@@ -1002,6 +1002,54 @@ export const setProfileColor = (profile: string, color: string | undefined): boo
 };
 
 /**
+ * **빌트인 프로파일의 배지 색** — `models.builtinColors.<등급>` (2026-10-14 정태님 신고: «설정 파일이 없는
+ * 기본 프로파일 상태에서 색을 고르면 오류»).
+ *
+ * ★빌트인은 디스크에 **프로파일로** 쓰지 않는다(`builtin-profiles.ts` — `models.profiles` 에 하나라도 생기면
+ *  사용자 프로파일이 통째로 이겨 자동 조립이 꺼진다). 그래서 색만 이 칸에 둔다. 사용자 프로파일의 색은 지금처럼
+ *  그 프로파일 안(`models.profiles.<name>.color`)이고, 이 칸은 **빌트인이 보일 때만** 읽힌다.
+ */
+export const readBuiltinProfileColors = (cwd?: string): Record<string, string> => {
+  const out: Record<string, string> = {};
+  try {
+    for (const layer of loadSettingsLayers(cwd)) {
+      const m = (layer as { models?: unknown }).models;
+      if (typeof m !== "object" || m === null) continue;
+      const c = (m as { builtinColors?: unknown }).builtinColors;
+      if (typeof c !== "object" || c === null || Array.isArray(c)) continue;
+      for (const [k, v] of Object.entries(c as Record<string, unknown>)) {
+        if (out[k] === undefined && isBadgeColor(v)) out[k] = v.trim().toLowerCase();
+      }
+    }
+  } catch {
+    /* 읽기·파싱 실패 = 없음(never throw) */
+  }
+  return out;
+};
+
+/** `color === undefined` = 지우기(기본색). 형식이 틀리면 `false`. 등급 이름 판정은 호출자(`builtin-profiles`)가 한다. */
+export const setBuiltinProfileColor = (tier: string, color: string | undefined): boolean => {
+  if (color !== undefined && !isBadgeColor(color)) return false;
+  const file = getPaths().settings;
+  const root = readSettingsRootForWrite(file);
+  const models = root.models;
+  if (models !== undefined && (models === null || typeof models !== "object" || Array.isArray(models))) return false;
+  const m = { ...((models ?? {}) as Record<string, unknown>) };
+  const cur = m.builtinColors;
+  if (cur !== undefined && (cur === null || typeof cur !== "object" || Array.isArray(cur))) return false;
+  const colors = { ...((cur ?? {}) as Record<string, unknown>) };
+  if (color === undefined) delete colors[tier];
+  else colors[tier] = color.trim().toLowerCase();
+  if (Object.keys(colors).length === 0) delete m.builtinColors;
+  else m.builtinColors = colors;
+  // 지울 것도 없던 새 설치에 빈 `models: {}` 를 만들지 않는다.
+  if (Object.keys(m).length === 0) delete root.models;
+  else root.models = m;
+  writeSettingsRootAtomic(file, root);
+  return true;
+};
+
+/**
  * 스케줄 **전달** 실패 시 자동 재전송 여부 — settings.json `scheduler.retryFailedDispatch`
  * (기본 **켜짐**). 명시 `false` 일 때만 끈다(부재·오타·비-boolean = 기본값 유지, never-throw).
  *
@@ -1082,6 +1130,9 @@ export const getDefaultProfileName = (
   const profiles = loadModelProfiles(cwd);
   // 명시 포인터가 실존 프로파일이면 그것.
   if (explicit !== undefined && profiles[explicit] !== undefined) return explicit;
+  // ★사용자 프로파일이 **하나도 없으면**(빌트인 조립) 포인터를 그대로 돌려준다 — 등급 해석은 빌트인 쪽(`builtinTierFor`, 모르는 이름은
+  //  high)이 한다 (2026-10-14). 종전엔 여기서 버려져, 빌트인 상태에서 화면의 mid 를 기본으로 골라도 실행은 계속 high 였다.
+  if (explicit !== undefined && Object.keys(profiles).length === 0) return explicit;
   // 미지정/댕글링 → 첫 프로파일(순서상 처음). 없으면 "default"(어댑터 디폴트 폴백).
   const first = Object.keys(profiles)[0];
   return first ?? "default";

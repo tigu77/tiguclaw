@@ -18,9 +18,7 @@ import {
 } from "../store/sessions.js";
 import { resolveSessionId } from "./threadkey.js";
 import { runClaude } from "./claude.js";
-import { parseModelSpecList, resolveModelChain } from "./llm-runtime/index.js";
-import { resolveProfileChain } from "./settings.js";
-import { poolToSpecs } from "./llm-runtime/index.js";
+import { parseModelSpecList, resolveModelChain, resolveSessionProfilePool } from "./llm-runtime/index.js";
 
 export interface RouteOutput {
   text: string;
@@ -136,7 +134,7 @@ export const route = async (
   //  빈 배열 → 기본 풀(현행). router 는 값을 만들지 않고 **운반**만 하는 규약을 지킨다.
   const endpointChain =
     opts?.modelProfile !== undefined && opts.modelProfile !== ""
-      ? resolveModelChain(opts.modelProfile, process.cwd()) // 프로파일 조회 기준 = 데몬 cwd(위 resolveProfileChain 과 동일).
+      ? resolveModelChain(opts.modelProfile, process.cwd()) // 프로파일 조회 기준 = 데몬 cwd(아래 세션 프로파일과 동일).
       : [];
   let overridePool =
     overrideRaw !== null ? parseModelSpecList(overrideRaw) : [];
@@ -151,19 +149,13 @@ export const route = async (
   if (overridePool.length === 0) {
     const profileName = getSessionModelProfile(sessionChannel, sessionId);
     if (profileName !== null) {
-      const chain = resolveProfileChain(profileName, process.cwd());
-      if (chain.length > 0) {
-        // ★`chain[0]` 은 **객체 배열**(`PoolEntry[]`)이다 — `.join(",")` 하면
-        //  `"[object Object],[object Object]"` 가 나와 파싱이 빈 배열을 돌려주고,
-        //  오버라이드가 **조용히** 안 걸린다(2026-08-25 실사고: 사용자가 세션에서
-        //  `gpt-high` 를 골랐는데 계속 기본 프로파일로 답했다. 로그의 `model_profile=`
-        //  이 08-24 이후 **0건**이 된 것이 증거다). 08-24 에 이 왕복을 5곳 지웠다고
-        //  적어놓고 이 한 곳을 빠뜨렸다 — 같은 판단이 두 벌이면 하나는 반드시 뒤처진다.
-        const pool = poolToSpecs(chain[0], process.cwd());
-        if (pool.length > 0) {
-          overridePool = pool;
-          appliedProfile = profileName;
-        }
+      // ★지금 고를 수 있는 프로파일일 때만 푼다(`resolveSessionProfilePool` — 화면 목록과 같은 판정, 2026-10-14).
+      //  사용자 프로파일이면 그 자기 풀, 빌트인 상태면 등급 풀. 고를 수 없는 이름은 빈 풀 → 기본으로.
+      //  (풀 원소 → spec 변환은 `resolveTier` 안의 `poolToSpecs` 한 곳 — 08-25 `[object Object]` 사고의 자리.)
+      const pool = resolveSessionProfilePool(profileName, process.cwd());
+      if (pool.length > 0) {
+        overridePool = pool;
+        appliedProfile = profileName;
       }
     }
   }

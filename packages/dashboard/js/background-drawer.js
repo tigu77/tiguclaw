@@ -160,27 +160,18 @@
       // ── 취소(중지) — POST /api/cancel-worker { jobId } → { ok, cancelled }. 대상: 진행 중인
       // 잡(worker·agent) 모두 — U-I4 개정(2026-07-17): awaited 서브에이전트(kind==="agent")도
       // 이제 취소 가능(백엔드가 cancel-only abort 핸들 등록). kind 무관, status==="running" 만
-      // 게이트. 낙관적 UI: 클릭 즉시 버튼 비활성화+"중지 요청…" 텍스트로, 상태 배지도
+      // 게이트(⋯ 메뉴 «중지» 노출 조건). 낙관적 UI: 상태 배지를
       // "취소 중…"(기존 잡 상태 렌더 재사용, BG_STATUS 확장). cancelled:false(대상없음/
       // 이미종료) 나 네트워크 실패는 무해하게 되돌린다 — 실제 종료 반영은 worker.cancelled lifecycle
       // SSE(handleWorkerEvent, BG_STATUS.cancelled="⏹ 취소")가 한다.
       const canCancelJob = (entry) => !!entry && entry.status === "running";
-      const updateStopBtn = (entry) => {
-        if (!entry || !entry.stopBtnEl) return;
-        const show = canCancelJob(entry);
-        entry.stopBtnEl.style.display = show ? "" : "none";
-        entry.stopBtnEl.disabled = !!entry._cancelRequested;
-        entry.stopBtnEl.textContent = entry._cancelRequested ? i18n("common.stopping") : i18n("bg.stop");
-      };
       const requestCancelJob = async (jobId) => {
         const entry = jobCards.get(jobId);
         if (!canCancelJob(entry) || entry._cancelRequested) return;
         entry._cancelRequested = true;
-        updateStopBtn(entry);
         if (entry.statusEl) entry.statusEl.textContent = i18n("bg.status.cancelling");
         const revert = () => {
           entry._cancelRequested = false;
-          updateStopBtn(entry);
           if (entry.statusEl && entry.status === "running") entry.statusEl.textContent = BG_STATUS.running;
         };
         try {
@@ -916,25 +907,15 @@
           // 놓친 경우: 매니저 실행 중 새로고침 등)도 상태 뱃지가 비지 않게. 라이프사이클 이벤트
           // 오면 handleWorkerEvent 가 실제 상태로 갱신. entry.status 기본값("running")과 일치.
           st.textContent = BG_STATUS.running;
-          // 중지 버튼 — running 이면 노출(worker·agent 무관, U-I4 개정; updateStopBtn 이 켜고/끔).
-          // 클릭은 top 의 펼침 토글로 버블링되지 않게 stopPropagation.
-          const stopBtn = document.createElement("button");
-          stopBtn.type = "button"; stopBtn.className = "bg-job-stop"; stopBtn.title = i18n("bg.stopTitle");
-          stopBtn.textContent = i18n("bg.stop"); stopBtn.style.display = "none";
-          // ★⋯ 메뉴의 «중지»(danger)와 **같은 확인**을 받는다 (2026-10-09 적대 검토) — 같은 일을 하는 두 문 중 이쪽만 한 번에 실행됐다.
-          //  확인을 requestCancelJob 안에 두면 메뉴 경로가 두 번 묻는다(메뉴 프리미티브가 danger 를 이미 묻는다).
-          stopBtn.addEventListener("click", (ev) => {
-            ev.stopPropagation();
-            if (!window.confirm(i18n("ctx.confirm", { what: i18n("bg.stopShort") }))) return;
-            void requestCancelJob(jobId);
-          });
+          // ★중지는 ⋯ 메뉴에만 있다 (2026-10-14 정태님: «잡카드 관련 메뉴는 ⋯ 안에 다»). 종전엔 머리줄에 ⏹ 버튼이 따로 있어
+          //  같은 일을 하는 문이 둘이었고, 확인이 한쪽에만 있던 사고(10-09)도 그 두 문에서 났다. 메뉴는 danger 라 묻는다.
           const chev = document.createElement("span"); chev.className = "bg-job-chev"; chev.style.display = "none";
           // 실제 응답 모델 (2026-07-27) — tierBadge 는 *요청한* 티어(high/mid/low)이고 이건 그
           //  요청이 실제로 어느 모델로 실행됐나다. 둘이 갈리는 경우(폴백·쿨다운)를 보이게 하는 게
           //  목적이라 티어 바로 옆에 둔다 — "high 로 보냈는데 뭐가 답했나"가 한 줄에 보인다.
           const modelBadge = document.createElement("span");
           modelBadge.className = "bg-job-model"; modelBadge.style.display = "none";
-          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(modelBadge); top.appendChild(ago); top.appendChild(st); top.appendChild(stopBtn); top.appendChild(chev);
+          top.appendChild(label); top.appendChild(kindBadge); top.appendChild(tierBadge); top.appendChild(modelBadge); top.appendChild(ago); top.appendChild(st); top.appendChild(chev);
           const meta = document.createElement("div"); meta.className = "bg-job-meta";
           meta.textContent = (opts && opts.ts) || "";
           // ★원시 좌표는 **이름 배지가 없을 때만** 보인다 (2026-08-07 사용자 지적).
@@ -1014,7 +995,7 @@
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
             sessBadgeEl: sessBadge, rawTkEl: rawTk,
-            resultEl: result, errEl: err, kindBadgeEl: kindBadge, stopBtnEl: stopBtn,
+            resultEl: result, errEl: err, kindBadgeEl: kindBadge,
             liveEl: live, elapsedEl: elapsed, agoEl: ago, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
             usageEl, usage: null, // 토큰 합계(서버 `usage`) — setJobUsage 가 채운다.
@@ -1062,7 +1043,6 @@
           //  하이드레이션은 로드·재연결 때만 돌아 그 사이 생긴 카드는 계속 미상으로 남았다.
           //  ★추측을 정교하게 만들지 않는다 — 서버가 아는 사실(ownerThreadKey)을 가져온다.
           if (entry.ownerTk === "") scheduleOwnerBackfill();
-          updateStopBtn(entry); // 신규 카드 기본 running → 중지 버튼 노출(worker·agent 무관).
           // 컨텍스트메뉴 트리거 — kebab(top 우측) + 우클릭 + 롱프레스(카드류, 3경로 동일 메뉴).
           // ctxFn 은 매 호출 시 최신 entry 를 다시 읽어(jobCards.get) label/threadKey 드리프트 없음.
           const jobCtx = () => {
@@ -1093,7 +1073,6 @@
           entry.kind = "agent";
           entry.el.classList.add("agent");
           entry.kindBadgeEl.textContent = AGENT_KIND_BADGE.agent;
-          updateStopBtn(entry); // awaited 서브에이전트 승격 후에도 running 이면 중지버튼 표시(U-I4 개정).
         }
         // 에이전트명 채우기 — 활동-선도 카드는 activity 시엔 agentName 이 없어 라벨이 "(작업)".
         // lifecycle 이 agentName 을 실어 오면(먼저든 나중이든) 라벨을 "🤖 <name>" 로. 이미 채웠으면 무영향.
@@ -1306,7 +1285,6 @@
         entry.el.classList.add(status); // open/has-detail 보존.
         if (status !== "running") entry._cancelRequested = false; // 종료됐으면 낙관 플래그 리셋(멱등).
         entry.statusEl.textContent = BG_STATUS[status] || status;
-        updateStopBtn(entry); // running 이탈/kind 무관 — 버튼 노출조건 재평가.
         // 잡 종료 시 경과시간 최종 확정(틱은 running 만 갱신 → 여기서 마지막 값 고정).
         if (wasRunning && status !== "running" && entry.elapsedEl) {
           entry.elapsedEl.textContent = fmtElapsed(Date.now() - (entry.startTs || Date.now()));

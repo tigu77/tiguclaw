@@ -689,7 +689,7 @@ export const runClaude = async (
         ...(reaches("session-tools", turnKindOf(input))
           ? { "session-tools": createSessionToolsMcpServer(input.threadKey) }
           : {}),
-        // 확정 지침 쓰기(2026-10-13) — confirm_feedback. 사용자가 확인한 규칙만 올라가므로 메인만(표가 정한다).
+        // 확정 지침 쓰기(2026-10-13) — confirm_feedback. 사용자 앞에서만 올라가므로 메인만(표가 정한다).
         ...(reaches("directives", turnKindOf(input)) ? { directives: createDirectivesMcpServer() } : {}),
         // 앞선 도구 결과 다시 읽기(2026-09-30) — 섞인 대화(Codex 실패 → Claude 폴백 등)에서 Codex·OpenAI 턴의 기록을 되찾는다.
         //  접힌 채 실린다(이름만) — 순수 Claude 대화의 매 요청 비용을 안 늘린다.

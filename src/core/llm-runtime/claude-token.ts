@@ -12,14 +12,29 @@
 //  스크립트가 `.env` 를 읽게 된다(회귀 `reasoning-effort-from-catalog` 가 잡았다).
 
 const TOKEN_CHARS = /^[A-Za-z0-9._-]+$/;
-// eslint-disable-next-line no-control-regex
-const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 /** 상자 그리기 문자 — 터미널 UI 가 토큰을 상자 안에 그리면 줄 끝에 `│` 가 붙는다. */
 const BOX = /[─-╿]/g;
 const MIN_LEN = "sk-ant-".length + 20;
 
 /** 이어 붙일 조각을 몇 개까지 볼까 — 터미널 폭 40자면 토큰(~110자)이 3~4조각이다. 여유를 둔다. */
 const MAX_PIECES = 6;
+
+/**
+ * **터미널 출력 → 사람이 읽는 글자** — 토큰·URL·안내 문구를 찾는 쪽이 모두 이 한 함수를 쓴다.
+ * ★커서 이동은 **지우지 않고 공백·줄바꿈으로 바꾼다** (2026-10-14 테스트돌쇠). 발급기 화면(Ink)은 낱말 사이를 공백 대신
+ *  «오른쪽 n칸»(`ESC[nC`)으로 그린다 — 지우면 낱말이 붙는다(실측 프롬프트 `Pastecodehereifprompted>`). 토큰 바로 뒤에
+ *  낱말이 오면 토큰 문자와 구분이 안 돼 `sk-ant-…XXXStore…` 가 되고, 막 발급된 토큰이 확인에서 401 로 거부됐다.
+ * ★맨 `\r`(뒤에 `\n` 없음)은 줄 처음으로 돌아가 덮어 그리는 것이라 줄바꿈으로 본다.
+ */
+export const terminalText = (s: string): string =>
+  s
+    .replace(/\x1b\[(\d*)C/g, (_m, n: string) => " ".repeat(Math.min(Math.max(Number(n) || 1, 1), 200)))
+    .replace(/\x1b\[\d*[BE]/g, "\n")
+    .replace(/\x1b\[\d*(?:;\d*)?[Hf]/g, "\n")
+    .replace(/\x1b\[\d*G/g, " ")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>]/g, "")
+    .replace(/\r(?!\n)/g, "\n")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 
 /**
  * 글에서 토큰 후보를 뽑는다 — **많이 이은 것부터, 한 조각짜리까지**.
@@ -32,7 +47,7 @@ const MAX_PIECES = 6;
  * ★끝의 `.`·`-` 는 뗀다 — 문장 끝 마침표가 토큰에 붙었다(옛 정규식은 `\b` 로 뗐다).
  */
 export const claudeTokenCandidates = (text: string): string[] => {
-  const clean = text.replace(ANSI, "").replace(BOX, " ");
+  const clean = terminalText(text).replace(BOX, " ");
   const multiline = /\r?\n/.test(clean.trim());
   // 줄 모드: 한 줄 = 한 조각(앞뒤 공백 제거) · 한 줄 모드: 공백으로 가른 낱말 = 한 조각.
   const pieces = (multiline ? clean.split(/\r?\n/).map((l) => l.trim()) : clean.split(/\s+/)).filter((p) => p !== "");
@@ -111,32 +126,30 @@ export const acceptClaudeToken = async (
   raw: string,
   check: (token: string) => Promise<TokenVerdict> = checkClaudeToken,
 ): Promise<{ ok: boolean; message: string; savedTo?: string }> => {
+  // 문구 카탈로그도 쓸 때만 연다(위 «저장 모듈은 쓸 때만» 과 같은 이유 — import 만으로 설정을 읽지 않게).
+  const { translate } = await import("../i18n.js");
   const candidates = claudeTokenCandidates(raw);
   if (candidates.length === 0) {
-    return { ok: false, message: "No token found — paste the value that starts with `sk-ant-`." };
+    return { ok: false, message: translate("srv.claudeToken.notFound") };
   }
   const unverified: string[] = [];
   for (const c of candidates) {
     const v = await check(c);
-    if (v === "ok") return save(c, "Checked and saved the token");
+    if (v === "ok") return save(c, translate("srv.claudeToken.checkedSaved"));
     if (v === "unknown") unverified.push(c);
   }
   if (unverified.length === 1) {
-    return save(unverified[0]!, "Saved the token (the check request failed, so it could not be confirmed as valid)");
+    return save(unverified[0]!, translate("srv.claudeToken.savedUnverified"));
   }
   if (unverified.length > 1) {
     return {
       ok: false,
-      message:
-        "The token is split into several pieces and the check request failed, so it is unclear which one is right — nothing was saved. " +
-        "Paste it again in a moment.",
+      message: translate("srv.claudeToken.splitUnknown"),
     };
   }
   return {
     ok: false,
-    message:
-      "Anthropic rejected this token (401) — nothing was saved. It may have been cut by a line break, or it may be an old token. " +
-      "Get a new one with `npm run claude-auth`.",
+    message: translate("srv.claudeToken.rejected"),
   };
 };
 
@@ -148,13 +161,14 @@ const save = async (token: string, lead: string): Promise<{ ok: boolean; message
   const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim() !== "";
   // 재시작 없이 따라가는 기능이 이 Node 에 없으면 «다음 메시지부터» 는 거짓이다(전체 검토).
   const { credentialFollowAvailable } = await import("../credential-env.js");
-  const when = credentialFollowAvailable() ? "the new token is used from the next message" : "restart the daemon to use the new token (automatic pickup is off on this Node version)";
+  const { translate } = await import("../i18n.js");
+  const when = translate(credentialFollowAvailable() ? "srv.claudeToken.whenNext" : "srv.claudeToken.whenRestart");
   return {
     ok: true,
     savedTo,
     message:
       `${lead} — ${when}.` +
-      (apiKey ? " Note that an API key (ANTHROPIC_API_KEY) is also set and may be used first." : "") +
-      (cleared > 0 ? ` Also cleared ${cleared} Claude cooldown(s).` : ""),
+      (apiKey ? ` ${translate("srv.claudeToken.apiKeyNote")}` : "") +
+      (cleared > 0 ? ` ${translate("srv.claudeToken.cooldownsCleared", { n: cleared })}` : ""),
   };
 };

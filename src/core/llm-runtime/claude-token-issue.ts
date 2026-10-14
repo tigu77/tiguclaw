@@ -19,7 +19,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { findBundledClaude, bundledClaudeMissingHint } from "../claude-cli.js";
 import { getPaths, sourceRoot } from "../paths.js";
-import { acceptClaudeToken, claudeTokenCandidates } from "./claude-token.js";
+import { acceptClaudeToken, claudeTokenCandidates, terminalText } from "./claude-token.js";
+import { translate } from "../i18n.js";
 
 /**
  * 가짜 터미널 중계 — 자식에게 넓은 창(1000열: URL·토큰이 줄바꿈으로 안 잘리게)을 주고, 표준입력 ↔ 터미널을 잇는다.
@@ -55,11 +56,17 @@ _, st = os.waitpid(pid, 0)
 sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)
 `;
 
-/** 터미널 제어 문자를 걷어 사람이 읽는 글자만 남긴다(URL·토큰·안내 문구를 찾는 용도). */
-const plain = (s: string): string =>
-  s
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>]/g, "")
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
+/** 실패 진단용 꼬리 — 공백을 접고 마지막 240자, 16자 넘는 낱말(코드·토큰 조각)과 `sk-ant-` 는 길이만 남긴다. */
+export const maskIssuerTail = (text: string): string =>
+  text
+    .replace(/sk-ant-\S*/g, (m) => `<토큰 ${m.length}자>`)
+    .replace(/[A-Za-z0-9_\-#.]{16,}/g, (m) => `<${m.length}자>`)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(-240) || "(없음)";
+
+/** 터미널 제어 문자를 걷어 사람이 읽는 글자만 남긴다 — 판단은 `terminalText` 한 곳(커서 이동을 공백으로 바꾸는 것까지). */
+const plain = terminalText;
 
 const AUTHORIZE_URL = /https:\/\/\S+\/oauth\/authorize\?\S+/;
 /** 코드 입력 대기 — 화면이 커서 이동으로 그려 공백이 빠진다(실측 `Pastecodehereifprompted>`). */
@@ -70,6 +77,8 @@ const ISSUE_ERROR = /OAuth\s*error[^\n]*/i;
 const BEGIN_TIMEOUT_MS = 30_000;
 /** 코드를 넣은 뒤 토큰이 나오기까지. */
 const FINISH_TIMEOUT_MS = 60_000;
+/** 코드를 넣고 엔터를 치기까지 — 붙여넣기 판정이 끝날 틈(실측 400ms 로 제출됨, 여유를 둔다). */
+const PASTE_SETTLE_MS = 600;
 /** 버튼을 누르고 코드를 안 넣은 채 둔 발급기는 치운다. */
 const SESSION_TTL_MS = 15 * 60_000;
 
@@ -214,9 +223,14 @@ export const finishClaudeTokenIssue = async (
     return accept(text);
   }
   const code = text.trim();
-  if (code === "") return { ok: false, message: "로그인 뒤 나온 코드를 붙여넣으세요." };
+  if (code === "") return { ok: false, message: translate("srv.claudeToken.pasteCode") };
   const before = s.out.length;
-  s.child.stdin?.write(`${code}\r`);
+  // ★엔터는 **따로** 보낸다 (2026-10-14 테스트돌쇠 실측 · 재현). 발급기는 긴 입력이 한 덩어리로 오면 붙여넣기로 보고, 같이 온
+  //  엔터를 제출이 아니라 내용으로 먹는다 — 실제 로그인 코드(~94자)는 별표로만 찍히고 60초 무반응이었다(짧은 27자는 제출됨).
+  //  코드를 넣고 잠깐 뒤 엔터를 치면 제출된다. 사람이 붙여넣고 엔터를 누르는 것과 같은 순서다.
+  s.child.stdin?.write(code);
+  await waitFor(s, () => false, PASTE_SETTLE_MS);
+  s.child.stdin?.write("\r");
   await waitFor(s, () => {
     const t = plain(s.out.slice(before));
     return claudeTokenCandidates(t).length > 0 || ISSUE_ERROR.test(t);
@@ -228,11 +242,29 @@ export const finishClaudeTokenIssue = async (
   if (claudeTokenCandidates(after).length === 0) {
     // 붙여넣은 코드는 문구에 싣지 않는다(발급기가 가려 찍지만 일부가 보인다) — 오류 줄만.
     const why = ISSUE_ERROR.exec(after)?.[0].replace(/\s*Press\s*Enter.*$/i, "").trim();
+    // ★로그만으로 원인을 잡을 수 있게 — 코드를 넣은 뒤 발급기가 **무엇을** 냈는지 끝부분을 남긴다(2026-10-14 테스트돌쇠:
+    //  오류도 토큰도 없이 «답하지 않았습니다» 만 남아 원인을 못 갈랐다). 긴 낱말(코드·토큰 조각)은 길이만 남기고 가린다.
+    console.log(
+      `[auth] Claude 토큰 발급 실패 진단 — 코드 뒤 출력 ${after.length}자 · 발급기 ${s.exited ? "끝남" : "아직 떠 있음"} · 끝부분: ` +
+        maskIssuerTail(after),
+    );
     return {
       ok: false,
-      message: `토큰을 받지 못했습니다${why === undefined ? " — 발급기가 답하지 않았습니다" : ` — ${why}`}. 코드가 맞는지 확인하고, 발급을 처음부터 다시 해 주세요.`,
+      message: why === undefined ? translate("srv.claudeToken.issueSilent") : translate("srv.claudeToken.issueError", { why }),
     };
   }
   console.log("[auth] Claude 구독 토큰 발급기가 토큰을 냈습니다 — 확인·저장으로 넘깁니다");
-  return accept(after);
+  const r = await accept(after);
+  if (!r.ok) {
+    // ★확인에서 떨어지면 «무엇을 토큰으로 뽑았나» 를 남긴다 — 후보 길이와 토큰 주변 **원문 제어 구조**(토큰 글자는 길이만).
+    //  2026-10-14: 발급된 토큰이 401 — 뒤 낱말이 붙었는지 원문 없이는 못 가렸다.
+    const raw = s.out.slice(before);
+    const at = raw.indexOf("sk-ant-");
+    const around = at === -1 ? "" : raw.slice(Math.max(0, at - 40), at + 200);
+    console.log(
+      `[auth] Claude 토큰 확인 실패 진단 — 후보 ${claudeTokenCandidates(after).map((c) => c.length).join("·") || "0"}자 · ` +
+        `토큰 주변 원문: ${JSON.stringify(around.replace(/sk-ant-[A-Za-z0-9._-]*/g, (m) => `<토큰 ${m.length}자>`).replace(/[A-Za-z0-9_-]{16,}/g, (m) => `<${m.length}자>`))}`,
+    );
+  }
+  return r;
 };

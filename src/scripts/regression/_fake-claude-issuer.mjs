@@ -12,11 +12,21 @@ process.stdin.setRawMode?.(true);
 process.stdout.write("\x1b[2KPaste\x1b[1Ccode\x1b[1Chere\x1b[1Cif\x1b[1Cprompted\x1b[1C>\x1b[1C");
 let buf = "";
 process.stdin.on("data", (d) => {
-  buf += d.toString();
+  // 진짜 발급기처럼 — **한 덩어리로 온 긴 입력은 붙여넣기**로 보고 그 안의 엔터를 제출로 치지 않는다(2026-10-14 실측:
+  //  94자 코드+엔터를 한 번에 쓰면 무반응, 따로 쓰면 제출). 짧은 입력은 종전대로.
+  const chunk = d.toString();
+  buf += chunk.length > 40 ? chunk.replace(/\r/g, "") : chunk;
   if (!buf.includes("\r")) return;
   const code = buf.split("\r")[0];
   if (code === "silent-code#st") return; // 답하지 않는 발급기 — 마무리가 기다리는 사이 버튼을 다시 누르는 경우를 만든다
-  if (code === "good-code#st") {
+  if (code === "good-ink#st") {
+    // 진짜 발급기(Ink) 화면처럼 — 낱말 사이를 공백 대신 «오른쪽 1칸»(ESC[1C)으로 그리고, 토큰 바로 뒤에 낱말이 온다(2026-10-14).
+    const C = "\x1b[1C";
+    process.stdout.write(`\r\nYour${C}OAuth${C}token${C}(valid${C}for${C}1${C}year):\r\n\r\nsk-ant-oat01-${"C".repeat(90)}${C}Store${C}this${C}token${C}securely.\r\n`);
+    setTimeout(() => process.exit(0), 100);
+    return;
+  }
+  if (code === "good-code#st" || code.startsWith("good-long-")) {
     process.stdout.write(`\r\nYour OAuth token (valid for 1 year):\r\n\r\nsk-ant-oat01-${"A".repeat(90)}\r\n\r\nStore this token securely.\r\n`);
     setTimeout(() => process.exit(0), 100);
   } else {

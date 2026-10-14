@@ -67,6 +67,16 @@ export const check: RegressionCheck = {
     const saved: string[] = [];
     const accept = async (t: string) => { saved.push(t); return { ok: true, message: "saved" }; };
     const out: Assertion[] = [];
+    // 실패 진단 꼬리 — 사람이 읽을 문구는 남기고 토큰·코드 조각은 길이만(2026-10-14).
+    {
+      const tok = "sk-ant-oat01-" + "Q".repeat(80);
+      const masked = m.maskIssuerTail(`Paste code here > ****************abcdEFGH1234567890XYZ#statePART\nYour OAuth token (valid for 1 year): ${tok}\nStore this token securely.`);
+      out.push(assert(
+        "★실패 진단 꼬리는 토큰·긴 코드 조각을 가리고 안내 문구는 남긴다",
+        !masked.includes("sk-ant-oat01-Q") && !masked.includes("abcdEFGH1234567890") && masked.includes("Store this token securely") && masked.includes("<토큰"),
+        masked,
+      ));
+    }
     // ★실패해도 러너가 멈추지 않게 — 변이로 세션을 놓친 발급기가 남으면 이벤트 루프를 붙잡아 스위트가 끝나지 않았다(적대 검토).
     //  이 검사가 띄운 가짜 발급기만 pid 로 모아 끝에 치운다.
     const { mkdtempSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
@@ -94,6 +104,28 @@ export const check: RegressionCheck = {
       { b2: b2.ok, good, savedHasToken: saved.map((t) => t.includes("sk-ant-oat01-")) },
     ));
 
+    // ★실제 로그인 코드 길이(~94자) — 코드와 엔터를 한 덩어리로 보내면 발급기가 붙여넣기로 먹어 제출되지 않는다(테스트돌쇠 실측).
+    nextPidFile();
+    await m.beginClaudeTokenIssue(issuer);
+    const longGood = await m.finishClaudeTokenIssue(`good-long-${"x".repeat(80)}#st`, accept);
+    out.push(assert(
+      "★★실제 길이(~94자)의 로그인 코드도 제출된다 — 엔터를 따로 보낸다(한 덩어리면 발급기가 붙여넣기로 먹어 60초 무반응)",
+      longGood.ok,
+      longGood.message,
+    ));
+    // ★발급기 화면이 낱말 사이를 커서 이동으로 그리고 토큰 바로 뒤에 낱말이 와도, 뽑힌 토큰이 **정확히** 토큰이다(뒤 낱말이 안 붙는다).
+    //  2026-10-14 테스트돌쇠: 막 발급된 토큰이 401 — 커서 이동을 지워 `…CCCStore…` 가 됐다.
+    nextPidFile();
+    await m.beginClaudeTokenIssue(issuer);
+    const ink = await m.finishClaudeTokenIssue("good-ink#st", accept);
+    const { claudeTokenCandidates } = await import("../../core/llm-runtime/claude-token.js");
+    const inkCands = claudeTokenCandidates(saved[saved.length - 1] ?? "");
+    const exact = `sk-ant-oat01-${"C".repeat(90)}`;
+    out.push(assert(
+      "★★커서 이동으로 그린 발급기 화면에서도 토큰이 뒤 낱말과 붙지 않는다(첫 후보가 정확히 토큰)",
+      ink.ok && inkCands[0] === exact,
+      { ok: ink.ok, 후보길이: inkCands.map((c) => c.length), 기대: exact.length },
+    ));
     // 토큰을 직접 붙여넣으면(이미 받아 둔 것) — 발급기가 떠 있어도 종전 길로 저장하고 발급기는 치운다.
     nextPidFile();
     await m.beginClaudeTokenIssue(issuer);
@@ -101,7 +133,7 @@ export const check: RegressionCheck = {
     const noSession = await m.finishClaudeTokenIssue("some-code", accept);
     out.push(assert(
       "토큰을 붙여넣으면 토큰으로 저장 · 발급기가 없으면 붙여넣은 글은 종전 판단(저장 경로)으로 간다",
-      direct.ok && saved[1]!.includes("B".repeat(90)) && noSession.ok && saved[2] === "some-code",
+      direct.ok && saved[3]!.includes("B".repeat(90)) && noSession.ok && saved[4] === "some-code",
       { direct, noSession, saved: saved.length },
     ));
     // ★코드를 넣고 기다리는 사이 버튼을 다시 누르면, 늦게 끝난 앞 마무리가 **새 발급기를 닫지 않는다**(적대 검토 — 종전엔 전역 «지금 발급» 을 닫았다).

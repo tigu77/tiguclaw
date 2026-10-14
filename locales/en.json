@@ -1141,5 +1141,17 @@
   "srv.health.portExcluded": "{key} {port} could not be opened, so it is off — Windows has reserved that port in an excluded range (Hyper-V/WSL/Docker). Set {key} in the home .env to a free port between 15001 and 32767 (defaults 17010/17011) and restart.",
   "srv.health.portInUse": "{key} {port} is in use by another program, so it is off. Set {key} in the home .env to a free port and restart.",
   "srv.health.pluginDown": "The {plugin} plugin has stopped — {error}",
-  "plugins.auth.usage.refreshAfter": "You can check again {when}"
+  "plugins.auth.usage.refreshAfter": "You can check again {when}",
+  "srv.claudeToken.notFound": "No token found. If you pasted a sign-in code, that sign-in session has already ended (failed, timed out, or the daemon restarted) — press Sign in again and use the code from the new page. To paste a token instead, use the value that starts with `sk-ant-`.",
+  "srv.claudeToken.checkedSaved": "Checked and saved the token",
+  "srv.claudeToken.savedUnverified": "Saved the token (the check request failed, so it could not be confirmed as valid)",
+  "srv.claudeToken.splitUnknown": "The token is split into several pieces and the check request failed, so it is unclear which one is right — nothing was saved. Paste it again in a moment.",
+  "srv.claudeToken.rejected": "Anthropic rejected this token (401) — nothing was saved. It may have been cut by a line break, or it may be an old token. Get a new one with `npm run claude-auth`.",
+  "srv.claudeToken.whenNext": "the new token is used from the next message",
+  "srv.claudeToken.whenRestart": "restart the daemon to use the new token (automatic pickup is off on this Node version)",
+  "srv.claudeToken.apiKeyNote": "Note that an API key (ANTHROPIC_API_KEY) is also set and may be used first.",
+  "srv.claudeToken.cooldownsCleared": "Also cleared {n} Claude cooldown(s).",
+  "srv.claudeToken.pasteCode": "Paste the code shown after sign-in.",
+  "srv.claudeToken.issueSilent": "No token came back — the issuer did not answer. Check the code and start the sign-in over.",
+  "srv.claudeToken.issueError": "No token came back — {why}. Check the code and start the sign-in over."
 }

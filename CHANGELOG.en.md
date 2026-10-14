@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-10-15
+
+### Added
+
+- **The assistant learns from your reactions.** Corrections and approval of how it answered become one-line rules it follows from the next conversation on. When the meaning is clear it records the rule and tells you; it asks only when unsure. Rules are written in the language you used.
+- **Long-running background jobs report their progress.** One update per hour by default; turn it off or change the interval (10 minutes to 24 hours) with `jobs.progressNotice` in `settings.json`.
+
+### Changed
+
+- **`/stop` stops only the conversation turn in progress.** Background jobs keep running, and the reply says how many are still going. To stop a job, name it.
+- **Stopping a background job is now in the job card's ⋯ menu,** with a confirmation first.
+- **The self-growth plugin is now off by default.** The assistant learns from your reactions on its own. To keep using the plugin, turn it on in the dashboard's plugin screen. Rules it already saved stay in effect.
+
+### Fixed
+
+- **Scheduled and file-watch jobs could run at the same time as other work in the same conversation,** which caused the same notification to arrive twice.
+- **Without a settings file (built-in high · mid · low profiles), badge colors, the default profile, and per-session profiles could not be set or did not take effect,** and the screen could show a different default than the one in use.
+- **Claude subscription sign-in from the dashboard on macOS and Linux did not finish:** pasting the sign-in code did nothing, or the issued token was rejected. Sign-in messages now follow your language.
+- **Background job checks could not see a tool that was still running,** so a job running one long command could be mistaken for stalled.
+
 ## [0.70.1] - 2026-10-13
 
 ### Fixed
@@ -967,7 +987,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...HEAD
+[0.71.0]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...v0.71.0
 [0.70.1]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...v0.70.1
 [0.70.0]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...v0.70.0
 [0.69.1]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...v0.69.1

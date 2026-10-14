@@ -21,6 +21,7 @@
     "provider": {
       "id": "plugin.self-growth",
       "entry": "./src/provider.ts"
-    }
+    },
+    "defaultOff": true
   }
 }

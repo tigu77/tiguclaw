@@ -130,12 +130,27 @@ export const check: RegressionCheck = {
     nextPidFile();
     await m.beginClaudeTokenIssue(issuer);
     const direct = await m.finishClaudeTokenIssue(`sk-ant-oat01-${"B".repeat(90)}`, accept);
+    const savedAtNoSession = saved.length;
     const noSession = await m.finishClaudeTokenIssue("some-code", accept);
+    const { translate } = await import("../../core/i18n.js");
     out.push(assert(
-      "토큰을 붙여넣으면 토큰으로 저장 · 발급기가 없으면 붙여넣은 글은 종전 판단(저장 경로)으로 간다",
-      direct.ok && saved[3]!.includes("B".repeat(90)) && noSession.ok && saved[4] === "some-code",
+      "토큰을 붙여넣으면 토큰으로 저장 · 발급기가 없을 때 토큰 아닌 글은 «로그인 세션이 끝났다» 안내(이 화면 전용 문구 — 저장 경로로 안 간다)",
+      direct.ok && saved[3]!.includes("B".repeat(90)) && !noSession.ok && saved.length === savedAtNoSession &&
+        noSession.message === translate("srv.claudeToken.notFoundSessionOver"),
       { direct, noSession, saved: saved.length },
     ));
+    // ★확인 함수의 «못 찾음» 은 터미널(`claude-auth`)도 쓴다 — 화면 버튼(«로그인») 안내가 섞이면 안 된다(2026-10-15 F4).
+    {
+      const { acceptClaudeToken } = await import("../../core/llm-runtime/claude-token.js");
+      const neutral = await acceptClaudeToken("some-code", async () => "ok");
+      const ko = translate("srv.claudeToken.notFound");
+      const over = translate("srv.claudeToken.notFoundSessionOver");
+      out.push(assert(
+        "터미널도 쓰는 «토큰 못 찾음» 은 화면 전용 «세션 끝남» 문구와 다르고, 그 안내를 담지 않는다",
+        !neutral.ok && neutral.message === ko && ko !== over && !/로그인|Sign in/.test(ko),
+        { neutral: neutral.message.slice(0, 60) },
+      ));
+    }
     // ★코드를 넣고 기다리는 사이 버튼을 다시 누르면, 늦게 끝난 앞 마무리가 **새 발급기를 닫지 않는다**(적대 검토 — 종전엔 전역 «지금 발급» 을 닫았다).
     nextPidFile();
     await m.beginClaudeTokenIssue(issuer);
@@ -151,6 +166,17 @@ export const check: RegressionCheck = {
       b3.ok && !slowDone.ok && fresh.ok && saved.length === savedBefore + 1 && saved.at(-1)!.includes(`sk-ant-oat01-${"A".repeat(90)}`),
       { b3: b3.ok, slowDone: slowDone.ok, fresh, last: saved.at(-1)?.slice(0, 20) },
     ));
+    // ★엔터를 늦게 보내는 사이(600ms) «로그인» 을 다시 누르면 앞 발급기가 닫힌다 — 거기 쓰면 EPIPE 이고 리스너가 없으면 데몬이 죽는다
+    //  (2026-10-15 적대 검토 F1 · 실측: 리스너를 빼고 다시 누름을 601~605ms 에 두면 8번 중 1~2번 `Error: write EPIPE` 로 종료 · 넣으면 12/12 생존).
+    //  ★경합이라 실행으로는 결정적으로 못 잡는다(자식 프로세스로 창을 훑는 검사는 리스너를 빼도 초록이었다 — 가짜 그물). 배선을 본다.
+    {
+      const { readSource } = await import("./_wiring.js");
+      const src = await readSource("../../core/llm-runtime/claude-token-issue.ts");
+      const spawnAt = src.indexOf('spawn("python3"');
+      const listenAt = src.indexOf('child.stdin?.on("error"');
+      out.push(assert("★발급기 입력 파이프에 오류 리스너가 있다(닫힌 발급기에 쓰는 EPIPE 가 데몬을 죽이지 않게) — 띄운 직후, 첫 쓰기 전",
+        spawnAt > 0 && listenAt > spawnAt && listenAt < src.indexOf("stdin?.write(code)"), { spawnAt, listenAt }));
+    }
     // ★부모(데몬)가 갑자기 죽으면 발급기도 같이 끝난다 — 코드를 안 넣은 채 배포·재시작하면 발급기·중계가 고아로 남던 것(적대 검토 실측).
     const pidfile = nextPidFile();
     const mod = fileURLToPath(new URL("../../core/llm-runtime/claude-token-issue.ts", import.meta.url));

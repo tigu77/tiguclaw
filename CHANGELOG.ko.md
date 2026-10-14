@@ -8,6 +8,26 @@
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-10-15
+
+### Added
+
+- **비서가 사용자의 반응으로 행동을 고칩니다.** 답에 대한 교정이나 마음에 든다는 반응을 한 줄 규칙으로 정리해 다음 대화부터 지킵니다. 판단이 분명하면 바로 기록하고 알려 주며, 애매할 때만 묻습니다. 규칙은 사용자가 말한 언어로 적습니다.
+- **오래 걸리는 백그라운드 작업이 진행 상황을 알려 줍니다.** 기본 1시간마다 한 번 보내고, `settings.json` 의 `jobs.progressNotice` 에서 끄거나 간격(10분~24시간)을 바꿀 수 있습니다.
+
+### Changed
+
+- **`/stop` 은 진행 중인 대화 턴만 멈춥니다.** 백그라운드 작업은 계속 돌고, 몇 건이 남아 있는지 알려 줍니다. 작업을 멈추려면 그 작업을 지목해 말씀하세요.
+- **백그라운드 작업 카드의 중지는 ⋯ 메뉴에서 합니다.** 멈추기 전에 한 번 확인합니다.
+- **자가성장 플러그인이 기본으로 꺼집니다.** 반응에서 배우는 일은 이제 비서가 직접 합니다. 계속 쓰려면 대시보드의 플러그인 화면에서 켜세요. 이미 쌓인 지침은 그대로 쓰입니다.
+
+### Fixed
+
+- **스케줄·파일 감시 작업이 같은 대화의 다른 작업과 동시에 돌던 문제.** 같은 알림이 두 번 오는 원인이었습니다.
+- **설정 파일 없이 기본 모델 프로파일(high·mid·low)로 쓸 때 배지 색·기본 프로파일·세션 프로파일이 지정되지 않거나 적용되지 않던 문제.** 화면에 보이는 기본 프로파일이 실제와 다르던 문제도 함께 고쳤습니다.
+- **맥·리눅스 대시보드에서 Claude 구독 로그인이 끝나지 않던 문제.** 로그인 코드를 넣어도 반응이 없거나 발급된 토큰이 거부됐습니다. 로그인 안내도 사용자의 언어로 나옵니다.
+- **백그라운드 작업 점검이 실행 중인 도구를 보지 못하던 문제.** 긴 명령 하나만 도는 작업을 멈춘 것으로 잘못 볼 수 있었습니다.
+
 ## [0.70.1] - 2026-10-13
 
 ### Fixed
@@ -2517,7 +2537,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...HEAD
+[0.71.0]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...v0.71.0
 [0.70.1]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...v0.70.1
 [0.70.0]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...v0.70.0
 [0.69.1]: https://github.com/tigu77/tiguclaw/compare/v0.69.0...v0.69.1

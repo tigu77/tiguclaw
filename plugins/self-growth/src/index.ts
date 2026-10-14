@@ -27,7 +27,6 @@ import {
 import { deliverOutbound } from "../../../src/core/outbound.js";
 import { translate } from "../../../src/core/i18n.js";
 import { peekMemory } from "../../../src/store/memory.js";
-import { recordSkillInvocation } from "../../../src/store/skill-usage.js";
 import {
   cleanupDirectives,
   ensureSelfGrowthFile,
@@ -48,7 +47,6 @@ import {
   failureKey,
   normalizeErrorMessage,
   type MemoryWritePayload,
-  type SkillInvokedPayload,
   type TurnDonePayload,
   type TurnErrorPayload,
 } from "./analysis.js";
@@ -110,7 +108,7 @@ class SelfGrowthPlugin {
       this.runMaintenance();
     }, TTL_CLEANUP_INTERVAL_MS);
     console.log(
-      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done, skill.invoked] + TTL cleanup + weekly review + SELF_GROWTH.md directives + skill proposal scan + skill improve proposal scan",
+      "self-growth: started, subscribe[memory.write, llm.turn_error, llm.turn_done] + TTL cleanup + weekly review + SELF_GROWTH.md directives + skill proposal scan + skill improve proposal scan",
     );
   }
 
@@ -294,26 +292,8 @@ class SelfGrowthPlugin {
         // 스케줄 실패로 자가 진단을 깨우는 일은 **코어**가 한다(core/self-maintenance.ts).
         // 여기서 또 들으면 같은 스윕이 두 곳에서 돈다.
         return;
-      case "skill.invoked":
-        // 텔레메트리(2026-06-24) — upsert *만*. self-growth 입력축(repeated/failure/
-        // drift/skill_proposal)을 *재트리거하지 않음*(메타재귀 차단, 계약 §4·§10-4).
-        // harness 가 스킬 생성 중 invoke_skill 해도 카운트만 오르고 분석은 안 깨움.
-        this.handleSkillInvoked(event.payload as SkillInvokedPayload);
-        return;
       default:
         return;
-    }
-  }
-
-  // 텔레메트리(2026-06-24) — skill.invoked → skill_usage 멱등 upsert. **upsert만** —
-  // 입력축 재트리거 0(메타재귀). never-throw: upsert 실패가 EventBus subscriber 격리를
-  // 넘어 데몬을 못 죽이게(원칙 3). 발행(region)·upsert(여기) 2겹 never-throw.
-  private handleSkillInvoked(payload: SkillInvokedPayload): void {
-    try {
-      if (typeof payload.name !== "string" || payload.name.length === 0) return;
-      recordSkillInvocation(payload.name, Date.now());
-    } catch (e) {
-      console.error(`self-growth: skill.invoked upsert failed: ${e}`);
     }
   }
 

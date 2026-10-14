@@ -9,9 +9,9 @@
  *  - `getRecentSkillInvocations` 는 events(`type='skill.invoked'`) 경유 *시점 상관*
  *    (P2 세그먼트-거버넌스 제외용). skill_usage 와 목적 분리.
  *
- * 코어는 이 모듈을 모른다(단방향). self-growth 가 generic `skill.invoked` 를 구독해
- * `recordSkillInvocation` 으로 upsert. never-throw 는 호출자(self-growth) 책임 —
- * 본 모듈은 events.ts 동형 순수 CRUD.
+ * 횟수는 코어 `invoke_skill` 이 성공 호출마다 `recordSkillInvocation` 으로 upsert 한다(2026-10-15 — 종전엔
+ * 자가성장 플러그인이 `skill.invoked` 를 받아 적어서, 그 플러그인이 꺼지면 기록이 멈췄다). never-throw 는
+ * 호출자 책임 — 본 모듈은 events.ts 동형 순수 CRUD.
  */
 import { getDb } from "./sessions.js";
 
@@ -19,7 +19,7 @@ import { getDb } from "./sessions.js";
  * skill.invoked 1건 반영 — 멱등 upsert(count +1, last_used 갱신).
  *
  * INSERT … ON CONFLICT 로 race-free 증분(동시 turn 도 SQLite 단일 write lock 하 안전).
- * never-throw 는 호출자(self-growth handleSkillInvoked try/catch). 본 함수는 throw 가능
+ * never-throw 는 호출자(`invoke_skill` 의 try/catch). 본 함수는 throw 가능
  * — DB 실패 시 호출자가 가린다(원칙 3, 데몬 생존).
  */
 export const recordSkillInvocation = (skillName: string, ts: number): void => {

@@ -183,6 +183,9 @@ export const beginClaudeTokenIssue = async (issuer?: readonly string[]): Promise
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, BROWSER: "true" },
   });
+  // ★발급기가 끝난 뒤 쓰면(EPIPE) 오류 리스너가 없을 때 데몬이 죽는다 — 엔터를 늦게 보내는 600ms 사이에 «로그인» 을 다시
+  //  누르면 세션이 닫힌다(2026-10-15 F1). 쓰기 실패는 아래 «토큰 없음» 판정으로 드러난다.
+  child.stdin?.on("error", () => {});
   const s: IssueSession = { child, out: "", exited: false, ttl: setTimeout(() => closeSession(s), SESSION_TTL_MS) };
   s.ttl.unref();
   session = s;
@@ -220,6 +223,9 @@ export const finishClaudeTokenIssue = async (
   const text = String(pasted ?? "");
   if (s === null || s.exited || claudeTokenCandidates(text).length > 0) {
     closeSession(s);
+    // 토큰 모양이 없으면 로그인 코드였을 수 있다 — 그 세션은 끝났으니 «로그인» 을 다시 누르라고도 말한다(이 화면 전용 문구).
+    //  확인 함수(`acceptClaudeToken`)의 «못 찾음» 은 터미널(`claude-auth`)도 쓰므로 거기엔 화면 버튼 안내가 없다(2026-10-15 F4).
+    if (claudeTokenCandidates(text).length === 0) return { ok: false, message: translate("srv.claudeToken.notFoundSessionOver") };
     return accept(text);
   }
   const code = text.trim();

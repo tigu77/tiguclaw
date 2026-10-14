@@ -43,7 +43,7 @@ import { getEventBus } from "../../eventbus.js";
 import { asReach, turnReaches, type Reach, type TurnKind } from "../capability-reach.js";
 import type { ChannelName } from "../../../channels/types.js";
 import { dedupeWithShadows, warnShadowed } from "./dedup-by-source.js";
-import { listSkillUsage } from "../../../store/skill-usage.js";
+import { listSkillUsage, recordSkillInvocation } from "../../../store/skill-usage.js";
 
 export interface Skill {
   /** frontmatter `name` (우선) 또는 디렉터리 basename. */
@@ -454,8 +454,8 @@ const SKILL_INDEX_CAP_BYTES = 25_600;
  */
 const FIND_SKILLS_MAX = 50;
 
-// 사용빈도 랭킹 재료 — skill_usage(일반 store 테이블, self-growth 가 채움). 코어는
-// opportunistic read(빈 테이블·미초기화 시 무랭킹 폴백 — 플러그인 *의존* 아님).
+// 사용빈도 랭킹 재료 — skill_usage(일반 store 테이블, 아래 invoke_skill 이 채움). 코어는
+// opportunistic read(빈 테이블·미초기화 시 무랭킹 폴백).
 const skillUsageRank = (): Map<string, number> => {
   try {
     return new Map(
@@ -646,6 +646,14 @@ export const createSkillInvokeMcpServer = (
         // 절대 못 깨게(turn_done 발행 best-effort 패턴 답습). 코어는 어느 스킬인지
         // 모름(generic) — self-growth 가 데이터로만 소비(단방향).
         if (ctx !== undefined) {
+          // ★횟수 기록은 코어가 한다 (2026-10-15 릴리스 적대 검토 F2). 종전엔 자가성장 플러그인이 이 이벤트를 받아
+          //  적었는데, 그 플러그인을 기본 꺼짐으로 바꾸자 기록이 통째로 멈췄다 — 스킬 인덱스 사용빈도 순서와
+          //  `find_skills` 랭킹이 이 표를 읽는다. 기록 실패는 도구 응답을 깨지 않는다(관측 best-effort).
+          try {
+            recordSkillInvocation(args.name, Date.now());
+          } catch {
+            // 저장소 미준비·쓰기 실패 — 랭킹이 한 번 덜 오를 뿐이다.
+          }
           try {
             getEventBus().publish({
               type: "skill.invoked",

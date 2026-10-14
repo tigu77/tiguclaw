@@ -1409,6 +1409,20 @@ const readDisabledModules = (cwd: string = process.cwd()): Set<string> => {
   return disabled;
 };
 
+/**
+ * 모듈(plugin) 이름 → 사용자가 **켰다고 적었는지**(어느 층이든 `modules.<name>.enabled: true`).
+ * ★기본 꺼짐 번들(`defaultOff`)을 사용자가 켠 것인지 가르는 데만 쓴다 — 끄기(false)는 위 AND 규칙이 이긴다.
+ */
+export const isModuleExplicitlyEnabled = (name: string, cwd: string = process.cwd()): boolean => {
+  for (const layer of loadSettingsLayers(cwd)) {
+    const m = layer.modules;
+    if (m === undefined || m === null || typeof m !== "object") continue;
+    const v = (m as Record<string, unknown>)[name];
+    if (v !== null && typeof v === "object" && !Array.isArray(v) && (v as { enabled?: unknown }).enabled === true) return true;
+  }
+  return false;
+};
+
 /** 모듈(plugin) 이름 → 사용자가 껐는지(disabled). "off" 만 참 — 목록 부재/미기재는 false(inactive 아님, 이 함수 관할 밖). */
 export const isModuleDisabled = (
   name: string,

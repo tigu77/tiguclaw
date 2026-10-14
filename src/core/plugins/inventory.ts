@@ -19,7 +19,7 @@ import {
   BUILTIN_COMMANDS,
   type Command,
 } from "../entry/command-registry.js";
-import { isModuleDisabled } from "../settings.js";
+import { isModuleDisabled, isModuleExplicitlyEnabled } from "../settings.js";
 import { listHooksForInventory } from "../entry/hook-runner.js";
 import { translate } from "../i18n.js";
 
@@ -397,7 +397,16 @@ export const isSelfReferentialModule = (name: string): boolean =>
  *  (=사용자가 바꿀 수 있는가) 그대로 둔다.
  */
 export const isModuleActive = (name: string): boolean =>
-  !isModuleDisabled(name) || isCoreModule(name);
+  isCoreModule(name) ||
+  (!isModuleDisabled(name) && (!isDefaultOffModule(name) || isModuleExplicitlyEnabled(name)));
+
+/**
+ * **기본은 꺼진 채로 오는 번들인가**(manifest `tiguclaw.defaultOff`, 2026-10-14 — 자가성장 은퇴).
+ * ★설정에 아무 말이 없을 때만 이 선언을 따른다 — 사용자가 켜면(`enabled: true`) 켜지고, 끈 것은 그대로 꺼진다.
+ *  «없으면 켜짐» 규칙(`readDisabledModules`)의 예외는 **선언으로만** 생긴다(이름 목록을 코드에 두지 않는다).
+ * ★`core` 와 같이 **레포 `plugins/` 위치로만** 읽는다 — 설치된 플러그인의 자기 선언은 검증할 수 없다.
+ */
+export const isDefaultOffModule = (name: string): boolean => bundledManifestFlag(name, "defaultOff");
 
 // 번들 비채널 플러그인 (appRoot/plugins/* 중 kind 에 "channel" 없는 것 — service·trigger·
 // observer·provider: dashboard·scheduler·file-watch·self-growth 등). 채널은 collectChannels 가

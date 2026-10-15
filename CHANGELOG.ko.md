@@ -8,6 +8,18 @@
 
 ## [Unreleased]
 
+## [0.72.0] - 2026-10-15
+
+### Added
+
+- **대화를 갈라낼 수 있습니다.** 세션 탭 메뉴 «여기서 갈라내기»나 텔레그램 `/fork` 로 지금까지의 대화를 물려받은 새 대화를 만들어, 원래 대화는 그대로 두고 다른 방향을 시도합니다.
+- **특정 답에서 갈라낼 수 있습니다.** 비서 답 카드 메뉴 «여기까지로 갈라내기»는 그 답까지만 물려받습니다. 이미 요약된 오래된 답에서는 아직 갈라낼 수 없습니다.
+- **가지의 결론을 원래 대화로 보냅니다.** 가지 탭 메뉴나 텔레그램 `/fork back` 으로 보내면 가지의 비서가 정한 것과 매니저 작업 결과를 정리해 넘기고, 원래 대화의 비서가 받은 내용을 알려 줍니다. 다시 보내면 지난번 뒤에 생긴 것만 보냅니다.
+
+### Fixed
+
+- **긴 Codex·OpenAI 대화에서 짧은 메시지에도 답이 나오기까지 몇 분씩 걸리던 문제.** 대화가 모델이 한 번에 읽을 수 있는 분량 안이면 이력 정리를 답한 뒤로 미룹니다.
+
 ## [0.71.0] - 2026-10-15
 
 ### Added
@@ -2537,7 +2549,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...HEAD
+[0.72.0]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...v0.71.0
 [0.70.1]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...v0.70.1
 [0.70.0]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...v0.70.0

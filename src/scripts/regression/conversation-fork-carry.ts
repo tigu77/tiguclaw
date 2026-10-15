@@ -53,12 +53,22 @@ export const check: RegressionCheck = {
     //  원래 대화의 비서가 알림으로 받고, 화면엔 «무엇을 받았는지» 알리는 비서 답만 남는다(백그라운드 작업 완료 알림과 같은 모양).
     out.push(assert("★★① 가지 턴(합성·가지 지정)으로 결론을 받고 ② 원래 대화의 비서에게 **합성 알림**으로 전한다(사용자 말풍선 없음 · 가지 이름·결론 포함 · 원래 대화 지정) · 결과에 원래 대화 이름",
       r.ok && r.parentKey === P && r.parentName === "여행 계획" && seen.length === 2 &&
-        a!.threadKey === K && a!.synthetic === true && a!.session?.explicitSessionId === K &&
-        b!.threadKey === P && b!.synthetic === true && b!.session?.explicitSessionId === P &&
+        a!.threadKey === K && a!.synthetic === true && a!.session?.explicitSessionId === K && a!.turnOrigin === "fork-carry" &&
+        b!.threadKey === P && b!.synthetic === true && b!.session?.explicitSessionId === P && b!.turnOrigin !== "fork-carry" &&
         b!.text.includes("결론: 3박 4일") && b!.text.includes("여행 계획 (2)") &&
         // 정리 지시: **빠짐없이** + 경계 = 가지에서 처음 보낸 메시지(갈라지기 전 메시지가 아니다 · 10-15 정태님 «충분히 정리해서 넘기는 거지?»)
         a!.text.includes("빠짐없이") && a!.text.includes("가지에서 처음 보낸 말") && !a!.text.includes("갈라지기 전 메시지"),
-      { r, turns: seen.map((m) => ({ tk: m.threadKey === K ? "K" : m.threadKey === P ? "P" : m.threadKey, synthetic: m.synthetic, text: m.text.slice(0, 40) })) }));
+      { r, turns: seen.map((m) => ({ tk: m.threadKey === K ? "K" : m.threadKey === P ? "P" : m.threadKey, synthetic: m.synthetic, origin: m.turnOrigin, text: m.text.slice(0, 40) })) }));
+
+    // ★정리 턴(`fork-carry`)엔 끼워넣기 채널을 안 붙인다 — 붙이면 그 사이 가지에 친 말이 정리에 섞여 «결론» 으로 원래 대화에 가고,
+    //  그 말은 «보냄» 앞이라 다음 보내기에서도 빠졌다(릴리스 레드팀 F2). 원래 대화 턴(②)은 종전대로 받는다.
+    {
+      const { readSourceSync, stripComments } = await import("./_wiring.js");
+      const entry = stripComments(readSourceSync("src/index.ts"));
+      out.push(assert("★진입점: 끼워넣기 채널은 `fork-carry` 턴에 안 만든다",
+        /if\s*\(\s*STEERING_ENABLED\s*&&\s*msg\.turnOrigin\s*!==\s*"fork-carry"\s*\)/.test(entry),
+        entry.split("\n").filter((l) => l.includes("STEERING_ENABLED")).map((l) => l.trim())));
+    }
 
     seen.length = 0;
     answer = "   ";
@@ -156,13 +166,24 @@ export const check: RegressionCheck = {
         recordChatMessage({ ts: e.ts, threadKey: String(e.payload.threadKey), channel: "http-bridge", role: "assistant", text: "", notice: true, kind: e.type, data: e.payload } as never);
       });
       const asks: string[] = [];
-      const h3 = (m: IncomingMessage): Promise<unknown> => enqueueThreadTurn(m.threadKey, async () => { if (m.threadKey === K3) { asks.push(m.text); await m.reply("결론: 갱신"); } });
+      // 원래 대화도 답한다 — «보냄» 표식은 원래 대화의 비서가 실패 없이 답한 **뒤에만** 남는다(릴리스 레드팀 F1).
+      // 답은 진짜처럼 **화면 기록에도 남긴다**(진입점이 답 직후 `channel.message.out` 을 동기 발행 → 영속기) — 안 남기면 «결론 행 자신이
+      //  다음 새 내용으로 잡히는가» 를 못 본다(재검토 G).
+      const answerK3 = async (m: IncomingMessage, t: string): Promise<void> => {
+        await m.reply(t);
+        recordChatMessage({ threadKey: m.threadKey, channel: "dashboard", role: "assistant", text: t, ts: Date.now() } as never);
+      };
+      const h3 = (m: IncomingMessage): Promise<unknown> => enqueueThreadTurn(m.threadKey, async () => {
+        if (m.threadKey === K3) { asks.push(m.text); await answerK3(m, "결론: 갱신"); } else await m.reply("받았습니다");
+      });
+      const settle = (): Promise<unknown> => new Promise((res) => setTimeout(res, 20));
       try {
         const c1 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        await settle();
         const c2 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
         recordChatMessage({ threadKey: K3, channel: "dashboard", role: "user", text: "두 번째 이야기 — 렌터카", ts: Date.now() + 20 } as never);
         const c3 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
-        await new Promise((res) => setTimeout(res, 20));
+        await settle();
         out.push(assert("★보내면 가지에 «여기까지 보냈다» 표식 · 새 대화 없이 다시 보내면 가지 비서를 부르지 않고 «새 내용 없음» · 새 대화가 생기면 그 뒤부터만 정리",
           c1.ok && marks.length >= 1 && marks[0]!.threadKey === K3 && marks[0]!.parentKey === P && marks[0]!.parentName === "여행 계획" &&
             !c2.ok && c2.reason === "nothing_new" && asks.length === 2 &&
@@ -173,6 +194,7 @@ export const check: RegressionCheck = {
         //  «매니저들이 엄청나게 작업을 했어»). 진행 통지(notice)만 있으면 새 내용이 아니다.
         recordChatMessage({ threadKey: K3, channel: "dashboard", role: "assistant", text: "매니저 결과 — 보고서 docs/r.md 작성", ts: Date.now() + 30 } as never);
         const c4 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        await settle();
         recordChatMessage({ threadKey: K3, channel: "dashboard", role: "assistant", text: "⏳ 작업 진행 중", notice: true, ts: Date.now() + 40 } as never);
         const c5 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
         await new Promise((res) => setTimeout(res, 20));
@@ -180,9 +202,104 @@ export const check: RegressionCheck = {
           c4.ok && asks.length === 3 && asks[2]!.includes("매니저 결과 — 보고서") && asks[2]!.includes("비서의 답") && asks[2]!.includes("매니저·백그라운드 작업이 한 일") &&
             !c5.ok && c5.reason === "nothing_new" && asks.length === 3,
           { c4: c4.ok, c5, asks: asks.length, last: asks[2]?.slice(0, 200) }));
+
+        // ★`/fork back` 도 보낼 게 없으면 **방을 옮기지 않고** 한 번만 답한다 — 종전엔 «보냅니다» 를 말하고 방을 원래 대화로 옮긴 뒤
+        //  «새 내용 없음» 을 이어 말했다(릴리스 레드팀 F4).
+        setChannelSessionBinding("telegram", "chat-carry-3", K3);
+        replies.length = 0;
+        const asksBefore = asks.length;
+        await handleFork({ msg: { ...tg, threadKey: K3, channelAddress: "chat-carry-3" } as never, args: "back", trimmed: "/fork back", sidChannel: CH });
+        await settle();
+        out.push(assert("★`/fork back` 에 보낼 새 내용이 없으면 방은 가지에 그대로 · 답은 «새 내용 없음» 한 번 · 가지 비서를 안 부른다",
+          getChannelSessionBinding("telegram", "chat-carry-3") === K3 && replies.length === 1 && asks.length === asksBefore,
+          { bound: getChannelSessionBinding("telegram", "chat-carry-3") === K3 ? "K3" : "moved", replies, asks: asks.length - asksBefore }));
+
+        // ★«보냄» 표식은 원래 대화가 **실패 없이 답한 뒤에만** — 그 턴이 실패하면(한도·장애) 다시 보낼 때 «새 내용 없음» 이 아니라
+        //  같은 범위를 다시 정리한다(릴리스 레드팀 F1 — 종전엔 줄에 넣자마자 표식을 남겨 결론이 사라졌다).
+        recordChatMessage({ threadKey: K3, channel: "dashboard", role: "user", text: "세 번째 이야기 — 환전", ts: Date.now() + 50 } as never);
+        const marksBefore = marks.length;
+        const parentFails = (m: IncomingMessage): Promise<unknown> => enqueueThreadTurn(m.threadKey, async () => {
+          if (m.threadKey === K3) { asks.push(m.text); await answerK3(m, "결론: 환전"); } else await m.reply("⚠️ 응답 생성 실패: 429", { turnFailed: true });
+        });
+        const c6 = await carryForkConclusion(K3, { channel: CH }, { runTurn: parentFails, deliver });
+        await settle();
+        const c7 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        await settle();
+        out.push(assert("★원래 대화 턴이 실패하면 «보냄» 표식을 안 남긴다 — 다시 보내면 같은 범위(세 번째 이야기)를 다시 정리해 보낸다",
+          c6.ok && c7.ok && marks.length === marksBefore + 1 && asks[asks.length - 1]!.includes("세 번째 이야기"),
+          { c6: c6.ok, c7, marks: marks.length - marksBefore, last: asks[asks.length - 1]?.slice(0, 160) }));
+
+        // ★원래 대화가 받는 **동안** 가지에 생긴 말은 «보냄» 에 묻히지 않는다 — 표식은 그 턴이 끝난 뒤 남지만, 범위 끝은 정리 직후
+        //  위치(`throughChatId`)다(F1 수정이 낳을 수 있는 빈틈).
+        recordChatMessage({ threadKey: K3, channel: "dashboard", role: "user", text: "네 번째 이야기 — 보험", ts: Date.now() + 60 } as never);
+        let releaseParent: () => void = () => {};
+        const parentSlow = (m: IncomingMessage): Promise<unknown> => enqueueThreadTurn(m.threadKey, async () => {
+          if (m.threadKey === K3) { asks.push(m.text); await answerK3(m, "결론: 보험"); return; }
+          await new Promise<void>((res) => { releaseParent = res; setTimeout(res, 2000); });
+          await m.reply("받았습니다");
+        });
+        const c8 = await carryForkConclusion(K3, { channel: CH }, { runTurn: parentSlow, deliver });
+        await settle();
+        recordChatMessage({ threadKey: K3, channel: "dashboard", role: "user", text: "다섯 번째 이야기 — 받는 동안 친 말", ts: Date.now() } as never);
+        // ★원래 대화가 받는 동안 다시 보내면 «보내는 중» — 표식이 아직 없어 같은 범위를 또 정리해 같은 결론이 두 번 들어간다(재검토 G).
+        const asksMid = asks.length;
+        const busyMid = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        out.push(assert("★원래 대화가 받는 동안 다시 보내면 «보내는 중» 으로 거절 · 가지 비서를 다시 안 부른다",
+          !busyMid.ok && busyMid.reason === "busy" && asks.length === asksMid, { busyMid, asks: asks.length - asksMid }));
+        releaseParent();
+        await settle();
+        const c9 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        await settle();
+        out.push(assert("★원래 대화가 받는 동안 가지에 친 말은 다음 보내기 범위에 든다(표식 위치 = 정리 직후)",
+          c8.ok && c9.ok && asks[asks.length - 1]!.includes("다섯 번째 이야기") && !asks[asks.length - 1]!.includes("네 번째 이야기"),
+          { c8: c8.ok, c9, last: asks[asks.length - 1]?.slice(0, 160) }));
+        // 구분선 «여기까지 보냈다» 는 범위 끝(결론 행) 바로 뒤 시각 — 화면 기록은 ts 순이라, 받는 동안 친 말이 구분선 **아래**에 보여야 한다(재검토 P1).
+        {
+          const rows = db.prepare(`SELECT id, ts, kind, text FROM chat_log WHERE thread_key = ? ORDER BY ts ASC, id ASC`).all(K3) as { id: number; ts: number; kind: string | null; text: string }[];
+          const fifth = rows.findIndex((x) => x.text.includes("다섯 번째 이야기"));
+          const insuranceMark = rows.findIndex((x, i) => x.kind === "thread.carried" && rows.slice(0, i).some((y) => y.text === "결론: 보험"));
+          out.push(assert("★표식(구분선)은 ts 순으로 결론 행 뒤 · 받는 동안 친 말보다 앞",
+            insuranceMark >= 0 && fifth > insuranceMark, { insuranceMark, fifth, order: rows.map((x) => x.kind ?? x.text.slice(0, 8)) }));
+        }
+
+        // ★정리 턴(①) 중에 가지에 친 말 — 그 턴은 줄 **뒤**에서 시작할 때 적재된다. 그 적재가 범위 끝을 잡는 것보다 먼저 돌아도(호출자가
+        //  한 겹 더 감싸 한 틱 늦는 경우) 묻히지 않고 다음 범위의 첫 기록이어야 한다(재검토 G — 종전엔 «지금의 최대 id» 라 한 틱 차이에 기댔다).
+        recordChatMessage({ threadKey: K3, channel: "dashboard", role: "user", text: "여섯 번째 이야기 — 정리 직전", ts: Date.now() } as never);
+        let queued: Promise<unknown> | undefined;
+        const h6 = (m: IncomingMessage): Promise<unknown> => enqueueThreadTurn(m.threadKey, async () => {
+          if (m.threadKey === K3) {
+            asks.push(m.text);
+            // 정리하는 중에 사용자가 가지에 말을 친다 — 줄 뒤에 서고, 그 턴이 시작될 때 입력 행이 적재된다.
+            queued = enqueueThreadTurn(K3, async () => {
+              recordChatMessage({ threadKey: K3, channel: "dashboard", role: "user", text: "일곱 번째 이야기 — 정리 중에 친 말", ts: Date.now() } as never);
+              await answerK3({ ...m, reply: async () => {} } as IncomingMessage, "네, 렌터카도 볼게요");
+            });
+            await answerK3(m, "결론: 직전");
+          } else await m.reply("받았습니다");
+        });
+        // 몇 틱 늦춘다 — 줄 선 턴(적재 + 답)이 범위 끝을 잡기 전에 다 돌아도 묻히지 않아야 한다.
+        const wrapped = async (m: IncomingMessage): Promise<unknown> => { const r = await h6(m); for (let i = 0; i < 20; i++) await Promise.resolve(); return r; };
+        const c10 = await carryForkConclusion(K3, { channel: CH }, { runTurn: wrapped, deliver });
+        await queued;
+        await settle();
+        const c11 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        await settle();
+        out.push(assert("★정리 중에 가지에 친 말은 (적재가 한 틱 앞서도) 다음 보내기 범위의 첫 기록이다",
+          c10.ok && c11.ok && asks[asks.length - 1]!.includes("일곱 번째 이야기") && !asks[asks.length - 1]!.includes("여섯 번째 이야기"),
+          { c10: c10.ok, c11, last: asks[asks.length - 1]?.slice(0, 200) }));
       } finally {
         unsub();
       }
+    }
+
+    // ★갈라진 뒤 아무것도 안 했으면 «새 내용 없음»(지난번 보낸 뒤) 이 아니라 «아직 대화 없음» 이다 — 처음인데 «지난번» 을 말하던 것
+    //  (릴리스 레드팀 F5). 가지 비서를 부르지 않는다.
+    {
+      const K5 = `dashboard:${randomUUID()}`;
+      await forkThread(P, K5, noSdk);
+      seen.length = 0;
+      const y = await carryForkConclusion(K5, { channel: CH }, { runTurn: handler, deliver });
+      out.push(assert("★갈라진 뒤 대화가 없으면 «nothing_yet» · 가지 비서를 부르지 않는다", !y.ok && y.reason === "nothing_yet" && seen.length === 0, { y, turns: seen.length }));
     }
     return out;
   },

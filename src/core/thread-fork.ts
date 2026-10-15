@@ -327,7 +327,12 @@ export interface CarryOrigin {
 
 export type CarryResult =
   | { ok: true; parentKey: string; parentName: string; conclusion: string }
-  | { ok: false; reason: "not_fork" | "no_handler" | "busy" | "empty" | "nothing_new" | "failed"; detail: string };
+  | {
+      ok: false;
+      // nothing_new = 지난번 보낸 뒤 새 기록 없음 · nothing_yet = 갈라진 뒤 아무 기록 없음(처음 보내는데 보낼 게 없다)
+      reason: "not_fork" | "no_handler" | "busy" | "empty" | "nothing_new" | "nothing_yet" | "failed";
+      detail: string;
+    };
 
 export interface CarryDeps {
   runTurn?: ((msg: IncomingMessage) => Promise<unknown>) | undefined;
@@ -338,6 +343,12 @@ export interface CarryDeps {
 /** 지금 결론을 보내는 중인 가지 — 같은 가지를 두 번 겹쳐 보내면 같은 결론이 원래 대화에 두 번 들어간다(적대 검토 P2). */
 const carrying = new Set<string>();
 export const isCarrying = (childKey: string): boolean => carrying.has(childKey);
+
+/**
+ * 보낼 새 기록이 있나 — 지난번 «보냄» 표식 뒤(없으면 갈라진 뒤) 첫 대화 기록. 결론 보내기와 `/fork back` 이 **같은 판정**을 쓴다
+ *  (`/fork back` 은 안내·방 이동 **전에** 묻는다 — 종전엔 «보냅니다» 를 먼저 말하고 «새 내용 없음» 을 이어 말했다, 릴리스 레드팀 F4).
+ */
+export const carrySince = (childKey: string): ReturnType<typeof firstChatAfterKind> => firstChatAfterKind(childKey, "thread.carried");
 
 /**
  * 가지의 결론을 원래 대화로 보낸다. ①을 **기다리고**(결론이 있어야 ②를 만든다) ②는 **줄에 넣고 돌아온다**(원래 대화의 답은 그쪽 화면에 뜬다).
@@ -356,6 +367,8 @@ export const carryForkConclusion = async (childKey: string, origin: CarryOrigin,
   if (runTurn === undefined) return { ok: false, reason: "no_handler", detail: "메인 핸들러 미등록" };
   if (carrying.has(childKey)) return { ok: false, reason: "busy", detail: "이미 보내는 중" };
   carrying.add(childKey);
+  /** 원래 대화 턴에 넘겼다 — 그 턴이 끝날 때 «보내는 중» 을 푼다(그 전에 풀면 같은 범위를 겹쳐 보낸다). */
+  let handedOff = false;
   try {
     const parentName = forkSessionName(lin.parentKey);
     const childName = forkSessionName(childKey);
@@ -364,7 +377,13 @@ export const carryForkConclusion = async (childKey: string, origin: CarryOrigin,
     const replyFor = (threadKey: string) => async (t: string): Promise<void> => {
       await deliver({ channel: origin.channel, target: origin.address ?? null, text: t, originThreadKey: threadKey });
     };
-    const turn = (threadKey: string, text: string, synthetic: boolean, reply: (t: string, o?: ReplyOptions) => Promise<void>): IncomingMessage => {
+    const turn = (
+      threadKey: string,
+      text: string,
+      synthetic: boolean,
+      reply: (t: string, o?: ReplyOptions) => Promise<void>,
+      turnOrigin: "fork-carry" | "synthetic-other" = "synthetic-other",
+    ): IncomingMessage => {
       const address = origin.address ?? threadKey;
       return {
         channel: origin.channel,
@@ -374,7 +393,7 @@ export const carryForkConclusion = async (childKey: string, origin: CarryOrigin,
         // 세션을 **지정**한다 — 대화방 바인딩이 어디를 가리키든 이 두 턴은 이 세션들로 간다.
         session: { explicitSessionId: threadKey, channelAddress: address },
         synthetic,
-        turnOrigin: "synthetic-other",
+        turnOrigin,
         receivedAt: Date.now(),
         text,
         reply,
@@ -385,17 +404,22 @@ export const carryForkConclusion = async (childKey: string, origin: CarryOrigin,
     // 정리 범위의 시작 — 지난번 보낸 표식(`thread.carried`) 뒤 첫 대화 기록(사용자 메시지 또는 매니저 결과 같은 비서 답), 표식이 없으면
     //  갈라진 뒤 첫 기록(가지 자신의 화면 기록 — 물려받은 기록은 원래 대화 키로 남는다). ★없으면 **보낼 새 내용이 없다** — 가지 비서를
     //  부르지 않는다(헛턴·같은 결론 중복 방지).
-    const since = firstChatAfterKind(childKey, "thread.carried");
-    if (since.text === "") return { ok: false, reason: "nothing_new", detail: since.marked ? "지난번 보낸 뒤 새 대화 없음" : "갈라진 뒤 대화 없음" };
+    const since = carrySince(childKey);
+    if (since.text === "") return since.marked ? { ok: false, reason: "nothing_new", detail: "지난번 보낸 뒤 새 대화 없음" } : { ok: false, reason: "nothing_yet", detail: "갈라진 뒤 대화 없음" };
     let conclusion = "";
     let failed = "";
+    /** 결론을 답하던 순간의 기록 끝 — 결론 행은 이 직후(배달 뒤 동기 적재)에 생기고, 정리 중 줄 선 말은 이 턴이 끝난 뒤에 생긴다. */
+    let beforeConclusion = 0;
+    const maxChatId = (): number => (getDb().prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM chat_log`).get() as { m: number }).m;
     const sendBranch = replyFor(childKey);
     try {
+      // ★정리 턴엔 끼워넣기를 받지 않는다(`fork-carry` — 릴리스 레드팀 F2). 받으면 그 사이 가지에 친 말이 이 턴에 섞여 그 답이 «결론» 으로
+      //  원래 대화에 가고, 그 말은 «보냄» 앞이라 다음 보내기에서도 빠졌다. 받지 않으면 다음 턴으로 줄을 선다.
       await runTurn(turn(childKey, carryAsk(parentName, since, since.marked), true, async (t, o) => {
         if (o?.turnFailed === true) failed = t;
-        else conclusion = t;
+        else { conclusion = t; beforeConclusion = maxChatId(); }
         await sendBranch(t);
-      }));
+      }, "fork-carry"));
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       console.warn(`[fork] 결론 정리 실패 ${childKey}: ${detail}`);
@@ -415,18 +439,43 @@ export const carryForkConclusion = async (childKey: string, origin: CarryOrigin,
     //   떠서 시스템 공지처럼 부자연스러웠다(10-15 정태님). 읽는 이가 둘(사람·모델)인 글을 한 메시지에 쓴 것이 원인.
     //  ★본문은 가지 **비서**가 쓴 글이다 — 알림이 «참고 맥락, 새 지시 아님» 을 밝힌다(사용자 권위로 올라가지 않게, 적대 검토 P2).
     const carried = translate("srv.fork.carried", { name: childName, conclusion: conclusion.trim() });
-    void Promise.resolve(runTurn(turn(lin.parentKey, carried, true, replyFor(lin.parentKey)))).catch((e: unknown) => {
-      console.warn(`[fork] 결론 전달 턴 실패 ${lin.parentKey}: ${e instanceof Error ? e.message : String(e)}`);
-    });
-    // 가지 화면에 «여기까지 보냈다» 구분선 — 다음 보내기의 범위 시작 표식이기도 하다(대화 가시 이벤트 → chat_log).
-    try {
-      getEventBus().publish({ type: "thread.carried", ts: Date.now(), payload: { threadKey: childKey, channel, parentKey: lin.parentKey, parentName } });
-    } catch {
-      /* 관측 발행 실패가 보내기를 무르지 않는다 — 다음 보내기가 조금 겹칠 뿐이다. */
-    }
+    // 이번 정리가 덮은 화면 기록의 끝 = **결론 답 행 자신**(답 직후 동기로 적재된다 — 답하던 순간 이후 가지의 첫 비서 행). 표식은 원래
+    //  대화가 받은 **뒤에** 남기므로, 그 사이 가지에 생긴 기록이 «보냄» 에 묻히지 않게 위치를 지금 잡아 둔다(다음 보내기는 이 뒤부터).
+    //  ★«지금의 최대 id» 로 잡지 않는다 — 정리 중 줄 선 말은 그 턴이 **시작할 때** 적재되는데, 그게 이 줄보다 먼저 도느냐가 한 틱 차이라
+    //   그 말이 범위 끝에 묻힐 수 있었다(재검토 G). 행이 없으면(기록 안 되는 경로) 답하던 순간의 끝 — 그때는 줄 선 턴이 아직 안 돌았다.
+    const endRow = getDb()
+      .prepare(`SELECT id, ts FROM chat_log WHERE thread_key = ? AND id > ? AND role = 'assistant' AND kind IS NULL AND notice IS NULL ORDER BY id ASC LIMIT 1`)
+      .get(childKey, beforeConclusion) as { id: number; ts: number } | undefined;
+    const throughChatId = endRow?.id ?? beforeConclusion;
+    // 구분선은 범위 끝에 그린다 — 화면 기록은 ts 순이라, 표식 시각(원래 대화가 받은 뒤)을 쓰면 그 사이 생긴(보내지 않은) 기록이
+    //  «여기까지 보냈다» 위에 보였다(재검토 P1).
+    const markTs = endRow !== undefined ? endRow.ts + 1 : Date.now();
+    // ★«보냄» 표식은 원래 대화의 비서가 **실패 없이 답한 뒤에만** 남긴다(릴리스 레드팀 F1). 종전엔 줄에 넣자마자 남겨, 그 턴이 실패하거나
+    //  (한도·장애) 종료 중에 버려지거나 재시작으로 줄이 날아가도 «보냈다» 가 되어 다시 보내면 «새 내용 없음» — 결론이 사라졌다.
+    let parentAnswered = false;
+    const deliverParent = replyFor(lin.parentKey);
+    handedOff = true;
+    void Promise.resolve(runTurn(turn(lin.parentKey, carried, true, async (t, o) => {
+      if (o?.turnFailed !== true) parentAnswered = true;
+      await deliverParent(t);
+    })))
+      .then(() => {
+        if (!parentAnswered) {
+          console.warn(`[fork] 결론 전달 턴이 답 없이 끝남 ${lin.parentKey} — «보냄» 표식을 남기지 않는다(다시 보낼 수 있다)`);
+          return;
+        }
+        // 가지 화면에 «여기까지 보냈다» 구분선 — 다음 보내기의 범위 시작 표식이기도 하다(대화 가시 이벤트 → chat_log).
+        getEventBus().publish({ type: "thread.carried", ts: markTs, payload: { threadKey: childKey, channel, parentKey: lin.parentKey, parentName, throughChatId } });
+      })
+      .catch((e: unknown) => {
+        console.warn(`[fork] 결론 전달 턴 실패 ${lin.parentKey}: ${e instanceof Error ? e.message : String(e)}`);
+      })
+      .finally(() => {
+        carrying.delete(childKey);
+      });
     console.log(`[fork] 결론 전달 ${childKey} → ${lin.parentKey} (${conclusion.length}자)`);
     return { ok: true, parentKey: lin.parentKey, parentName, conclusion };
   } finally {
-    carrying.delete(childKey);
+    if (!handedOff) carrying.delete(childKey);
   }
 };

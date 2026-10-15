@@ -1184,5 +1184,8 @@
   "ctx.forkHere": "여기까지로 갈라내기",
   "tab.forkNotTurn": "이 답에서는 갈라낼 수 없습니다 — 저장이 확인된 답이 아닙니다.",
   "tab.forkSummarized": "이 답은 이미 요약된 구간이라 지금은 여기서 갈라낼 수 없습니다. 더 최근 답에서 갈라내 주세요.",
-  "tab.forkClearedAfter": "이 답 뒤에 대화를 비웠기 때문에(/clear) 지금은 여기서 갈라낼 수 없습니다."
+  "tab.forkClearedAfter": "이 답 뒤에 대화를 비웠기 때문에(/clear) 지금은 여기서 갈라낼 수 없습니다.",
+  "tab.carryNothingYet": "갈라진 뒤 이 가지에서 나눈 대화가 없어 보낼 결론이 없습니다.",
+  "srv.fork.carryNothingYet": "갈라진 뒤 이 가지에서 나눈 대화가 없어 보낼 결론이 없습니다. 이 대화방은 가지에 그대로 둡니다.",
+  "tab.carryBusy": "지금 결론을 보내는 중입니다 — 원래 대화가 받으면 끝납니다."
 }

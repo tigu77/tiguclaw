@@ -627,7 +627,7 @@
   "tab.close": "Close tab",
   "tab.fallbackName": "Session {n}",
   "tab.new": "New session",
-  "tab.fork": "Branch from here",
+  "tab.fork": "Branch this conversation",
   "tab.forkReady": "Created the new conversation: {name}",
   "tab.carryDone": "Sent the conclusion to «{name}».",
   "tab.carry": "Send conclusion to «{name}»",
@@ -1181,8 +1181,11 @@
   "chat.carriedTo": "↩️ Conclusion up to here sent to «{name}»",
   "tab.carryNothingNew": "Nothing new in this branch since the last time you sent its conclusion.",
   "srv.fork.carryNothingNew": "Nothing new in this branch since the last send, so nothing was sent. This chat stays on the branch.",
-  "ctx.forkHere": "Branch from here",
+  "ctx.forkHere": "Branch up to here",
   "tab.forkNotTurn": "Can't branch from this reply — it isn't a confirmed, saved reply.",
   "tab.forkSummarized": "This reply is already in the summarized part of the conversation, so branching here isn't supported yet. Try a more recent reply.",
-  "tab.forkClearedAfter": "The conversation was cleared (/clear) after this reply, so branching here isn't supported yet."
+  "tab.forkClearedAfter": "The conversation was cleared (/clear) after this reply, so branching here isn't supported yet.",
+  "tab.carryNothingYet": "Nothing has happened in this branch yet, so there's no conclusion to send.",
+  "srv.fork.carryNothingYet": "Nothing has happened in this branch yet, so there's no conclusion to send. This chat stays on the branch.",
+  "tab.carryBusy": "Already sending the conclusion — it finishes once the original chat receives it."
 }

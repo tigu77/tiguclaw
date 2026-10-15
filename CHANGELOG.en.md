@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.72.0] - 2026-10-15
+
+### Added
+
+- **Branch a conversation.** «Branch this conversation» on a session tab, or `/fork` on Telegram, starts a new conversation that inherits everything so far, so you can try another direction without touching the original.
+- **Branch from a specific reply.** «Branch up to here» on an assistant reply inherits the conversation only up to that reply. Replies already in the summarized part of a long conversation can't be branched from yet.
+- **Send a branch's conclusion back.** From the branch tab's menu, or `/fork back` on Telegram, the branch's assistant summarizes what was decided — including what its managers did — and the original conversation's assistant tells you what it received. Sending again only carries what's new since the last time.
+
+### Fixed
+
+- **Long Codex and OpenAI conversations taking minutes to answer even a short message.** When the conversation fits in what the model can read at once, history tidying now waits until after the reply.
+
 ## [0.71.0] - 2026-10-15
 
 ### Added
@@ -987,7 +999,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...HEAD
+[0.72.0]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...v0.71.0
 [0.70.1]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...v0.70.1
 [0.70.0]: https://github.com/tigu77/tiguclaw/compare/v0.69.1...v0.70.0

@@ -199,6 +199,9 @@
             return;
           }
           if (r && r.reason === "nothing_new") { showToast(i18n("tab.carryNothingNew")); return; }
+          if (r && r.reason === "nothing_yet") { showToast(i18n("tab.carryNothingYet")); return; }
+          // 정리는 끝났고 원래 대화가 받는 중이다(그 턴이 끝나야 «보냄» 이 남는다) — 실패가 아니다.
+          if (r && r.reason === "busy") { showToast(i18n("tab.carryBusy")); return; }
           console.warn("session-carry 실패:", res.status, r && (r.reason || r.error), r && r.detail);
           showToast(i18n("tab.carryFailed"), "bad");
         } catch (e) {

@@ -59,6 +59,7 @@ export interface Attachment {
  *  추론하지 않는다.
  * ★이 값은 모델 요청 body·headers·instructions·input·tools·prompt_cache_key 에
  *  **절대 들어가지 않는다.** 로그에만 찍힌다.
+ * ★예외 하나 — `fork-carry` 는 진입점이 **끼워넣기 채널을 안 만드는** 데 쓴다(`src/index.ts`, 2026-10-15).
  */
 export type TurnOrigin =
   | "inbound"
@@ -67,10 +68,12 @@ export type TurnOrigin =
   | "worker-completion"
   | "worker-checkin"
   | "synthetic-other"
+  /** 가지 결론 정리 턴 — 끼워넣기(steering)를 받지 않는다(그 사이 친 말이 결론에 섞인다). */
+  | "fork-carry"
   | "unknown";
 
 export interface IncomingMessage {
-  /** 턴 출처 — 진단 전용(위 `TurnOrigin`). 미지정은 라우터가 기본값을 정한다. */
+  /** 턴 출처 — 진단용(위 `TurnOrigin`, `fork-carry` 만 끼워넣기 차단에 쓰인다). 미지정은 라우터가 기본값을 정한다. */
   turnOrigin?: TurnOrigin;
   channel: ChannelName;
   channelUserId: string;

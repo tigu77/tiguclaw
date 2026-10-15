@@ -187,7 +187,7 @@ export const handleSessionCarry = async (ctx: RouteCtx): Promise<void> => {
   try {
     const { carryForkConclusion } = await import("../../src/core/thread-fork.js");
     const r = await carryForkConclusion(threadKey, { channel: ctx.channelName });
-    writeJson(res, r.ok ? 200 : r.reason === "not_fork" ? 400 : r.reason === "busy" || r.reason === "nothing_new" ? 409 : 500, r);
+    writeJson(res, r.ok ? 200 : r.reason === "not_fork" ? 400 : r.reason === "busy" || r.reason === "nothing_new" || r.reason === "nothing_yet" ? 409 : 500, r);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
     writeJson(res, 500, { error: m });

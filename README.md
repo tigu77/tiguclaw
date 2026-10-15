@@ -190,7 +190,9 @@ Eight things. Everything else is in [the full feature list](docs/features.en.md)
    tabs, run several at once without them blocking each other, and pick up any of them later from
    a different channel. Search spans every session, and narrows to one when you want it to. Link a
    project to a conversation and it stays in that project's context throughout, with commands like
-   deploy or test one click away, run right in that folder.
+   deploy or test one click away, run right in that folder. You can also **branch** a conversation —
+   try another direction in a new tab that inherits everything so far, or everything up to a chosen
+   reply, then send just the outcome back to the original.
 4. **Hand over whole goals** — big work goes to a **manager** that assembles its own sub-agents and
    isn't done until it has collected results. Your conversation keeps going meanwhile.
 5. **Many LLMs, one surface** — `anthropic`, `openai`, `codex` (ChatGPT), `google`,

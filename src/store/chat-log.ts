@@ -358,7 +358,11 @@ export const firstChatAfterKind = (
   kind: string,
 ): { text: string; role: "user" | "assistant" | ""; marked: boolean } => {
   const db = getDb();
-  const mark = db.prepare(`SELECT MAX(id) AS id FROM chat_log WHERE thread_key = ? AND kind = ?`).get(threadKey, kind) as { id: number | null };
+  // 표식이 «여기까지 보냈다» 를 실어 오면(`throughChatId` — 표식은 원래 대화가 받은 뒤에 남으므로 그 사이 생긴 기록을 묻지 않게) 그 위치,
+  //  없으면 표식 행 자신.
+  const mark = db
+    .prepare(`SELECT MAX(COALESCE(json_extract(data, '$.throughChatId'), id)) AS id FROM chat_log WHERE thread_key = ? AND kind = ?`)
+    .get(threadKey, kind) as { id: number | null };
   const after = mark.id ?? 0;
   const row = db
     .prepare(

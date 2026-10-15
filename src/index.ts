@@ -1304,7 +1304,9 @@ const handler: MessageHandler = async (msg) => {
   // 개입점(serializedHandler)이 진행 턴을 감지하면 steeringChannels.get(threadKey).push 로 이
   // 채널에 적재 → (P1)어댑터가 drain/stream 소비. P0 에선 어댑터 미소비라 사실상 no-op.
   let steeringCh: SteeringChannel | undefined;
-  if (STEERING_ENABLED) {
+  // 가지 결론 정리 턴은 끼워넣기를 받지 않는다 — 그 사이 친 말이 정리에 섞여 «결론» 으로 원래 대화에 갔다(릴리스 레드팀 F2). 채널이 없으면
+  //  들어온 말은 다음 턴으로 줄을 선다.
+  if (STEERING_ENABLED && msg.turnOrigin !== "fork-carry") {
     steeringCh = createSteeringChannel();
     steeringChannels.set(msg.threadKey, steeringCh);
     // `/stop` 뒤에 온 메시지는 이 턴에 끼우지 않고 새 턴으로 — 위 await 사이에 이미 멈췄어도 같다(`closeWhenStopped`).

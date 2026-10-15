@@ -576,7 +576,7 @@ export const handleFork = async (ctx: SlashCtx): Promise<void> => {
   // `/fork back` — 이 가지의 결론을 원래 대화로 보내고 대화방도 원래 대화로 돌린다(대시보드 «결론을 원래 대화로 보내기» 와 같은 코어).
   if (parseSlashCommand(ctx.trimmed).sub === "back") {
     const { getLineage } = await import("../../store/thread-members.js");
-    const { carryForkConclusion, forkSessionName, isCarrying } = await import("../thread-fork.js");
+    const { carryForkConclusion, carrySince, forkSessionName, isCarrying } = await import("../thread-fork.js");
     // 이 방에서 이미 보내는 중이면 기다리라고만 한다 — 바인딩이 먼저 원래 대화로 옮겨져 있어서, 다시 치면 **원래 대화의** 결론이
     //  조부모로 가 버린다(적대 검토 P2).
     const room = `${msg.channel}:${addr}`;
@@ -587,6 +587,13 @@ export const handleFork = async (ctx: SlashCtx): Promise<void> => {
     const lin = getLineage(SESSION_STORAGE_CHANNEL, msg.threadKey);
     if (lin === undefined) {
       await replyCommand(msg, translate("srv.fork.notBranch"), { ephemeral });
+      return;
+    }
+    // 보낼 게 없으면 안내·방 이동 **전에** 답한다 — 종전엔 «보냅니다» 를 말하고 방을 옮긴 뒤 «새 내용 없음» 을 이어 말해, 방은 원래 대화로
+    //  가 버렸다(릴리스 레드팀 F4). 결론 보내기와 같은 판정(`carrySince`)이다.
+    const since = carrySince(msg.threadKey);
+    if (since.text === "") {
+      await replyCommand(msg, translate(since.marked ? "srv.fork.carryNothingNew" : "srv.fork.carryNothingYet"), { ephemeral });
       return;
     }
     // 바인딩을 **먼저** 옮긴다 — 정리하는 동안 이 방에 친 말이 가지(정리 중인 턴)에 끼어들지 않고 원래 대화로 가게.
@@ -600,7 +607,11 @@ export const handleFork = async (ctx: SlashCtx): Promise<void> => {
         if (c.ok) return;
         // 실패하면 방을 **가지로 되돌린다** — 안 그러면 «다시 시도» 가 원래 대화에서 «가지가 아닙니다» 가 된다(적대 검토 P2).
         if (movable) setChannelSessionBinding(msg.channel, addr, child);
-        await replyCommand(msg, translate(c.reason === "nothing_new" ? "srv.fork.carryNothingNew" : "srv.fork.carryFailed"), { ephemeral });
+        await replyCommand(
+          msg,
+          translate(c.reason === "nothing_new" ? "srv.fork.carryNothingNew" : c.reason === "nothing_yet" ? "srv.fork.carryNothingYet" : "srv.fork.carryFailed"),
+          { ephemeral },
+        );
       })
       .finally(() => carryRooms.delete(room));
     return;

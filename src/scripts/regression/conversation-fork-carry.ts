@@ -169,6 +169,17 @@ export const check: RegressionCheck = {
             c3.ok && asks[1]!.includes("두 번째 이야기") && !asks[1]!.includes("첫 이야기") && asks[1]!.includes("이미 한 번 이상") &&
             asks[0]!.includes("첫 이야기") && !asks[0]!.includes("이미 한 번 이상"),
           { c1: c1.ok, c2, c3: c3.ok, marks: marks.length, asks: asks.map((x) => x.slice(0, 120)) }));
+        // ★보낸 뒤 **매니저가 끝났다** — 사용자 말 없이 비서 보고만 남는다(숨은 완료 알림 + 보고). 그것도 새 내용이다(10-15 정태님
+        //  «매니저들이 엄청나게 작업을 했어»). 진행 통지(notice)만 있으면 새 내용이 아니다.
+        recordChatMessage({ threadKey: K3, channel: "dashboard", role: "assistant", text: "매니저 결과 — 보고서 docs/r.md 작성", ts: Date.now() + 30 } as never);
+        const c4 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        recordChatMessage({ threadKey: K3, channel: "dashboard", role: "assistant", text: "⏳ 작업 진행 중", notice: true, ts: Date.now() + 40 } as never);
+        const c5 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        await new Promise((res) => setTimeout(res, 20));
+        out.push(assert("★보낸 뒤 사용자 말 없이 매니저 결과(비서 보고)만 왔어도 다시 보내면 그 결과를 정리한다(범위 첫 기록 = 그 보고) · 진행 통지만이면 «새 내용 없음»",
+          c4.ok && asks.length === 3 && asks[2]!.includes("매니저 결과 — 보고서") && asks[2]!.includes("비서의 답") && asks[2]!.includes("매니저·백그라운드 작업이 한 일") &&
+            !c5.ok && c5.reason === "nothing_new" && asks.length === 3,
+          { c4: c4.ok, c5, asks: asks.length, last: asks[2]?.slice(0, 200) }));
       } finally {
         unsub();
       }

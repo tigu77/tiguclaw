@@ -348,21 +348,30 @@ export const getFirstUserText = (threadKey: string): string => {
 };
 
 /**
- * 이 대화에서 **마지막 `kind` 표식 뒤** 사용자가 처음 보낸 메시지 — 표식이 없으면 처음부터.
+ * 이 대화에서 **마지막 `kind` 표식 뒤의 첫 대화 기록**(사용자 메시지 또는 비서 답 · 통지·이벤트 행 제외) — 표식이 없으면 처음부터.
  *  가지 결론 보내기가 «지난번 보낸 뒤부터» 정리 범위를 잡는 데 쓴다(`thread.carried` 표식, 2026-10-15).
+ * ★비서 답도 센다 — 매니저(백그라운드 작업) 완료는 사용자 말 없이 숨은 알림 + 비서 보고로 남는다. 사용자 메시지만 세면 «보낸 뒤 매니저가
+ *  끝났다» 가 «새 내용 없음» 이 되어 그 결과가 원래 대화로 가지 않았다(10-15 정태님 «매니저들이 엄청나게 작업을 했어»).
  */
-export const firstUserTextAfterKind = (threadKey: string, kind: string): { text: string; marked: boolean } => {
+export const firstChatAfterKind = (
+  threadKey: string,
+  kind: string,
+): { text: string; role: "user" | "assistant" | ""; marked: boolean } => {
   const db = getDb();
   const mark = db.prepare(`SELECT MAX(id) AS id FROM chat_log WHERE thread_key = ? AND kind = ?`).get(threadKey, kind) as { id: number | null };
   const after = mark.id ?? 0;
   const row = db
     .prepare(
-      `SELECT text FROM chat_log
-        WHERE thread_key = ? AND id > ? AND role = 'user' AND kind IS NULL AND text IS NOT NULL AND TRIM(text) <> ''
+      `SELECT role, text FROM chat_log
+        WHERE thread_key = ? AND id > ? AND kind IS NULL AND notice IS NULL AND text IS NOT NULL AND TRIM(text) <> ''
         ORDER BY id ASC LIMIT 1`,
     )
-    .get(threadKey, after) as { text?: string } | undefined;
-  return { text: typeof row?.text === "string" ? row.text : "", marked: mark.id !== null };
+    .get(threadKey, after) as { role?: string; text?: string } | undefined;
+  return {
+    text: typeof row?.text === "string" ? row.text : "",
+    role: row?.role === "user" ? "user" : row?.role === "assistant" ? "assistant" : "",
+    marked: mark.id !== null,
+  };
 };
 
 /** 검색 결과 한 건 — 어느 세션의 언제/누가/무엇인지가 다 실려야 한다. */

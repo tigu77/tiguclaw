@@ -17,7 +17,7 @@ import { deliverOutbound } from "./outbound.js";
 import { enqueueThreadTurn, mainMessageHandler } from "./worker-jobs.js";
 import { translate } from "./i18n.js";
 import type { ChannelName, IncomingMessage, ReplyOptions } from "../channels/types.js";
-import { findTurnRow, firstUserTextAfterKind, getFirstUserText, latestClaudeMarkUpTo } from "../store/chat-log.js";
+import { findTurnRow, firstChatAfterKind, getFirstUserText, latestClaudeMarkUpTo } from "../store/chat-log.js";
 import { indexJsonlIfNeeded } from "../store/memory.js";
 import { getContextBoundary, getDb, getSession, isUserConversationThread, sessionDisplayName, SESSION_STORAGE_CHANNEL } from "../store/sessions.js";
 import { forkExists, forkName, ForkRecordRejected, sessionNames, writeForkRecords } from "../store/thread-fork.js";
@@ -300,17 +300,20 @@ const CARRY_ANCHOR_CHARS = 80;
  * ★경계를 알려 준다 — 가지의 기록엔 갈라지기 전 대화도 다 있는데 표시가 없어서, 모델이 «갈라진 뒤» 를 짐작으로 골랐다.
  *  가지에서 처음 보낸 메시지(가지 자신의 화면 기록 첫 줄 — 물려받은 기록은 원래 대화 키로 남는다)를 인용한다.
  */
-const carryAsk = (parentName: string, firstSince: string, sentBefore: boolean): string => {
-  const head = firstSince.replace(/\s+/g, " ").trim();
+const carryAsk = (parentName: string, since: { text: string; role: "user" | "assistant" | "" }, sentBefore: boolean): string => {
+  const head = since.text.replace(/\s+/g, " ").trim();
   const quote = `«${head.length > CARRY_ANCHOR_CHARS ? `${head.slice(0, CARRY_ANCHOR_CHARS)}…` : head}»`;
+  // 범위의 첫 기록 — 사용자 메시지거나, 매니저 결과처럼 사용자 말 없이 온 비서 보고다.
+  const first = since.role === "assistant" ? `첫 기록은 비서의 답(매니저·백그라운드 작업 결과 보고일 수 있습니다) ${quote}` : `사용자가 처음 보낸 메시지는 ${quote}`;
   // ★두 번째부터는 **지난번 보낸 뒤**만 — 이미 보낸 것을 다시 쓰면 원래 대화에 겹쳐 쌓인다(10-15 정태님 «다시 보내면 그 이후의 내용을»).
   const anchor = sentBefore
-    ? `이 가지의 결론은 이미 한 번 이상 원래 대화로 보냈습니다. 지난번 보낸 뒤 사용자가 처음 보낸 메시지는 ${quote} 입니다 — 거기서부터 지금까지만 정리하고, 이미 보낸 내용은 다시 쓰지 마세요. `
-    : `갈라진 뒤 사용자가 처음 보낸 메시지는 ${quote} 입니다 — 거기서부터 지금까지가 정리 범위입니다. `;
+    ? `이 가지의 결론은 이미 한 번 이상 원래 대화로 보냈습니다. 지난번 보낸 뒤 ${first} 입니다 — 거기서부터 지금까지만 정리하고, 이미 보낸 내용은 다시 쓰지 마세요. `
+    : `갈라진 뒤 ${first} 입니다 — 거기서부터 지금까지가 정리 범위입니다. `;
   return (
     `[가지 결론 정리] 이 대화는 «${parentName}» 에서 갈라진 가지입니다. 사용자가 이 가지의 결론을 원래 대화로 보내려 합니다. ${anchor}` +
     `그 범위에서 한 일을 **빠짐없이** 정리하세요(항목마다 간결하게): 정해진 것(기존 결정을 바꿨으면 무엇에서 무엇으로) · 알아낸 것 · ` +
-    `만든 것과 그 위치 · 확인한 것과 확인하지 못한 것 · 남은 할 일. 갈라지기 전 내용·인사·배경 설명은 빼고, ` +
+    `만든 것과 그 위치 · 확인한 것과 확인하지 못한 것 · 남은 할 일. 매니저·백그라운드 작업이 한 일과 그 결과물(위치)도 같은 항목에 넣습니다. ` +
+    `갈라지기 전 내용·인사·배경 설명은 빼고, ` +
     `원래 대화의 비서가 이것 하나로 그대로 이어받을 수 있게 씁니다. 이 답이 그대로 원래 대화로 전달됩니다. 사용자가 쓰는 언어로 답하세요.`
   );
 };
@@ -379,15 +382,16 @@ export const carryForkConclusion = async (childKey: string, origin: CarryOrigin,
     };
     // ① 가지 비서가 정리한다 — 지시는 합성(사용자 버블 없음), 답은 가지 화면(또는 그 방)에 남는다.
     //  ★실패 답(`turnFailed` — 한도·장애·훅 차단·중단 안내)은 **결론이 아니다**. 종전엔 그 문구가 결론으로 원래 대화에 들어갔다(적대 검토 P3).
-    // 정리 범위의 시작 — 지난번 보낸 표식(`thread.carried`) 뒤 첫 사용자 메시지, 표식이 없으면 갈라진 뒤 첫 메시지(가지 자신의 화면 기록 —
-    //  물려받은 기록은 원래 대화 키로 남는다). ★없으면 **보낼 새 내용이 없다** — 가지 비서를 부르지 않는다(헛턴·같은 결론 중복 방지).
-    const since = firstUserTextAfterKind(childKey, "thread.carried");
+    // 정리 범위의 시작 — 지난번 보낸 표식(`thread.carried`) 뒤 첫 대화 기록(사용자 메시지 또는 매니저 결과 같은 비서 답), 표식이 없으면
+    //  갈라진 뒤 첫 기록(가지 자신의 화면 기록 — 물려받은 기록은 원래 대화 키로 남는다). ★없으면 **보낼 새 내용이 없다** — 가지 비서를
+    //  부르지 않는다(헛턴·같은 결론 중복 방지).
+    const since = firstChatAfterKind(childKey, "thread.carried");
     if (since.text === "") return { ok: false, reason: "nothing_new", detail: since.marked ? "지난번 보낸 뒤 새 대화 없음" : "갈라진 뒤 대화 없음" };
     let conclusion = "";
     let failed = "";
     const sendBranch = replyFor(childKey);
     try {
-      await runTurn(turn(childKey, carryAsk(parentName, since.text, since.marked), true, async (t, o) => {
+      await runTurn(turn(childKey, carryAsk(parentName, since, since.marked), true, async (t, o) => {
         if (o?.turnFailed === true) failed = t;
         else conclusion = t;
         await sendBranch(t);

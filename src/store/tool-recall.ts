@@ -11,6 +11,7 @@
  */
 import type { ChannelName } from "../channels/types.js";
 import { getContextBoundary, getDb } from "./sessions.js";
+import { memberClause, scopeHasRow, threadScope, type ThreadScope } from "./thread-members.js";
 import type { CodexTurnItem } from "./memory.js";
 
 type Call = Extract<CodexTurnItem, { type: "function_call" }>;
@@ -47,14 +48,12 @@ const SNIPPET_SIDE = 150;
 /** 참조 문자열 — 요약 입력(`foldBody`)과 이 도구가 **같은 함수**로 만든다(두 벌이면 갈린다). */
 export const toolResultRef = (transcriptId: number, seq: number): string => `${transcriptId}#${seq}`;
 
-interface Scope { sids: string[]; boundary: number }
+interface Scope { members: ThreadScope; boundary: number }
 
-const scopeOf = (channel: ChannelName, threadKey: string): Scope => {
-  const sids = (getDb()
-    .prepare(`SELECT claude_session_id FROM transcript_index WHERE channel = ? AND thread_key = ?`)
-    .all(channel, threadKey) as { claude_session_id: string }[]).map((r) => r.claude_session_id);
-  return { sids, boundary: getContextBoundary(channel, threadKey) };
-};
+// 소속은 `memberClause`(한 곳) · 경계는 원문 회수 목적이라 적용한다. ★아래 셋은 **자체 SQL** 이라 소속 조건을 `memberClause` 로
+//  SQL 안에 넣는다 — sid 목록만 넘기면 물려받은 기록의 상한(가지치기)이 빠진다.
+const scopeOf = (channel: ChannelName, threadKey: string): Scope =>
+  ({ members: threadScope(channel, threadKey), boundary: getContextBoundary(channel, threadKey) });
 
 const parse = (s: string): CodexTurnItem | undefined => {
   try { return JSON.parse(s) as CodexTurnItem; } catch { return undefined; }
@@ -124,8 +123,9 @@ export const searchThreadToolResults = (
   query: string,
   limit = TOOL_RECALL_LIST_LIMIT,
 ): { total: number; totalCapped: boolean; hits: ToolRecallHit[] } => {
-  const { sids, boundary } = scopeOf(channel, threadKey);
-  if (sids.length === 0 || query.trim() === "") return { total: 0, totalCapped: false, hits: [] };
+  const { members, boundary } = scopeOf(channel, threadKey);
+  if (query.trim() === "") return { total: 0, totalCapped: false, hits: [] };
+  const scope = memberClause(members, "t");
   // SQLite LIKE 는 ASCII 만 대소문자를 무시한다 — 비ASCII 는 원래·소문자·대문자 세 모양으로 거른다(«Ärger» 를 «ärger»·«ÄRGER» 로
   //  찾는다). 종전엔 이런 검색어면 사전 거르기를 통째로 건너뛰어 대화 전체를 읽었다(적대 재검토 P2).
   // ★대소문자가 있는 비ASCII 글자가 **둘 이상** 섞인 저장값(«ÄöÜ»)은 세 모양 어디에도 안 맞는다(외부 검토). 그런 검색어일 때만
@@ -143,12 +143,12 @@ export const searchThreadToolResults = (
     .prepare(
       `SELECT ti.transcript_id AS tid, ti.seq AS seq, ti.item AS item, t.ts AS ts FROM turn_items ti
          JOIN transcripts t ON t.id = ti.transcript_id
-        WHERE t.claude_session_id IN (${sids.map(() => "?").join(", ")}) AND t.ts > ?
+        WHERE ${scope.sql} AND t.ts > ?
           AND ti.item NOT LIKE '{"type":"message"%'
           AND (${forms.map(() => `${col} LIKE ? ESCAPE '\\' OR ${col} LIKE ? ESCAPE '\\'`).join(" OR ")})
         ORDER BY ti.transcript_id DESC, ti.seq DESC`,
     )
-    .iterate(...sids, boundary, ...forms.flatMap((q) => [like(enc(q)), like(enc(enc(q)))])) as IterableIterator<{ tid: number; seq: number; item: string; ts: number }>;
+    .iterate(...scope.params, boundary, ...forms.flatMap((q) => [like(enc(q)), like(enc(enc(q)))])) as IterableIterator<{ tid: number; seq: number; item: string; ts: number }>;
 
   const needle = query.toLowerCase();
   const turns = new Map<number, TurnTools>();
@@ -207,8 +207,9 @@ export const listFoldedToolResults = (
   minChars: number,
   limit: number,
 ): { ref: string; tool: string; args: string; chars: number }[] => {
-  const { sids, boundary } = scopeOf(channel, threadKey);
-  if (sids.length === 0 || throughTid <= 0 || limit <= 0) return [];
+  const { members, boundary } = scopeOf(channel, threadKey);
+  if (throughTid <= 0 || limit <= 0) return [];
+  const scope = memberClause(members);
   // ★최근 턴부터 거꾸로 읽고 `limit` 을 채우면 멈춘다 (2026-10-05 적대 검토 F2). 첫 판은 대화의 워터마크 이하 항목을 **전부** 읽고
   //  정렬했다(실측 10만 행 ≈250ms, 요청마다 동기 — 그동안 모든 채널이 멈춘다). 지금은 캐시가 빗나갈 때(접을 때·재시작 뒤)만 여기 온다.
   // ★창은 **도구 기록이 있는 턴**으로 센다 (재검토 A). assistant 행으로 세면 Claude 턴(턴당 행 여러 개·도구 기록 없음)이 창을 먹어,
@@ -216,10 +217,10 @@ export const listFoldedToolResults = (
   //  PK 조회 한 번으로 지나간다. ★턴 id 정렬은 대화 행 전체를 한 번 정렬한다(10만 행 ≈27ms, 재검토 B) — 바운드가 아니라 선형이다.
   const tids = getDb()
     .prepare(
-      `SELECT id FROM transcripts WHERE claude_session_id IN (${sids.map(() => "?").join(", ")}) AND id <= ? AND ts > ? AND role = 'assistant'
+      `SELECT id FROM transcripts WHERE ${scope.sql} AND id <= ? AND ts > ? AND role = 'assistant'
         ORDER BY id DESC`,
     )
-    .iterate(...sids, throughTid, boundary) as IterableIterator<{ id: number }>;
+    .iterate(...scope.params, throughTid, boundary) as IterableIterator<{ id: number }>;
   const hasItems = getDb().prepare(`SELECT 1 FROM turn_items WHERE transcript_id = ? LIMIT 1`);
   const out: { ref: string; tool: string; args: string; chars: number }[] = [];
   let scanned = 0;
@@ -254,8 +255,8 @@ export const readThreadToolResult = (
     .prepare(`SELECT ts, claude_session_id AS sid FROM transcripts WHERE id = ?`)
     .get(tid) as { ts: number; sid: string } | undefined;
   if (row === undefined) return { ok: false, reason: "not_found", ref };
-  const { sids, boundary } = scopeOf(channel, threadKey);
-  if (!sids.includes(row.sid)) return { ok: false, reason: "other_conversation", ref };
+  const { members, boundary } = scopeOf(channel, threadKey);
+  if (!scopeHasRow(members, tid)) return { ok: false, reason: "other_conversation", ref };
   if (row.ts <= boundary) return { ok: false, reason: "before_boundary", ref };
   const item = getDb().prepare(`SELECT item FROM turn_items WHERE transcript_id = ? AND seq = ?`).get(tid, seq) as { item: string } | undefined;
   if (item === undefined) return { ok: false, reason: "not_found", ref };

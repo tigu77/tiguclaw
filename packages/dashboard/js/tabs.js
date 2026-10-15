@@ -130,11 +130,102 @@
       registerBuiltinHandler("session.rename", (ctx) => { startEditingTab(ctx.targetId); });
       registerBuiltinHandler("session.close", (ctx) => { closeTab(ctx.targetId); });
       registerBuiltinHandler("session.new", () => { newTab(); });
+      // ── 가지치기(2026-10-15) — 이 대화 끝에서 새 대화로 갈라 **새 탭으로 열고 그리로 옮긴다**(정태님 결정: 새 탭·활성 이동).
+      //  판단은 서버 한 곳(`forkThread`). 진행 중인 답이 있으면 그게 끝난 뒤 갈라지므로 기다리는 동안 알린다.
+      //  ★가지 키는 **성공할 때까지 같은 것**을 쓴다 — 응답을 못 받았어도(연결 끊김) 서버는 줄에서 나중에 갈랐을 수 있다.
+      //   다시 누르면 같은 키라 서버가 그 가지를 돌려준다(두 번째 가지 없음, 적대 검토 P3).
+      //  ★단 **잠깐만**(FORK_RETRY_MS) — 한참 뒤 다시 누르는 건 «지금 시점에서 새로 가르기» 다. 같은 키를 무기한 쓰면 서버가 옛 시점에
+      //   만든 가지를 돌려줘, 그 사이 부모에 쌓인 대화가 빠진 가지가 열렸다(재검토 P2 — 모바일 백그라운드·망 끊김).
+      const FORK_RETRY_MS = 120000;
+      const forkKeys = new Map();     // 부모 키 → { key, at } 실패 직후 재시도용 가지 키
+      const forkInFlight = new Set(); // 지금 요청 중인 부모 키(연타 막기)
+      registerBuiltinHandler("session.fork", (ctx) => { void forkSession(ctx.targetId); });
+      const forkSession = async (tk) => {
+        if (forkInFlight.has(tk)) { showToast(i18n("tab.forkWaiting")); return; }
+        const kept = forkKeys.get(tk);
+        let childKey = kept && Date.now() - kept.at < FORK_RETRY_MS ? kept.key : "";
+        if (!childKey) {
+          const uuid = (self.crypto && self.crypto.randomUUID) ? self.crypto.randomUUID() : (String(Date.now()) + "-" + Math.random().toString(16).slice(2));
+          childKey = "dashboard:" + uuid;
+        }
+        forkKeys.delete(tk);
+        forkInFlight.add(tk);
+        // 기다린다고 말하는 건 **실제로 답이 진행 중일 때만**(거짓 안내 금지).
+        if (activeTurns.has(tk)) showToast(i18n("tab.forkWaiting"));
+        try {
+          const res = await fetch("/api/session-fork", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadKey: tk, childKey }) });
+          const r = await res.json().catch(() => ({}));
+          if (r && r.ok === true && typeof r.childKey === "string") {
+            forkParents.set(r.childKey, tk); // 다음 목록 갱신 전에도 «결론을 원래 대화로 보내기» 가 보이게
+            // 기다리는 사이 사용자가 다른 탭으로 갔으면 **끌고 가지 않는다** — 새 탭만 열고 알린다(재검토: 긴 대기 뒤 갑작스러운 이동).
+            if (activeThreadKey === tk) { if (window.openSessionByKey) window.openSessionByKey(r.childKey, { label: r.name }); }
+            else showToast(i18n("tab.forkReady", { name: r.name || "" }), "good");
+            return;
+          }
+          // 확정 실패(«갈라낼 게 없음»)가 아니면 잠깐 같은 키를 남긴다 — 서버는 갈랐는데 응답만 잃었을 수 있다.
+          if (!(r && r.reason === "empty")) forkKeys.set(tk, { key: childKey, at: Date.now() });
+          console.warn("session-fork 실패:", res.status, r && (r.reason || r.error), r && r.detail);
+          showToast(r && r.reason === "empty" ? i18n("tab.forkEmpty") : i18n("tab.forkFailed"), "bad");
+        } catch (e) {
+          forkKeys.set(tk, { key: childKey, at: Date.now() });
+          console.warn("session-fork 실패:", e && e.message ? e.message : e);
+          showToast(i18n("tab.forkFailed"), "bad");
+        } finally {
+          forkInFlight.delete(tk);
+        }
+      };
+      // ── 가지 결론을 원래 대화로(2026-10-15) — 가지 비서가 정리하고(가지 화면에 남는다) 원래 대화에 넣는다. 판단은 서버 한 곳
+      //  (`carryForkConclusion`). 끝나면 **원래 대화 탭으로 옮긴다** — 그 대화에 결론 메시지와 비서의 확인이 뜬다.
+      const forkParents = new Map(); // 가지 키 → 원래 대화 키(서버 /sessions 의 forkedFrom)
+      const carryInFlight = new Set();
+      registerBuiltinHandler("session.carry", (ctx) => { void carryConclusion(ctx.targetId); });
+      const carryConclusion = async (tk) => {
+        if (carryInFlight.has(tk)) { showToast(i18n("tab.carryWorking")); return; }
+        carryInFlight.add(tk);
+        showToast(i18n("tab.carryWorking"));
+        try {
+          const res = await fetch("/api/session-carry", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadKey: tk }) });
+          const r = await res.json().catch(() => ({}));
+          if (r && r.ok === true && typeof r.parentKey === "string") {
+            // 정리를 기다리는 사이 다른 탭으로 갔으면 끌고 가지 않는다(가르기와 같은 규칙).
+            if (activeThreadKey === tk) { if (window.openSessionByKey) window.openSessionByKey(r.parentKey); }
+            else showToast(i18n("tab.carryDone"), "good");
+            return;
+          }
+          console.warn("session-carry 실패:", res.status, r && (r.reason || r.error), r && r.detail);
+          showToast(i18n("tab.carryFailed"), "bad");
+        } catch (e) {
+          console.warn("session-carry 실패:", e && e.message ? e.message : e);
+          showToast(i18n("tab.carryFailed"), "bad");
+        } finally {
+          carryInFlight.delete(tk);
+        }
+      };
+      // 가지 화면 맨 위(물려받은 기록 끝)의 구분선 — 서버가 남긴 `thread.forked` 를 그린다. 문구는 여기서 짓는다(서버 재조립 금지).
+      registerChatKindBuilder("thread.forked", (data, time, evTs) => {
+        const div = document.createElement("div");
+        div.className = "ev local channel-chat sys-notice fork-divider";
+        if (typeof evTs === "number") div.dataset.ts = String(evTs);
+        const head = document.createElement("div");
+        head.className = "bubble-meta";
+        const tsEl = document.createElement("span"); tsEl.className = "ts"; tsEl.textContent = time || "";
+        const tyEl = document.createElement("span"); tyEl.className = "type"; tyEl.textContent = i18n("common.systemNotice");
+        head.appendChild(tsEl); head.appendChild(tyEl);
+        const body = document.createElement("div");
+        body.className = "chat-message";
+        body.textContent = i18n("chat.forkedFrom", { name: String((data && data.parentName) || "") });
+        div.appendChild(head); div.appendChild(body);
+        return div;
+      });
       registerMenuItems("session", (ctx) => {
         const items = [
           { id: "rename", label: i18n("tab.rename"), icon: "✏️", action: { kind: "builtin", handler: "session.rename" } },
           { id: "new", label: i18n("tab.new"), icon: "➕", action: { kind: "builtin", handler: "session.new" } },
+          { id: "fork", label: i18n("tab.fork"), icon: "🌿", action: { kind: "builtin", handler: "session.fork" } },
         ];
+        if (forkParents.has(ctx.targetId)) {
+          items.push({ id: "carry", label: i18n("tab.carry"), icon: "↩️", action: { kind: "builtin", handler: "session.carry" } });
+        }
         if (ctx.targetId !== DEFAULT_DASH_THREAD) {
           items.push({ id: "close", label: i18n("tab.close"), icon: "✕", danger: true, action: { kind: "builtin", handler: "session.close" } });
         }
@@ -522,6 +613,7 @@
               ? s.displayName
               : (typeof s.name === "string" && s.name ? s.name : "");
             if (nm !== "") sessionDisplayNames.set(s.threadKey, nm);
+            if (typeof s.forkedFrom === "string" && s.forkedFrom) forkParents.set(s.threadKey, s.forkedFrom);
           }
           // 이름이 새로 생겼을 수 있으니 잡 카드 배지를 한 번 훑는다(끝난 잡은 이벤트가
           // 더 안 와서 스스로 갱신되지 않는다). 드로어가 없으면 no-op.

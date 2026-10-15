@@ -1761,7 +1761,9 @@ const loadHistoryTurns = (
   watermark: number,
   replays: boolean,
 ): CodexTurnWithId[] =>
-  loadThreadHistoryWithIds(channel, threadKey, { itemsAfter: watermark }).map((t) => {
+  // ★워터마크 **뒤만** 읽는다(2026-10-15) — 요약에 접힌 앞부분은 쓰는 곳이 없다(모두 `id > 워터마크` 로 거른다). 그래서 «0개» 는
+  //  «기록 없음» 이 아니라 «요약 뒤 새 턴 없음» 일 수 있다 — 빈 판정은 워터마크·요약과 같이 본다.
+  loadThreadHistoryWithIds(channel, threadKey, { itemsAfter: watermark, after: watermark }).map((t) => {
     // 보낸 그대로의 사용자 메시지는 되살리는 어댑터만 쓴다 — 안 보내는 것을 세면 창만 헛되이 준다(아래 항목과 같은 규칙).
     if (t.sent !== undefined && !replays) { const { sent: _sent, ...rest } = t; return rest; }
     if (t.items === undefined) return t;
@@ -2129,7 +2131,7 @@ const compactionDiag = (
 ): string =>
   // 원문=이력에서 빠지는 크기 · 입력=요약기에 넣은 글(긴 도구 결과는 참조+앞부분) — 둘이 몇 배 다르다.
   `threadKey=${threadKey} fold=${plan.toFold.length}턴/원문 ${plan.historyChars}자·입력 ${promptChars}자 ` +
-  `watermark=${watermark}→${plan.nextWatermark} 전체=${totalTurns}턴`;
+  `watermark=${watermark}→${plan.nextWatermark} 워터마크뒤=${totalTurns}턴`; // 적재가 워터마크 뒤만 읽는다(2026-10-15) — «전체» 가 아니다
 
 const compactThreadNowUnlocked = async (
   channel: ChannelName,
@@ -2149,7 +2151,7 @@ const compactThreadNowUnlocked = async (
   const existing = getThreadSummary(threadKey);
   const watermark = existing?.compactedThrough ?? 0;
   const allTurns = loadHistoryTurns(channel, threadKey, watermark, true);
-  if (allTurns.length === 0) return { ok: false, reason: translate("srv.compact.noHistory") };
+  if (allTurns.length === 0 && watermark === 0) return { ok: false, reason: translate("srv.compact.noHistory") };
   const prior = existing?.summary ?? "";
   const unsummarized = allTurns.filter((t) => t.id > watermark);
   // triggerChars 0 = 임계 무시(수동 호출). keepRecent 는 기본값 그대로 — 최근은 안 접는다.
@@ -2415,7 +2417,7 @@ const compactThreadHistoryUnlocked = async (args: {
   let summary = existing?.summary ?? "";
   // 도구 항목을 되살리는 건 지금 codex 뿐이다 — 다른 어댑터는 요약 입력에만 쓰고 크기는 안 센다.
   const allTurns = loadHistoryTurns(args.channel, args.threadKey, watermark, args.adapter === "codex");
-  if (allTurns.length === 0) return { allTurns, summary: "", watermark: 0 };
+  if (allTurns.length === 0 && watermark === 0) return { allTurns, summary: "", watermark: 0 };
 
   // watermark 이후(미요약) 턴만 추려 압축 트리거 판정.
   const unsummarized = allTurns.filter((t) => t.id > watermark);
@@ -2437,6 +2439,28 @@ const compactThreadHistoryUnlocked = async (args: {
     watermark,
     { ...nextPassOpts(0, currentFoldBudget(args.threadKey), lowWater, highWater), keepRecentChars: lowWater },
   );
+  // ★사용자가 답을 기다리는 요청은 **이번 요청이 창에 들어가면** 접지 않는다 (2026-10-15 회사돌쇠 압축 인계서).
+  //  실측(회사 RPG 세션): 짧은 메시지에 준비 404초 · 본 응답 18초 — 답 앞에서 원문 8패스(이어받은 몫 5 포함)를 저수위까지
+  //  접고 누적 요약을 두 번 재압축(약 3분)했다. 마지막 요청은 406K자로 안전선 595K자 아래였고 재압축이 줄인 건 26K자뿐이었다.
+  //  저수위까지 내리는 건 «한동안 다시 안 접게» 하는 정리라 기다리는 사람이 없는 **답한 뒤 접기**의 몫이다(같은 잠금·같은 계획기).
+  //  ★들어가지 않으면 종전대로 접되, 들어가는 순간 멈춘다 — 이어받은 몫(`yieldedPassBudget`)은 그때만 쓰이는 상한이다.
+  // ★파생 스레드(매니저·에이전트·스케줄)는 답한 뒤 접기가 없어 종전대로다 — 여기서 멈추면 다음 턴마다 경계에서 다시 접는다(진동).
+  const answerFirst = args.postTurn !== true && !isDerivedThread(args.threadKey);
+  const requestCap = args.budget.capChars ?? CODEX_TURN_HISTORY_CHAR_CAP;
+  const requestFits = (): boolean =>
+    historyFitsCap(
+      allTurns,
+      watermark,
+      args.budget.instructionsChars + args.budget.promptChars + summary.length + FOLDED_TOOL_INDEX_MAX_CHARS,
+      requestCap,
+    );
+  const settled = (): boolean => answerFirst && requestFits();
+  if (plan.needed && settled()) {
+    console.log(
+      `[${args.adapter} 6b] 요청 때 접기 생략 — 이번 요청이 창에 들어간다(미요약 ${unsummarized.length}턴 · 상한 ${requestCap}자). ` +
+        `정리는 답한 뒤에. threadKey=${args.threadKey}`,
+    );
+  }
   let compactPass = 0;
   // ★알림은 **턴에 한 번**이다 (2026-08-09). 저수위까지 여러 번 접게 되자 알림도 패스마다
   //  나가 사용자에게 "3번에 걸쳐" 보였다 — 사용자에겐 한 번의 정리인데 **내부 패스 수가
@@ -2456,7 +2480,7 @@ const compactThreadHistoryUnlocked = async (args: {
   const compactStartedAt = Date.now();
   // ★이미 뒤에 요청이 줄을 섰으면 시작 알림을 내지 않는다 — 곧바로 0패스에서 양보하면 끝 알림이 없어 «압축 중 ⏳» 이 남는다
   //  («시작을 냈으면 끝도 낸다», 2026-09-15). 접는 일은 그 요청이 이어받아 자기 알림을 낸다.
-  if (plan.needed && plan.toFold.length > 0 && args.yieldTo?.() !== true) {
+  if (plan.needed && plan.toFold.length > 0 && args.yieldTo?.() !== true && !settled()) {
     try {
       getEventBus().publish({
         type: "llm.compacting",
@@ -2482,6 +2506,15 @@ const compactThreadHistoryUnlocked = async (args: {
   const maxPasses = args.postTurn === true ? CODEX_COMPACT_MAX_PASSES * 3 : CODEX_COMPACT_MAX_PASSES + inherited;
   let yielded = false;
   while (plan.needed && compactPass < maxPasses) {
+    if (settled()) {
+      if (compactPass > 0) {
+        console.log(
+          `[${args.adapter} 6b] 요청 때 접기 ${compactPass}패스에서 멈춤 — 이번 요청이 창에 들어간다(상한 ${requestCap}자). ` +
+            `나머지 정리는 답한 뒤에. threadKey=${args.threadKey}`,
+        );
+      }
+      break;
+    }
     if (args.yieldTo?.() === true) {
       yielded = true;
       yieldedPassBudget.set(args.threadKey, maxPasses - compactPass);
@@ -2620,6 +2653,8 @@ const compactThreadHistoryUnlocked = async (args: {
   for (let rp = 0; rp < CODEX_SUMMARY_RECOMPACT_MAX_PASSES; rp++) {
     // 양보했거나 지금 뒤에 줄이 섰으면 재압축(요약 호출)도 미룬다 — 요약이 좀 긴 것뿐, 손실은 0 이다(아래 주석).
     if (yielded || args.yieldTo?.() === true) break;
+    // 답을 기다리는 요청은 요약이 길어도 **들어가면** 그대로 보낸다 — 재압축은 답한 뒤 접기가 한다(회사 실측: 답 앞 재압축 약 3분).
+    if (settled()) break;
     const rec = planSummaryRecompaction(summary, summaryCap);
     if (!rec.needed) break;
     if ((cooldownPort?.remainingMs(args.provider) ?? 0) !== 0) break;
@@ -2632,7 +2667,7 @@ const compactThreadHistoryUnlocked = async (args: {
     } catch (e) {
       console.warn(
         `[${args.adapter} 6b] 누적 요약 재압축 실패 — 그대로 둔다(손실 0, 누적 ${summary.length}자): ` +
-          `${e instanceof Error ? e.message : String(e)}`,
+          `${e instanceof Error ? e.message : String(e)}` + ` threadKey=${args.threadKey}`,
       );
       break;
     }
@@ -2642,7 +2677,7 @@ const compactThreadHistoryUnlocked = async (args: {
     if (next === null) {
       console.warn(
         `[${args.adapter} 6b] 재압축 결과가 안 줄어 버린다 — 앞 구간 ${rec.oldPart.length}자 → ` +
-          `${folded.trim().length}자(목표 ${recompactTargetFor(rec.oldPart.length, summaryCap)}자). 누적 ${summary.length}자 유지.`,
+          `${folded.trim().length}자(목표 ${recompactTargetFor(rec.oldPart.length, summaryCap)}자). 누적 ${summary.length}자 유지. threadKey=${args.threadKey}`,
       );
       break;
     }
@@ -2652,14 +2687,15 @@ const compactThreadHistoryUnlocked = async (args: {
     expectedGeneration = generation();
     console.log(
       `[${args.adapter} 6b] 누적 요약 재압축 ${rp + 1}회차 — 앞 구간 ${rec.oldPart.length}자 → ` +
-        `${folded.trim().length}자 (상한 ${summaryCap}자, 최종 ${summary.length}자)`,
+        `${folded.trim().length}자 (상한 ${summaryCap}자, 최종 ${summary.length}자) threadKey=${args.threadKey}`,
     );
   }
-  if (summary.length > summaryCap) {
+  // 답을 기다리는 요청이 일부러 미룬 것(창에 들어간다)은 경고가 아니다 — 답한 뒤 접기가 정리한다.
+  if (summary.length > summaryCap && !settled()) {
     // 수렴 못 했으면 **남긴다** — 조용히 지나가면 최근 턴이 밀려나는 걸 아무도 모른다.
     console.warn(
       `[${args.adapter} 6b] ★누적 요약이 상한을 넘은 채다 — ${summary.length}자 > ${summaryCap}자 ` +
-        `(구간 ${summary.split(SUMMARY_SECTION_SEP).length}개). 프롬프트 예산에서 최근 원문 턴이 밀릴 수 있다.`,
+        `(구간 ${summary.split(SUMMARY_SECTION_SEP).length}개). 프롬프트 예산에서 최근 원문 턴이 밀릴 수 있다. threadKey=${args.threadKey}`,
     );
   }
 
@@ -2696,7 +2732,13 @@ type CompactArgs = Parameters<typeof compactThreadHistoryUnlocked>[0];
  * 기억해 두어, 턴 저장 직후 `compactHistoryAfterTurn` 이 같은 설정으로 뒤에서 접을 수 있게 한다.
  */
 export const compactThreadHistory = async (args: CompactArgs): Promise<CompactedThreadHistory> => {
-  if (args.postTurn !== true) lastCompactArgs.set(args.threadKey, args);
+  if (args.postTurn !== true) {
+    // ★바운드 (2026-10-15 재검토) — 저장이 없는 내부 호출(`job-progress:<id>` 등)은 답한 뒤 접기가 꺼내 가지 않아 키마다 쌓였다.
+    //  요청과 저장 사이에 다른 대화 1,000개가 끼는 일은 없다 — 넘치면 가장 오래된 것부터.
+    lastCompactArgs.delete(args.threadKey);
+    lastCompactArgs.set(args.threadKey, args);
+    if (lastCompactArgs.size > CAP_USED_MAX) lastCompactArgs.delete(lastCompactArgs.keys().next().value as string);
+  }
   // ★답변 뒤 접기는 **선택적인 일**이다 — 뒤에 요청이 줄을 서면 패스 사이에서 양보한다(2026-10-03, 회사돌쇠 압축 인계서 1단계).
   const r = await withThreadCompactionLock(
     args.threadKey,
@@ -2760,10 +2802,21 @@ export const foldedToolIndex = (channel: ChannelName, threadKey: string, waterma
  * ★어댑터가 둘이 되면서 꺼냈다 — 이 자르기까지 각자 적으면 «같은 판단이 두 곳» 이고,
  *  한쪽만 고쳐질 때 두 어댑터의 기억 범위가 조용히 갈린다.
  */
+/**
+ * **이번 요청이 창에 다 들어가는가** — 워터마크 뒤 원문 턴 전부(도구 항목까지) + 고정 비용 + 요약이 이력 상한 안이면 참.
+ *  참이면 `recentTurnsAfter` 가 아무것도 버리거나 줄이지 않는다(같은 자 `turnSize` · 같은 상한) — 요청 때 접기가 멈춰도 되는 조건이다.
+ * ★`usedChars` 엔 보내는 요약 뒤에 붙는 접힌 도구 결과 목록 몫을 넣는다 — 상한(`FOLDED_TOOL_INDEX_MAX_CHARS`)으로 보수적으로.
+ */
+export const historyFitsCap = (allTurns: CodexTurnWithId[], watermark: number, usedChars: number, capChars: number): boolean => {
+  let sum = usedChars;
+  for (const t of allTurns) if (t.id > watermark && (sum += turnSize(t)) > capChars) return false;
+  return sum <= capChars;
+};
+
 export const recentTurnsAfter = (
   allTurns: CodexTurnWithId[],
   watermark: number,
-  opts: { budgetUsedChars: number; limitTurns?: number; charCap?: number },
+  opts: { budgetUsedChars: number; limitTurns?: number; charCap?: number; threadKey?: string },
 ): CodexTurn[] => {
   // ★턴 수 상한은 **기본에서 뺐다**(2026-09-26) — 매 턴 한 칸씩 밀어 캐시를 깨고 요약 안 된 턴을 버렸다.
   //  크기는 요약(historyTriggerChars)이 묶는다. 글자 상한은 요약이 실패했을 때의 안전망으로만 남는다.
@@ -2779,6 +2832,7 @@ export const recentTurnsAfter = (
     }));
   let charSum = opts.budgetUsedChars;
   const kept: CodexTurn[] = [];
+  let textOnly = 0;
   for (let i = after.length - 1; i >= 0; i--) {
     if (kept.length >= limit) break;
     const full = after[i] as CodexTurn;
@@ -2786,8 +2840,17 @@ export const recentTurnsAfter = (
     //  종전 모양대로면 큰 최신 턴 하나에서 멈춰 이전 이력을 통째로 잃는다(아스트라 재현: 0턴).
     const t = charSum + turnSize(full) <= charCap || full.items === undefined ? full : { role: full.role, content: full.content };
     if (charSum + turnSize(t) > charCap) break;
+    if (t !== full) textOnly += 1;
     charSum += turnSize(t);
     kept.unshift(t);
+  }
+  // ★안전망이 실제로 잘랐으면 남긴다 (2026-10-15 회사돌쇠 압축 인계서) — 종전엔 조용했다. 버린 턴은 요약에도 원문에도 없어 모델이 못 본다.
+  //  요청 때 접기가 «들어가면 멈춤» 이 된 뒤로 여기 닿는 건 접기가 못 따라잡았을 때뿐이다 — 이 줄이 그 빈도를 잰다.
+  if (opts.threadKey !== undefined && (kept.length < after.length || textOnly > 0)) {
+    console.warn(
+      `[history] ★창 안전망이 이력을 잘랐다 — 미요약 ${after.length}턴 중 ${after.length - kept.length}턴 버림 · ${textOnly}턴 도구 항목 뺌 ` +
+        `(고정 ${opts.budgetUsedChars}자 · 상한 ${charCap}자) threadKey=${opts.threadKey}`,
+    );
   }
   return kept;
 };
@@ -2844,8 +2907,8 @@ export const buildTurnHistory = async (
         input.threadKey,
       ),
   });
-  if (allTurns.length === 0) {
-    // 빈 history 조기반환 — summary/history 둘 다 0, currentTurn 하나뿐.
+  if (allTurns.length === 0 && summary === "") {
+    // 빈 history 조기반환 — summary/history 둘 다 0, currentTurn 하나뿐(요약만 있으면 아래에서 요약을 싣는다).
     onBoundary?.({ summaryCount: 0, historyCount: 0 });
     return [currentTurn];
   }
@@ -2854,6 +2917,7 @@ export const buildTurnHistory = async (
     budgetUsedChars:
       instructionsChars + currentPromptWithMemory.length + summary.length,
     charCap: capChars,
+    threadKey: input.threadKey,
   });
 
   return buildCodexInputArray(recentRaw, summary, currentTurn, onBoundary);

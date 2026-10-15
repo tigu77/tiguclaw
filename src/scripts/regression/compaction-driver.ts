@@ -40,9 +40,11 @@ export const check: RegressionCheck = {
     );
 
     initStore();
-    const TK = "regr:driver";
+    // ★파생 스레드 키다 (2026-10-15) — 사람이 기다리는 대화의 요청 때 접기는 «창에 들어가면 멈춤» 이라 저수위 여러 패스를 안 돈다
+    //  (그건 답한 뒤 접기의 일 — `compaction-answer-first`). 요청 때 저수위까지 접는 경로는 파생 스레드(답한 뒤 접기가 없다)에 남았다.
+    const TK = "agent:regr-driver";
     clearThreadSummary("http-bridge", TK);
-    indexCodexTurn({ channel: "http-bridge", threadKey: TK, claudeSessionId: "regr-driver-sid2" });
+    indexCodexTurn({ channel: "http-bridge", threadKey: TK, claudeSessionId: "regr-driver-sid3" });
 
     // 사고 크기 재현 — 임계의 1.6배. (같은 sid 에 이미 심겨 있으면 건너뛴다: 회귀는 반복 실행된다.)
     // ★**임계 바로 위**로 잡는다. 종전엔 임계의 1.6배라 저수위가 없어도(고수위로만 판정)
@@ -57,7 +59,7 @@ export const check: RegressionCheck = {
       let ts = 1_700_000_000_000;
       for (let i = existing.length; i < turnCount; i++) {
         appendTranscript({
-          claudeSessionId: "regr-driver-sid2",
+          claudeSessionId: "regr-driver-sid3",
           role: i % 2 === 0 ? "user" : "assistant",
           // ★턴마다 **고유 내용** — 전부 같으면 "패스마다 다른 구간을 접는가" 를 볼 수 없다.
           content: `턴${i}:` + "가".repeat(Math.max(1, per - 8)),

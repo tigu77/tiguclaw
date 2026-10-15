@@ -70,6 +70,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "update", get description() { return translate("srv.cmd.desc.update"); } },
   { name: "cooldown", get description() { return translate("srv.cmd.desc.cooldown"); } },
   { name: "sessions", get description() { return translate("srv.cmd.desc.sessions"); } },
+  { name: "fork", get description() { return translate("srv.cmd.desc.fork"); } },
   { name: "project", get description() { return translate("srv.cmd.desc.project"); } },
   { name: "model", get description() { return translate("srv.cmd.desc.model"); } },
   { name: "models", get description() { return translate("srv.cmd.desc.models"); } },
@@ -140,6 +141,8 @@ export const isEphemeralCommandText = (text: string): boolean => {
     if (sub === "unlink" && /(^|\s)confirm$/.test(rest.trim())) return false;
     return true;
   }
+  // `/fork` — 세션 조작 확인(가지 화면엔 구분선이 남는다). 기록하면 명령 버블이 가지로 상속돼 답 없는 버블이 된다(2026-10-15).
+  if (cmd === "/fork") return true;
   if (cmd !== "/sessions") return false;
   const { sub, rest } = parseSlashCommand(text);
   // ★**선택지를 띄우는 호출은 휘발**이다 (2026-08-23 4라운드). 인자 없는 `/sessions` 와

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { ChannelName } from "../channels/types.js";
 import { getContextBoundary, getDb, getSession } from "./sessions.js";
+import { includedEnd, memberClause, threadScope } from "./thread-members.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 export type MemoryType = "user" | "feedback" | "project" | "reference";
@@ -1130,41 +1131,38 @@ export const loadThreadHistory = (
   const charCap = opts?.charCap ?? CODEX_TURN_HISTORY_CHAR_CAP;
   const db = requireDb("loadThreadHistory");
 
-  // thread 의 모든 session_id (claude UUID + codex sentinel sid 전부).
-  const sidRows = db
-    .prepare(
-      `SELECT claude_session_id FROM transcript_index
-       WHERE channel = ? AND thread_key = ?`,
-    )
-    .all(channel, threadKey) as { claude_session_id: string }[];
-  if (sidRows.length === 0) return [];
-
-  const placeholders = sidRows.map(() => "?").join(", ");
-  const sids = sidRows.map((r) => r.claude_session_id);
+  // 이 대화가 가진 기록(claude UUID + codex sentinel sid 전부 — 소속 판정은 `memberClause` 한 곳, 세션 수와 무관).
+  const scope = memberClause(threadScope(channel, threadKey));
 
   // Context boundary(/reset·/clear) — 리셋 시각 이후 transcript 만. 미설정 → 0 →
   // ts > 0 은 모든 epoch-ms ts 에 참이라 기존 동작(전체) 보존. 단일 enforcement point.
   const boundary = getContextBoundary(channel, threadKey);
 
-  // 횡단 IN(…sid), role 필터, ts ASC 병합. 최신 N turn 만 취하려고 ts DESC LIMIT 후
-  // reverse 하는 대신, 전체를 ts ASC 로 받아 tail N 을 취함 (인터리브 정확성 우선).
-  const rows = db
+  // ★**최근 `limit` 행만 읽는다** (2026-10-15 정태님 «굳이 다 읽을 필요가 있어?»). 종전엔 대화 전체를 매 턴 읽고 끝에서 N 개만
+  //  썼다 — 대화가 길어질수록 매 턴 동기 읽기가 늘었다(8만 행 ≈0.5초, 그동안 데몬 전체가 멎는다). 결과는 같다: 아래가 쓰는 건
+  //  끝에서 최대 `limit` 개이고, 재개 경계가 이 창 밖(더 옛날)이면 종전에도 창 전체를 썼다. 정렬은 같은 두 축의 역순.
+  const rows = (db
     .prepare(
       `SELECT role, content, ts, id, claude_session_id FROM transcripts
-       WHERE claude_session_id IN (${placeholders})
+       WHERE ${scope.sql}
          AND role IN ('user', 'assistant')
          AND ts > ?
-       ORDER BY ts ASC, id ASC`,
+       ORDER BY ts DESC, id DESC
+       LIMIT ?`,
     )
-    .all(...sids, boundary) as (TranscriptHistoryTsRow & { claude_session_id: string })[];
+    .all(...scope.params, boundary, limit) as (TranscriptHistoryTsRow & { claude_session_id: string })[]).reverse();
   if (rows.length === 0) return [];
 
   // 세션 소속으로 경계를 먼저 찾는다. 창을 자른 뒤 본문으로 찾으면 오래된
   // 경계가 사라지거나 동일 문장을 다른 세션의 경계로 오인한다.
   let start = 0;
   if (opts?.afterSessionId) {
+    // ★SDK 세션이 담은 끝 = `includedEnd` — 그 세션의 마지막 행, 또는 가지가 복제로 받은 끝(S). 시작은 그 **행 바로 뒤**다.
+    //  «id > S» 로 자르지 않는다: Claude 행은 턴 뒤에 늦게 적재돼 id 순서가 시간 순서와 어긋날 수 있다(실측 dashboard:default 3건,
+    //  하나는 32시간 늦은 적재). 위치로 자르면 종전 규칙(«그 세션 마지막 행 뒤»)과 같은 뜻이다.
+    const end = includedEnd(channel, threadKey, opts.afterSessionId);
     for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i]!.claude_session_id === opts.afterSessionId) {
+      if (rows[i]!.claude_session_id === opts.afterSessionId || (end !== null && rows[i]!.id === end)) {
         start = i + 1;
         break;
       }
@@ -1223,19 +1221,12 @@ export const loadThreadHistoryWithIds = (
    * ★요약된 턴의 항목은 **지우지 않고 안 읽는다**(정리 ≠ 삭제 — 다시 만들 수 없는 원기록이다). 그래서 핫 경로는
    *  미요약 구간만큼만 읽고, 기록은 남는다.
    */
-  opts?: { itemsAfter?: number },
+  opts?: { itemsAfter?: number; after?: number },
 ): CodexTurnWithId[] => {
   const db = requireDb("loadThreadHistoryWithIds");
-  const sidRows = db
-    .prepare(
-      `SELECT claude_session_id FROM transcript_index
-       WHERE channel = ? AND thread_key = ?`,
-    )
-    .all(channel, threadKey) as { claude_session_id: string }[];
-  if (sidRows.length === 0) return [];
-
-  const placeholders = sidRows.map(() => "?").join(", ");
-  const sids = sidRows.map((r) => r.claude_session_id);
+  const ts = threadScope(channel, threadKey);
+  const scope = memberClause(ts);
+  const scopeT = memberClause(ts, "t");
 
   // Context boundary(/reset·/clear) — loadThreadHistory 와 동일 필터로 타임라인
   // identity 유지(watermark id 가 같은 턴 집합을 가리킴). 미설정 → 0 → 전체 보존.
@@ -1244,21 +1235,23 @@ export const loadThreadHistoryWithIds = (
   const rows = db
     .prepare(
       `SELECT role, content, ts, id FROM transcripts
-       WHERE claude_session_id IN (${placeholders})
+       WHERE ${scope.sql}
          AND role IN ('user', 'assistant')
          AND ts > ?
+         AND id > ?
        ORDER BY ts ASC, id ASC`,
     )
-    .all(...sids, boundary) as TranscriptHistoryTsRow[];
+    // ★`after`(요약 워터마크) 뒤만 — 요약에 이미 접힌 앞부분은 읽지 않는다(2026-10-15). 호출부는 원래도 `id > 워터마크` 만 썼다.
+    .all(...scope.params, boundary, opts?.after ?? 0) as TranscriptHistoryTsRow[];
   // 비서 턴에 묶인 도구 항목 — 같은 세션·경계 조건 + 워터마크 뒤만 한 번에 읽는다.
   const itemRows = opts?.itemsAfter === undefined ? [] : db
     .prepare(
       `SELECT ti.transcript_id AS tid, ti.seq AS seq, ti.item AS item FROM turn_items ti
          JOIN transcripts t ON t.id = ti.transcript_id
-        WHERE t.claude_session_id IN (${placeholders}) AND t.ts > ? AND ti.transcript_id > ?
+        WHERE ${scopeT.sql} AND t.ts > ? AND ti.transcript_id > ?
         ORDER BY ti.transcript_id ASC, ti.seq ASC`,
     )
-    .all(...sids, boundary, opts.itemsAfter) as { tid: number; seq: number; item: string }[];
+    .all(...scopeT.params, boundary, opts.itemsAfter) as { tid: number; seq: number; item: string }[];
   const itemsById = new Map<number, { items: CodexTurnItem[]; seqs: number[]; chars: number }>();
   for (const r of itemRows) {
     let parsed: CodexTurnItem;

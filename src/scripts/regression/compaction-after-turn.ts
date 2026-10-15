@@ -32,7 +32,7 @@ export const check: RegressionCheck = {
       lowWaterMark,
     } = await import(SRC);
     const { initStore } = await import("../../store/sessions.js");
-    const { appendTranscript, indexCodexTurn } = await import("../../store/memory.js");
+    const { appendTranscript, indexCodexTurn, loadThreadHistoryWithIds: loadAfter } = await import("../../store/memory.js");
     const { getThreadSummary, clearThreadSummary, upsertThreadSummary } = await import("../../store/thread-summaries.js");
     const { resetThreadContext } = await import("../../store/thread-reset.js");
     initStore();
@@ -177,7 +177,7 @@ export const check: RegressionCheck = {
           clearThreadSummary("http-bridge", ctl);
           seed(ctl, "regr-cy-ctl", 60, per);
           await request(ctl);
-          seed(ctl, "regr-cy-ctl", 240, per);
+          seed(ctl, "regr-cy-ctl", 100, per);
           calls = 0;
           await compactHistoryAfterTurn(ctl);
           const controlCalls = calls;
@@ -188,7 +188,7 @@ export const check: RegressionCheck = {
           clearThreadSummary("http-bridge", Y);
           seed(Y, "regr-cy", 60, per);
           await request(Y);
-          seed(Y, "regr-cy", 240, per);
+          seed(Y, "regr-cy", 100, per);
           calls = 0;
           maxInFlight = 0;
           const gateY = hold();
@@ -202,13 +202,19 @@ export const check: RegressionCheck = {
           release();
           await bgY;
           const assembled = await reqY;
-          const ctlLen = Array.isArray(controlAssembled) ? controlAssembled.length : -1;
-          const yLen = Array.isArray(assembled) ? assembled.length : -2;
+          // ★«버린 턴 0» 을 **직접 센다** (2026-10-15) — 종전엔 대조군과 길이가 같은지만 봤는데, 240턴이면 둘 다 따라잡지 못해
+          //  창 안전망이 똑같이 119턴을 잘라 길이가 우연히 같았다(새 잘림 로그로 드러남). 조립된 이력 = 요약 + 미요약 턴 전부 + 현재.
+          const unsummarizedOf = (tk: string): number =>
+            loadAfter("http-bridge", tk, { after: getThreadSummary(tk)?.compactedThrough ?? 0 }).length;
+          const ctlLen = Array.isArray(controlAssembled) ? controlAssembled.length - 2 : -1;
+          const yLen = Array.isArray(assembled) ? assembled.length - 2 : -2;
+          const ctlAll = unsummarizedOf(ctl);
+          const yAll = unsummarizedOf(Y);
           out.push(
             assert(
-              "★뒤에서 접는 중 요청이 줄을 서면 지금 패스까지만 하고 양보한다(1패스) · 줄이 없으면 여러 패스를 돈다 · 요청은 정상 조립 · 요약 호출이 겹치지 않는다 · ★양보한 몫을 요청이 이어받아 **대조군과 같은 이력**을 싣는다(창 안전망이 중간을 자르지 않는다)",
-              enteredY && controlCalls > 1 && yLen === ctlLen && yieldLines.length === 1 && /\b1\/\d+패스에서 멈춤/.test(yieldLines[0] ?? "") && Array.isArray(assembled) && maxInFlight === 1,
-              { enteredY, controlCalls, yieldLines, assembled: yLen, controlAssembled: ctlLen, maxInFlight },
+              "★뒤에서 접는 중 요청이 줄을 서면 지금 패스까지만 하고 양보한다(1패스) · 줄이 없으면 여러 패스를 돈다 · 요청은 정상 조립 · 요약 호출이 겹치지 않는다 · ★양보한 쪽도 대조군도 **미요약 턴을 하나도 버리지 않는다**(창 안전망이 중간을 자르지 않는다)",
+              enteredY && controlCalls > 1 && yLen === yAll && ctlLen === ctlAll && yAll > 0 && yieldLines.length === 1 && /\b1\/\d+패스에서 멈춤/.test(yieldLines[0] ?? "") && maxInFlight === 1,
+              { enteredY, controlCalls, yieldLines, assembled: yLen, unsummarized: yAll, controlAssembled: ctlLen, controlUnsummarized: ctlAll, maxInFlight },
             ),
           );
         } finally {
@@ -595,8 +601,11 @@ export const check: RegressionCheck = {
     {
       const { readSourceSync } = await import("./_wiring.js");
       const facade = readSourceSync("src/core/llm-runtime/index.ts");
-      const wired = /appendApiTurn\(\{[\s\S]{0,500}\}\);\s*(\/\/[^\n]*\n\s*)*void compactHistoryAfterTurn\(input\.threadKey\);/.test(facade);
-      out.push(assert("★공통 경로가 턴 저장 직후 뒤에서 접기를 시작한다(기다리지 않는다)", wired, `facade 배선=${wired}`));
+      // ★저장 함수의 **마지막 문장**(두 저장 갈래 뒤)이어야 한다 — Codex 갈래 안에만 두면 Codex 가 조립하고 Claude 가 답한 턴에서 빠진다
+      //  (2026-10-15 적대 검토 P1). 함수 본문 들여쓰기(2칸) + 바로 함수 끝.
+      const body = facade.slice(facade.indexOf("const persistOutput = ("), facade.indexOf("\n};", facade.indexOf("const persistOutput = (")) + 3);
+      const wired = /appendApiTurn\(\{/.test(body) && /\n  void compactHistoryAfterTurn\(input\.threadKey\);\n\};$/.test(body) && (body.match(/compactHistoryAfterTurn\(/g) ?? []).length === 1;
+      out.push(assert("★공통 경로가 턴 저장 뒤 — **어느 어댑터가 답했든** — 뒤에서 접기를 시작한다(기다리지 않는다)", wired, `facade 배선=${wired}`));
       // 두 어댑터 모두 이 턴의 취소를 드라이버에 넘긴다 — 안 넘기면 앞선 요약을 기다리는 동안 /stop 이 안 듣는다.
       const codexSrc = readSourceSync("src/core/llm-runtime/adapters/openai-codex-oauth-history.ts");
       const openaiSrc = readSourceSync("src/core/llm-runtime/adapters/openai-agents-sdk.ts");

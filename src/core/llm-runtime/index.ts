@@ -1541,13 +1541,15 @@ const persistOutput = (
         ...(output.turnItems !== undefined ? { items: output.turnItems } : {}),
         ...(output.sentUserText !== undefined ? { userSent: output.sentUserText } : {}),
       });
-      // ★저장이 끝났으니 **다음 요청 전에 뒤에서 미리 접는다** — 요청 직전에 돌면 사용자가 그대로 기다린다(2026-09-29,
-      //  회사돌쇠 매 턴 3~6분). 이번 턴에 이력을 조립한 어댑터가 없으면(claude 등) 아무것도 안 한다. 기다리지 않는다.
-      void compactHistoryAfterTurn(input.threadKey);
     } catch (e) {
       console.error("llm-runtime: appendTranscript/indexCodexTurn failed:", e);
     }
   }
+  // ★저장이 끝났으니 **다음 요청 전에 뒤에서 미리 접는다** — 요청 직전에 돌면 사용자가 그대로 기다린다(2026-09-29,
+  //  회사돌쇠 매 턴 3~6분). 이번 턴에 이력을 조립한 어댑터가 없으면(claude 단독 등) 아무것도 안 한다. 기다리지 않는다.
+  // ★두 저장 갈래 **뒤**에 둔다 (2026-10-15 적대 검토 P1) — Codex 가 이력을 조립하고 실패해 Claude 가 답하면 저장은 Claude 갈래로
+  //  가는데, 이 호출이 Codex 갈래 안에만 있어 정리가 빠졌다. 요청 때 접기는 «들어가면 멈춤» 이라 그동안 경계에서 매번 접었다.
+  void compactHistoryAfterTurn(input.threadKey);
 };
 
 /**

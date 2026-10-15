@@ -195,7 +195,7 @@ import {
   handleSetSessionProfile, handleSetModuleEnabled, handleGetModelProfiles,
   handleGetProviders,
 } from "./routes-settings.js";
-import { handleSessions, handleSessionName, handleSessionArchive } from "./routes-sessions.js";
+import { handleSessions, handleSessionName, handleSessionArchive, handleSessionFork, handleSessionCarry } from "./routes-sessions.js";
 import {
   handleAuthProviders,
   handleAuthUsage,
@@ -546,6 +546,10 @@ class HttpBridge implements Channel, Observer {
               : pathname === "/session-name" && method === "POST"
                 ? "write"
               : pathname === "/session-archive" && method === "POST"
+                ? "write"
+              : pathname === "/session-fork" && method === "POST"
+                ? "write"
+              : pathname === "/session-carry" && method === "POST"
                 ? "write"
               : pathname === "/set-default-profile" && method === "POST"
                 ? "write"
@@ -1128,6 +1132,18 @@ class HttpBridge implements Channel, Observer {
     //  body { threadKey, archived: boolean }. 기본 세션은 보관 불가(닫을 수 없는 홈).
     if (pathname === "/session-archive" && method === "POST") {
       await handleSessionArchive(this.routeCtx(req, res, url));
+      return;
+    }
+
+    // /session-fork — 대화 가지치기(지금 대화 끝에서 새 대화로). body { threadKey, childKey }. 판단은 코어 `forkThread`.
+    if (pathname === "/session-fork" && method === "POST") {
+      await handleSessionFork(this.routeCtx(req, res, url));
+      return;
+    }
+
+    // /session-carry — 가지의 결론을 원래 대화로. body { threadKey }(가지). 판단은 코어 `carryForkConclusion`.
+    if (pathname === "/session-carry" && method === "POST") {
+      await handleSessionCarry(this.routeCtx(req, res, url));
       return;
     }
 

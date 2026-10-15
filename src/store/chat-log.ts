@@ -12,7 +12,8 @@
  *
  * 기존 store 모듈(skill-usage.ts·worker-jobs.ts) 의 prepared statement·getDb 접근 동형.
  */
-import { getDb, sessionDisplayName, visibleSessionSql } from "./sessions.js";
+import { getDb, SESSION_STORAGE_CHANNEL, sessionDisplayName, visibleSessionSql } from "./sessions.js";
+import { lineageChain } from "./thread-members.js";
 
 export type ChatRole = "user" | "assistant";
 
@@ -127,6 +128,15 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
 };
 
 /**
+ * **이 대화 화면에 보이는 기록의 범위** — 자기 행 전부 + 갈라져 나온 조상의 행은 갈라진 순간(Tc)까지 (설계 §3, 2026-10-15).
+ * 가지가 아니면 자기 하나 — 질의 모양이 종전과 같다. 조회·검색이 **이 한 함수**로 범위를 정한다.
+ */
+export const chatScreenSegments = (threadKey: string): { key: string; maxId: number | null }[] => [
+  { key: threadKey, maxId: null },
+  ...lineageChain(SESSION_STORAGE_CHANNEL, threadKey).map((a) => ({ key: a.key, maxId: a.throughChatId })),
+];
+
+/**
  * 최근 채팅 메시지 — 시간 오름차순 반환(렌더용). limit 기본 200.
  *  - sinceTs: 그 시각 *이후*(>=)만 (라이브 갱신용).
  *  - beforeTs: 그 시각 *이전*(<)만 (스크롤 더보기 — 페이지네이션). 가장 최근 N 건을 잡아
@@ -151,7 +161,9 @@ export const getRecentChatLog = (opts?: {
   const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 200;
   const where: string[] = [];
   const params: unknown[] = [];
-  if (opts?.threadKey !== undefined) {
+  // 가지면 조상 구간을 세그먼트별로 따로 잡아 합친다 — OR 로 묶으면 인덱스 범위 탐색이 안 된다(아래 행-값 커서 주석의 실측과 같은 이유).
+  const segments = opts?.threadKey !== undefined ? chatScreenSegments(opts.threadKey) : [];
+  if (opts?.threadKey !== undefined && segments.length === 1) {
     where.push(`thread_key = ?`);
     params.push(opts.threadKey);
   }
@@ -176,16 +188,33 @@ export const getRecentChatLog = (opts?: {
       params.push(opts.beforeTs);
     }
   }
-  const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ``;
-  const rows = getDb()
-    .prepare(
-      `SELECT id, ts, thread_key, channel, role, text, attachments, notice, model, kind, data, reasoning, spend
-         FROM chat_log
-         ${whereClause}
-        ORDER BY ts DESC, id DESC
-        LIMIT ?`,
-    )
-    .all(...params, limit) as ChatLogRow[];
+  const cols = `id, ts, thread_key, channel, role, text, attachments, notice, model, kind, data, reasoning, spend`;
+  let rows: ChatLogRow[];
+  if (segments.length > 1) {
+    const parts: string[] = [];
+    const segParams: unknown[] = [];
+    for (const seg of segments) {
+      const w = [`thread_key = ?`, ...(seg.maxId !== null ? [`id <= ?`] : []), ...where];
+      parts.push(`SELECT * FROM (SELECT ${cols} FROM chat_log WHERE ${w.join(" AND ")} ORDER BY ts DESC, id DESC LIMIT ?)`);
+      segParams.push(seg.key, ...(seg.maxId !== null ? [seg.maxId] : []), ...params, limit);
+    }
+    rows = getDb()
+      .prepare(`${parts.join(" UNION ALL ")} ORDER BY ts DESC, id DESC LIMIT ?`)
+      .all(...segParams, limit) as ChatLogRow[];
+    // 물려받은 행도 **이 대화의 화면**에 그려진다 — 표시 키를 이 대화로 둔다(화면은 행의 키로 탭을 가른다).
+    for (const r of rows) r.thread_key = opts!.threadKey!;
+  } else {
+    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : ``;
+    rows = getDb()
+      .prepare(
+        `SELECT ${cols}
+           FROM chat_log
+           ${whereClause}
+          ORDER BY ts DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(...params, limit) as ChatLogRow[];
+  }
   // ts DESC 로 최신 N 건을 잡고 ASC(오래된→최신)로 뒤집어 렌더 순서로 반환.
   return rows.reverse().map((r) => {
     const entry: ChatLogEntry = {
@@ -298,9 +327,16 @@ const searchWhere = (
   const visible = visibleSessionSql("t");
   const where = [`c.text LIKE '%' || ? || '%' ESCAPE '\\'`];
   const params: unknown[] = [like];
+  // 대화 하나로 좁히면 그 대화의 **화면 범위**(가지면 조상 구간 포함) — 보이는지는 행의 대화가 아니라 **이 대화**로 판정한다
+  //  (부모를 보관·삭제해도 가지가 물려받은 기록은 가지에서 찾힌다).
+  let join = `JOIN threads t ON t.channel_thread_id = c.thread_key`;
+  const joinParams: unknown[] = [];
   if (opts?.threadKey !== undefined) {
-    where.push(`c.thread_key = ?`);
-    params.push(opts.threadKey);
+    const segs = chatScreenSegments(opts.threadKey);
+    where.push(`(${segs.map((g) => (g.maxId === null ? `c.thread_key = ?` : `(c.thread_key = ? AND c.id <= ?)`)).join(" OR ")})`);
+    for (const g of segs) params.push(g.key, ...(g.maxId === null ? [] : [g.maxId]));
+    join = `JOIN threads t ON t.channel_thread_id = ?`;
+    joinParams.push(opts.threadKey);
   }
   // ★더보기 커서 — `ts <` 로 이어 받는다(OFFSET 아님). 목록이 `ts DESC` 인데 그 사이 새
   //  메시지가 오면 OFFSET 은 한 건을 건너뛰거나 두 번 보여준다. 커서는 그 창에 안 걸린다
@@ -317,9 +353,9 @@ const searchWhere = (
   }
   return {
     sql:
-      `FROM chat_log c\n         JOIN threads t ON t.channel_thread_id = c.thread_key\n` +
+      `FROM chat_log c\n         ${join}\n` +
       `        WHERE ${[...visible.conds, ...where].join("\n          AND ")}`,
-    params: [...visible.params, ...params],
+    params: [...joinParams, ...visible.params, ...params],
   };
 };
 
@@ -447,7 +483,7 @@ export const searchChatLog = (
   return rows.map((r) => ({
     id: r.id,
     ts: r.ts,
-    threadKey: r.thread_key,
+    threadKey: opts?.threadKey ?? r.thread_key, // 물려받은 행도 이 대화에서 찾은 것 — 이 대화로 연다
     channel: r.channel,
     role: r.role,
     text: r.text,

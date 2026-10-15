@@ -876,6 +876,24 @@ export const initStore = (): void => {
     );
   `);
 
+  // ─── 대화 가지 (2026-10-15, docs/decisions/2026-10-14-conversation-fork-design.md §2) ──
+  // 가지당 한 행 — 만든 뒤 **바뀌지 않는다**(부모의 이후 /clear·새 기록·삭제가 기존 가지의 소속을 못 바꾸게).
+  //  through_transcript_id T = 물려받는 부모 기록의 상한(transcripts.id) · through_chat_id Tc = 화면 기록 상한(chat_log.id)
+  //  sdk_session_id = Claude SDK 복제본 sid(없으면 NULL) · sdk_included_through S = 그 복제본이 담은 마지막 행 id.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS thread_lineage (
+      channel               TEXT NOT NULL,
+      thread_key            TEXT NOT NULL,
+      parent_key            TEXT NOT NULL,
+      through_transcript_id INTEGER NOT NULL,
+      through_chat_id       INTEGER NOT NULL,
+      sdk_session_id        TEXT,
+      sdk_included_through  INTEGER,
+      created_at            INTEGER NOT NULL,
+      PRIMARY KEY (channel, thread_key)
+    );
+  `);
+
   // ─── 대시보드 대화 이력 영속 (기능 B, 2026-06-25) ──────────────────────────────
   // 대시보드 채팅이 EventBus 인메모리 ring(최근 50)으로만 그려져 재시작 시 소실. transcripts
   // 는 raw 모델 I/O(사용자 턴에 system-reminder 스캐폴딩 섞임)라 그대로 못 씀 → 깨끗한

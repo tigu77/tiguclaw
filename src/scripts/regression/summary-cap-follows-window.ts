@@ -52,13 +52,17 @@ export const check: RegressionCheck = {
       return { calls, after: getThreadSummary(tk)?.summary.length ?? 0, turns: loadThreadHistoryWithIds("http-bridge", tk).length };
     };
 
-    const big = await drive("regr:summary-cap-big", BIG);
+    // ★파생 스레드 키 (2026-10-15 재검토 G5) — 사람이 기다리는 대화는 요청이 창에 들어가면 재압축을 안 해서, 메인 키로는 «다시 요약하지
+    //  않는다» 가 상한과 무관하게 공짜 초록이었다(요청 경로만 옛 2만으로 되돌리는 변이가 살았다). 요청 때 재압축이 실제로 판단되는 자리로 본다.
+    const big = await drive("agent:regr-summary-cap-big", BIG);
     // ★턴 뒤 접기 — 09-29 이후 실제 접기 대부분이 여기서 돈다(적대 검토 H: 이 경로만 옛 2만으로 되돌려도 초록이었다).
     const bigAfter = await drive("regr:summary-cap-big-after", BIG, true);
     // ★중간 창(실측 밀도 1.8~2.3 → 상한 22.5만~30만) — 한 점(40만)만 찍으면 경계를 30만으로 좁혀도 초록이었다(적대 검토 P).
     const MID = 260_000;
     const midSummary = H.summaryCapChars(MID) as number;
-    const def = await drive("regr:summary-cap-default", undefined);
+    // ★답한 뒤 접기로 본다 (2026-10-15) — 사람이 기다리는 요청은 요약이 상한을 넘어도 **창에 들어가면** 재압축하지 않는다
+    //  (`compaction-answer-first`). 상한이 꺼지지 않았는지는 그 정리가 실제로 도는 자리에서 본다.
+    const def = await drive("regr:summary-cap-default", undefined, true);
     const capBig = H.summaryCapChars(BIG) as number;
 
     return [

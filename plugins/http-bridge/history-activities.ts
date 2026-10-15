@@ -8,6 +8,8 @@
  */
 import { listEvents } from "../../src/store/events.js";
 import { isDerivedThread } from "../../src/core/threadkey.js";
+import { SESSION_STORAGE_CHANNEL } from "../../src/store/sessions.js";
+import { lineageChain } from "../../src/store/thread-members.js";
 
 interface HistoryActivity {
   ts: number;
@@ -54,11 +56,18 @@ export const historyActivities = (
     ? entries[entries.length - 1].ts
     : Number.POSITIVE_INFINITY;
   try {
+    // 가지면 조상 대화의 도구 스텝도 **갈라진 시각까지** 이 대화 것으로 그린다(화면 메시지 범위와 같은 사슬 — `chatScreenSegments`).
+    const scope = new Map<string, number>();
+    if (scopeThreadKey !== undefined && scopeThreadKey !== "") {
+      scope.set(scopeThreadKey, Number.POSITIVE_INFINITY);
+      for (const a of lineageChain(SESSION_STORAGE_CHANNEL, scopeThreadKey)) scope.set(a.key, a.forkedAt);
+    }
     const raw = listEvents({ types: ["llm.activity"], sinceTs, limit: 3000 });
     // 1차 파싱 — start 스텝은 out 으로, end 이벤트의 output 은 (threadKey|adapter|seq) 맵으로
     // 모아 뒤에 시작 스텝에 병합(라이브의 phase:end→스텝 주석과 동형). durationMs 는 이력 불필요.
     const out: HistoryActivity[] = [];
     const endOutputs = new Map<string, unknown>();
+    const rawKeyOf = new WeakMap<HistoryActivity, string>();
     const okey = (tk: string, adapter: string, seq: number) => tk + "|" + adapter + "|" + seq;
     for (const e of raw) {
       if (e.ts > newestTs) continue;
@@ -84,15 +93,21 @@ export const historyActivities = (
       // 2026-07-13 인터리브 — "tool" 외에 "text"(도구 경계 텍스트 세그먼트)도 이력에 admit.
       // "turn"(coarse floor) 은 여전히 제외 — 렌더 대상 아님(기존과 동일).
       if (p.kind !== "tool" && p.kind !== "text") continue;
-      const tk = typeof p.threadKey === "string" ? p.threadKey : "";
+      const rawTk = typeof p.threadKey === "string" ? p.threadKey : "";
       // ★손 목록이 갈려 있었다 (2026-09-05 적대 검토) — 셋만 적어 `scheduler:`·`endpoint:`
       //  가 빠졌고, 그래서 스케줄·엔드포인트 도구 스텝이 채팅 이력에 섞였다. 코어 정본을 쓴다.
-      if (isDerivedThread(tk)) {
+      if (isDerivedThread(rawTk)) {
         continue; // 파생 턴(잡·에이전트·스케줄·엔드포인트·게이트웨이) 스텝은 채팅 이력 아님.
       }
       // 멀티세션 탭(ADR 2026-07-15) — 요청 threadKey 로 스코프해 entries 와 동일 계약 유지
       //  (안 하면 타 스레드 도구 스텝이 세션 이력에 샘 = 크로스세션 누수). 미지정=현행(전 스레드).
-      if (scopeThreadKey !== undefined && scopeThreadKey !== "" && tk !== scopeThreadKey) continue;
+      //  가지면 조상의 스텝은 갈라진 시각까지만, 그리고 **이 대화의 키로** 그린다(메시지와 같은 키여야 인터리브된다).
+      let tk = rawTk;
+      if (scope.size > 0) {
+        const until = scope.get(rawTk);
+        if (until === undefined || e.ts > until) continue;
+        tk = scopeThreadKey!;
+      }
       const seq = typeof p.seq === "number" ? p.seq : 0;
       const adapter = typeof p.adapter === "string" ? p.adapter : "";
       // ★실제 응답 모델을 이력 투영에 포함 (2026-07-27). 종전엔 여기서 버려져, 라이브 SSE 에는
@@ -116,10 +131,10 @@ export const historyActivities = (
       }
       if (p.phase === "end") {
         // 실행시간 주석 이벤트 — 스텝은 아니나 output 이 있으면 시작 스텝에 병합.
-        if (p.output !== undefined && p.output !== null) endOutputs.set(okey(tk, adapter, seq), p.output);
+        if (p.output !== undefined && p.output !== null) endOutputs.set(okey(rawTk, adapter, seq), p.output); // 원래 대화 키 — 가지·부모 스텝의 seq 가 겹쳐도 섞이지 않게
         continue;
       }
-      out.push({
+      const step: HistoryActivity = {
         ts: e.ts,
         threadKey: tk,
         adapter,
@@ -130,12 +145,14 @@ export const historyActivities = (
         kind: "tool",
         ...(p.diff !== undefined && p.diff !== null ? { diff: p.diff } : {}),
         ...(typeof p.plan === "string" ? { plan: p.plan } : {}),
-      });
+      };
+      rawKeyOf.set(step, rawTk);
+      out.push(step);
     }
     // 2차 — end output 을 대응 시작 스텝에 병합.
     if (endOutputs.size > 0) {
       for (const s of out) {
-        const o = endOutputs.get(okey(s.threadKey, s.adapter, s.seq));
+        const o = endOutputs.get(okey(rawKeyOf.get(s) ?? s.threadKey, s.adapter, s.seq));
         if (o !== undefined) s.output = o;
       }
     }

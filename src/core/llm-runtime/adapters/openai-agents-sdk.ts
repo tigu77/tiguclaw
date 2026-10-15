@@ -1233,6 +1233,7 @@ export const runOpenAi = async (
   const priorTurns = recentTurnsAfter(allTurns, watermark, {
     budgetUsedChars: instructions.length + promptWithMemory.length + summary.length,
     charCap: capChars,
+    threadKey: input.threadKey,
   });
   // ★스캐폴딩 스트립 (2026-07-28) — transcripts 의 user 턴에는 SYSTEM.md·system-reminder 등
   //  런타임 주입물이 함께 박혀 있다(실측: 최근 14일 282행 평균 41,132자·최대 1,324,574자).

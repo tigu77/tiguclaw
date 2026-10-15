@@ -2754,6 +2754,12 @@ const subscribeWorkerToolSlowNotify = (): void => {
   });
 };
 
+/**
+ * 등록된 메인 핸들러(세션 줄 경유) — 코어가 **세션에 턴을 넣는** 다른 자리(가지 결론 보내기 등)도 같은 문을 쓴다.
+ * 없으면(부팅 전) undefined — 호출자가 «못 보냈다» 로 다룬다.
+ */
+export const mainMessageHandler = (): MessageHandler | undefined => mainHandler;
+
 export const registerWorkerHandler = (handler: MessageHandler): void => {
   mainHandler = handler;
   subscribeWorkerStallNotify(); // 부팅 1회 — 매니저 스톨 재개 유저 통지 구독.

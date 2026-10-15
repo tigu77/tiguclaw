@@ -10,6 +10,7 @@ import { setSessionArchived } from "../../src/store/channel-session.js";
 import { getFirstUserText, getRecentChatLog } from "../../src/store/chat-log.js";
 import { SESSION_STORAGE_CHANNEL, getSessionModelProfile, listThreads, sessionDisplayName, setThreadName } from "../../src/store/sessions.js";
 import { readJsonBody, bodyErrorStatus } from "./http-body.js";
+import { getLineage } from "../../src/store/thread-members.js";
 import type { RouteCtx } from "./route-ctx.js";
 
 export const handleSessions = async (ctx: RouteCtx): Promise<void> => {
@@ -18,9 +19,9 @@ export const handleSessions = async (ctx: RouteCtx): Promise<void> => {
     // 사용자에게 보이는 목록 — 프로브·검증 흔적 제외(대시보드 세션 목록과 /sessions 공통 기준).
     const threads = listThreads({ excludeInternal: true });
     const sessions = threads.map((t) => {
-      // 프리뷰 — 그 스레드 최근 1건 text 요약(80자 슬라이스). 첨부-only(text="")는
-      // 스킵되어 빈 프리뷰(undefined)로 graceful.
-      const recent = getRecentChatLog({ threadKey: t.threadKey, limit: 1 });
+      // 프리뷰 — 최근 3건 중 **글이 있는 마지막 행** 요약(80자 슬라이스). 글 없는 행(첨부만·선택지·가지 구분선)은 건너뛴다 —
+      //  갓 갈라진 대화는 마지막 행이 구분선이라 1건만 보면 미리보기가 빈다(2026-10-15). 셋 다 글이 없으면 빈 프리뷰.
+      const recent = getRecentChatLog({ threadKey: t.threadKey, limit: 3 }).filter((e) => e.text !== "").slice(-1);
       const previewText = recent.length > 0 ? recent[recent.length - 1]!.text : "";
       const preview =
         previewText.trim() !== ""
@@ -32,11 +33,14 @@ export const handleSessions = async (ctx: RouteCtx): Promise<void> => {
         SESSION_STORAGE_CHANNEL,
         t.threadKey,
       );
+      // 가지면 어느 대화에서 갈라졌나 — 화면이 «결론을 원래 대화로 보내기» 를 가지 탭에만 보인다.
+      const forkedFrom = getLineage(SESSION_STORAGE_CHANNEL, t.threadKey)?.parentKey;
       return {
         threadKey: t.threadKey,
         lastUsedAt: t.lastUsedAt,
         ...(t.model !== null ? { model: t.model } : {}),
         ...(preview !== undefined ? { preview } : {}),
+        ...(forkedFrom !== undefined ? { forkedFrom } : {}),
         ...(t.name !== null ? { name: t.name } : {}),
         // ★표시명은 **서버가 정한다** — 클라가 각자 파생하면 같은 세션이 채널마다
         //  다른 이름으로 보인다(실제로 그랬다: 대시보드 `세션3` vs 텔레그램 생키).
@@ -125,4 +129,63 @@ export const handleSessionArchive = async (ctx: RouteCtx): Promise<void> => {
     writeJson(res, 500, { error: m });
   }
   return;
+};
+
+/**
+ * 대화 가지치기 — body `{ threadKey, childKey }`. `childKey` 는 화면이 만든 `dashboard:<uuid>`(재시도 멱등 키).
+ * 판단·절차는 코어 `forkThread` 하나다(`/fork` 명령과 같은 함수). 부모 대화의 줄에서 진행 중인 답이 끝난 뒤 갈라진다.
+ */
+export const handleSessionFork = async (ctx: RouteCtx): Promise<void> => {
+  const { req, res } = ctx;
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
+    return;
+  }
+  const threadKey = typeof body.threadKey === "string" ? body.threadKey.trim() : "";
+  const childKey = typeof body.childKey === "string" ? body.childKey.trim() : "";
+  if (threadKey === "" || childKey === "") {
+    writeJson(res, 400, { error: "threadKey and childKey required" });
+    return;
+  }
+  try {
+    const { forkThread } = await import("../../src/core/thread-fork.js");
+    const r = await forkThread(threadKey, childKey);
+    writeJson(res, r.ok ? 200 : r.reason === "not_forkable" || r.reason === "empty" ? 400 : 500, r);
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, 500, { error: m });
+  }
+};
+
+/**
+ * 가지 결론을 원래 대화로 — body `{ threadKey }`(가지 키). 판단·절차는 코어 `carryForkConclusion`(`/fork back` 과 같다).
+ * 가지 비서가 정리를 끝낼 때까지 기다리고(그 답은 가지 화면에 남는다), 원래 대화엔 줄에 넣고 돌아온다 — 화면은 원래 대화 탭으로 옮긴다.
+ */
+export const handleSessionCarry = async (ctx: RouteCtx): Promise<void> => {
+  const { req, res } = ctx;
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
+    return;
+  }
+  const threadKey = typeof body.threadKey === "string" ? body.threadKey.trim() : "";
+  if (threadKey === "") {
+    writeJson(res, 400, { error: "threadKey required" });
+    return;
+  }
+  try {
+    const { carryForkConclusion } = await import("../../src/core/thread-fork.js");
+    const r = await carryForkConclusion(threadKey, { channel: ctx.channelName });
+    writeJson(res, r.ok ? 200 : r.reason === "not_fork" ? 400 : r.reason === "busy" ? 409 : 500, r);
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, 500, { error: m });
+  }
 };

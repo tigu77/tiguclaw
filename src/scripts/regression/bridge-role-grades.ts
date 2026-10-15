@@ -36,6 +36,8 @@ const EXPECTED: Record<string, Grade> = {
   "POST /messages": "write",
   "POST /session-name": "write",
   "POST /session-archive": "write",
+  "POST /session-fork": "write",
+  "POST /session-carry": "write",
   "POST /set-default-profile": "write",
   "POST /session-projects": "write",
   "POST /set-session-profile": "write",

@@ -8,6 +8,7 @@
 import type { ChannelName } from "../channels/types.js";
 import { clearSessionContext, getContextBoundary, getDb, setContextBoundary } from "./sessions.js";
 import { clearThreadSummary } from "./thread-summaries.js";
+import { memberClause, threadScope } from "./thread-members.js";
 import { stripAssembledPrefix } from "./memory.js";
 import { scheduleRunTimes } from "./schedules.js";
 
@@ -73,14 +74,15 @@ export const scheduleRunStarts = (
 ): number[] => {
   const head = prompt.trim().slice(0, 40);
   if (head === "" || limit <= 0) return [];
+  // 소속은 `memberClause` 한 곳 — 발화 이력은 활성 경계를 **적용하지 않는다**(경계 전 발화도 센다, 종전 그대로).
+  const scope = memberClause(threadScope(channel, threadKey), "t");
   const rows = getDb()
     .prepare(
       `SELECT t.ts, t.content FROM transcripts t
-         JOIN transcript_index ti ON ti.claude_session_id = t.claude_session_id
-        WHERE ti.channel = ? AND ti.thread_key = ? AND t.role = 'user'
+        WHERE ${scope.sql} AND t.role = 'user'
         ORDER BY t.ts DESC, t.id DESC`,
     )
-    .iterate(channel, threadKey) as IterableIterator<{ ts: number; content: string }>;
+    .iterate(...scope.params) as IterableIterator<{ ts: number; content: string }>;
   const out: number[] = [];
   // ★«포함» 이 아니라 **조립 접두를 걷은 뒤 그 머리로 시작**하는가 (2026-09-26 싱크 레드팀 P2).
   //  포함으로 세면 재주입 턴이 인용한 프롬프트(`작업: "…"`)·Claude 의 «지난 대화» 블록까지 발화로 세어

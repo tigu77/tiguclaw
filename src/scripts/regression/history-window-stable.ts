@@ -41,6 +41,8 @@ export const check: RegressionCheck = {
           summarize: async (_t: string, target: number) => { summarizeCalls += 1; return "요약:" + "약".repeat(Math.max(0, Math.min(target, 2_000) - 3)); },
           budget: { instructionsChars: FIXED, promptChars: 0 },
         });
+        // 실제처럼 턴이 저장된 뒤 공통 경로가 답한 뒤 접기를 건다(2026-10-15 — 요청 때 접기는 창에 들어가면 멈추고, 저수위 정리는 여기서 한다).
+        await H.compactHistoryAfterTurn(TK);
         const unsummarized = r.allTurns.filter((t) => t.id > r.watermark);
         maxUnsummarized = Math.max(maxUnsummarized, unsummarized.reduce((n, t) => n + t.content.length, 0));
         const win = H.recentTurnsAfter(r.allTurns, r.watermark, { budgetUsedChars: FIXED + r.summary.length });

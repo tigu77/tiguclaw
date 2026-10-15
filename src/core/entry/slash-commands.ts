@@ -62,6 +62,18 @@ const dateLocale = (): string => {
   }
 };
 
+/**
+ * **이 메시지는 채널이 세션을 스스로 고르는가** — 그렇다면 대화방 바인딩을 쓰거나 옮겨도 아무 효과가 없다(그 채널은 바인딩을 안 읽는다).
+ * `/sessions`(묶기)와 `/fork`(옮기기)가 **이 한 판정**을 쓴다 — `/fork` 가 따로 explicit 만 보다가 http-bridge(threadKey 없는 요청)에서
+ *  바인딩을 쓰고 «이어집니다» 라고 거짓으로 답했다(2026-10-15 적대 검토 P3, `/sessions` 는 07-29 에 같은 부류를 겪었다).
+ */
+const choosesSessionItself = (msg: IncomingMessage): boolean =>
+  msg.channel === SESSION_STORAGE_CHANNEL ||
+  (msg.session?.explicitSessionId !== undefined && msg.session.explicitSessionId !== "");
+
+/** `/fork back` 이 결론을 보내는 중인 대화방(채널:주소). */
+const carryRooms = new Set<string>();
+
 /** 명령 본문이 진입점에서 받는 것 — 한 벌만 둔다. */
 export interface SlashCtx {
   readonly msg: IncomingMessage;
@@ -381,9 +393,7 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
     //  실어 보내므로) = 죽은 쓰기 + 거짓 확인. 심지어 그렇게 띄운 선택지를 대시보드에서
     //  누르면 이번엔 가드가 거절한다 — 자기가 띄운 걸 자기가 거절(검토 실측).
     //  기준: 세션 셀렉터를 가진 채널(session.explicitSessionId 를 쓰는 계열) 전체를 거절.
-    const hasSelector =
-      msg.channel === SESSION_STORAGE_CHANNEL ||
-      (msg.session?.explicitSessionId !== undefined && msg.session.explicitSessionId !== "");
+    const hasSelector = choosesSessionItself(msg);
     if (hasSelector) {
       await replyCommand(
         msg,
@@ -547,6 +557,71 @@ export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
       { ephemeral },
     );
     return;
+};
+
+/**
+ * `/fork` — 지금 대화를 여기서 갈라 새 대화로(2026-10-15 대화 가지치기 v1). 판단·절차는 코어 `forkThread` 하나(대시보드 버튼과 같다).
+ * ★이 명령은 **그 세션의 턴으로** 처리되므로(진입점이 세션 줄 안에서 부른다) 줄에 다시 넣지 않는 `forkThreadHeld` 를 쓴다 —
+ *  `forkThread` 를 부르면 자기 자신이 끝나기를 기다린다.
+ * 대화방 주소가 있는 채널(텔레그램·CLI)은 바인딩을 새 가지로 옮긴다 — `/sessions new` 와 같은 규칙(정태님 결정: 활성 세션도 옮긴다).
+ */
+export const handleFork = async (ctx: SlashCtx): Promise<void> => {
+  const { msg } = ctx;
+  const { forkThreadHeld, newForkKey } = await import("../thread-fork.js");
+  // 휘발 — 세션 조작 확인이라 기록에 안 남긴다(`/sessions new` 와 같은 부류). 남기면 명령 버블이 갈라진 순간 앞에 끼어
+  //  가지가 **답 없는 `/fork` 버블**을 물려받았다(적대 검토 P2). 판정은 `isEphemeralCommandText` 한 곳.
+  const ephemeral = isEphemeralCommandText(ctx.trimmed);
+  const addr = msg.channelAddress?.trim() ?? "";
+  const movable = addr !== "" && !choosesSessionItself(msg);
+  // `/fork back` — 이 가지의 결론을 원래 대화로 보내고 대화방도 원래 대화로 돌린다(대시보드 «결론을 원래 대화로 보내기» 와 같은 코어).
+  if (parseSlashCommand(ctx.trimmed).sub === "back") {
+    const { getLineage } = await import("../../store/thread-members.js");
+    const { carryForkConclusion, isCarrying } = await import("../thread-fork.js");
+    // 이 방에서 이미 보내는 중이면 기다리라고만 한다 — 바인딩이 먼저 원래 대화로 옮겨져 있어서, 다시 치면 **원래 대화의** 결론이
+    //  조부모로 가 버린다(적대 검토 P2).
+    const room = `${msg.channel}:${addr}`;
+    if (carryRooms.has(room) || isCarrying(msg.threadKey)) {
+      await replyCommand(msg, translate("srv.fork.carryBusy"), { ephemeral });
+      return;
+    }
+    const lin = getLineage(SESSION_STORAGE_CHANNEL, msg.threadKey);
+    if (lin === undefined) {
+      await replyCommand(msg, translate("srv.fork.notBranch"), { ephemeral });
+      return;
+    }
+    // 바인딩을 **먼저** 옮긴다 — 정리하는 동안 이 방에 친 말이 가지(정리 중인 턴)에 끼어들지 않고 원래 대화로 가게.
+    if (movable) setChannelSessionBinding(msg.channel, addr, lin.parentKey);
+    await replyCommand(msg, translate(movable ? "srv.fork.carryStarted" : "srv.fork.carryStartedListed"), { ephemeral });
+    // ★백그라운드로 — 이 명령은 가지 대화의 줄 **안**이라, 기다리면 결론 정리 턴(같은 줄)이 이 명령 뒤에서 영원히 기다린다.
+    carryRooms.add(room);
+    const child = msg.threadKey;
+    void carryForkConclusion(child, { channel: msg.channel, ...(addr !== "" ? { address: addr } : {}) })
+      .then(async (c) => {
+        if (c.ok) return;
+        // 실패하면 방을 **가지로 되돌린다** — 안 그러면 «다시 시도» 가 원래 대화에서 «가지가 아닙니다» 가 된다(적대 검토 P2).
+        if (movable) setChannelSessionBinding(msg.channel, addr, child);
+        await replyCommand(msg, translate("srv.fork.carryFailed"), { ephemeral });
+      })
+      .finally(() => carryRooms.delete(room));
+    return;
+  }
+  const r = await forkThreadHeld(msg.threadKey, newForkKey());
+  if (!r.ok) {
+    await replyCommand(
+      msg,
+      r.reason === "not_forkable" ? translate("srv.fork.notForkable")
+        : r.reason === "empty" ? translate("srv.fork.empty")
+        : translate("srv.fork.failed"),
+      { ephemeral },
+    );
+    return;
+  }
+  // 바인딩으로 세션을 고르는 대화방만 옮긴다 — 채널이 세션을 스스로 고르는 메시지(대시보드 탭·답장으로 갈린 세션·http)는
+  //  바인딩을 안 따르므로, 옮겼다고 말하면 거짓이 된다. 답은 실제로 한 일을 말한다.
+  const moved = movable;
+  if (moved) setChannelSessionBinding(msg.channel, addr, r.childKey);
+  const lead = translate(moved ? "srv.fork.created" : "srv.fork.createdListed", { name: r.name });
+  await replyCommand(msg, r.claude === "rebuilt" ? `${lead}\n${translate("srv.fork.rebuiltNote")}` : lead, { ephemeral });
 };
 
 export const handleCompact = async (ctx: SlashCtx): Promise<void> => {

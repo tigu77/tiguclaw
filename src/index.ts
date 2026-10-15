@@ -9,6 +9,7 @@ import { migrateLegacyModelEnv } from "./core/legacy-model-env.js";
 import { turnSpend } from "./core/llm-runtime/turn-spend.js";
 import {
   handleCompact,
+  handleFork,
   handleCooldown,
   handleForget,
   handleMemo,
@@ -1134,6 +1135,12 @@ const handler: MessageHandler = async (msg) => {
     // 채널 무관: 텔레그램 전용이 아니라 channelAddress 를 가진 모든 채널에서 동작한다.
     if (cmd === "/sessions") {
       await handleSessions(slashCtx);
+      return;
+    }
+
+    // ── /fork — 지금 대화를 여기서 갈라 새 대화로(2026-10-15). 본문은 slash-commands.ts.
+    if (cmd === "/fork") {
+      await handleFork(slashCtx);
       return;
     }
 

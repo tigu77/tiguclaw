@@ -157,7 +157,9 @@ const proxyJson = async (
   init?: RequestInit,
 ): Promise<void> => {
   try {
-    if (bridgePath === "/messages") {
+    // ★답이 끝나기를 기다리는 요청은 기본 fetch(응답 헤더 300초 상한)로 보내지 않는다 — `/messages`(09-24)와 같은 이유.
+    //  `/session-fork` 는 부모 대화의 진행 중인 답이 끝난 뒤에 갈라지므로 같은 부류다(10-15 적대 검토 P3: 5분 넘으면 502 인데 서버는 나중에 갈랐다).
+    if (bridgePath === "/messages" || bridgePath === "/session-fork" || bridgePath === "/session-carry") {
       const r = await requestBridgeMessage(res, bridgeUrl(bridgePath), TOKEN, String(init?.body ?? ""));
       if (!res.destroyed) {
         res.writeHead(r.status, { "Content-Type": r.contentType });
@@ -1139,6 +1141,26 @@ const server = http.createServer((req, res) => {
     if (pathname === "/api/session-archive" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/session-archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 대화 가지치기 — bridge POST /session-fork. 새 대화(가지)를 만들고 화면이 새 탭으로 연다.
+    if (pathname === "/api/session-fork" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/session-fork", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    // 가지 결론을 원래 대화로 — bridge POST /session-carry. 가지 비서의 정리를 기다리므로 /messages 와 같은 대기 경로.
+    if (pathname === "/api/session-carry" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/session-carry", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,

@@ -29,10 +29,13 @@ export const check: RegressionCheck = {
       mem.appendTranscript({ claudeSessionId: `codex-${k}`, role: "user", content: "q" });
       mem.indexCodexTurn({ channel: CH, threadKey: k, claudeSessionId: `codex-${k}` });
     };
+    const { recordChatMessage } = await import("../../store/chat-log.js");
     const P = `dashboard:${randomUUID()}`;
     seed(P, "여행 계획");
+    recordChatMessage({ threadKey: P, channel: "dashboard", role: "user", text: "갈라지기 전 메시지 — 여행지는 미정", ts: Date.now() } as never);
     const K = `dashboard:${randomUUID()}`;
     await forkThread(P, K, noSdk);
+    recordChatMessage({ threadKey: K, channel: "dashboard", role: "user", text: "가지에서 처음 보낸 말 — 숙소부터 정하자", ts: Date.now() + 1 } as never);
 
     // 대역 핸들러 — 진짜처럼 **세션 줄**에 넣고, 가지 턴엔 결론을 답한다.
     const seen: IncomingMessage[] = [];
@@ -52,7 +55,9 @@ export const check: RegressionCheck = {
       r.ok && r.parentKey === P && r.parentName === "여행 계획" && seen.length === 2 &&
         a!.threadKey === K && a!.synthetic === true && a!.session?.explicitSessionId === K &&
         b!.threadKey === P && b!.synthetic === true && b!.session?.explicitSessionId === P &&
-        b!.text.includes("결론: 3박 4일") && b!.text.includes("여행 계획 (2)"),
+        b!.text.includes("결론: 3박 4일") && b!.text.includes("여행 계획 (2)") &&
+        // 정리 지시: **빠짐없이** + 경계 = 가지에서 처음 보낸 메시지(갈라지기 전 메시지가 아니다 · 10-15 정태님 «충분히 정리해서 넘기는 거지?»)
+        a!.text.includes("빠짐없이") && a!.text.includes("가지에서 처음 보낸 말") && !a!.text.includes("갈라지기 전 메시지"),
       { r, turns: seen.map((m) => ({ tk: m.threadKey === K ? "K" : m.threadKey === P ? "P" : m.threadKey, synthetic: m.synthetic, text: m.text.slice(0, 40) })) }));
 
     seen.length = 0;
@@ -135,6 +140,39 @@ export const check: RegressionCheck = {
     await new Promise((res) => setTimeout(res, 50));
     out.push(assert("★`/fork back` 이 실패하면 방이 가지로 돌아가고 «다시 해 주세요» 를 말한다",
       getChannelSessionBinding("telegram", "chat-carry-2") === K && replies.length === 2, { bound: getChannelSessionBinding("telegram", "chat-carry-2") === K ? "K" : "P", replies }));
+
+    // ★다시 보내면 **지난번 보낸 뒤**만 (10-15 정태님 «보낸 부분까지는 저장되고 다시 보내면 그 이후의 내용을»).
+    //  보내기는 가지 화면에 `thread.carried` 구분선을 남기고(대화 가시 이벤트 → chat_log), 다음 보내기는 그 뒤 첫 사용자 메시지부터 정리한다.
+    //  새 대화가 없으면 가지 비서를 부르지 않는다(헛턴·같은 결론 중복). 적재는 이벤트 영속기(`event-persist`)가 한다 — 여기선 그 한 줄을 흉내 낸다.
+    {
+      const { getEventBus } = await import("../../core/eventbus.js");
+      const K3 = `dashboard:${randomUUID()}`;
+      await forkThread(P, K3, noSdk);
+      recordChatMessage({ threadKey: K3, channel: "dashboard", role: "user", text: "첫 이야기 — 숙소", ts: Date.now() + 10 } as never);
+      const marks: { threadKey?: string; parentKey?: string; parentName?: string }[] = [];
+      const unsub = getEventBus().subscribe((e: { type: string; ts: number; payload: Record<string, unknown> }) => {
+        if (e.type !== "thread.carried") return;
+        marks.push(e.payload as never);
+        recordChatMessage({ ts: e.ts, threadKey: String(e.payload.threadKey), channel: "http-bridge", role: "assistant", text: "", notice: true, kind: e.type, data: e.payload } as never);
+      });
+      const asks: string[] = [];
+      const h3 = (m: IncomingMessage): Promise<unknown> => enqueueThreadTurn(m.threadKey, async () => { if (m.threadKey === K3) { asks.push(m.text); await m.reply("결론: 갱신"); } });
+      try {
+        const c1 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        const c2 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        recordChatMessage({ threadKey: K3, channel: "dashboard", role: "user", text: "두 번째 이야기 — 렌터카", ts: Date.now() + 20 } as never);
+        const c3 = await carryForkConclusion(K3, { channel: CH }, { runTurn: h3, deliver });
+        await new Promise((res) => setTimeout(res, 20));
+        out.push(assert("★보내면 가지에 «여기까지 보냈다» 표식 · 새 대화 없이 다시 보내면 가지 비서를 부르지 않고 «새 내용 없음» · 새 대화가 생기면 그 뒤부터만 정리",
+          c1.ok && marks.length >= 1 && marks[0]!.threadKey === K3 && marks[0]!.parentKey === P && marks[0]!.parentName === "여행 계획" &&
+            !c2.ok && c2.reason === "nothing_new" && asks.length === 2 &&
+            c3.ok && asks[1]!.includes("두 번째 이야기") && !asks[1]!.includes("첫 이야기") && asks[1]!.includes("이미 한 번 이상") &&
+            asks[0]!.includes("첫 이야기") && !asks[0]!.includes("이미 한 번 이상"),
+          { c1: c1.ok, c2, c3: c3.ok, marks: marks.length, asks: asks.map((x) => x.slice(0, 120)) }));
+      } finally {
+        unsub();
+      }
+    }
     return out;
   },
 };

@@ -722,6 +722,8 @@ export const searchTranscripts = (
 
 interface JsonlLineMessage {
   type?: string;
+  uuid?: string;
+  isSidechain?: boolean;
   role?: string;
   message?: { role?: string; content?: unknown };
   content?: unknown;
@@ -750,9 +752,13 @@ const flattenContent = (content: unknown): string => {
   return "";
 };
 
+/**
+ * 한 줄 → 행 재료. `content` 가 빈 줄(생각만 있는 메시지 등)은 행을 안 만들지만 **대화 메시지 uuid** 는 돌려준다 — 적재 기록의
+ *  «마지막으로 적재한 메시지 uuid» 는 행 유무와 무관하게 파일의 마지막 대화 메시지를 가리켜야 한다(메시지 지점 가지치기, 2026-10-15).
+ */
 const parseJsonlLine = (
   line: string,
-): { ts: number; role: string; content: string } | undefined => {
+): { ts: number; role: string; content: string; messageUuid?: string } | undefined => {
   const trimmed = line.trim();
   if (trimmed === "") return undefined;
   let obj: JsonlLineMessage;
@@ -766,14 +772,16 @@ const parseJsonlLine = (
   const role = obj.message?.role ?? obj.role ?? obj.type ?? "unknown";
   const rawContent = obj.message?.content ?? obj.content;
   const content = flattenContent(rawContent);
-  if (content === "") return undefined;
+  // 대화 메시지 = 최상위(사이드체인 아님) user·assistant 줄.
+  const messageUuid = (obj.type === "user" || obj.type === "assistant") && obj.isSidechain !== true && typeof obj.uuid === "string" ? obj.uuid : undefined;
+  if (content === "") return messageUuid === undefined ? undefined : { ts: 0, role, content, messageUuid };
   const ts =
     typeof obj.ts === "number"
       ? obj.ts
       : typeof obj.timestamp === "string"
         ? Date.parse(obj.timestamp) || Date.now()
         : Date.now();
-  return { ts, role, content };
+  return { ts, role, content, ...(messageUuid !== undefined ? { messageUuid } : {}) };
 };
 
 /**
@@ -944,10 +952,13 @@ export const indexJsonlIfNeeded = (input: {
   );
 
   let inserted = 0;
+  let lastMessageUuid: string | undefined;
   const tx = db.transaction(() => {
     for (const line of pending) {
       const parsed = parseJsonlLine(line);
       if (parsed === undefined) continue;
+      if (parsed.messageUuid !== undefined) lastMessageUuid = parsed.messageUuid;
+      if (parsed.content === "") continue;
       // ★여기가 부풀던 자리다 — jsonl 의 user 메시지는 우리가 넘긴 **조립 프롬프트 전문**
       //  (헌법+메모리+스킬 인덱스)이라 한 줄 입력이 25KB 로 들어온다. 원문은 그대로 넣고,
       //  색인용만 프리픽스를 뺀다(같을 땐 NULL — 본문 이중 저장 0).
@@ -970,6 +981,10 @@ export const indexJsonlIfNeeded = (input: {
       totalLines,
       consumedBytes,
     );
+    if (lastMessageUuid !== undefined) {
+      db.prepare(`UPDATE transcript_index SET last_message_uuid = ? WHERE channel = ? AND thread_key = ? AND claude_session_id = ?`)
+        .run(lastMessageUuid, channel, threadKey, claudeSessionId);
+    }
   });
   tx();
 

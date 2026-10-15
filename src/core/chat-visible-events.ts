@@ -42,6 +42,7 @@
 export const CHAT_VISIBLE_EVENT_TYPES = new Set<string>([
   "prompt.options", // 비서가 선택지를 물었다.
   "thread.forked", // 이 대화가 다른 대화에서 갈라졌다(가지 화면의 구분선, 2026-10-15).
+  "thread.carried", // 이 가지의 결론을 원래 대화로 보냈다(가지 화면의 구분선 · 다음 보내기의 범위 시작, 2026-10-15).
 ]);
 
 /** 이 이벤트가 대화 기록(chat_log)에 남아야 하는가. */

@@ -22,8 +22,9 @@ type Frame = Record<string, unknown>;
 type UserMsg = { uuid?: string };
 
 const init = (): Frame => ({ type: "system", subtype: "init", session_id: "sess-fake", model: "claude-fake" });
-const say = (text: string, uuids?: string[]): Frame => ({
+const say = (text: string, uuids?: string[], msgUuid?: string): Frame => ({
   type: "assistant",
+  ...(msgUuid !== undefined ? { uuid: msgUuid } : {}),
   session_id: "sess-fake",
   parent_tool_use_id: null,
   message: { role: "assistant", model: "claude-fake", content: [{ type: "text", text }] },
@@ -66,7 +67,7 @@ const fakeQuery =
 const runWith = async (
   steers: string[],
   script: Parameters<typeof fakeQuery>[0],
-): Promise<{ text?: string; error?: string }> => {
+): Promise<{ text?: string; lastMessageUuid?: string; error?: string }> => {
   const steering = createSteeringChannel();
   for (const raw of steers) steering.push({ text: raw, raw, ts: Date.now() });
   try {
@@ -79,7 +80,8 @@ const runWith = async (
       ),
     );
     if ("timedOut" in r) return { error: r.timedOut };
-    return { text: (r.value as { text?: string }).text };
+    const v = r.value as { text?: string; lastMessageUuid?: string };
+    return { text: v.text, ...(v.lastMessageUuid !== undefined ? { lastMessageUuid: v.lastMessageUuid } : {}) };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
@@ -297,6 +299,38 @@ const runScenarios = async (): Promise<Assertion[]> => {
     got: JSON.stringify(early),
   });
 
+
+  // ★메시지 지점 가지치기의 체크포인트 후보(`lastMessageUuid`) — **성공 경계가 확정된 답**에만 (2026-10-15 아스트라 구현 검토 1).
+  //  실패가 섞인 답(이어 받던 턴의 에러)은 «첫 답 + 실패 안내» 로 전달되는데 uuid 는 실패한 메시지 것이었다 → 그 좌표로 표식이 나갔다.
+  const okTurn = await runWith([], async function* () {
+    yield init();
+    yield say("A1", undefined, "u-ok");
+    yield done("A1");
+  });
+  const steered = await runWith(["두 번째"], async function* ({ pullSteer }) {
+    yield init();
+    yield say("A1", undefined, "u-a1");
+    const u = await pullSteer();
+    yield done("A1");
+    yield init();
+    yield say("B2", u !== undefined ? [u] : [], "u-b2");
+    yield done("B2");
+  });
+  const mixed = await runWith(["두 번째"], async function* ({ pullSteer }) {
+    yield init();
+    yield say("첫 답 완료", undefined, "u-success");
+    const u = await pullSteer();
+    yield done("첫 답 완료");
+    yield init();
+    yield say("API Error: 400", u !== undefined ? [u] : [], "u-failed");
+    yield done("API Error: 400", { is_error: true });
+  });
+  out.push({
+    name: "★체크포인트 후보: 정상 답·이어 받은 정상 답은 마지막 메시지 uuid · 실패가 섞인 답은 **후보 없음**(답은 그대로 전달)",
+    ok: okTurn.lastMessageUuid === "u-ok" && steered.lastMessageUuid === "u-b2" &&
+      mixed.lastMessageUuid === undefined && typeof mixed.text === "string" && mixed.text.startsWith("첫 답 완료"),
+    got: JSON.stringify({ ok: okTurn.lastMessageUuid, steered: steered.lastMessageUuid, mixed }),
+  });
   return out;
 };
 

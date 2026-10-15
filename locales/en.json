@@ -1177,5 +1177,12 @@
   "srv.claudeToken.cooldownsCleared": "Also cleared {n} Claude cooldown(s).",
   "srv.claudeToken.pasteCode": "Paste the code shown after sign-in.",
   "srv.claudeToken.issueSilent": "No token came back — the issuer did not answer. Check the code and start the sign-in over.",
-  "srv.claudeToken.issueError": "No token came back — {why}. Check the code and start the sign-in over."
+  "srv.claudeToken.issueError": "No token came back — {why}. Check the code and start the sign-in over.",
+  "chat.carriedTo": "↩️ Conclusion up to here sent to «{name}»",
+  "tab.carryNothingNew": "Nothing new in this branch since the last time you sent its conclusion.",
+  "srv.fork.carryNothingNew": "Nothing new in this branch since the last send, so nothing was sent. This chat stays on the branch.",
+  "ctx.forkHere": "Branch from here",
+  "tab.forkNotTurn": "Can't branch from this reply — it isn't a confirmed, saved reply.",
+  "tab.forkSummarized": "This reply is already in the summarized part of the conversation, so branching here isn't supported yet. Try a more recent reply.",
+  "tab.forkClearedAfter": "The conversation was cleared (/clear) after this reply, so branching here isn't supported yet."
 }

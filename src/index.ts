@@ -1378,6 +1378,10 @@ const handler: MessageHandler = async (msg) => {
         // 실제로 보낸 추론 강도·턴 비용(2026-09-29) — 답변 행에 같이 영속돼 새로고침·다른 기기에서도 같은 줄이 뜬다.
         //  비용은 실시간 카드와 **같은 판정**(`turnSpend`)으로 고른다 — 두 벌이면 두 화면이 다른 수를 보인다.
         ...(typeof out.reasoning === "string" && out.reasoning !== "" ? { reasoning: out.reasoning } : {}),
+        // 완료 턴 표식(2026-10-15) — 저장이 확인된 정상 답에만 있다. 화면 기록에 같이 남아 «여기까지로 갈라내기» 의 좌표가 된다.
+        //  ★끼워넣기 통로에 남은 입력이 있으면 싣지 않는다 — 그 입력은 다음 턴으로 가는데 화면엔 이 답보다 앞에 이미 있어,
+        //   이 답에서 갈라내면 가지 화면엔 보이고 모델은 모른다(2026-10-15 적대 검토 P2). 확인 못 하면 표식 없음.
+        ...(out.turn !== undefined && (steeringCh?.pending() ?? 0) === 0 ? { turn: out.turn } : {}),
         ...((): Record<string, unknown> => {
           const spend = turnSpend(out.usage);
           if (spend === undefined) return {};

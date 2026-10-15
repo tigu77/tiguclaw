@@ -164,6 +164,11 @@ export interface SteeringChannel {
    *  `stream()` 으로 기다리면 되돌려 놓은 걸 **다시 꺼내** 무한히 돈다.
    */
   untilClosed(signal: AbortSignal): Promise<void>;
+  /**
+   * 아직 이 턴이 소비하지 않은(또는 되돌려 놓은) 입력 수 — **비파괴**. 답 발행 시점에 남아 있으면 그 입력은 다음 턴으로 가는데
+   *  화면엔 이 답보다 앞에 이미 보인다 → 이 답에 완료 턴 표식을 싣지 않는다(메시지 지점 가지치기, 2026-10-15 적대 검토 P2).
+   */
+  pending(): number;
 }
 
 /**
@@ -194,6 +199,9 @@ export const createSteeringChannel = (): SteeringChannel => {
       buffer.push(msg);
       wake();
       return true;
+    },
+    pending() {
+      return buffer.length;
     },
     drain(): SteeringInput[] {
       if (buffer.length === 0) return []; // 빈 배열 안전.

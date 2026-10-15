@@ -16,6 +16,7 @@ import type { Attachment, ChannelName, IncomingMessage, TurnOrigin } from "../..
 import type { WorkerNotifyDest } from "../worker-jobs.js";
 import type { SteeringChannel } from "../steering.js";
 import type { CodexTurnItem } from "../../store/memory.js";
+import type { TurnMark } from "../../store/turn-marks.js";
 import type { TurnTimingSummary } from "./adapters/_request-timing.js";
 
 /**
@@ -355,6 +356,16 @@ export interface RegionASdkOutput {
    * 있으면 jsonl catch-up 진실 소스, 없으면 runRegionA 가 transcripts INSERT 직접.
    */
   jsonlPath?: string;
+  /**
+   * 이 턴의 마지막 **최상위** assistant 메시지 uuid — claude 어댑터만(하위 에이전트·사이드체인 제외). 퍼사드가 적재 기록의
+   *  «마지막으로 적재한 메시지 uuid» 와 맞춰 본 뒤에만 완료 턴 표식의 Claude 체크포인트로 쓴다(메시지 지점 가지치기, 2026-10-15).
+   */
+  lastMessageUuid?: string;
+  /**
+   * **완료 턴 표식** — 퍼사드가 이 턴의 저장을 확인한 뒤에만 채운다(`store/turn-marks.ts`). `channel.message.out` 으로 화면 기록에
+   *  같이 남아 «여기까지로 갈라내기» 의 좌표가 된다. 어댑터는 채우지 않는다.
+   */
+  turn?: TurnMark;
   /**
    * 신규 (additive) — 이 turn 응답을 트리거 메시지 직접 답글로 마킹.
    * 비서가 reply_to_current_message() 도구를 호출했을 때만 true.

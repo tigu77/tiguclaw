@@ -12,6 +12,7 @@
  *
  * 기존 store 모듈(skill-usage.ts·worker-jobs.ts) 의 prepared statement·getDb 접근 동형.
  */
+import type { TurnMark } from "./turn-marks.js";
 import { getDb, SESSION_STORAGE_CHANNEL, sessionDisplayName, visibleSessionSql } from "./sessions.js";
 import { lineageChain } from "./thread-members.js";
 
@@ -71,6 +72,13 @@ export interface ChatLogEntry {
   kind?: string;
   /** 그 이벤트의 원본 payload. kind 가 있을 때만. */
   data?: Record<string, unknown>;
+  /**
+   * 완료 턴 표식(`store/turn-marks.ts`) — 저장이 확인된 정상 답에만. 기록엔 전부 남기고, 조회는 화면이 쓰는 `turnId` 만 돌려준다
+   *  (좌표는 서버가 갈라낼 때 다시 읽는다).
+   */
+  turn?: TurnMark;
+  /** 조회 결과 — 그 답의 완료 턴 id(메뉴 «여기까지로 갈라내기» 의 대상). */
+  turnId?: string;
 }
 
 interface ChatLogRow {
@@ -87,6 +95,7 @@ interface ChatLogRow {
   data: string | null;
   reasoning: string | null;
   spend: string | null;
+  turn: string | null;
 }
 
 /**
@@ -104,8 +113,8 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
   try {
     getDb()
       .prepare(
-        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice, model, kind, data, reasoning, spend)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice, model, kind, data, reasoning, spend, turn)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.ts,
@@ -120,11 +129,66 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
         row.data !== undefined ? JSON.stringify(row.data) : null,
         typeof row.reasoning === "string" && row.reasoning !== "" ? row.reasoning : null,
         row.spend !== undefined ? JSON.stringify(row.spend) : null,
+        row.turn !== undefined ? JSON.stringify(row.turn) : null,
       );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[chat-log] recordChatMessage failed (best-effort): ${msg}`);
   }
+};
+
+/** 저장된 표식 — 모양이 틀리거나 손상됐으면 없음(그 답에선 갈라낼 수 없다 · 거짓 좌표 금지). */
+export const parseTurnMark = (raw: string | null): TurnMark | undefined => {
+  if (raw === null || raw === "") return undefined;
+  try {
+    const t = JSON.parse(raw) as TurnMark;
+    if (typeof t?.id !== "string" || typeof t.through !== "number") return undefined;
+    if (t.claude !== undefined && (typeof t.claude.sid !== "string" || typeof t.claude.uuid !== "string")) return undefined;
+    return t;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * 이 대화 **화면 범위 안**에서 그 완료 턴의 답 행 — 자기 행 + 조상 행(갈라진 순간까지). 물려받은 카드도 찾는다.
+ * 없으면 undefined(다른 대화의 턴 · 범위 밖 · 표식 없음).
+ */
+export const findTurnRow = (threadKey: string, turnId: string): { id: number; ts: number; threadKey: string; turn: TurnMark } | undefined => {
+  for (const seg of chatScreenSegments(threadKey)) {
+    const r = getDb()
+      .prepare(`SELECT id, ts, thread_key, turn FROM chat_log WHERE thread_key = ? AND turn IS NOT NULL AND json_extract(turn, '$.id') = ?${seg.maxId !== null ? " AND id <= ?" : ""} LIMIT 1`)
+      .get(seg.key, turnId, ...(seg.maxId !== null ? [seg.maxId] : [])) as { id: number; ts: number; thread_key: string; turn: string } | undefined;
+    const t = r === undefined ? undefined : parseTurnMark(r.turn);
+    if (r !== undefined && t !== undefined) return { id: r.id, ts: r.ts, threadKey: r.thread_key, turn: t };
+  }
+  return undefined;
+};
+
+/**
+ * 이 대화 화면 범위에서 **화면 행 `maxChatId` 이하**인 가장 최근 Claude 완료 턴 표식(그 행 시각과 함께).
+ *  Codex 답에서 갈라낼 때 그 앞의 마지막 Claude 지점까지 SDK 복제하고 나머지는 재개 델타로 넣는다(설계 «유효 계약» §3-2).
+ *  chat_log id 는 전역 단조라 «화면 행 ≤ Tc» 하나로 자기·조상 범위를 함께 자른다 — 표식의 모델 상한도 시간순으로만 커지므로
+ *  (답 행은 그 턴 저장 뒤에 남는다) 이 조건이 «상한 ≤ T» 도 보장한다(따로 걸면 같은 판단 두 벌 — 변이 M6 이 동치로 확인).
+ */
+export const latestClaudeMarkUpTo = (
+  threadKey: string,
+  maxChatId: number,
+): { ts: number; claude: NonNullable<TurnMark["claude"]> } | undefined => {
+  let best: { id: number; ts: number; claude: NonNullable<TurnMark["claude"]> } | undefined;
+  for (const seg of chatScreenSegments(threadKey)) {
+    const cap = seg.maxId === null ? maxChatId : Math.min(seg.maxId, maxChatId);
+    const r = getDb()
+      .prepare(
+        `SELECT id, ts, turn FROM chat_log WHERE thread_key = ? AND id <= ? AND turn IS NOT NULL
+            AND json_extract(turn, '$.claude.sid') IS NOT NULL
+          ORDER BY id DESC LIMIT 1`,
+      )
+      .get(seg.key, cap) as { id: number; ts: number; turn: string } | undefined;
+    const t = r === undefined ? undefined : parseTurnMark(r.turn);
+    if (r !== undefined && t?.claude !== undefined && (best === undefined || r.id > best.id)) best = { id: r.id, ts: r.ts, claude: t.claude };
+  }
+  return best === undefined ? undefined : { ts: best.ts, claude: best.claude };
 };
 
 /**
@@ -188,7 +252,7 @@ export const getRecentChatLog = (opts?: {
       params.push(opts.beforeTs);
     }
   }
-  const cols = `id, ts, thread_key, channel, role, text, attachments, notice, model, kind, data, reasoning, spend`;
+  const cols = `id, ts, thread_key, channel, role, text, attachments, notice, model, kind, data, reasoning, spend, turn`;
   let rows: ChatLogRow[];
   if (segments.length > 1) {
     const parts: string[] = [];
@@ -229,6 +293,8 @@ export const getRecentChatLog = (opts?: {
       ...(typeof r.reasoning === "string" && r.reasoning !== "" ? { reasoning: r.reasoning } : {}),
       ...(typeof r.kind === "string" && r.kind !== "" ? { kind: r.kind } : {}),
     };
+    const turnId = parseTurnMark(r.turn)?.id;
+    if (turnId !== undefined) entry.turnId = turnId;
     // 턴 비용 — 손상 JSON·모양이 틀린 값은 버린다(표시 없음 = 거짓값 금지).
     if (r.spend !== null && r.spend !== "") {
       try {
@@ -279,6 +345,24 @@ export const getFirstUserText = (threadKey: string): string => {
     )
     .get(threadKey) as { text?: string } | undefined;
   return typeof row?.text === "string" ? row.text : "";
+};
+
+/**
+ * 이 대화에서 **마지막 `kind` 표식 뒤** 사용자가 처음 보낸 메시지 — 표식이 없으면 처음부터.
+ *  가지 결론 보내기가 «지난번 보낸 뒤부터» 정리 범위를 잡는 데 쓴다(`thread.carried` 표식, 2026-10-15).
+ */
+export const firstUserTextAfterKind = (threadKey: string, kind: string): { text: string; marked: boolean } => {
+  const db = getDb();
+  const mark = db.prepare(`SELECT MAX(id) AS id FROM chat_log WHERE thread_key = ? AND kind = ?`).get(threadKey, kind) as { id: number | null };
+  const after = mark.id ?? 0;
+  const row = db
+    .prepare(
+      `SELECT text FROM chat_log
+        WHERE thread_key = ? AND id > ? AND role = 'user' AND kind IS NULL AND text IS NOT NULL AND TRIM(text) <> ''
+        ORDER BY id ASC LIMIT 1`,
+    )
+    .get(threadKey, after) as { text?: string } | undefined;
+  return { text: typeof row?.text === "string" ? row.text : "", marked: mark.id !== null };
 };
 
 /** 검색 결과 한 건 — 어느 세션의 언제/누가/무엇인지가 다 실려야 한다. */

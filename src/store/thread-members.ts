@@ -27,12 +27,14 @@ export interface ThreadLineage {
   sdkSessionId: string | null;
   /** S — 그 복제본이 담은 마지막 행 id. */
   sdkIncludedThrough: number | null;
+  /** 갈라진 시각 — 도구 스텝 상한. 옛 행은 null(= createdAt). */
+  throughTs: number | null;
   createdAt: number;
 }
 
 interface LineageRow {
   channel: string; thread_key: string; parent_key: string; through_transcript_id: number; through_chat_id: number;
-  sdk_session_id: string | null; sdk_included_through: number | null; created_at: number;
+  sdk_session_id: string | null; sdk_included_through: number | null; through_ts: number | null; created_at: number;
 }
 
 export const getLineage = (channel: ChannelName, threadKey: string): ThreadLineage | undefined => {
@@ -42,7 +44,7 @@ export const getLineage = (channel: ChannelName, threadKey: string): ThreadLinea
   return r === undefined ? undefined : {
     channel: r.channel as ChannelName, threadKey: r.thread_key, parentKey: r.parent_key,
     throughTranscriptId: r.through_transcript_id, throughChatId: r.through_chat_id,
-    sdkSessionId: r.sdk_session_id, sdkIncludedThrough: r.sdk_included_through, createdAt: r.created_at,
+    sdkSessionId: r.sdk_session_id, sdkIncludedThrough: r.sdk_included_through, throughTs: r.through_ts, createdAt: r.created_at,
   };
 };
 
@@ -67,7 +69,7 @@ export const lineageChain = (
     seen.add(lin.parentKey);
     t = Math.min(t, lin.throughTranscriptId);
     tc = Math.min(tc, lin.throughChatId);
-    at = Math.min(at, lin.createdAt);
+    at = Math.min(at, lin.throughTs ?? lin.createdAt);
     // forkedAt — 그 조상 기록 중 이 대화가 물려받는 시각 상한(시각만 있는 관측 기록 — 도구 스텝 — 을 가를 때).
     out.push({ key: lin.parentKey, throughTranscriptId: t, throughChatId: tc, forkedAt: at });
   }

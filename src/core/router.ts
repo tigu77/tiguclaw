@@ -32,6 +32,8 @@ export interface RouteOutput {
   reasoning?: string;
   /** 런타임 output 의 사용량 그대로 — 턴 비용은 받는 쪽이 `turnSpend` 한 곳에서 고른다. */
   usage?: RegionASdkOutput["usage"];
+  /** 완료 턴 표식 — 런타임 output 그대로(저장이 확인된 턴에만). 답과 함께 화면 기록에 남는다. */
+  turn?: RegionASdkOutput["turn"];
   /**
    * LLM 런타임 output 에서 그대로 전달 — 이 turn 응답을 트리거 메시지 직접 답글로 마킹.
    */
@@ -261,5 +263,6 @@ export const route = async (
     ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
     ...(typeof out.reasoning === "string" && out.reasoning !== "" ? { reasoning: out.reasoning } : {}),
     ...(out.usage !== undefined ? { usage: out.usage } : {}),
+    ...(out.turn !== undefined ? { turn: out.turn } : {}),
   };
 };

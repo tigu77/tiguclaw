@@ -441,12 +441,15 @@
         // out(봇 답변)이고 같은 threadKey 에 스트리밍 진행 버블이 있으면, 새 버블을 만들지
         // 말고 그 진행 버블을 "최종 권위 전체본 + 마크다운"으로 승격(중복 버블 생성 금지).
         // 누적 평문 델타는 폐기되고 out 전체본으로 치환 = 부분 렌더 오차 자가치유.
+        // 완료 턴 표식(2026-10-15) — 저장이 확인된 정상 답에만 온다. 메뉴 «여기까지로 갈라내기» 가 이 값을 찾는다(통지엔 없다).
+        const turnId = isOut && payload.notice !== true && payload.turn && typeof payload.turn.id === "string" ? payload.turn.id : "";
         if (isOut) {
           const card = cardByThread.get(thread);
           // 인터리브(2026-07-13): 이 턴이 kind:"text" 세그먼트를 냈으면 마지막 텍스트는 이미
           // 세그먼트 버블이 소유 → 최종 답변 버블을 따로 만들거나 승격하지 않는다(중복 방지). 턴만 마감.
           if (card && !card.interrupted && card.sawTextSegment && vtIndex.has(card.group)) {
             if (card.replyMsg) card.replyMsg.classList.remove("streaming"); // 혹시 남은 커서 정리.
+            if (turnId) card.group.dataset.turn = turnId;
             card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
             completeTurnGroup(thread);
             localChatCount += 1;
@@ -458,6 +461,7 @@
           if (card && !card.interrupted && card.replyBubble && vtIndex.has(card.group)) {
             setChatBody(card.replyMsg, payload.text, true);     // 평문 델타 → 마크다운 전체본 1회.
             card.replyMsg.classList.remove("streaming");        // 타이핑 커서 off.
+            if (turnId) card.group.dataset.turn = turnId;
             card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
             completeTurnGroup(thread);                          // 스텝 카드 "n단계 완료"로 접기.
             localChatCount += 1;
@@ -477,6 +481,7 @@
         div.className = isNotice ? "ev local channel-chat sys-notice" : "ev local channel-chat";
         div.dataset.type = (ev.type || "").toLowerCase();
         if (ev.ts != null) div.dataset.ts = String(ev.ts); // prune 후 커서 복구용 수치 ts.
+        if (turnId) div.dataset.turn = turnId;
         const head = document.createElement("div");
         head.className = "bubble-meta"; // 채팅 버블 메타 줄 간격(생성 지점 4곳 공통).
         head.appendChild(makeCardCaret()); // 도구 카드와 **같은 캐럿** — 맨 앞.

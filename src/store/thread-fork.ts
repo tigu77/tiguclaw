@@ -17,9 +17,24 @@ export interface ForkRecordInput {
   throughTranscriptId: number;
   /** Tc — 물려받는 화면 기록 상한(`chat_log.id`). */
   throughChatId: number;
+  /**
+   * 메시지 지점에서 갈랐을 때만 — 그 답의 시각. 도구 스텝 상한이자 활성 경계 검사 기준. 끝에서 가르면 없다(v1 그대로: 모든 것을 물려받으니
+   *  경계도 그대로 복사하고, 도구 스텝 상한은 만든 시각).
+   */
+  throughTs?: number;
   name: string;
   /** Claude SDK 복제본 — 없으면 «SDK 없는 가지»(`/clear` 와 같은 무효화 값: sid `''` · 해시 NULL). */
   sdk?: { sessionId: string; jsonlPath: string; lines: number; bytes: number; includedThrough: number | null; systemPromptHash: string | null };
+}
+
+/**
+ * 최종 트랜잭션 안의 거절 — 검사한 요약·경계와 복사하는 값이 **같은 읽기**다(아스트라 회신 3). SDK 복제를 기다리는 사이 답한 뒤 접기가
+ *  요약을 T 너머로 진전시켰으면 여기서 걸린다 — 조용히 요약을 빼고 성공시키지 않는다.
+ */
+export class ForkRecordRejected extends Error {
+  constructor(readonly reason: "summarized" | "cleared_after", detail: string) {
+    super(detail);
+  }
 }
 
 /** 이미 있는 가지면 그 행 — 같은 childKey 재시도는 두 번째 가지를 만들지 않는다(설계 §4 ③). */
@@ -30,13 +45,24 @@ export const writeForkRecords = (f: ForkRecordInput): void => {
   const db = getDb();
   const now = Date.now();
   db.transaction(() => {
+    // ★물려줄 요약·활성 경계는 **이 읽기**로 검사하고 아래에서 같은 행을 복사한다(트랜잭션은 동기라 그 사이 바뀌지 않는다).
+    //  요약이 상한 T 너머까지 접었으면 그 요약엔 갈라진 지점 **뒤** 내용이 섞여 있다 · 경계가 갈라진 시각 뒤면 그 시점의 경계를 모른다.
+    //  끝에서 가르면 T 가 «지금» 의 최대라 요약 검사는 저절로 통과하고, 경계 검사는 하지 않는다(시각 없음 = 전부 물려받음).
+    const sum = db.prepare(`SELECT compacted_through FROM thread_summaries WHERE thread_key = ?`).get(f.parentKey) as { compacted_through: number } | undefined;
+    if (sum !== undefined && sum.compacted_through > f.throughTranscriptId) {
+      throw new ForkRecordRejected("summarized", `요약 워터마크 ${sum.compacted_through} > 상한 ${f.throughTranscriptId}`);
+    }
+    const cb = db.prepare(`SELECT boundary_ts FROM context_boundaries WHERE channel = ? AND thread_key = ?`).get(f.channel, f.parentKey) as { boundary_ts: number } | undefined;
+    if (f.throughTs !== undefined && cb !== undefined && cb.boundary_ts > f.throughTs) {
+      throw new ForkRecordRejected("cleared_after", `활성 경계 ${cb.boundary_ts} > 갈라진 시각 ${f.throughTs}`);
+    }
     const parent = db
       .prepare(`SELECT model FROM threads WHERE channel = ? AND channel_thread_id = ?`)
       .get(f.channel, f.parentKey) as { model: string | null } | undefined;
     db.prepare(
-      `INSERT INTO thread_lineage (channel, thread_key, parent_key, through_transcript_id, through_chat_id, sdk_session_id, sdk_included_through, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(f.channel, f.childKey, f.parentKey, f.throughTranscriptId, f.throughChatId, f.sdk?.sessionId ?? null, f.sdk?.includedThrough ?? null, now);
+      `INSERT INTO thread_lineage (channel, thread_key, parent_key, through_transcript_id, through_chat_id, sdk_session_id, sdk_included_through, through_ts, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(f.channel, f.childKey, f.parentKey, f.throughTranscriptId, f.throughChatId, f.sdk?.sessionId ?? null, f.sdk?.includedThrough ?? null, f.throughTs ?? null, now);
     db.prepare(
       `INSERT INTO threads (channel, channel_thread_id, claude_session_id, model, system_prompt_hash, last_used_at, created_at, name)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

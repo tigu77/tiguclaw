@@ -47,6 +47,8 @@ import {
   appendApiTurn,
   indexJsonlIfNeeded,
 } from "../../store/memory.js";
+import { randomUUID } from "node:crypto";
+import { apiTurnMark, claudeTurnMark } from "../../store/turn-marks.js";
 import type {
   RegionASdkInput,
   RegionASdkOutput,
@@ -1481,19 +1483,18 @@ const persistOutput = (
     } catch (e) {
       console.error("llm-runtime: saveSession failed:", e);
     }
-    const jsonlPath = output.jsonlPath;
-    void Promise.resolve()
-      .then(() =>
-        indexJsonlIfNeeded({
-          channel: idChannel,
-          threadKey: input.threadKey,
-          claudeSessionId: sessionId,
-          jsonlPath,
-        }),
-      )
-      .catch((e) => {
-        console.error("llm-runtime: indexJsonlIfNeeded failed:", e);
+    // ★적재를 **그 자리에서** 한다 (2026-10-15 메시지 지점 가지치기) — 원래도 동기 함수를 마이크로태스크 뒤로 미뤄 부를 뿐이었다(꼬리만 읽음).
+    //  답이 전달되기 전에 이번 답까지 적재돼 있어야 완료 턴 표식을 낼 수 있다. 실패해도 답은 그대로 간다 — 표식만 없다.
+    try {
+      indexJsonlIfNeeded({ channel: idChannel, threadKey: input.threadKey, claudeSessionId: sessionId, jsonlPath: output.jsonlPath });
+      const mark = claudeTurnMark(randomUUID(), {
+        channel: idChannel, threadKey: input.threadKey, sid: sessionId, uuid: output.lastMessageUuid, systemPromptHash: output.systemPromptHash ?? null,
       });
+      if (mark !== undefined) output.turn = mark;
+      else console.log(`[turn-mark] 표식 없음 — 적재 기록의 마지막 메시지가 이번 답이 아니다 thread=${input.threadKey} sid=${sessionId} uuid=${output.lastMessageUuid ?? "(없음)"}`);
+    } catch (e) {
+      console.error("llm-runtime: indexJsonlIfNeeded failed:", e);
+    }
   } else {
     // codex·openai 어댑터 — jsonl 없음. (contract Part B v2 §B-4·B-5)
     //  - preserveSessionId:true → codex 가 threads.claude_session_id (claude SDK resume
@@ -1541,6 +1542,7 @@ const persistOutput = (
         ...(output.turnItems !== undefined ? { items: output.turnItems } : {}),
         ...(output.sentUserText !== undefined ? { userSent: output.sentUserText } : {}),
       });
+      output.turn = apiTurnMark(randomUUID()); // 저장 성공 뒤에만 — 실패하면 아래 catch 로 가고 표식이 없다
     } catch (e) {
       console.error("llm-runtime: appendTranscript/indexCodexTurn failed:", e);
     }

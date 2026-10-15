@@ -27,6 +27,8 @@
         // 복합 커서의 두 번째 축도 같이 심는다 — 프루닝은 DOM 만 보고 커서를 되살리므로
         // id 가 없으면 ts 만 새로 당겨지고 id 는 옛 값에 남아 커서가 조용히 퇴행한다.
         if (typeof entry.id === "number") div.dataset.id = String(entry.id);
+        // 완료 턴 표식 — 라이브와 같은 값(메뉴 «여기까지로 갈라내기»). 통지·사용자 메시지엔 없다.
+        if (isOut && !isNotice && typeof entry.turnId === "string" && entry.turnId) div.dataset.turn = entry.turnId;
         const head = document.createElement("div");
         head.className = "bubble-meta"; // 라이브 답변 버블과 같은 간격(새로고침해도 동일해야 함).
         head.appendChild(makeCardCaret()); // 도구 카드와 **같은 캐럿** — 맨 앞.
@@ -351,6 +353,7 @@
           // 강도·비용은 세그먼트가 아니라 **답변 행**이 싣는다 — 병합이 그 행을 버리기 전에 여기로 옮겨 둔다(아래).
           ...(typeof a.reasoning === "string" && a.reasoning !== "" ? { reasoning: a.reasoning } : {}),
           ...(a.spend ? { spend: a.spend } : {}),
+          ...(typeof a.turnId === "string" && a.turnId ? { turnId: a.turnId } : {}),
         });
       };
 
@@ -440,6 +443,8 @@
                 const meta = {
                   ...(typeof it.m.reasoning === "string" && it.m.reasoning !== "" ? { reasoning: it.m.reasoning } : {}),
                   ...(it.m.spend ? { spend: it.m.spend } : {}),
+                  // 완료 턴 표식도 — 버려지는 이 행이 싣는다(메뉴가 세그먼트 버블에서 찾는다).
+                  ...(typeof it.m.turnId === "string" && it.m.turnId ? { turnId: it.m.turnId } : {}),
                 };
                 if (Object.keys(meta).length > 0) lastTextUnit.act = { ...lastTextUnit.act, ...meta };
               }

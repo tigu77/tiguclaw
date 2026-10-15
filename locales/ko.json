@@ -1177,5 +1177,12 @@
   "srv.claudeToken.cooldownsCleared": "Claude 쿨다운 {n}건도 풀었습니다.",
   "srv.claudeToken.pasteCode": "로그인 뒤 나온 코드를 붙여넣어 주세요.",
   "srv.claudeToken.issueSilent": "토큰을 받지 못했습니다 — 발급기가 답하지 않았습니다. 코드가 맞는지 확인하고 로그인을 처음부터 다시 해 주세요.",
-  "srv.claudeToken.issueError": "토큰을 받지 못했습니다 — {why}. 코드가 맞는지 확인하고 로그인을 처음부터 다시 해 주세요."
+  "srv.claudeToken.issueError": "토큰을 받지 못했습니다 — {why}. 코드가 맞는지 확인하고 로그인을 처음부터 다시 해 주세요.",
+  "chat.carriedTo": "↩️ 여기까지의 결론을 «{name}» 에 보냈습니다",
+  "tab.carryNothingNew": "지난번 보낸 뒤 이 가지에서 새로 나눈 대화가 없습니다.",
+  "srv.fork.carryNothingNew": "지난번 보낸 뒤 이 가지에서 새로 나눈 대화가 없어 보내지 않았습니다. 이 대화방은 가지에 그대로 둡니다.",
+  "ctx.forkHere": "여기까지로 갈라내기",
+  "tab.forkNotTurn": "이 답에서는 갈라낼 수 없습니다 — 저장이 확인된 답이 아닙니다.",
+  "tab.forkSummarized": "이 답은 이미 요약된 구간이라 지금은 여기서 갈라낼 수 없습니다. 더 최근 답에서 갈라내 주세요.",
+  "tab.forkClearedAfter": "이 답 뒤에 대화를 비웠기 때문에(/clear) 지금은 여기서 갈라낼 수 없습니다."
 }

@@ -98,6 +98,8 @@
           //  JSON 이 되지 않는다 — endpoint 는 action.body 를, send_message 는 label/targetId
           //  만 쓴다). 외부 기여 항목은 builtin 을 못 부르므로 이 참조에 닿지 않는다.
           el: host,
+          // 완료 턴 표식 id — 저장이 확인된 비서 답(라이브·복원 같은 값, 턴 묶음이면 묶음에). 없으면 «여기까지로 갈라내기» 가 안 뜬다.
+          turn: (() => { const t = msg.closest ? msg.closest("[data-turn]") : null; return t ? t.dataset.turn : ""; })(),
         };
       };
       registerBuiltinHandler("message.reply", (ctx) => { startReply(ctx.text, ctx.label); });
@@ -112,11 +114,16 @@
         // 가리고 있는 카드(접힌 조상)를 대상으로 — 클릭과 같은 판정(`collapseTargetFor`).
         if (ctx && ctx.el) toggleCardCollapsed(collapseTargetFor(ctx.el));
       });
+      // «여기까지로 갈라내기» — 완료 턴 표식이 있는 비서 답(또는 그 답의 턴 묶음)에서만(`ctx.turn`). 판단·절차는 서버(코어 `forkThread`).
+      registerBuiltinHandler("message.fork", (ctx) => {
+        if (ctx && ctx.turn && typeof window.forkSessionAt === "function") window.forkSessionAt(activeThreadKey, ctx.turn);
+      });
       registerMenuItems("message", (ctx) => {
         const items = [
           { id: "reply", label: i18n("reply.label"), icon: "↩️", action: { kind: "builtin", handler: "message.reply" } },
           { id: "copy", label: i18n("common.copy"), icon: "📋", action: { kind: "builtin", handler: "message.copy" } },
         ];
+        if (ctx && ctx.turn) items.push({ id: "fork", label: i18n("ctx.forkHere"), icon: "🌿", action: { kind: "builtin", handler: "message.fork" } });
         // ★**본문 어디서 우클릭해도 접을 수 있다** — 머리줄만 누르게 바꾸면서(2026-09-14)
         //  «긴 답변은 머리줄이 화면 밖» 이 다시 문제가 되는데, 그 필요를 여기가 받는다.
         //  펼칠 손잡이(머리줄)가 없는 카드엔 항목을 내지 않는다 — 되돌릴 길이 없으니까.

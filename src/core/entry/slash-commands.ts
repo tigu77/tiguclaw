@@ -600,7 +600,7 @@ export const handleFork = async (ctx: SlashCtx): Promise<void> => {
         if (c.ok) return;
         // 실패하면 방을 **가지로 되돌린다** — 안 그러면 «다시 시도» 가 원래 대화에서 «가지가 아닙니다» 가 된다(적대 검토 P2).
         if (movable) setChannelSessionBinding(msg.channel, addr, child);
-        await replyCommand(msg, translate("srv.fork.carryFailed"), { ephemeral });
+        await replyCommand(msg, translate(c.reason === "nothing_new" ? "srv.fork.carryNothingNew" : "srv.fork.carryFailed"), { ephemeral });
       })
       .finally(() => carryRooms.delete(room));
     return;

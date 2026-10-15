@@ -147,14 +147,18 @@ export const handleSessionFork = async (ctx: RouteCtx): Promise<void> => {
   }
   const threadKey = typeof body.threadKey === "string" ? body.threadKey.trim() : "";
   const childKey = typeof body.childKey === "string" ? body.childKey.trim() : "";
+  // 메시지 지점(v2) — 그 답의 완료 턴 id. 없으면 끝에서(v1).
+  const turn = typeof body.turn === "string" && body.turn.trim() !== "" ? body.turn.trim() : undefined;
   if (threadKey === "" || childKey === "") {
     writeJson(res, 400, { error: "threadKey and childKey required" });
     return;
   }
   try {
     const { forkThread } = await import("../../src/core/thread-fork.js");
-    const r = await forkThread(threadKey, childKey);
-    writeJson(res, r.ok ? 200 : r.reason === "not_forkable" || r.reason === "empty" ? 400 : 500, r);
+    const r = await forkThread(threadKey, childKey, undefined, turn);
+    // 요청이 가리킨 지점에서 갈라낼 수 없는 것(사용자 선택의 문제)은 400 — 그 밖(복제·기록 실패)은 500.
+    const userSide = ["not_forkable", "empty", "not_turn", "summarized", "cleared_after"];
+    writeJson(res, r.ok ? 200 : userSide.includes(r.reason) ? 400 : 500, r);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
     writeJson(res, 500, { error: m });
@@ -183,7 +187,7 @@ export const handleSessionCarry = async (ctx: RouteCtx): Promise<void> => {
   try {
     const { carryForkConclusion } = await import("../../src/core/thread-fork.js");
     const r = await carryForkConclusion(threadKey, { channel: ctx.channelName });
-    writeJson(res, r.ok ? 200 : r.reason === "not_fork" ? 400 : r.reason === "busy" ? 409 : 500, r);
+    writeJson(res, r.ok ? 200 : r.reason === "not_fork" ? 400 : r.reason === "busy" || r.reason === "nothing_new" ? 409 : 500, r);
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
     writeJson(res, 500, { error: m });

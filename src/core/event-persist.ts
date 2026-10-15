@@ -343,6 +343,10 @@ const startChatLogPersistence = (bus: EventBus): void => {
         ...(payload.spend !== null && typeof payload.spend === "object" && typeof (payload.spend as { input?: unknown }).input === "number"
           ? { spend: payload.spend as NonNullable<ChatLogEntry["spend"]> }
           : {}),
+        // 완료 턴 표식 — 비서 답에만(사용자 메시지에 실려 와도 남기지 않는다).
+        ...(event.type === "channel.message.out" && payload.turn !== null && typeof payload.turn === "object" && typeof (payload.turn as { id?: unknown }).id === "string"
+          ? { turn: payload.turn as NonNullable<ChatLogEntry["turn"]> }
+          : {}),
       });
     } catch (e) {
       console.error(

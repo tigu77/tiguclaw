@@ -527,6 +527,11 @@ export const initStore = (): void => {
   if (!txCols.some((c) => c.name === "bytes_indexed")) {
     handle.exec(`ALTER TABLE transcript_index ADD COLUMN bytes_indexed INTEGER`);
   }
+  // 마지막으로 적재한 **대화 메시지**(최상위 user·assistant) uuid (2026-10-15 메시지 지점 가지치기) — 턴 저장이 «이번 답까지
+  //  적재됐다» 를 파일을 다시 읽지 않고 확인한다(완료 턴 표식 발급 조건). 옛 행은 NULL = 확인 불가 = 표식 없음.
+  if (!txCols.some((c) => c.name === "last_message_uuid")) {
+    handle.exec(`ALTER TABLE transcript_index ADD COLUMN last_message_uuid TEXT`);
+  }
 
   // ─── Memory V2.5: trigram tokenizer migration (contract §3.3) ───────────
   // FTS5 가상 테이블의 tokenizer 는 ALTER 불가 → DROP/RECREATE.
@@ -893,6 +898,12 @@ export const initStore = (): void => {
       PRIMARY KEY (channel, thread_key)
     );
   `);
+  // 갈라진 **시각** (2026-10-15 메시지 지점 가지치기) — 도구 스텝(시각만 있는 기록)을 이 시각까지 물려받는다. 끝에서 가르면 만든 시각과
+  //  같고, 메시지에서 가르면 그 답의 시각이다. 옛 행 NULL = `created_at`.
+  {
+    const linCols = handle.prepare(`PRAGMA table_info(thread_lineage)`).all() as ColumnInfoRow[];
+    if (!linCols.some((c) => c.name === "through_ts")) handle.exec(`ALTER TABLE thread_lineage ADD COLUMN through_ts INTEGER`);
+  }
 
   // ─── 대시보드 대화 이력 영속 (기능 B, 2026-06-25) ──────────────────────────────
   // 대시보드 채팅이 EventBus 인메모리 ring(최근 50)으로만 그려져 재시작 시 소실. transcripts
@@ -993,6 +1004,10 @@ export const initStore = (): void => {
   }
   if (!chatLogCols.some((c) => c.name === "spend")) {
     handle.exec(`ALTER TABLE chat_log ADD COLUMN spend TEXT`);
+  }
+  // 완료 턴 표식(JSON, 2026-10-15 메시지 지점 가지치기) — 저장이 확인된 정상 답에만. 옛 행 NULL = 그 답에선 갈라낼 수 없다.
+  if (!chatLogCols.some((c) => c.name === "turn")) {
+    handle.exec(`ALTER TABLE chat_log ADD COLUMN turn TEXT`);
   }
 
   // ─── 백그라운드 셸 프로세스 영속 (reap 전용 메타 — 2026-07-17) ──────────────────

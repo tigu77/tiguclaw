@@ -140,20 +140,25 @@
       const forkKeys = new Map();     // 부모 키 → { key, at } 실패 직후 재시도용 가지 키
       const forkInFlight = new Set(); // 지금 요청 중인 부모 키(연타 막기)
       registerBuiltinHandler("session.fork", (ctx) => { void forkSession(ctx.targetId); });
-      const forkSession = async (tk) => {
+      // 메시지 지점(v2) — 그 답의 완료 턴 id. 재시도 키는 (대화, 지점) 마다 — 다른 답에서 다시 누르면 새 가지다.
+      window.forkSessionAt = (tk, turn) => { void forkSession(tk, turn); };
+      // 지점이 갈라낼 수 없는 곳(확정 실패) — 같은 키를 남기지 않는다.
+      const FORK_FINAL = { empty: "tab.forkEmpty", not_turn: "tab.forkNotTurn", summarized: "tab.forkSummarized", cleared_after: "tab.forkClearedAfter" };
+      const forkSession = async (tk, turn) => {
         if (forkInFlight.has(tk)) { showToast(i18n("tab.forkWaiting")); return; }
-        const kept = forkKeys.get(tk);
+        const rk = turn ? tk + "|" + turn : tk;
+        const kept = forkKeys.get(rk);
         let childKey = kept && Date.now() - kept.at < FORK_RETRY_MS ? kept.key : "";
         if (!childKey) {
           const uuid = (self.crypto && self.crypto.randomUUID) ? self.crypto.randomUUID() : (String(Date.now()) + "-" + Math.random().toString(16).slice(2));
           childKey = "dashboard:" + uuid;
         }
-        forkKeys.delete(tk);
+        forkKeys.delete(rk);
         forkInFlight.add(tk);
         // 기다린다고 말하는 건 **실제로 답이 진행 중일 때만**(거짓 안내 금지).
         if (activeTurns.has(tk)) showToast(i18n("tab.forkWaiting"));
         try {
-          const res = await fetch("/api/session-fork", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ threadKey: tk, childKey }) });
+          const res = await fetch("/api/session-fork", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(turn ? { threadKey: tk, childKey, turn } : { threadKey: tk, childKey }) });
           const r = await res.json().catch(() => ({}));
           if (r && r.ok === true && typeof r.childKey === "string") {
             forkParents.set(r.childKey, tk); // 다음 목록 갱신 전에도 «결론을 원래 대화로 보내기» 가 보이게
@@ -162,12 +167,13 @@
             else showToast(i18n("tab.forkReady", { name: r.name || "" }), "good");
             return;
           }
-          // 확정 실패(«갈라낼 게 없음»)가 아니면 잠깐 같은 키를 남긴다 — 서버는 갈랐는데 응답만 잃었을 수 있다.
-          if (!(r && r.reason === "empty")) forkKeys.set(tk, { key: childKey, at: Date.now() });
+          // 확정 실패(갈라낼 게 없음·그 지점에선 못 함)가 아니면 잠깐 같은 키를 남긴다 — 서버는 갈랐는데 응답만 잃었을 수 있다.
+          const final = r && FORK_FINAL[r.reason];
+          if (!final) forkKeys.set(rk, { key: childKey, at: Date.now() });
           console.warn("session-fork 실패:", res.status, r && (r.reason || r.error), r && r.detail);
-          showToast(r && r.reason === "empty" ? i18n("tab.forkEmpty") : i18n("tab.forkFailed"), "bad");
+          showToast(final ? i18n(final) : i18n("tab.forkFailed"), "bad");
         } catch (e) {
-          forkKeys.set(tk, { key: childKey, at: Date.now() });
+          forkKeys.set(rk, { key: childKey, at: Date.now() });
           console.warn("session-fork 실패:", e && e.message ? e.message : e);
           showToast(i18n("tab.forkFailed"), "bad");
         } finally {
@@ -192,6 +198,7 @@
             else showToast(i18n("tab.carryDone", { name: r.parentName || sessionDisplayNames.get(r.parentKey) || "" }), "good");
             return;
           }
+          if (r && r.reason === "nothing_new") { showToast(i18n("tab.carryNothingNew")); return; }
           console.warn("session-carry 실패:", res.status, r && (r.reason || r.error), r && r.detail);
           showToast(i18n("tab.carryFailed"), "bad");
         } catch (e) {
@@ -201,8 +208,9 @@
           carryInFlight.delete(tk);
         }
       };
-      // 가지 화면 맨 위(물려받은 기록 끝)의 구분선 — 서버가 남긴 `thread.forked` 를 그린다. 문구는 여기서 짓는다(서버 재조립 금지).
-      registerChatKindBuilder("thread.forked", (data, time, evTs) => {
+      // 가지 화면의 구분선 둘 — 서버가 남긴 대화 가시 이벤트를 그린다. 문구는 여기서 짓는다(서버 재조립 금지).
+      //  `thread.forked`: 맨 위(물려받은 기록 끝) «여기서 갈라짐» · `thread.carried`: «여기까지 보냈다»(다음 보내기는 이 줄 뒤부터 정리).
+      const forkDivider = (textOf) => (data, time, evTs) => {
         const div = document.createElement("div");
         div.className = "ev local channel-chat sys-notice fork-divider";
         if (typeof evTs === "number") div.dataset.ts = String(evTs);
@@ -213,10 +221,12 @@
         head.appendChild(tsEl); head.appendChild(tyEl);
         const body = document.createElement("div");
         body.className = "chat-message";
-        body.textContent = i18n("chat.forkedFrom", { name: String((data && data.parentName) || "") });
+        body.textContent = textOf(data || {});
         div.appendChild(head); div.appendChild(body);
         return div;
-      });
+      };
+      registerChatKindBuilder("thread.forked", forkDivider((d) => i18n("chat.forkedFrom", { name: String(d.parentName || "") })));
+      registerChatKindBuilder("thread.carried", forkDivider((d) => i18n("chat.carriedTo", { name: String(d.parentName || "") })));
       registerMenuItems("session", (ctx) => {
         const items = [
           { id: "rename", label: i18n("tab.rename"), icon: "✏️", action: { kind: "builtin", handler: "session.rename" } },

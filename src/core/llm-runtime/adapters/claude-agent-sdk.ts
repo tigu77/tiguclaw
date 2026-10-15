@@ -1474,6 +1474,14 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   let rateLimitRejectedUntil: number | undefined;
   let assistantTextChunks: string[] = [];
   let lastSessionId: string | undefined;
+  /** 이 턴의 마지막 **최상위** assistant 메시지 uuid — 메시지 지점 가지치기의 Claude 체크포인트(하위 에이전트·사이드체인 제외, 2026-10-15 설계 v2). */
+  let lastAssistantUuid: string | undefined;
+  /**
+   * 이 턴의 답에 **실패가 섞였나**(이어 받던 턴의 에러·완료 뒤 에러 result·확정 뒤 throw) — 섞였으면 답은 그대로 전달하되 체크포인트
+   *  후보(`lastMessageUuid`)를 내지 않는다(아스트라 구현 검토 1: 실패한 후속 메시지 uuid 가 완료 턴 좌표로 나갔다). 성공 지점으로
+   *  되돌리는 기능은 범위 밖 — 그 답에선 갈라낼 수 없을 뿐이다.
+   */
+  let turnHadFailure = false;
   let lastModel: string | null = null;
   const requestUsage = createClaudeRequestUsage();
   let lastUsage:
@@ -1698,6 +1706,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     //  → 스트림 종료로 이어지는 기존 teardown 순서가 바뀐다(완료 데드락 수정의 전제).
     if (turnResultSeen && framesClaimSteer(msg, steerUuids)) {
       // 줄 선 우리 입력의 턴 — 앞 답을 확정해 두고 이 턴을 이어 받는다(이 프레임부터 정상 처리).
+      if (steerTurnFailed) turnHadFailure = true; // 실패 안내가 답에 합쳐진다 — 체크포인트 후보 없음
       settledAnswer = settleAnswer(
         settledAnswer,
         resultText !== undefined && resultText !== "" ? resultText : assistantTextChunks.slice(chunkBase).join(""),
@@ -2012,6 +2021,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         //   경고 + 관측 이벤트로 남기고 그 결과로 턴을 닫는다 — 조용히 삼키지 않는다.
         if ((succeeded && resultText !== undefined && resultText !== "") || settledAnswer !== undefined) {
           if (settledAnswer !== undefined && (resultText === undefined || resultText === "")) steerTurnFailed = true;
+          turnHadFailure = true; // 결과를 유지해도 뒤따른 에러가 있었다 — 성공 경계를 확정할 수 없다
           console.warn(
             `[claude-complete] ${input.threadKey} 완료 후 에러 result 수신 — 이미 받은 결과를 유지합니다: ${errs}`,
           );
@@ -2035,6 +2045,10 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         throw withRateLimitUntil(new Error(`claude-agent-sdk error: ${errs}`), rateLimitRejectedUntil);
       }
     } else if (msg.type === "assistant") {
+      {
+        const m = msg as { uuid?: unknown; parent_tool_use_id?: unknown; isSidechain?: unknown };
+        if (typeof m.uuid === "string" && (m.parent_tool_use_id === null || m.parent_tool_use_id === undefined) && m.isSidechain !== true) lastAssistantUuid = m.uuid;
+      }
       // ★앱 도구 호출 캡처 (externalTools, 2026-08-09) — 이 assistant 메시지에 든 tool_use
       //  블록을 **통째로** 읽는다. 모델은 한 메시지에 여러 도구를 병렬로 부르므로, MCP
       //  핸들러에서 하나씩 잡고 abort 하면 형제 호출을 잃는다(그래서 스트림에서 잡는다).
@@ -2398,6 +2412,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
           cancelled,
         })
       ) {
+        turnHadFailure = true; // 확정한 답 뒤에 실패 — 답은 유지, 체크포인트 후보는 내지 않는다
         if (settledAnswer !== undefined && !turnResultSeen) {
           steerTurnFailed = true; // 이어 받던 턴 도중에 끊겼다 — 그 턴의 조각은 싣지 않고 안내로.
           chunkBase = assistantTextChunks.length;
@@ -2435,6 +2450,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       resumeRetried = true;
       resultText = undefined;
       assistantTextChunks = [];
+      lastAssistantUuid = undefined; // 버린 시도의 후보가 새 시도로 새지 않게
+      turnHadFailure = false;
       lastSessionId = undefined;
       lastModel = null;
       requestUsage.resetPending(); // 완료된 이전 요청 기록은 재시도 뒤에도 보존한다.
@@ -2645,6 +2662,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       reasoning: shownEffort,
       systemPromptHash: SYSTEM_PROMPT_HASH,
       jsonlPath: jsonl,
+      ...(lastAssistantUuid !== undefined && !turnHadFailure && !steerTurnFailed ? { lastMessageUuid: lastAssistantUuid } : {}),
       replyToTrigger,
       usage: requestUsage.withUsage(lastUsage),
       timing: requestTimeline.summary(),

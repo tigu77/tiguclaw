@@ -46,10 +46,12 @@ export const check: RegressionCheck = {
     const r = await carryForkConclusion(K, { channel: CH }, { runTurn: handler, deliver });
     await new Promise((res) => setTimeout(res, 20)); // ②는 줄에 넣고 돌아온다
     const [a, b] = seen;
-    out.push(assert("★★① 가지 턴(합성·가지 지정)으로 결론을 받고 ② 원래 대화에 **보이는** 메시지로 넣는다(가지 이름·결론 포함, 원래 대화 지정)",
-      r.ok && r.parentKey === P && seen.length === 2 &&
+    // ★②도 합성이다 (10-15 정태님 «시스템적인 메시지 알림 같아») — 비서에게 하는 당부가 사용자 말풍선에 사용자 이름으로 뜨던 것.
+    //  원래 대화의 비서가 알림으로 받고, 화면엔 «무엇을 받았는지» 알리는 비서 답만 남는다(백그라운드 작업 완료 알림과 같은 모양).
+    out.push(assert("★★① 가지 턴(합성·가지 지정)으로 결론을 받고 ② 원래 대화의 비서에게 **합성 알림**으로 전한다(사용자 말풍선 없음 · 가지 이름·결론 포함 · 원래 대화 지정) · 결과에 원래 대화 이름",
+      r.ok && r.parentKey === P && r.parentName === "여행 계획" && seen.length === 2 &&
         a!.threadKey === K && a!.synthetic === true && a!.session?.explicitSessionId === K &&
-        b!.threadKey === P && b!.synthetic === false && b!.session?.explicitSessionId === P &&
+        b!.threadKey === P && b!.synthetic === true && b!.session?.explicitSessionId === P &&
         b!.text.includes("결론: 3박 4일") && b!.text.includes("여행 계획 (2)"),
       { r, turns: seen.map((m) => ({ tk: m.threadKey === K ? "K" : m.threadKey === P ? "P" : m.threadKey, synthetic: m.synthetic, text: m.text.slice(0, 40) })) }));
 

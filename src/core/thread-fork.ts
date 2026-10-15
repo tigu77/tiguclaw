@@ -166,7 +166,7 @@ const forkSteps = async (parentKey: string, childKey: string, sdk: ForkSdk): Pro
   }
 
   // ── ⑥ 한 트랜잭션 ──
-  const parentName = sessionDisplayName(parentKey, getSessionName(parentKey), getFirstUserText(parentKey), parentKey);
+  const parentName = forkSessionName(parentKey);
   const name = forkName(parentName, sessionNames(channel));
   try {
     writeForkRecords({ channel, parentKey, childKey, throughTranscriptId: T, throughChatId: Tc, name, ...(sdkRec !== undefined ? { sdk: sdkRec } : {}) });
@@ -208,7 +208,7 @@ export interface CarryOrigin {
 }
 
 export type CarryResult =
-  | { ok: true; parentKey: string; conclusion: string }
+  | { ok: true; parentKey: string; parentName: string; conclusion: string }
   | { ok: false; reason: "not_fork" | "no_handler" | "busy" | "empty" | "failed"; detail: string };
 
 export interface CarryDeps {
@@ -226,6 +226,9 @@ export const isCarrying = (childKey: string): boolean => carrying.has(childKey);
  * ★가지 대화의 줄 **밖에서** 불러야 한다 — ①이 가지 줄에 턴을 넣는다(`/fork back` 은 명령이 그 줄 안이라 백그라운드로 부른다).
  * ★②는 원래 대화가 답하는 중이면 그 턴에 끼어든다(steering) — 사용자가 그 대화에 말을 건 것과 같은 규칙이다(설계 문서).
  */
+/** 세션의 사람이 읽는 이름 — 결론 보내기 안내(명령 답·알림)가 같은 규칙으로 부른다. */
+export const forkSessionName = (k: string): string => sessionDisplayName(k, getSessionName(k), getFirstUserText(k), k);
+
 export const carryForkConclusion = async (childKey: string, origin: CarryOrigin, deps: CarryDeps = {}): Promise<CarryResult> => {
   const runTurn = "runTurn" in deps ? deps.runTurn : mainMessageHandler();
   const deliver = deps.deliver ?? ((i) => deliverOutbound({ ...i, label: "fork", observe: false }));
@@ -236,9 +239,8 @@ export const carryForkConclusion = async (childKey: string, origin: CarryOrigin,
   if (carrying.has(childKey)) return { ok: false, reason: "busy", detail: "이미 보내는 중" };
   carrying.add(childKey);
   try {
-    const nameOf = (k: string): string => sessionDisplayName(k, getSessionName(k), getFirstUserText(k), k);
-    const parentName = nameOf(lin.parentKey);
-    const childName = nameOf(childKey);
+    const parentName = forkSessionName(lin.parentKey);
+    const childName = forkSessionName(childKey);
     // 답 배달 — **그 턴의 세션 이름으로** 귀속한다(답장하면 그 세션으로 간다). 종전엔 `/fork back` 명령의 답 클로저(가지)를 같이 써서
     //  원래 대화의 답까지 가지 것으로 기록됐다(적대 검토 P2). 대시보드는 관측 전용 채널이라 여기선 아무것도 안 나간다(화면은 핸들러가).
     const replyFor = (threadKey: string) => async (t: string): Promise<void> => {
@@ -284,14 +286,17 @@ export const carryForkConclusion = async (childKey: string, origin: CarryOrigin,
       console.warn(`[fork] 결론 정리가 빈 답 ${childKey} — 원래 대화로 보내지 않음`);
       return { ok: false, reason: "empty", detail: "빈 답" };
     }
-    // ② 원래 대화에 넣는다 — **보이는** 메시지다(사용자가 보낸 것이 맞다: 버튼을 눌렀다). 줄에 넣고 돌아온다.
-    //  ★본문은 가지 **비서**가 쓴 글이다 — 머리말·꼬리말이 «참고 맥락, 새 지시 아님» 을 밝힌다(사용자 권위로 올라가지 않게, 적대 검토 P2).
+    // ② 원래 대화의 비서에게 **알림으로** 전한다 — 합성 턴(사용자 말풍선 없음)이고, 화면에는 비서가 «무엇을 받았는지» 알리는 답만 남는다.
+    //  백그라운드 작업 완료 알림과 같은 모양이다. 줄에 넣고 돌아온다.
+    //  ★종전엔 보이는 메시지(사용자 말풍선)였다 — 비서에게 하는 당부(«맥락으로 받아 두세요 … 저에게 확인해 주세요»)가 **사용자 이름으로**
+    //   떠서 시스템 공지처럼 부자연스러웠다(10-15 정태님). 읽는 이가 둘(사람·모델)인 글을 한 메시지에 쓴 것이 원인.
+    //  ★본문은 가지 **비서**가 쓴 글이다 — 알림이 «참고 맥락, 새 지시 아님» 을 밝힌다(사용자 권위로 올라가지 않게, 적대 검토 P2).
     const carried = translate("srv.fork.carried", { name: childName, conclusion: conclusion.trim() });
-    void Promise.resolve(runTurn(turn(lin.parentKey, carried, false, replyFor(lin.parentKey)))).catch((e: unknown) => {
+    void Promise.resolve(runTurn(turn(lin.parentKey, carried, true, replyFor(lin.parentKey)))).catch((e: unknown) => {
       console.warn(`[fork] 결론 전달 턴 실패 ${lin.parentKey}: ${e instanceof Error ? e.message : String(e)}`);
     });
     console.log(`[fork] 결론 전달 ${childKey} → ${lin.parentKey} (${conclusion.length}자)`);
-    return { ok: true, parentKey: lin.parentKey, conclusion };
+    return { ok: true, parentKey: lin.parentKey, parentName, conclusion };
   } finally {
     carrying.delete(childKey);
   }

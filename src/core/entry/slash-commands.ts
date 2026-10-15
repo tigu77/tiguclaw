@@ -576,7 +576,7 @@ export const handleFork = async (ctx: SlashCtx): Promise<void> => {
   // `/fork back` — 이 가지의 결론을 원래 대화로 보내고 대화방도 원래 대화로 돌린다(대시보드 «결론을 원래 대화로 보내기» 와 같은 코어).
   if (parseSlashCommand(ctx.trimmed).sub === "back") {
     const { getLineage } = await import("../../store/thread-members.js");
-    const { carryForkConclusion, isCarrying } = await import("../thread-fork.js");
+    const { carryForkConclusion, forkSessionName, isCarrying } = await import("../thread-fork.js");
     // 이 방에서 이미 보내는 중이면 기다리라고만 한다 — 바인딩이 먼저 원래 대화로 옮겨져 있어서, 다시 치면 **원래 대화의** 결론이
     //  조부모로 가 버린다(적대 검토 P2).
     const room = `${msg.channel}:${addr}`;
@@ -591,7 +591,7 @@ export const handleFork = async (ctx: SlashCtx): Promise<void> => {
     }
     // 바인딩을 **먼저** 옮긴다 — 정리하는 동안 이 방에 친 말이 가지(정리 중인 턴)에 끼어들지 않고 원래 대화로 가게.
     if (movable) setChannelSessionBinding(msg.channel, addr, lin.parentKey);
-    await replyCommand(msg, translate(movable ? "srv.fork.carryStarted" : "srv.fork.carryStartedListed"), { ephemeral });
+    await replyCommand(msg, translate(movable ? "srv.fork.carryStarted" : "srv.fork.carryStartedListed", { name: forkSessionName(lin.parentKey) }), { ephemeral });
     // ★백그라운드로 — 이 명령은 가지 대화의 줄 **안**이라, 기다리면 결론 정리 턴(같은 줄)이 이 명령 뒤에서 영원히 기다린다.
     carryRooms.add(room);
     const child = msg.threadKey;

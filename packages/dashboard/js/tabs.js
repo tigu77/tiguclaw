@@ -189,7 +189,7 @@
           if (r && r.ok === true && typeof r.parentKey === "string") {
             // 정리를 기다리는 사이 다른 탭으로 갔으면 끌고 가지 않는다(가르기와 같은 규칙).
             if (activeThreadKey === tk) { if (window.openSessionByKey) window.openSessionByKey(r.parentKey); }
-            else showToast(i18n("tab.carryDone"), "good");
+            else showToast(i18n("tab.carryDone", { name: r.parentName || sessionDisplayNames.get(r.parentKey) || "" }), "good");
             return;
           }
           console.warn("session-carry 실패:", res.status, r && (r.reason || r.error), r && r.detail);
@@ -224,7 +224,9 @@
           { id: "fork", label: i18n("tab.fork"), icon: "🌿", action: { kind: "builtin", handler: "session.fork" } },
         ];
         if (forkParents.has(ctx.targetId)) {
-          items.push({ id: "carry", label: i18n("tab.carry"), icon: "↩️", action: { kind: "builtin", handler: "session.carry" } });
+          // 어디로 가는지 이름으로 — 가지의 가지는 맨 위가 아니라 **바로 위** 가지로 간다(10-15 정태님 «첫번째 가지로 가는 거지?»).
+          const parentKey = forkParents.get(ctx.targetId);
+          items.push({ id: "carry", label: i18n("tab.carry", { name: sessionDisplayNames.get(parentKey) || i18n("tab.session") }), icon: "↩️", action: { kind: "builtin", handler: "session.carry" } });
         }
         if (ctx.targetId !== DEFAULT_DASH_THREAD) {
           items.push({ id: "close", label: i18n("tab.close"), icon: "✕", danger: true, action: { kind: "builtin", handler: "session.close" } });

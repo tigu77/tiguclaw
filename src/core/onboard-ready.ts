@@ -42,8 +42,11 @@ export const envKeyFromBody = (body: string, key: string): string | undefined =>
  *  `win-service-env.json` 에 붙잡아 쓰되 홈 `.env` 가 이긴다(`bin/daemon.mjs winLaunchEnv`) — 그래서 `serviceEnv` 는 홈 다음이다.
  *  ★윈도우의 `serviceEnv` 는 셸 환경이 아니라 **그 붙잡은 파일**이다(재검토 2차 P2) — 레포 `.env` 가 정한 키는 붙잡지 않으므로
  *   (`saveWinServiceEnv`) 셸 값을 넣으면 레포 값을 이긴다고 잘못 본다.
- * ★**있음**으로 판정한다(P2) — 홈 `.env` 의 `KEY=` 는 데몬에서 레포 값을 막고 빈 값(=기본값)이 된다(`loadEnvFile` 은 이미 있는
- *  키를 안 덮는다). 빈 값을 «없음» 으로 보면 레포로 넘어가 데몬과 갈린다.
+ * ★홈의 빈 값(`KEY=`)은 둘로 갈린다 — 데몬과 같게(2026-10-16 아스트라 «온보딩 후속 검토» = 3차 재검토 P-a).
+ *  · 붙잡은 값이 있으면 그것이 이긴다 — `winLaunchEnv` 는 홈의 빈 값을 «안 정함» 으로 보고(`readHomeEnvValue`) 붙잡은 값을 실행
+ *    환경에 넣으며, 그 뒤 `loadEnvFile` 은 이미 있는 키를 안 덮는다. 종전엔 빈 값이 붙잡은 값을 가린다고 봐 doctor 가 다른 포트를 두드렸다.
+ *  · 없으면 빈 값(=기본값)이 레포를 막는다(재검토 P2 — `loadEnvFile` 이 `""` 를 세운다). 맥·리눅스는 붙잡은 값이 없으니 늘 이쪽이다.
+ *  붙잡은 값은 다듬지 않는다 — 데몬도 그대로 실행 환경에 넣고, 소비처가 `trim() ||` 로 빈칸을 기본값으로 읽는다.
  */
 export const daemonEnvLookup = (
   serviceEnv: NodeJS.ProcessEnv,
@@ -53,7 +56,8 @@ export const daemonEnvLookup = (
   const home = parseEnvBody(homeBody);
   const repo = parseEnvBody(repoBody);
   return (key) => {
-    const v = Object.hasOwn(home, key) ? home[key] : serviceEnv[key]?.trim() || repo[key];
+    const h = home[key];
+    const v = h !== undefined && h !== "" ? h : serviceEnv[key] || (h !== undefined ? h : repo[key]);
     return v === undefined || v.trim() === "" ? undefined : v;
   };
 };

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **On Windows, leaving a port or address empty in `.env` made `onboard` and `doctor` check a different port and report failure while the service was fine.**
+
 ## [0.73.0] - 2026-10-16
 
 ### Added

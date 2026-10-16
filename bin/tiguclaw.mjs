@@ -64,7 +64,7 @@ if (cmd !== undefined && LIFECYCLE.has(cmd)) {
     }
     // ★종료코드는 "명령이 실패했나" 지 "결과가 쓸 만한가" 가 아니다 — 열어봐야 안다.
     //  네이티브가 안 열리면 이 뒤 모든 단계가 부팅마다 죽는다(실측: 6회 연속 크래시).
-    const probe = spawnSync(process.execPath, ["-e", "require('better-sqlite3')"], {
+    const probe = spawnSync(process.execPath, [path.join(root, "bin", "check-native.cjs")], {
       cwd: root,
       stdio: "ignore",
     });
@@ -74,7 +74,7 @@ if (cmd !== undefined && LIFECYCLE.has(cmd)) {
         stdio: "inherit",
         shell: process.platform === "win32",
       });
-      const again = spawnSync(process.execPath, ["-e", "require('better-sqlite3')"], {
+      const again = spawnSync(process.execPath, [path.join(root, "bin", "check-native.cjs")], {
         cwd: root,
         stdio: "ignore",
       });

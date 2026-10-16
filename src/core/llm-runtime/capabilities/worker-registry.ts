@@ -41,7 +41,6 @@ import {
 import {
   cancelJob,
   createJobAbort,
-  getJob,
   listJobs,
   onWorkerComplete,
   registerWorkerRunner,
@@ -62,7 +61,6 @@ import {
   clearJobResultChannel,
   setSteerChannel,
   clearSteerChannel,
-  notifyJobOwner,
   steerJob,
   publishSteerAttempt,
   takeUndeliveredChildResults,

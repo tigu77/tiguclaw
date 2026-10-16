@@ -23,17 +23,13 @@
  * 등급: **동작** — `host.ask` 는 실제로 부르고(모델 없이 실패시켜 입력만 관측), 어댑터는
  * 옵션 조립까지만 돌려 `mcpServers` **키 집합**을 본다.
  */
-import { readFileSync } from "node:fs";
 import { ASK_TURN_DEPTH } from "../../core/plugins/host.js";
 import { turnKindOf } from "../../core/llm-runtime/capability-reach.js";
 import { readSourceSync } from "./_wiring.js";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { createPluginHost } from "../../core/plugins/host.js";
 import { registerMcpServer, unregisterMcpServer } from "../../core/mcp-registry.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 /** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
 const read = (rel: string): string => readSourceSync(rel);
 

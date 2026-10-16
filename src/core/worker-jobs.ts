@@ -1243,7 +1243,6 @@ const checkinTick = (nowArg?: number): void => {
     const kindLabel = job.kind === "agent" ? "서브에이전트" : "매니저";
     const name = job.kind === "agent" ? (job.agentName ?? job.label) : job.label;
 
-    const idleMs = now - ev.lastActivityAt;
     job.lastActivityAt = ev.lastActivityAt;
     job.stallReports = silent ? (job.stallReports ?? 0) + 1 : 0;
     // 다음 주기 시작 — 카운터만 접고 진행 중 도구는 **이월**한다(아직 안 끝났으므로).
@@ -2458,8 +2457,6 @@ export const cancelQueuedTurn = (
   return "cancelled";
 };
 
-/** 테스트·진단용 — 현재 직렬 큐가 추적 중인 thread 수. */
-export const pendingThreadCount = (): number => threadTails.size;
 
 /** 이 스레드에 앞 턴(진행·대기)이 있나 — 새로 줄 서면 기다리는가의 정본(`inflightTurns` 는 훅 뒤에야 등록된다). */
 export const threadHasQueuedTurn = (threadKey: string): boolean => threadTails.has(threadKey);

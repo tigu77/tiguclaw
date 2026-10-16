@@ -18,7 +18,7 @@
  * `_workspace/md_live_cdp.mjs`: 체크박스 2·비활성 2·접기 1·kbd 2·표정렬 left·
  * mermaid SVG 1·`<script>` 0 · **로드 직후 mermaid 요청 0건 → 블록 만난 뒤 1건**(지연 로드).
  */
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import vm from "node:vm";

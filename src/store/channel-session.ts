@@ -13,13 +13,6 @@
  */
 import { getDb, setThreadArchived } from "./sessions.js";
 
-export interface ChannelSessionBinding {
-  readonly channel: string;
-  readonly channelAddress: string;
-  readonly sessionId: string;
-  readonly updatedAt: number;
-}
-
 const norm = (v: string): string => (typeof v === "string" ? v.trim() : "");
 
 /**

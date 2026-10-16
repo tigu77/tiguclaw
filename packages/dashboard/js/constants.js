@@ -6,22 +6,6 @@
       //   "왜 이게 실행됐지" 를 추적할 데가 없다. 보이는 자리가 곧 진단면이다.
       //  `endpoint`·`command` 는 각자 전용 화면이 있어 여기 안 넣는다(의도적 제외).
       const CATEGORIES = ["channel", "external_plugin", "skill", "agent", "mcp", "hook"];
-      const CATEGORY_LABEL = {
-        channel: i18n("common.cat.channel"),
-        external_plugin: i18n("common.cat.plugin"),
-        skill: i18n("common.cat.skill"),
-        agent: i18n("common.cat.agent"),
-        mcp: "mcp",
-        hook: i18n("common.cat.hook"),
-      };
-      const CATEGORY_ICON = {
-        channel: "📡",
-        external_plugin: "🔌",
-        skill: "🛠",
-        agent: "🤖",
-        mcp: "🧩",
-        hook: "🪝",
-      };
       const LAYERS = ["meta_infra", "in_tree", "discovered"];
       // (구 MAX_EVENTS/HARD_MAX_EVENTS 는 CC식 가상화 도입으로 제거 — 마운트 노드 수는 뷰포트±버퍼로
       //  바운드되고, 보관 아이템 상한은 VT_MAX_ITEMS(vtCap)가 담당한다.)

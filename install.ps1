@@ -206,12 +206,16 @@ Dependency install failed.
 #  ★우리 클린룸 검증(sync 스킬 §7)은 이미 이 확인을 하고 있었다. 정작 **사용자가 돌리는
 #   스크립트**에만 없었다 — 우리 설치는 검증하고 사용자 설치는 안 하고 있었던 셈이다.
 Write-Host "-> Checking native modules..."
-node -e "require('better-sqlite3')" 2>$null
+# ★이 구간만 Continue (2026-10-16 재검토 2차 P4) - Windows PowerShell 5.1 은 Stop 아래서 **리디렉션한 네이티브 stderr**(`2>$null`)를
+#  종료 오류로 바꾼다. 점검이 실제로 DB 를 열게 되면서 실패 때 stderr 가 나오고, 그러면 아래 rebuild·안내에 닿기 전에 스크립트가 죽는다.
+#  판정은 종료코드($LASTEXITCODE)로 한다.
+$ErrorActionPreference = 'Continue'
+node bin/check-native.cjs 2>$null
 if ($LASTEXITCODE -ne 0) {
   # ★알려주고 끝내지 않는다 - **스스로 한 번 고쳐본다**(사용자가 명령을 외우게 하지 않는다).
   Write-Host "   A native module failed to load - rebuilding..."
   & $Npm rebuild better-sqlite3 --ignore-scripts=false 2>$null | Out-Null
-  node -e "require('better-sqlite3')" 2>$null
+  node bin/check-native.cjs 2>$null
   if ($LASTEXITCODE -ne 0) {
     Die @"
 Cannot load the SQLite native module - the daemon would crash on every start.
@@ -223,6 +227,7 @@ Cannot load the SQLite native module - the daemon would crash on every start.
   }
   Write-Host "   Native module repaired."
 }
+$ErrorActionPreference = 'Stop'
 
 # ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────
 Write-Host ""

@@ -9,8 +9,6 @@ import { generatePKCE as generatePkceUpstream } from "@openauthjs/openauth/pkce"
 import { upsertHomeEnvVars } from "../../env-file.js";
 import { refreshHomeCredentials } from "../../credential-env.js";
 import { randomBytes } from "node:crypto";
-import { promises as fs } from "node:fs";
-import { homeEnvPath } from "../../load-env.js";
 import type { AuthProvider } from "../auth-registry.js";
 import { ProviderUnavailableError } from "../rate-limit.js";
 

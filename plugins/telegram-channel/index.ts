@@ -21,6 +21,7 @@ import { getMostRecentTelegramChatId, getThreadName } from "../../src/store/sess
 import { recordOutboundMessage } from "../../src/store/outbound-messages.js";
 import { egressSourcePrefix } from "../../src/core/egress-targets.js";
 import { deliverDocument, sendDocumentTo } from "./send-document.js";
+import { ownerCandidateRoutes, recordBlockedSender } from "./owner-candidates.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -833,6 +834,8 @@ export default class TelegramChannel implements Channel {
 
     // 소유자 allowlist (자가호스트 보안 게이트 — 배포 계획서 Phase 0). 인터넷 노출은
     // 텔레그램 봇이 유일하므로 여기서 막는다. 빈 집합 = 잠금(아무도 통과 못 함).
+    // ★소유자 목록은 **메시지마다 다시 읽는다** (2026-10-16). 설정 화면의 «내 ID 찾기» 로 고르면 데몬이 `.env` 와 process.env 를
+    //  함께 바꾸므로, 재시작 없이 그 다음 메시지부터 통한다(토큰은 폴링 연결이라 재시작이 필요하지만 이 목록은 데이터다).
     const allowedIds = parseAllowedTelegramIds();
     if (allowedIds.size === 0) {
       console.warn(
@@ -873,8 +876,9 @@ export default class TelegramChannel implements Channel {
     //  각자 `isAllowed` 를 불렀다 — 아래 시간 게이트가 텍스트에만 걸려 사진이 새던 것과 같은 모양이라,
     //  핸들러가 하나 늘면 그것만 열린다. 가장 먼저 둔다: 남의 메시지는 오래됐든 아니든 세지도 답하지도 않는다.
     bot.use(async (ctx, next) => {
-      if (!isAllowedSender(ctx.from?.id, allowedIds)) {
+      if (!isAllowedSender(ctx.from?.id, parseAllowedTelegramIds())) {
         console.warn(`telegram: 차단된 접근 무시 — user=${ctx.from?.id ?? "unknown"} (allowlist 외)`);
+        recordBlockedSender(ctx.from); // 설정 화면 «내 ID 찾기» 의 후보 — 고르는 건 사용자다(자동 등록 없음)
         // 버튼이면 로딩은 풀어준다 — 안 그러면 차단된 쪽 화면에서 버튼이 영원히 돈다.
         if (ctx.callbackQuery !== undefined) await ctx.answerCallbackQuery().catch(() => {});
         return;
@@ -1011,7 +1015,9 @@ export default class TelegramChannel implements Channel {
     bot.on(
       ["message:photo", "message:document", "message:voice", "message:audio", "message:video"],
       async (ctx) => {
-        const token = process.env.TELEGRAM_BOT_TOKEN ?? "";
+        // 폴링 중인 봇의 토큰으로 받는다 — 설정 화면에서 토큰을 바꾸면 process.env 는 즉시 새 값인데 폴링은 재시작 전까지 옛 봇이라,
+        //  env 를 읽으면 옛 봇이 받은 파일을 새 토큰으로 내려받다 실패했다(적대 검토 P3).
+        const token = bot.token;
         const receivedAtSeconds = ctx.message.date;
         const triggerId = ctx.message.message_id;
 
@@ -1306,6 +1312,11 @@ export default class TelegramChannel implements Channel {
 
   /** stop() 이 시작됐나 — 폴링 종료를 «사망» 으로 보고하지 않게 한다. */
   private stopping = false;
+
+  /** 설정 화면 «내 ID 찾기»(`settings[].suggest`) — 폴링 중 소유자 게이트가 막은 보낸 사람(폴링 전이면 «먼저 재시작», getUpdates 는 안 부른다). */
+  getDataRoutes() {
+    return ownerCandidateRoutes(() => this.bot !== null && this.status === "up");
+  }
 
   async stop(): Promise<void> {
     this.stopping = true;

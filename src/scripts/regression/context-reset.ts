@@ -148,7 +148,6 @@ export const check: RegressionCheck = {
     );
 
     // ★③ 배선 — 핸들러가 실제로 셋을 **이 순서로** 부르는가(요약 드롭이 빠지면 위 ②가 현실이 된다).
-    const { sourceOrder } = await import("./_wiring.js");
     // ★2026-08-20: `/clear` 와 `/reset` 이 갈렸다 — 각각 **자기 블록**을 잘라서 본다.
     //  `sourceOrder` 로 파일 전체를 훑으면 이웃 블록의 줄에 매칭된다(실제로 그렇게 오탐이
     //  났다). 블록을 먼저 자르는 게 판정의 전제다.

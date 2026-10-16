@@ -30,14 +30,6 @@
         return b;
       };
 
-      // 모니터 라인 본문 = 단일 라인 플레인 텍스트(truncate). 라이브 프리즈 실측 후, 마크다운
-      // 파싱(setChatBody)·리치 블록은 불채택 — 800(→200) 라인을 한 번에 만드는 모니터에서 파서
-      // 호출은 치명적. 개행은 공백으로 접고 ACTIVITY_TEXT_MAX 로 자른다(전문은 채팅뷰에서 확인).
-      const ACTIVITY_TEXT_MAX = 200;
-      const activityPlainPreview = (text) => {
-        const s = stripMarkdownText(text);
-        return s.length > ACTIVITY_TEXT_MAX ? s.slice(0, ACTIVITY_TEXT_MAX) + "…" : s;
-      };
       // 아코디언 본문에 넣는 *전체* 텍스트(자르지 않음). 접힘=CSS 1줄 클램프(nowrap+ellipsis, 개행은
       // 시각적으로 접힘), 펼침(.expanded)=pre-wrap 로 개행·공백 보존해 전문 표시. 트렁케이트를 렌더
       // 시 baked 하지 않으므로 펼침이 실제로 전문을 드러낸다(재렌더 0). \r\n 정규화 + 양끝 트림만.

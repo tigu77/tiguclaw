@@ -24,6 +24,7 @@
  *    이므로 frontmatter 없어도 유효 (name = 파일 basename, description = "").
  */
 import { promises as fs } from "node:fs";
+import { activePluginDirs } from "../plugins/active-dirs.js";
 import path from "node:path";
 import { parseBool, parseFrontmatter } from "../llm-runtime/capabilities/skill-registry.js";
 import { dedupeWithShadows, warnShadowed } from "../llm-runtime/capabilities/dedup-by-source.js";
@@ -197,7 +198,7 @@ export interface Command {
  * 설치 루트. dev=레포=cwd 동치, prod 정정).
  * 미존재 디렉터리는 빈 배열.
  *
- * V9.5 — 동일 이름 충돌 dedup(`dedupeBySource`): project > plugin > user override,
+ * V9.5 — 동일 이름 충돌 dedup(`dedupeWithShadows`): project > plugin > user override,
  * 이름당 1개만 (인덱스↔fetch 단일 진실). `expandCommand` 의 `project ?? plugin ?? first`
  * 와 동일 규칙을 discover 레벨로 확장. 슬래시 인덱스는 `expandCommand` 단일 경로로
  * 소비 → C-4(plugin 필터) 무관, plain dedup. (contract `_workspace/v95_architect_contract.md`)
@@ -323,18 +324,8 @@ const warnDuplicateCommandOnce = (name: string, kept: string, dropped: string): 
 
 /** `<cwd>/plugins/<plugin>/commands/` walk — V7.2.a walkPluginsAgents 동형. */
 const walkPluginsCommands = async (pluginsRoot: string): Promise<Command[]> => {
-  let entries: Array<{ name: string; isDirectory: () => boolean }>;
-  try {
-    entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const pluginDirs = entries
-    .filter(
-      (e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules",
-    )
-    .map((e) => ({ id: e.name, dir: path.join(pluginsRoot, e.name) }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+  // 꺼 둔 플러그인의 자산은 싣지 않는다 — 판정은 한 곳(`activePluginDirs`).
+  const pluginDirs = await activePluginDirs(pluginsRoot);
 
   const perPlugin = await Promise.all(
     pluginDirs.map(async ({ id, dir }) => {
@@ -394,24 +385,6 @@ const stripFrontmatter = (raw: string): string => {
   // 닫는 `---` 라인 이후 본문.
   const bodyStart = 3 + closeMatch.index + closeMatch[0].length;
   return head.slice(bodyStart);
-};
-
-/**
- * 슬래시 커맨드 → 확장된 prompt.
- *  - 본문에서 frontmatter 제거.
- *  - `$ARGUMENTS` → 전체 args 치환 (Claude Code 표준).
- *  - 미발견 시 undefined.
- *
- * 우선순위: project > plugin > user.
- * `$1`/`$2` 위치 인자는 V7.3.1 후속 (현재 `$ARGUMENTS` 만).
- */
-export const expandCommand = async (
-  name: string,
-  args: string,
-  cwd: string = process.cwd(),
-): Promise<string | undefined> => {
-  const chosen = await resolveCommand(name, cwd);
-  return chosen === undefined ? undefined : expandCommandFile(chosen, args);
 };
 
 /** 전역 커맨드 하나를 고른다(우선순위 project > plugin > user) — 펼치기 전에 그 정의(`run:` 등)를 봐야 하는 호출용. */

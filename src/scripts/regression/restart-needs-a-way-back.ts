@@ -21,7 +21,6 @@
  */
 import { readFile } from "node:fs/promises";
 import {
-  hasSupervisorRespawn,
   hasSupervisorRespawnOn,
   shouldExitForRestart,
 } from "../../core/restart.js";

@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-10-16
+
+### Added
+
+- **Connect Telegram from the dashboard.** Put the bot token in Plugins → telegram-channel and restart, then message the bot once and pick yourself under «Find my ID». No `.env` editing, and the token never goes through the chat.
+- **A new, empty conversation shows example questions.** Tapping one fills the box; you send it.
+- **Enter and replace secret values on the plugin settings screen.** They're saved to the home `.env` and never shown again. Plugins can mark fields people may edit there (`editable`) and offer candidate values (`suggest`).
+
+### Changed
+
+- **Adding, changing or removing an external MCP server takes effect from the next turn, without a restart** — on Codex and OpenAI models too, just like Claude.
+- **`tiguclaw onboard` only reports success once the service actually answers and the checks find nothing blocking.** At the end it shows the dashboard address and opens it if this machine has a browser. Telegram is optional and no longer shows as a failure in the checks.
+- **If the assistant can't answer because an account is missing or expired, it tells you how to sign in again.**
+
+### Fixed
+
+- **Files the assistant sent were downloaded from the dashboard under their stored name instead of the original one.** Non-Latin names come through intact too.
+- **Skills, agents and commands of a turned-off plugin still showed up in the assistant's list.**
+- **A dropped external MCP connection didn't come back until a restart (Codex and OpenAI).** Start the target app again and it reconnects on the next turn.
+- **Install and update could miss a missing SQLite native module.** They now actually open it, and rebuild it themselves if it won't open.
+- **On Mac and Linux installs with a private Node, the retry command shown after a stopped install didn't run in a new terminal.**
+- **Leaving a value empty in `.env`, such as `DASHBOARD_HOST=`, opened the dashboard on every network address.** An empty value now falls back to the default, so it opens on this machine only. An empty bridge port no longer stops the daemon from starting.
+- **Setup guidance didn't match the actual setup.** The setup wizard no longer lists manual steps in the middle of onboard, and `doctor` follows the bridge address setting.
+
 ## [0.72.0] - 2026-10-15
 
 ### Added
@@ -999,7 +1023,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...HEAD
+[0.73.0]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...v0.71.0
 [0.70.1]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...v0.70.1

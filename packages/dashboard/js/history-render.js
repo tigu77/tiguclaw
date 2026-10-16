@@ -129,7 +129,8 @@
           //  (blob 은 최상위 이동이 허용된다). 둘 다 없으면 열지 않는다(빈 탭 0).
           const openHref = () => {
             const t = attachmentOpenTarget(a); // 판정은 util.js(순수) — 여기선 수행만.
-            if (t.kind === "served") return t.url;
+            // 원래 이름을 싣는다 — 새 탭에서 «다른 이름으로 저장» 해도 해시가 아니라 이 이름이 제안된다.
+            if (t.kind === "served") return t.url + "?name=" + encodeURIComponent(name);
             if (t.kind === "none") return null;
             try {
               const bin = atob(a.dataBase64);
@@ -170,7 +171,8 @@
           if (download && dlHref) {
             const dl = document.createElement("a");
             dl.className = "att-dl";
-            dl.href = dlHref;
+            // 저장 이름은 해시라 서버 헤더가 원래 이름을 주게 한다(`download` 속성만으론 서버 헤더에 진다 — 실측: 해시로 받아짐).
+            dl.href = a.rel ? dlHref + "?download=1&name=" + encodeURIComponent(name) : dlHref;
             dl.setAttribute("download", name);
             dl.title = i18n("hist.receive");
             dl.textContent = "⬇";

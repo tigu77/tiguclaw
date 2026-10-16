@@ -133,6 +133,19 @@ export const check: RegressionCheck = {
       );
     }
 
+    // ── ③ 안 쓰는 지역·import 를 컴파일러가 잡는다 (2026-10-16) ───────────────────
+    //  효율 감사가 197건을 찾았다(라우트 분리 뒤 남은 import 54개 · 대체된 비공개 함수 100줄). 손 점검으론 안 돈다 —
+    //  설정이 빠지면 같은 잔해가 다시 쌓인다. 상속까지 푼 **실제 설정**으로 본다.
+    {
+      const { ok, stdout } = await runTsc(tsc, ["-p", cfg, "--showConfig"]);
+      let got: unknown = "★설정을 못 읽음";
+      try {
+        got = (JSON.parse(stdout) as { compilerOptions?: { noUnusedLocals?: unknown } }).compilerOptions?.noUnusedLocals;
+      } catch {
+        /* got 에 그대로 남는다 */
+      }
+      out.push(assert("★타입 게이트가 안 쓰는 지역·import 를 잡는다(noUnusedLocals)", ok && got === true, `noUnusedLocals=${String(got)}`));
+    }
     return out;
   },
 };

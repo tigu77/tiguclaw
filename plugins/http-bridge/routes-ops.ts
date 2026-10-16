@@ -7,7 +7,6 @@
  */
 import { readFileSync } from "node:fs";
 import nodePath from "node:path";
-import path from "node:path";
 
 // 앱 버전 = 레포 루트 package.json(데몬 cwd=repoRoot). 하드코딩 stale 방지 — /health 가 이걸
 // 반환하고 대시보드 헤더가 표시한다. 읽기 실패 시 "unknown".
@@ -25,7 +24,6 @@ import { getInflightTurns } from "../../src/core/inflight-turns.js";
 import { listProjectRuns } from "../../src/core/entry/project-command.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { appRoot } from "../../src/core/paths.js";
-import fs from "node:fs/promises";
 
 import {
   ATTACH_MAX_COUNT,

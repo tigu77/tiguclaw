@@ -33,15 +33,6 @@ export const check: RegressionCheck = {
   guards:
     "서브에이전트가 도구를 하나도 안 쓰고 답을 지어내도 아무 신호가 없어 사람이 결과를 의심해야만 알던 것",
   run: async (): Promise<Assertion[]> => {
-    const emit = await sourceHas(
-      "../../core/llm-runtime/adapters/claude-agent-sdk.ts",
-      [
-        // 이미 세고 있는 잡별 스텝 수를 쓴다(새 카운터 0, 비용 0).
-        /if \(entry\.seq === 0 && !isError\)/,
-        /\[agent-no-tools\]/,
-        /type: "llm\.agent_no_tools"/,
-      ],
-    );
     const render = await sourceHas("../../../packages/dashboard/js/sse.js", [
       /ev\.type === "llm\.agent_no_tools"/,
       /renderLocalChat\(/,

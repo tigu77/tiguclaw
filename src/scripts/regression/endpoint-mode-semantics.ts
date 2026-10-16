@@ -20,13 +20,9 @@
  *  써야 하고, 반대로 방어 문장은 쓰면 안 된다(맞설 인격이 없다). `register_endpoint`
  *  도구 설명이 그것을 말하는지도 여기서 지킨다. 규칙을 코드에만 두면 비서는 모른다.
  */
-import { readFileSync } from "node:fs";
 import { readSourceSync } from "./_wiring.js";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 /** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
 const read = (rel: string): string => readSourceSync(rel);
 

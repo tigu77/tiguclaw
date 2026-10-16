@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import type { ChannelName } from "../channels/types.js";
-import { getContextBoundary, getDb, getSession } from "./sessions.js";
+import { getContextBoundary, getDb } from "./sessions.js";
 import { includedEnd, memberClause, threadScope } from "./thread-members.js";
 
 // ─── Types ──────────────────────────────────────────────────────────────────

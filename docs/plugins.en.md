@@ -223,13 +223,31 @@ Rows in the settings screen are generated **from this declaration**. You don't w
 
 ★**`secret` values are never stored in a file.** They're read from the home `.env`, and the
 screen only shows **whether one is set**. If it isn't set, the key is simply absent (not an
-empty string).
+empty string). People can **enter or replace** the value on the settings screen; it goes to the
+home `.env` and never comes back to the screen. If your plugin reads it at startup, a restart is
+needed to apply it, and the screen says so.
 
 The name is `TIGUCLAW_PLUGIN_<name>_<key>`, uppercased, with `-` replaced by `_`:
 
 ```
 hello       / apiKey   →  TIGUCLAW_PLUGIN_HELLO_APIKEY
 my-plugin   / api-key  →  TIGUCLAW_PLUGIN_MY_PLUGIN_API_KEY
+```
+
+A field with `env` (its value lives in that home `.env` variable) is **read-only by default** — some values, like ports,
+keep the dashboard from starting if they're wrong. Add `"editable": true` to let people change it on the screen. A plugin
+you installed yourself can only write keys in its own namespace (`TIGUCLAW_PLUGIN_…`), and values can't contain quotes,
+`#` or backslashes.
+
+**You can offer candidate values** — put the name of one of your data routes (§6) in `suggest`,
+and the settings screen draws a «Find» button next to that field. The route returns
+`{ "items": [{ "value": "…", "label": "…" }], "note": "…" }`, and nothing is saved until the
+person **picks** one (it's never filled in automatically). `note` is a key for the text shown
+when there are no candidates — your catalog's `suggest.note.<note>`. The button label is
+`suggest.<key>` (falls back to «Find»).
+
+```json
+{ "key": "ownerId", "type": "string", "suggest": "owner-candidates" }
 ```
 
 ---

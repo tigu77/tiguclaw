@@ -22,7 +22,6 @@ import { MEMORY_INDEX_CAP_BYTES } from "../../src/core/prompt-assembly.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { SESSION_STORAGE_CHANNEL, clearSessionModelProfile, setSessionModelProfile } from "../../src/store/sessions.js";
 import { readJsonBody, bodyErrorStatus } from "./http-body.js";
-import type http from "node:http";
 import type { RouteCtx } from "./route-ctx.js";
 
 

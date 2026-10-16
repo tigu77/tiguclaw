@@ -15,4 +15,3 @@
  *  - Phase 2 세션 지속성 회귀 = claude 어댑터 시점에 한정 보존
  */
 export { runRegionA as runClaude } from "./llm-runtime/index.js";
-export type { ClaudeRunInput, ClaudeRunOutput } from "./llm-runtime/index.js";

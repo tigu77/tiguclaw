@@ -52,7 +52,7 @@
 import { coreMcpServer } from "./_core-server.js";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import { findRipgrep, forgetRipgrep, rgBinName } from "../../ripgrep.js";
 import path from "node:path";
 import { withFileMutation } from "./_file-mutation.js";

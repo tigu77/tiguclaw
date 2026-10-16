@@ -119,7 +119,7 @@ function formatUsageLine(usage, now) {
        *  `/api/plugins/action` 을 부를 뿐이다 — 무엇이 켜져 있나·뺄 수 있나를 여기서 다시
        *  계산하지 않는다(가장자리는 판단하지 않는다).
        */
-      const pluginsState = { items: [], meta: {}, busy: "" };
+      const pluginsState = { items: [], meta: {}, busy: "", restartPending: false };
       /**
        * 플러그인 문구 — **그 플러그인 카탈로그만** 본다(코어 테이블로 안 넘어간다).
        *
@@ -305,6 +305,10 @@ function formatUsageLine(usage, now) {
                 : i18n("plugins.done"),
               "good",
             );
+          } else if (d.restartNeeded === true) {
+            // 홈 `.env` 에 저장했다 — 플러그인은 부팅 때 읽으므로 재시작해야 먹는다. 되는 척하지 않고 화면 위에 버튼으로 남긴다.
+            pluginsState.restartPending = true;
+            showToast(i18n("plugins.savedRestart"), "good");
           } else showToast(i18n("plugins.done"), "good");
         } catch (e) {
           showToast(i18n("plugins.failed") + ": " + e.message, "bad");
@@ -949,6 +953,20 @@ function formatUsageLine(usage, now) {
               st.className = "plugin-setting-secret" + (spec.hasSecret ? " on" : "");
               st.textContent = i18n(spec.hasSecret ? "plugins.secret.set" : "plugins.secret.unset");
               row.appendChild(st);
+              // 넣기·바꾸기 — 값은 홈 `.env` 로 가고 다시 화면에 오지 않는다(채팅·모델을 거치지 않는다). 저장 뒤 칸은 비운다.
+              const sec = document.createElement("input");
+              sec.className = "plugin-setting-input";
+              sec.type = "password";
+              sec.autocomplete = "off";
+              sec.placeholder = i18n(spec.hasSecret ? "plugins.secret.replace" : "plugins.secret.enter");
+              sec.disabled = busy;
+              sec.addEventListener("change", () => {
+                const raw = sec.value.trim();
+                sec.value = "";
+                if (raw === "") return;
+                void pluginAction("set-setting", p.name, { key: spec.key, value: raw });
+              });
+              row.appendChild(sec);
             } else if (spec.env || spec.readOnly) {
               // ★정본이 홈 `.env` 다 — **값만 보여주고 안 고친다**(2026-09-02). 이 플러그인은
               //  그 환경변수를 직접 읽으므로, 여기서 고치면 파일에 값이 남고 아무 일도
@@ -971,6 +989,20 @@ function formatUsageLine(usage, now) {
                 box2.appendChild(src);
               }
               row.appendChild(box2);
+              if (spec.env && spec.editable === true && !spec.readOnly) {
+                // 플러그인이 «화면에서 고쳐도 된다» 고 **명시**한 칸만(기본 읽기 전용 — 포트처럼 잘못 넣으면 대시보드가 죽는 값이 있다).
+                //  고치면 홈 `.env` 의 그 변수에 쓴다(서버가 이름·한 줄·문자를 판정).
+                const inp = document.createElement("input");
+                inp.className = "plugin-setting-input";
+                inp.type = "text";
+                inp.value = spec.value === undefined ? "" : String(spec.value);
+                inp.disabled = busy;
+                inp.addEventListener("change", () =>
+                  void pluginAction("set-setting", p.name, { key: spec.key, value: inp.value.trim() === "" ? null : inp.value.trim() }),
+                );
+                row.appendChild(inp);
+                if (spec.suggest) row.appendChild(suggestButton(p.name, spec, inp));
+              }
             } else if (spec.type === "enum") {
               const sel = document.createElement("select");
               sel.className = "plugin-setting-input";
@@ -1024,6 +1056,59 @@ function formatUsageLine(usage, now) {
         return card;
       };
 
+      /**
+       * «찾기» — 이 칸의 후보를 플러그인 데이터 라우트(`settings[].suggest`)에서 받아 보여준다. 고르면 그 값을 저장한다
+       *  (이미 값이 있으면 쉼표로 덧붙인다). ★자동으로 넣지 않는다 — 사용자가 고른다(예: 텔레그램 «내 ID 찾기» 는 봇에게 말을 건
+       *  사람 목록이고, 남이 먼저 말을 걸 수도 있다).
+       */
+      const suggestButton = (pluginName, spec, inp) => {
+        const wrap = document.createElement("span");
+        wrap.className = "plugin-suggest";
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "plugin-suggest-btn";
+        btn.textContent = pluginText(pluginName, "suggest." + spec.key) || i18n("plugins.suggest.find");
+        const list = document.createElement("div");
+        list.className = "plugin-suggest-list";
+        btn.addEventListener("click", async () => {
+          list.textContent = i18n("plugins.suggest.loading");
+          try {
+            const r = await fetch("/api/plugin-data/" + encodeURIComponent(pluginName) + "/" + encodeURIComponent(spec.suggest));
+            // 데이터 라우트 응답은 `{ data, cached }` 로 감싸여 온다(위젯과 같은 문) — 안의 것을 본다. ★처음엔 겉을 읽어 늘 «없음» 이었다(띄워서 확인).
+            const outer = await r.json().catch(() => ({}));
+            if (!r.ok) {
+              list.textContent = i18n("plugins.suggest.failed"); // 라우트 오류를 «없음» 으로 말하지 않는다
+              return;
+            }
+            const d = outer && typeof outer === "object" && outer.data !== undefined ? outer.data : outer;
+            list.textContent = "";
+            const items = Array.isArray(d.items) ? d.items : [];
+            if (items.length === 0) {
+              list.textContent = (d.note && pluginText(pluginName, "suggest.note." + d.note)) || i18n("plugins.suggest.none");
+              return;
+            }
+            for (const it of items) {
+              const b = document.createElement("button");
+              b.type = "button";
+              b.className = "plugin-suggest-item";
+              b.textContent = String(it.label || it.value);
+              b.addEventListener("click", () => {
+                const cur = inp.value.split(",").map((x) => x.trim()).filter(Boolean);
+                const v = String(it.value);
+                const next = cur.includes(v) ? cur : cur.concat([v]);
+                void pluginAction("set-setting", pluginName, { key: spec.key, value: next.join(",") });
+              });
+              list.appendChild(b);
+            }
+          } catch (e) {
+            list.textContent = i18n("plugins.suggest.failed");
+          }
+        });
+        wrap.appendChild(btn);
+        wrap.appendChild(list);
+        return wrap;
+      };
+
       const renderPluginsView = () => {
         const root = document.getElementById("detail-panel");
         if (!root || currentView !== "plugins") return; // 다른 뷰로 옮겼으면 그리지 않는다.
@@ -1038,6 +1123,26 @@ function formatUsageLine(usage, now) {
         //  갱신은 재시작이 필요하고, 위젯·CSS 는 새로고침이면 된다).
         if (pluginsState.meta.codeReloadRequiresRestart === true) {
           root.querySelector(".plugin-note").textContent = i18n("plugins.reloadNote");
+        }
+        // 홈 `.env` 에 저장한 값은 재시작해야 먹는다 — 그 사실과 할 일을 버튼으로(재시작은 확인을 한 번 더 묻는다).
+        if (pluginsState.restartPending === true) {
+          const bar = document.createElement("div");
+          bar.className = "plugin-restart-bar";
+          const t = document.createElement("span");
+          t.textContent = i18n("plugins.restartToApply");
+          const b = document.createElement("button");
+          b.type = "button";
+          b.textContent = i18n("plugins.restartNow");
+          b.addEventListener("click", async () => {
+            // 막대는 재시작을 **실제로 보낸 뒤에만** 내린다 — 확인을 취소하거나 실패하면 그대로(종전엔 먼저 내려 할 일이 사라졌다).
+            if ((await restartDaemon()) === true) {
+              pluginsState.restartPending = false;
+              renderPluginsView();
+            }
+          });
+          bar.appendChild(t);
+          bar.appendChild(b);
+          root.querySelector(".page-view").insertBefore(bar, root.querySelector(".plugin-list"));
         }
         // ── 왼쪽 목록: 아이콘·이름·설명만 ──────────────────────────────────────
         const panel = document.getElementById("plugins-list");

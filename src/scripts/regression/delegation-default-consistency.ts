@@ -28,7 +28,6 @@
  *  지키지 **못하는** 것: 의미 반전·동의어 치환·논지 훼손. 그건 사람이 본다.
  *  ★"지키지도 못하면서 지킨다고 적어둔 검사가 가장 나쁘다" — 그래서 이 문단이 있다.
  */
-import { readFileSync } from "node:fs";
 import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

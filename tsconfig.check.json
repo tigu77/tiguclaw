@@ -16,6 +16,10 @@
   // 검사 전용 = 산출물 0. emit 은 build:prod(tsconfig.build.json) 담당.
   "extends": "./tsconfig.build.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    // 안 쓰는 지역·import 는 **컴파일러가** 잡는다 (2026-10-16). 효율 감사가 197건을 찾았다 — 라우트를
+    //  쪼갠 뒤 남은 import 54개, 대체된 뒤 남은 비공개 함수 100줄. 손 점검에 두면 안 돈다
+    //  ([[feedback_gate_must_actually_run]]). 빌드 설정엔 안 건다 — 잔해가 배포를 막을 이유는 없다.
+    "noUnusedLocals": true
   }
 }

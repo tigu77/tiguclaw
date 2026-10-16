@@ -16,7 +16,6 @@
  *  경계도 못 지났다. 실패했는데 *아무것도* 안 보이는 형상 — 사후 진단이 불가능했다.
  *  그래서 종료 시 `llm.turn_error` 를 남긴다(통지는 채널이 있어야 닿지만 기록은 항상 남는다).
  */
-import { readFileSync } from "node:fs";
 import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

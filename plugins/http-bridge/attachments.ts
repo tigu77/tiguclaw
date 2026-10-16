@@ -74,6 +74,24 @@ export const CONTENT_TYPE_BY_EXT: Record<string, string> = {
 };
 export const sanitizeFilename = (n: string): string =>
   n.replace(/[/\\]/g, "_").replace(/[^\w.\- ]/g, "").trim().slice(-120) || "file";
+
+/**
+ * 받을 때의 파일 이름 헤더 — **원래 이름(한글 포함)** 으로 (2026-10-16, 정태님 «보내준 파일 이름 그대로 다운로드»).
+ * ★종전엔 저장 이름(해시)이 그대로 나갔고, `sanitizeFilename` 은 한글을 지워 원래 이름을 줘도 `file` 이 됐다. 표준은 둘을 같이
+ *  싣는 것이다 — 옛 브라우저용 ASCII `filename` 과 UTF-8 `filename*`(RFC 6266/5987). 경로 문자·제어 문자·따옴표는 지운다(이름만
+ *  바뀌고 어디에 저장될지는 브라우저가 정한다).
+ */
+export const contentDispositionFor = (type: "inline" | "attachment", wanted: string, stored: string): string => {
+  // 자르기는 **코드 포인트** 단위 — UTF-16 으로 자르면 이모지(서로게이트 쌍) 가운데가 끊겨 encodeURIComponent 가 던지고 500 이 났다(레드팀 A).
+  const clean = Array.from(wanted.replace(/[/\\"]/g, "_").replace(/[\u0000-\u001f\u007f]/g, "").trim()).slice(-200).join("");
+  const name = clean === "" ? stored : clean;
+  const ascii = sanitizeFilename(name);
+  // 이름 부분(확장자 앞)에 영숫자가 없으면(한글만 등) ASCII 대체는 저장 이름으로 — «.pdf» 처럼 이름 없는 대체를 내지 않는다.
+  const stem = ascii.replace(/\.[^.]*$/, "");
+  const fallback = !/[A-Za-z0-9]/.test(stem) ? sanitizeFilename(stored) : ascii;
+  const star = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `${type}; filename="${fallback}"; filename*=UTF-8''${star}`;
+};
 const extForAttachment = (filename: string, mime: string): string => {
   const e = path.extname(filename).replace(/^\./, "").toLowerCase();
   if (e.length > 0 && e.length <= 8) return e;

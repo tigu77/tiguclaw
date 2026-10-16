@@ -21,8 +21,9 @@
  *  없다. 아래는 문자열 대조뿐이고, 진짜 검증은 윈도우 인스턴스에서 실제로 돌리는 것이다.
  */
 import { execFileSync } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { readSourceSync } from "./_wiring.js";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Assertion, RegressionCheck } from "./_framework.js";
@@ -86,12 +87,62 @@ const run = async (): Promise<Assertion[]> => {
     //  그 사람 셸에 `npm` 이 없어서, 안내가 `$NPM_CMD`(절대경로)로 나가야 실제로 돌아간다.
     //  이 검사가 지키려는 성질은 «어느 경로로 끝나든 다음 행동이 남는가» 이지 «그 문자열이
     //  적혀 있는가» 가 아니다 — 리터럴을 요구하면 옳은 수정을 막는다.
-    const hasFallback = /(npm|\$NPM_CMD|"\$NPM_CMD") run onboard/.test(code) && /cd \$DIR/.test(code);
+    const hasFallback = /\$RETRY_CD && \$NPM_SHOW run onboard/.test(code);
     out.push({
       name: "★마법사를 못 띄워도 다음 명령을 알려준다(조용한 종료 0)",
       ok: noExecHandoff && hasFallback,
       got: `exec 핸드오프 없음=${noExecHandoff} · 폴백 안내=${hasFallback}`,
     });
+
+    // ★안내한 명령이 **새 셸에서 실제로 돈다** (2026-10-16 아스트라 «초보자 설치 검토» 2번). 종전엔 npm 절대경로를
+    //  적었는데 npm 첫 줄이 `#!/usr/bin/env node` 라 시스템 node 가 없는 셸에선 127 이었다 — 문자열 검사로는 초록.
+    //  그래서 install.sh 의 안내 변수 블록을 그대로 떼어 돌리고, 나온 명령을 **node 없는 PATH** 에서 실행한다.
+    //  설치 폴더엔 공백·`$`·작은따옴표를 넣는다(인용 — 재검토 2차 P6). 가짜 npm·npx 는 진짜와 같은 shebang 이고, 시스템 PATH 를
+    //  잃었으면 실패한다(`:$PATH` 를 빼면 사용자 셸의 다른 명령이 사라진다 — 변이 M8 이 살아남았던 자리).
+    //  «이미 설치됨» 의 업데이트 안내도 같은 방식으로 돌린다(재검토 2차 P5 — 다섯 번째 자리).
+    const lines = sh.split("\n");
+    const shqLine = lines.find((l) => /^shq\(\) \{/.test(l)) ?? "";
+    const blockOf = (start: RegExp, end: RegExp): string => {
+      const from = lines.findIndex((l) => start.test(l));
+      const to = from >= 0 ? lines.findIndex((l, i) => i > from && end.test(l)) : -1;
+      return from >= 0 && to > from ? lines.slice(from, to + 1).join("\n") : "";
+    };
+    const block = blockOf(/^RETRY_CD=/, /^fi$/);
+    const updBlock = blockOf(/^\s*UPDATE_CMD="cd /, /^\s{4}fi$/);
+    const iso = mkdtempSync(path.join(tmpdir(), "retry-cmd-"));
+    try {
+      const dir = path.join(iso, "my $HOME 'tc' tiguclaw");
+      const bin = path.join(dir, ".node", "bin");
+      mkdirSync(bin, { recursive: true });
+      symlinkSync(process.execPath, path.join(bin, "node"));
+      const fake = (name: string): string =>
+        `#!/usr/bin/env node\nif (!(process.env.PATH ?? "").split(":").includes("/usr/bin")) { console.log("lost system PATH"); process.exit(3); }\nconsole.log("${name}-ran " + process.argv.slice(2).join(" ") + " @" + process.cwd());\n`;
+      writeFileSync(path.join(bin, "npm"), fake("npm"), { mode: 0o755 });
+      writeFileSync(path.join(bin, "npx"), fake("npx"), { mode: 0o755 });
+      const show = (b: string, expr: string): string => execFileSync("/bin/sh", ["-c", `${shqLine}\n${b}\nprintf '%s' "${expr}"`], {
+        env: { PATH: "/usr/bin:/bin", DIR: dir, NODE_DIR: path.join(dir, ".node"), NEED_NODE: "1" },
+        encoding: "utf8",
+      });
+      const runIt = (cmd: string): string => {
+        try {
+          return execFileSync("/bin/sh", ["-c", cmd], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 }).trim();
+        } catch (e) {
+          return `rc=${(e as { status?: number }).status} ${String((e as { stdout?: string }).stdout ?? "").trim()} ${String((e as { stderr?: string }).stderr ?? "").trim()}`;
+        }
+      };
+      const ran = runIt(show(block, "$RETRY_CD && $NPM_SHOW run onboard"));
+      const upd = runIt(show(updBlock, "$UPDATE_CMD"));
+      // 안내 네 자리(의존 설치 실패 · 네이티브 재빌드 · 마법사 멈춤 · 마지막 안내)가 전부 이 명령 모양을 쓴다.
+      const uses = (code.match(/\$RETRY_CD && \$NPM_SHOW (ci|rebuild|run onboard)/g) ?? []).length;
+      out.push({
+        name: "★전용 Node 설치의 재시도·업데이트 명령이 node 없는 새 셸에서 그대로 돈다(공백·$·따옴표 경로 · 시스템 PATH 유지) · 안내 네 자리가 같은 명령 모양",
+        ok: block !== "" && updBlock !== "" && shqLine !== "" &&
+          ran === `npm-ran run onboard @${realpathSync(dir)}` && upd === `npx-ran tiguclaw update @${realpathSync(dir)}` && uses >= 4 && !/\$NODE_DIR\/bin\/npm/.test(code),
+        got: `실행=${ran.slice(0, 120)} · 업데이트=${upd.slice(0, 120)} · 안내 자리=${uses}`,
+      });
+    } finally {
+      rmSync(iso, { recursive: true, force: true });
+    }
   }
 
   // ── ④ 이미 설치된 곳을 덮지 않고, 업데이트는 도구를 가리킨다 ─────────────
@@ -196,13 +247,64 @@ const run = async (): Promise<Assertion[]> => {
     ok: installers.length >= 5,
     got: `${installers.length}곳: ${installers.map(([n]) => n).join(", ")}`,
   });
+  // ★«열어 확인» 은 **실행해서** 본다 (2026-10-16 아스트라 «초보자 설치 검토» 1번). 종전엔 다섯 곳이 각자
+  //  `require('better-sqlite3')` 를 적었고 이 검사는 그 문자열만 봤다 — 그런데 require 는 바인딩이 없어도 통과한다
+  //  (바인딩은 DB 를 만들 때 붙는다). 그래서 판정을 `bin/check-native.cjs` 한 곳에 두고, 바인딩을 뺀 격리 사본에서
+  //  **실패하는지**를 돌려 본다. 판정을 plain require 로 되돌리면 첫 단언이 빨개진다.
+  {
+    const iso = mkdtempSync(path.join(tmpdir(), "native-probe-"));
+    try {
+      const mods = path.join(iso, "node_modules");
+      const sq = path.join(mods, "better-sqlite3");
+      mkdirSync(sq, { recursive: true });
+      cpSync(path.join(REPO, "node_modules/better-sqlite3/package.json"), path.join(sq, "package.json"));
+      cpSync(path.join(REPO, "node_modules/better-sqlite3/lib"), path.join(sq, "lib"), { recursive: true });
+      for (const dep of ["bindings", "file-uri-to-path"]) cpSync(path.join(REPO, "node_modules", dep), path.join(mods, dep), { recursive: true });
+      mkdirSync(path.join(iso, "bin"));
+      cpSync(path.join(REPO, "bin/check-native.cjs"), path.join(iso, "bin/check-native.cjs"));
+      const probe = (root: string): number => {
+        try {
+          execFileSync(process.execPath, [path.join(root, "bin/check-native.cjs")], { cwd: root, stdio: "ignore", timeout: 20_000 });
+          return 0;
+        } catch (e) {
+          return (e as { status?: number }).status ?? -1;
+        }
+      };
+      const missing = probe(iso);
+      const real = probe(REPO);
+      out.push({
+        name: "★네이티브 점검은 바인딩이 없으면 실패하고(require 만으론 통과하던 것) · 정상 설치에선 통과한다",
+        ok: missing !== 0 && real === 0,
+        got: `바인딩 없는 사본 rc=${missing} · 실제 설치 rc=${real}`,
+      });
+    } finally {
+      rmSync(iso, { recursive: true, force: true });
+    }
+  }
+  // ★install.ps1 의 «리디렉션한 네이티브 호출» 은 Continue 구간 안에서만 (2026-10-16 재검토 2차 P4, 집 윈도우 5.1 실측).
+  //  Windows PowerShell 5.1 은 Stop 아래서 `cmd 2>$null` 의 stderr 를 종료 오류로 바꾼다(실측: RemoteException 으로 종료,
+  //  Continue 에선 rc=1 로 다음 줄 도달). 그러면 점검이 실패하는 순간 rebuild·안내에 닿지 못한다.
+  {
+    let mode = "Stop";
+    const exposed: string[] = [];
+    for (const l of codeOnly(ps).split("\n")) {
+      const m = /^\s*\$ErrorActionPreference\s*=\s*'(\w+)'/.exec(l);
+      if (m !== null) { mode = m[1]!; continue; }
+      if (/2>\$null/.test(l) && !/Get-Command|-ErrorAction/.test(l) && mode !== "Continue") exposed.push(l.trim());
+    }
+    out.push({
+      name: "★install.ps1: 리디렉션한 네이티브 호출(2>$null)은 Continue 구간 안에서만 — 5.1 은 Stop 아래서 stderr 를 종료 오류로 바꾼다",
+      ok: exposed.length === 0 && mode === "Stop",
+      got: exposed.length === 0 ? `노출 0 · 끝 상태 ${mode}` : `🔴 ${exposed.join(" / ").slice(0, 160)}`,
+    });
+  }
   for (const [name, src] of installers) {
     out.push({
-      name: `${name}: 설치 후 네이티브 모듈을 **실제로 열어** 확인한다`,
-      ok: /require\(['"]better-sqlite3['"]\)/.test(src),
-      got: /require\(['"]better-sqlite3['"]\)/.test(src)
-        ? "로드 확인 있음"
-        : "🔴 종료코드만 보고 '설치 완료' 라고 한다",
+      name: `${name}: 설치 후 네이티브 모듈을 **실제로 열어** 확인한다(공용 판정 bin/check-native.cjs)`,
+      ok: /check-native\.cjs/.test(src) && !/require\(['"]better-sqlite3['"]\)/.test(src),
+      got: /check-native\.cjs/.test(src)
+        ? /require\(['"]better-sqlite3['"]\)/.test(src) ? "🔴 옛 require 점검이 남아 있다" : "공용 판정 사용"
+        : "🔴 종료코드만 보거나 require 만 본다",
     });
     out.push({
       name: `${name}: **설치 명령 자체**에 --ignore-scripts=false 가 붙는다(사내 정책에도 성립)`,

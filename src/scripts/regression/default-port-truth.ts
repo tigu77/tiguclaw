@@ -46,7 +46,7 @@ const PORTS = [
     env: "HTTP_BRIDGE_PORT",
     what: "http-bridge",
     source: "plugins/http-bridge",
-    re: /process\.env\.HTTP_BRIDGE_PORT \?\? "(\d+)"/,
+    re: /process\.env\.HTTP_BRIDGE_PORT\?\.trim\(\) \|\| "(\d+)"/,
   },
 ] as const;
 

@@ -1,0 +1,8 @@
+{
+  "settings.botToken": "봇 토큰",
+  "settings.allowedUserIds": "소유자 ID",
+  "suggest.allowedUserIds": "내 ID 찾기",
+  "suggest.note.token-missing": "먼저 봇 토큰을 넣어 주세요.",
+  "suggest.note.no-messages-yet": "아직 봇에게 온 메시지가 없습니다 — 텔레그램에서 봇에게 아무 말이나 보낸 뒤 다시 찾아 주세요.",
+  "suggest.note.restart-first": "토큰을 저장했다면 먼저 위의 «지금 재시작» 을 누르고, 텔레그램에서 봇에게 아무 말이나 보낸 뒤 다시 찾아 주세요."
+}

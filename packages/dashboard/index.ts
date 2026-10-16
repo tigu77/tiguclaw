@@ -111,19 +111,21 @@ try {
 
 import { describeFetchFailure, bridgeFailureLog } from "./bridge-error.js";
 
-const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT ?? "17011", 10);
+const BRIDGE_PORT = parseInt(process.env.HTTP_BRIDGE_PORT?.trim() || "17011", 10);
 // ★**브리지와 같은 기본값이어야 한다** (2026-09-18, 회사돌쇠 조사). 종전엔 여기만
 // `localhost` 였고 브리지는 `127.0.0.1` 을 듣는다 — 같은 환경변수 이름인데 **기본값이 달랐다.**
 // Windows 에서 `localhost` 는 `::1`(IPv6) 을 먼저 가리키는데 브리지는 거기 안 듣는다.
 // 평소엔 Node 가 IPv4 로 넘어가 연결되지만, 그 경로가 실패 모드를 하나 더 만든다
 // ([[project_telegram_ipv6_blackhole_etimedout]] 과 같은 부류).
-const BRIDGE_HOST = process.env.HTTP_BRIDGE_HOST ?? "127.0.0.1";
+const BRIDGE_HOST = process.env.HTTP_BRIDGE_HOST?.trim() || "127.0.0.1";
 const BRIDGE_TOKEN = process.env.HTTP_BRIDGE_TOKEN;
-const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT ?? "17010", 10);
+const DASHBOARD_PORT = parseInt(process.env.DASHBOARD_PORT?.trim() || "17010", 10);
 // loopback 바인딩 기본 — 원격 노출은 tailscale serve(→127.0.0.1:<port> 프록시)가 담당.
 // 와일드카드(::)로 바인딩하면 tailscaled 가 잡은 tailnet-IP:<port> 와 EADDRINUSE 충돌 →
 // 대시보드가 못 떠 tailscale 프록시가 502 를 낸다. LAN 직접노출 필요 시 env 로 override.
-const DASHBOARD_HOST = process.env.DASHBOARD_HOST ?? "127.0.0.1";
+// ★빈 값(`DASHBOARD_HOST=`)도 루프백으로 — `??` 는 "" 를 통과시켜 listen(port, "") = **모든 인터페이스**에 열렸다(2026-10-16 재검토 P3).
+//  포트·브리지 값도 같은 규칙(빈 값=기본값)이다 — onboard·doctor 가 그렇게 읽는다.
+const DASHBOARD_HOST = process.env.DASHBOARD_HOST?.trim() || "127.0.0.1";
 // DNS 리바인딩 방어 — 루프백은 항상 허용, 그 외는 여기에 적은 이름만(원격 접속용).
 // 부팅 시 1회 파싱(요청마다 env 를 다시 읽을 이유가 없다 — 값이 바뀌면 재시작이 맞다).
 const ALLOWED_HOSTS = parseAllowedHosts(process.env.DASHBOARD_ALLOWED_HOSTS);
@@ -1097,7 +1099,8 @@ const server = http.createServer((req, res) => {
     // 첨부 파일 서빙 — bridge GET /attachments/<rel> (read 토큰 server-side 주입). 대시보드
     // 이력 이미지/파일 렌더용. rel 은 encoded 그대로 전달(bridge 가 decode + traversal 방어).
     if (pathname.startsWith("/api/attachments/") && method === "GET") {
-      await proxyRaw(res, "/attachments/" + pathname.slice("/api/attachments/".length));
+      // 쿼리도 넘긴다 — 받는 이름(`name`)·저장 강제(`download`)를 브리지가 헤더로 만든다(종전엔 경로만 넘겨 해시 이름으로 받아졌다).
+      await proxyRaw(res, "/attachments/" + pathname.slice("/api/attachments/".length) + url.search);
       return;
     }
     if (pathname === "/api/events" && method === "GET") {

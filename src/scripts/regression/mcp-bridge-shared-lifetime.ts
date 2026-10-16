@@ -186,7 +186,7 @@ const run = async (): Promise<Assertion[]> => {
       ["openai", await read("../../core/llm-runtime/adapters/openai-agents-sdk.ts")],
     ];
     const missing = adapters
-      .filter(([, src]) => !(/probeBridgeTools\(/.test(src) && /=== null\) continue;/.test(src)))
+      .filter(([, src]) => !(/probeBridgeTools\(/.test(src) && /=== null\)\s*(?:\{[^}]*?)?continue;/.test(src)))
       .map(([n]) => n);
     out.push({
       name: "★★죽은 외부 MCP 브리지는 그 턴에서 skip 된다 — **두 어댑터가 같은 판정**을 쓴다(하나가 죽어도 턴은 산다)",

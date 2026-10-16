@@ -15,6 +15,7 @@ import {
   codexProviderFromEnvBody,
   claudeSubProviderFromEnvBody,
 } from "./core/onboard-provider.js";
+import { bridgeHealthUrl, canOpenBrowser, dashboardUrl as dashboardUrlOf, envKeyFromBody, installedEnvLookup, openInBrowser, waitForServiceReady } from "./core/onboard-ready.js";
 import process from "node:process";
 
 // 설정(.env)은 런타임 홈에 있다(레포 무오염, 2026-07-09). 홈 = TIGUCLAW_HOME / 기본 ~/.tiguclaw.
@@ -25,10 +26,11 @@ const ENV_PATH = path.join(HOME_DIR, ".env");
 /** npm 스크립트 위임 실행 (TTY 상속 — 대화형 마법사 그대로 동작). exit code 반환.
  *  shell:true — Windows 는 `npm` 이 `npm.cmd` 라 shell 없이는 ENOENT(크로스플랫폼 필수).
  *  script 는 하드코딩 리터럴만(주입 위험 0). */
-const runNpm = (script: string): number => {
+const runNpm = (script: string, env?: NodeJS.ProcessEnv): number => {
   const r = spawnSync("npm", ["run", script], {
     stdio: "inherit",
     shell: true,
+    ...(env !== undefined ? { env: { ...process.env, ...env } } : {}),
   });
   return r.status ?? 1;
 };
@@ -90,12 +92,19 @@ const globalTiguclawIsOurs = (): boolean => {
   }
 };
 
-/** 원샷 설정 — 설치 후 이 명령 하나로 끝낸다. */
-const onboard = (): number => {
+/**
+ * 서비스가 응답할 때까지 기다리는 상한 — 보통 몇 초 안에 뜨지만(built 런타임 부팅 + 플러그인 로드), 느린 디스크·첫 부팅을 덮을 만큼.
+ *  무한 대기하지 않는다 — 넘으면 어느 쪽이 안 됐는지 말하고 끝낸다.
+ */
+const READY_TIMEOUT_MS = 60_000;
+
+/** 원샷 설정 — 설치 후 이 명령 하나로 끝낸다. ★도착점은 «대시보드에서 첫 대화» 다(아스트라 인계 2026-10-14 · 정태님 «대시보드가 메인»). */
+const onboard = async (): Promise<number> => {
   console.log("\n=== tiguclaw onboard — one-shot setup ===\n");
 
   console.log("[1/5] Setup wizard (creates .env)…");
-  if (runNpm("init") !== 0) {
+  // init 이 «다음 단계» 를 수동으로 늘어놓지 않게 — 이어지는 단계는 onboard 가 한다.
+  if (runNpm("init", { TIGUCLAW_FROM_ONBOARD: "1" }) !== 0) {
     console.error("→ init failed or was cancelled. Stopping onboard.");
     return 1;
   }
@@ -173,13 +182,45 @@ const onboard = (): number => {
     }
   }
 
-  console.log("\n[5/5] Checking the setup…");
-  runNpm("doctor"); // 진단용 — 실패해도 onboard 는 완료로 본다.
+  // ★완료 판정 — 서비스가 실제로 응답하는가 + doctor 의 «막는 문제»(종료 코드 1)가 없는가. 경고(⚠️)는 막지 않는다(doctor 가 이미
+  //  둘을 가른다). 종전엔 doctor 결과를 버리고 무조건 «완료» 를 찍었다 — 서비스가 안 떴어도 완료였다.
+  const envBody = readFileSync(ENV_PATH, "utf8");
+  // 데몬이 보는 순서·파서로 값을 찾는다(홈 .env → 윈도우만 설치 때 붙잡은 실행 환경 → 레포 .env) — 다르게 읽으면 엉뚱한 주소를 두드린다(레드팀 B F1·F2 · 재검토 P1·P2).
+  const get = installedEnvLookup(ENV_PATH, process.cwd());
+  const dashboardUrl = dashboardUrlOf(get);
+  // 대시보드 모듈을 꺼 둔 설치 — 기다리지 않고, 끝 안내도 대시보드로 보내지 않는다(꺼 둔 것은 실패가 아니다).
+  const { moduleActivityJudge } = await import("./core/plugins/inventory.js");
+  const dashboardOn = moduleActivityJudge()("dashboard");
+  console.log(`\n[5/5] Waiting for the service to answer (up to ${READY_TIMEOUT_MS / 1000}s)…`);
+  const ready = await waitForServiceReady({ healthUrl: bridgeHealthUrl(get), dashboardUrl, skipDashboard: !dashboardOn, timeoutMs: READY_TIMEOUT_MS });
+  console.log(`   daemon ${ready.daemon ? "✅" : "❌ not answering"} · dashboard ${!dashboardOn ? "(turned off)" : ready.dashboard ? "✅" : "❌ not answering"}`);
+  const doctorRc = runNpm("doctor");
+  if (!ready.daemon || !ready.dashboard || doctorRc !== 0) {
+    console.error("\n⚠️  Setup is not finished — fix the problems above, then run `tiguclaw onboard` again (your settings are kept).");
+    if (!ready.daemon || !ready.dashboard) {
+      console.error("   The service was registered but did not answer in time — check `tiguclaw status` and `tiguclaw logs`.");
+    }
+    return 1;
+  }
 
-  console.log("\n✅ Onboard complete!");
-  console.log(
-    "   Send your bot a message on Telegram to check that it replies (only the owner ID is allowed).",
-  );
+  if (!dashboardOn) {
+    console.log("\n✅ Ready! The dashboard module is turned off — talk to the assistant on your other channels, or turn the dashboard back on in settings.");
+    console.log("   Manage: tiguclaw status / restart / logs / uninstall\n");
+    return 0;
+  }
+  console.log("\n✅ Ready! Open the dashboard and say hello:");
+  console.log(`   ${dashboardUrl}`);
+  // AI 연결은 여기서 단언하지 않는다 — 인증이 있다는 것과 모델이 답한다는 것은 다르다. 첫 대화가 그 확인이다(답을 못 하면 그 자리에서 고칠 것을 말한다).
+  console.log("   Your first message there is also the AI connection check — if it can't answer, the reply says what to fix.");
+  if (canOpenBrowser(process.env, process.platform)) {
+    openInBrowser(dashboardUrl);
+    console.log("   (opening it in your browser…)");
+  } else {
+    console.log("   (no local browser here — open that address on this machine, or reach it through your own private network)");
+  }
+  if (envKeyFromBody(envBody, "TELEGRAM_BOT_TOKEN") !== undefined) {
+    console.log("   Telegram is set up too — you can also message your bot (only the owner ID is allowed).");
+  }
   console.log("   Manage: tiguclaw status / restart / logs / uninstall\n");
   return 0;
 };
@@ -220,7 +261,7 @@ const USAGE = `tiguclaw — self-hosted AI assistant CLI
     A built instance's self-update rebuilds, then swaps dist atomically.
 `;
 
-const main = (): number => {
+const main = async (): Promise<number> => {
   const cmd = process.argv[2] ?? "help";
   switch (cmd) {
     case "onboard":
@@ -261,4 +302,11 @@ const main = (): number => {
   }
 };
 
-process.exit(main());
+// ★onboard 가 준비 확인을 기다리므로 비동기다. 실패도 종료 코드로 끝낸다(던지면 스택 대신 한 줄).
+main().then(
+  (rc) => process.exit(rc),
+  (e: unknown) => {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  },
+);

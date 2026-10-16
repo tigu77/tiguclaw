@@ -18,59 +18,26 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { withViewerLanguage } from "../../src/core/i18n.js";
-import { callPluginDataRoute, isPluginMedia } from "../../src/core/plugins/data-routes.js";
-import { readHomeWidgets } from "../../src/core/home-widgets.js";
-import { listLivePlugins } from "../../src/core/plugins/manager.js";
-import { stampFor, RUNNING_WORK } from "../../src/core/resource-revision.js";
-import fs from "node:fs/promises";
-import path from "node:path";
 import type {
-  Attachment,
-  AttachmentKind,
   Channel,
   IncomingMessage,
   MessageHandler,
 } from "../../src/channels/types.js";
 import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
-import type { DisplayText } from "../../src/core/plugins/providers.js";
 import {
   isAllowedHost,
   parseAllowedHosts,
   rebindRejectionMessage,
 } from "../../src/core/net/host-guard.js";
-import { listOutboundChannels } from "../../src/core/channel-outbound.js";
 import {
   registerExternalTurn,
   unregisterExternalTurn,
 } from "../../src/core/inflight-turns.js";
-import { getPaths, appRoot } from "../../src/core/paths.js";
 import { getChannelPresence } from "../../src/core/channel-registry.js";
 import type { Observer } from "../../src/core/observers/types.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
 import { portListenFailure } from "../../src/core/port-hint.js";
 import { publishPromptOptions } from "./prompt-options-publish.js";
-import {
-  collectInventory,
-  collectContextMenuContributions,
-  isWhitelistedContextMenuAction,
-} from "../../src/core/plugins/inventory.js";
-import { getAllCommands } from "../../src/core/entry/command-registry.js";
-import { collectModules } from "../../src/core/plugins/providers.js";
-import { isCoreModule } from "../../src/core/plugins/inventory.js";
-import {
-  loadModelProfiles,
-  loadGatewayConfig,
-  getDefaultProfileName,
-  setDefaultProfile,
-  setSuggestionEnabled,
-  setLocale,
-  setTheme,
-  setEgressChannels,
-  readEgressChannels,
-  setModuleDisabled,
-  setProfileColor,
-} from "../../src/core/settings.js";
-import { readSuggestionSettings } from "../../src/core/next-message-suggestion.js";
 import {
   verifyToken,
   type BridgeTokenRole,
@@ -80,77 +47,11 @@ import {
   findEndpoint,
   expandEndpoint,
 } from "../../src/core/entry/endpoint-registry.js";
-import { getFirstUserText, getRecentChatLog } from "../../src/store/chat-log.js";
-import { setSessionArchived } from "../../src/store/channel-session.js";
-import {
-  resolveModelProfiles,
-  BUILTIN_DEFAULT_TIER,
-} from "../../src/core/llm-runtime/builtin-profiles.js";
-import {
-  listThreads,
-  setThreadName,
-  getSessionModelProfile,
-  setSessionModelProfile,
-  clearSessionModelProfile,
-  SESSION_STORAGE_CHANNEL,
-  sessionDisplayName,
-  setThreadArchived,
-} from "../../src/store/sessions.js";
-import { DEFAULT_SESSION_ID, resolveSessionId } from "../../src/core/threadkey.js";
-import { getAssistantName } from "../../src/core/identity.js";
-import { listProjects, forgetProject, upsertProject } from "../../src/store/projects.js";
-import { listSchedules } from "../../src/store/schedules.js";
-import { Cron } from "croner";
-import { parseProjectMd } from "../../src/core/llm-runtime/capabilities/project-registry.js";
-import { discoverSkills } from "../../src/core/llm-runtime/capabilities/skill-registry.js";
-import { discoverAgents } from "../../src/core/llm-runtime/capabilities/agent-registry.js";
 // 프로젝트 상세의 훅 목록 — 인벤토리와 **같은 판정 함수**를 쓴다(scope 로만 가른다).
-import { listHooksForInventory } from "../../src/core/entry/hook-runner.js";
-import {
-  readProjectMcpServers,
-  describeExternalMcpConfig,
-} from "../../src/core/external-mcp.js";
-import {
-  runRegionA,
-  parseModelSpec,
-  parseModelSpecList,
-  resolveTier,
-  specLabel,
-  type ModelSpec,
-} from "../../src/core/llm-runtime/index.js";
-import { resolveTranscriptionProvider } from "../../src/core/llm-runtime/transcription/index.js";
-import { listEvents } from "../../src/store/events.js";
-import { createMemoryMcpServer } from "../../src/core/memory-mcp.js";
-import { adaptClaudeMcpServer } from "../../src/core/llm-runtime/adapters/_mcp-bridge.js";
 
 
-import {
-  listJobs,
-  resolveOwnerThreadKey,
-  cancelQueuedTurn,
-  cancelJob,
-  isCancelledTurnResult,
-  isSteeredTurnResult,
-  getJobActivity,
-} from "../../src/core/worker-jobs.js";
-import {
-  listShells,
-  tailShell,
-  killShellById,
-} from "../../src/core/llm-runtime/capabilities/file-ops-mcp.js";
-import { promises as fsp } from "node:fs";
-import nodePath from "node:path";
 import { redactSecrets } from "../../src/core/outbound-sanitize.js";
-import { getInflightTurns } from "../../src/core/inflight-turns.js";
 
-/**
- * in-process MCP 서버 팩토리 — `/mcp-tools` 가 **실제 인스턴스에 물어보기** 위한 유일한 맵.
- * 새 in-process 서버가 생기면 여기 한 줄만 추가하면 도구 상세가 자동으로 따라온다
- * (하드코딩 목록을 또 만들지 않는다 — 기존 두 곳이 이미 드리프트했다, 2026-07-29).
- */
-import { readFileSync } from "node:fs";
-import * as nodeFs from "node:fs";
-import { execFile } from "node:child_process";
 
 // 커스텀 엔드포인트 전용 타임아웃(2026-07-26) — `/messages`(대시보드)와 **성격이 다르다**:
 //  - /messages: 최종 답은 SSE 로 가므로 HTTP 응답이 잘려도 사용자는 답을 받는다(504 무해).
@@ -182,9 +83,8 @@ import { endpointPreview } from "./endpoint-preview.js";
 // 텔레그램 첨부 경로와 동형(진실 소스 = Attachment 계약, <home>/data/attachments/<channel>/
 // <yyyymmdd>/<id>.<ext>). base64 인바운드는 로컬(127.0.0.1)+토큰 게이트 한정 = 외부 노출 아님.
 // 크기/개수 캡은 boundary 검증(메모리·디스크 보호). 캡 위반·저장 실패는 400 으로 닫고 데몬 생존.
-import { ATTACH_MAX_FILE_BYTES, AttachmentError, AUDIO_EXT_BY_MIME, CONTENT_TYPE_BY_EXT, sanitizeFilename, ingestAttachments, persistOutboundAttachment, deliverSessionAttachment } from "./attachments.js";
+import { deliverSessionAttachment } from "./attachments.js";
 import {
-  readJsonBody,
   readRawBody,
   respondToRequestFailure,
 } from "./http-body.js";
@@ -216,8 +116,6 @@ import {
   serveGatewayModels,
 } from "./routes-gateway.js";
 
-import { resolveGatewayRuntime, resolveGatewaySpecs, buildModelsListResponse, extractGatewayImageAttachments, GatewayChatMessage, flattenChatMessages, parseGatewayTools } from "./gateway.js";
-import { historyActivities } from "./history-activities.js";
 const ROLE_RANK: Record<BridgeTokenRole, number> = {
   read: 1,
   write: 2,
@@ -292,7 +190,8 @@ class HttpBridge implements Channel, Observer {
         `HTTP_BRIDGE_TOKEN not set, using ephemeral token: ${this.ephemeralToken}`,
       );
     }
-    this.port = parseInt(process.env.HTTP_BRIDGE_PORT ?? "17011", 10);
+    // 빈 값(`KEY=`)도 기본값으로 — `?? ` 면 parseInt("") = NaN 으로 listen 이 던졌다(2026-10-16 재검토 P3).
+    this.port = parseInt(process.env.HTTP_BRIDGE_PORT?.trim() || "17011", 10);
     this.host = process.env.HTTP_BRIDGE_HOST?.trim() || "127.0.0.1";
     this.allowedHosts = parseAllowedHosts(process.env.HTTP_BRIDGE_ALLOWED_HOSTS);
   }

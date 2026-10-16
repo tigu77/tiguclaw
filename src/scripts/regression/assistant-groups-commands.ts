@@ -239,7 +239,7 @@ export const check: RegressionCheck = {
     // 탐색이 안 들어가는 이름(node_modules)·끝 점은 거절 — 만들었다고 답하고 안 보이던 것(릴리스 검토 F4·F10) · 3단은 된다(G3)
     const nm = await call("register_command", { name: "regr-nm", prompt: "x", group: "node_modules" });
     const dot = await call("register_command", { name: "regr-dot", prompt: "x", group: "배포." });
-    const three = await call("register_command", { name: "regr-three", prompt: "x", group: "가/나/다" });
+    await call("register_command", { name: "regr-three", prompt: "x", group: "가/나/다" });
     out.push(
       assert(
         "④ 탐색이 안 들어가는 묶음(node_modules)·끝 점은 거절하고, 3단 묶음은 만든다",

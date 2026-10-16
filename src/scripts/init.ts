@@ -21,6 +21,7 @@ import process from "node:process";
 import type { ModelProfile } from "../core/settings.js";
 import { countHomeModelProfiles, profileToSettingsJson } from "../core/settings.js";
 import { builtinTierModel } from "../core/llm-runtime/builtin-profiles.js";
+import { dashboardUrl, initNextSteps, installedEnvLookup } from "../core/onboard-ready.js";
 
 // 설정(.env)은 **런타임 홈**에 둔다(공개 레포 checkout 무오염, 2026-07-09). 홈 =
 // TIGUCLAW_HOME env(있으면) / 기본 ~/.tiguclaw — load-env.ts·daemon.ts 와 동일 규칙.
@@ -389,7 +390,7 @@ const collectTelegram = async (): Promise<
   Pick<Answers, "telegramToken" | "telegramUserIds">
 > => {
   console.log("");
-  console.log("[3/4] Telegram (optional) — skip this if you only use the CLI.");
+  console.log("[3/4] Telegram (optional) — skip this to use the web dashboard (you can add Telegram later).");
   const skip = await ask("  Set up Telegram? [y/N]: ");
   if (skip.toLowerCase() !== "y" && skip.toLowerCase() !== "yes") {
     console.log("  → Skipped Telegram. (You can add TELEGRAM_BOT_TOKEN to .env later.)");
@@ -497,7 +498,6 @@ LLM_GATEWAY_MODELS=
 LLM_GATEWAY_MAX_CONCURRENCY=4
 
 # ── Daemon ──────────────────────────────────────────────────────
-LOG_LEVEL=info
 NODE_ENV=production
 `;
 };
@@ -577,17 +577,14 @@ const main = async (): Promise<void> => {
   }
 
   console.log("");
-  console.log("── Next steps ─────────────────────────────────────");
-  console.log("  ① Make sure `npm install` has finished.");
-  if (provider === "codex") {
-    console.log("  ② Get a ChatGPT OAuth token with `npm run codex-auth`. (required for codex)");
-  } else {
-    console.log("  ② (not the codex provider — skipping the OAuth step)");
-  }
-  console.log("  ③ Start it with `npm run daemon:install` (always-on daemon) or `npm run dev` (development).");
-  console.log("  ④ Check the setup with `npm run doctor`.");
-  console.log("  ⑤ Send your bot a message on Telegram to check that it replies.");
-  console.log("  ⑥ Open http://127.0.0.1:17010 in a browser — the web dashboard (chat, progress, background jobs).");
+  // 다음 단계 — onboard 가 부른 것이면 이어서 자동으로 간다고만, 단독이면 실제 설정대로(`initNextSteps`).
+  const get = installedEnvLookup(ENV_PATH, process.cwd());
+  for (const line of initNextSteps({
+    provider,
+    telegram: get("TELEGRAM_BOT_TOKEN") !== undefined,
+    dashboardUrl: dashboardUrl(get),
+    fromOnboard: process.env.TIGUCLAW_FROM_ONBOARD === "1",
+  })) console.log(line);
   console.log("");
   console.log("  ★ Never commit or share .env (it holds real tokens).");
   console.log("");

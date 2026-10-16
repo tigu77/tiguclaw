@@ -9,6 +9,8 @@
  * 자체 splitPool 6 줄 + provider→envvar 매핑 7 줄로 진단만 수행.
  */
 import "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
+import { homeEnvPath } from "../core/load-env.js";
+import { bridgeHealthUrl, dashboardUrl, installedEnvLookup } from "../core/onboard-ready.js";
 import { subscriptionAuthAvailable } from "../core/auth-plugin-presence.js";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
@@ -94,14 +96,16 @@ const telegramGetMe = async (
 };
 
 /**
- * 데몬 health 핑 — http://localhost:<port>/health GET. 이미 떠있는 서비스에
+ * 데몬 health 핑 — 브리지 `/health` GET. 이미 떠있는 서비스에
  * read-only 핑만 (데몬 start 금지). 실패는 흡수하여 up=false 반환.
+ * ★주소는 onboard 와 같은 규칙(`bridgeHealthUrl` — `HTTP_BRIDGE_HOST` 를 따른다, 2026-10-16 재검토 P4). 종전엔 localhost 고정이라
+ *  브리지를 다른 주소에만 묶은 설치에서 onboard 는 ✅ · doctor 는 ❌ 였고, «서비스를 시작하라» 가 떠 있는 데몬에 나갔다.
  */
 const daemonHealth = async (
-  port: string,
+  url: string,
 ): Promise<{ up: boolean; channelHandler?: boolean }> => {
   try {
-    const res = await fetch(`http://localhost:${port}/health`, {
+    const res = await fetch(url, {
       signal: AbortSignal.timeout(2500),
     });
     if (!res.ok) return { up: false };
@@ -410,7 +414,8 @@ const main = async (): Promise<void> => {
   if (telegramToken.length > 0) {
     console.log(line("telegram", "active ✅"));
   } else {
-    console.log(line("telegram", "disabled ❌ (no TELEGRAM_BOT_TOKEN)"));
+    // 선택 채널이다 — 대시보드가 주 화면이라 없어도 문제가 아니다(종전 ❌ 는 문제 목록엔 안 들면서 실패처럼 보였다).
+    console.log(line("telegram", "not set (optional — the web dashboard is the main screen)"));
   }
 
   console.log("");
@@ -458,9 +463,11 @@ const main = async (): Promise<void> => {
 
   // [daemon] — ★ "작동하나" 핵심. 이미 떠있는 데몬에 read-only health 핑.
   console.log("[daemon]");
-  const bridgePort =
-    (process.env.HTTP_BRIDGE_PORT ?? "17011").trim() || "17011";
-  const health = await daemonHealth(bridgePort);
+  // ★데몬이 보는 값으로 — doctor 자신의 실행 환경이 아니다(2026-10-16 재검토 P1). 맥·리눅스 서비스엔 셸 값이 안 닿는데, 셸 포트를
+  //  두드리면 onboard 는 ✅ 를 기다리고 doctor 는 ❌ 로 끝나 «안 끝났다» 가 됐다. onboard 와 같은 해석(`installedEnvLookup`).
+  const svc = installedEnvLookup(homeEnvPath(), process.cwd());
+  const bridgePort = svc("HTTP_BRIDGE_PORT")?.trim() || "17011";
+  const health = await daemonHealth(bridgeHealthUrl(svc));
   if (health.up) {
     console.log(
       line("daemon", `running ✅ (health ok, port ${bridgePort})`),
@@ -483,7 +490,7 @@ const main = async (): Promise<void> => {
   if (process.platform === "win32") {
     const r = spawnSync("netsh", ["interface", "ipv4", "show", "excludedportrange", "protocol=tcp"], { encoding: "utf8" });
     const ranges = r.status === 0 ? parseExcludedPortRanges(r.stdout ?? "") : [];
-    const dashboardPort = (process.env.DASHBOARD_PORT ?? "17010").trim() || "17010";
+    const dashboardPort = svc("DASHBOARD_PORT")?.trim() || "17010";
     for (const [key, port] of [["HTTP_BRIDGE_PORT", bridgePort], ["DASHBOARD_PORT", dashboardPort]] as const) {
       const hit = excludedRangeOf(Number(port), ranges);
       if (hit === undefined) continue;
@@ -733,9 +740,10 @@ const main = async (): Promise<void> => {
     } else if (!storeOk) {
       nextStep =
         "Next step: check the DATA_DIR permissions/path (defaults to <TIGUCLAW_HOME>/data when unset).";
-    } else if (telegramToken.length === 0) {
-      nextStep =
-        "Next step (optional): to use Telegram, set TELEGRAM_BOT_TOKEN in .env.";
+    } else if (!health.up) {
+      // ★설정이 갖춰졌으면 데몬이 먼저다 — 아래 선택 단계(외부 대시보드 토큰·스케줄 확인)는 떠 있는 비서를 전제한다(재검토 P5:
+      //  데몬이 죽었는데 «비서에게 "show my schedules" 를 물어라» 가 나갔다).
+      nextStep = "Next step: start the service with `tiguclaw start` (or `tiguclaw restart`), then run doctor again.";
     } else if (
       tokensOk &&
       activeCount === 0 &&
@@ -747,8 +755,15 @@ const main = async (): Promise<void> => {
       nextStep =
         "Next step: to see the failed triggers, ask the assistant \"show my schedules\" or use /schedule list.";
     } else {
-      nextStep =
-        "Next step: run npm run dev and type a line on stdin, or send your Telegram bot a message.";
+      // 도착점은 대시보드의 첫 대화다(온보딩과 같은 주소 — 설정을 따른다). 텔레그램은 선택이라 다음 단계로 세우지 않는다.
+      // ★막는 문제가 남았으면 그것부터다 — 종전엔 데몬이 죽어 있어도 «대시보드 열고 인사하라» 고 했다(레드팀 B F4, 데몬은 위 갈래).
+      // ★대시보드 모듈을 꺼 둔 설치엔 대시보드를 권하지 않는다 — onboard 끝 안내와 반대말이 됐다(재검토 P3).
+      const { moduleActivityJudge } = await import("../core/plugins/inventory.js");
+      nextStep = issues.length > 0
+        ? "Next step: fix the problems listed above, then run doctor again."
+        : !moduleActivityJudge()("dashboard")
+          ? "Next step: all set — the dashboard module is turned off, so talk to the assistant on your other channels."
+          : `Next step: open ${dashboardUrl(svc)} in a browser and say hello.`;
     }
   }
   console.log(nextStep);

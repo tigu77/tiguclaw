@@ -73,7 +73,6 @@ export const check: RegressionCheck = {
     }
 
     // ③ 메인은 **표시만 걷힌** 원문과 같다(본문 무변경).
-    const mainBody = scoped.get("main")!.body;
     const stripped = text
       .split("\n")
       .filter((l) => !/^[ \t]*<!--\s*\/?role(:[a-z]+)?\s*-->[ \t]*$/.test(l))

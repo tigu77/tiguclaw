@@ -23,10 +23,10 @@ cd "$WT"
 # 의존성은 잠금 파일이 바뀌었을 때만 다시 깐다(매번 깔면 1~2분).
 if [ "$OLD_LOCK" != "$NEW_LOCK" ] || [ ! -d node_modules ]; then npm ci --no-audit --no-fund --ignore-scripts=false; fi
 # 네이티브 모듈을 실제로 열어 본다 — install.sh 와 같은 규칙(사내 정책 ignore-scripts 면 ci 는 성공해도 SQLite 가 안 열린다).
-if ! node -e "require('better-sqlite3')(':memory:').close()" >/dev/null 2>&1; then
+if ! node bin/check-native.cjs >/dev/null 2>&1; then
   echo "네이티브 모듈이 안 열립니다 — 다시 빌드합니다…"
   npm rebuild better-sqlite3 --ignore-scripts=false >/dev/null 2>&1 || true
-  node -e "require('better-sqlite3')(':memory:').close()" || { echo "🔴 better-sqlite3 를 열 수 없습니다"; exit 1; }
+  node bin/check-native.cjs || { echo "🔴 better-sqlite3 를 열 수 없습니다"; exit 1; }
 fi
 npm run build:prod
 env -u HTTP_BRIDGE_TOKEN TIGUCLAW_HOME="$HOME_DIR" HTTP_BRIDGE_PORT="$PORT" TIGUCLAW_SERVICE_LABEL="$LABEL" node bin/deploy-guard.mjs

@@ -44,13 +44,6 @@ const sourceRank = (s: Sourced["source"]): number => {
 };
 
 /**
- * name 기준 우선순위 dedup. 더 높은 rank 가 기존을 덮고, 동일 rank 는 먼저 등장한 것
- * 유지. 첫 등장 순서로 반환.
- */
-export const dedupeBySource = <T extends Sourced>(items: T[]): T[] =>
-  dedupeWithShadows(items).kept;
-
-/**
  * **플러그인이 빌트인을 덮은 자리** — 조용히 넘어가면 안 되는 유일한 충돌 (2026-09-09).
  *
  * ★user·project 가 덮는 것은 **의도**다(오버라이드 모델 — 사용자가 자기 홈에 같은 이름을

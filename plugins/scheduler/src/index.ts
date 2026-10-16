@@ -345,14 +345,8 @@ const defaultRunClaude: RunnerDeps["runClaude"] = async (input) => {
   );
 };
 
-// ─── singleton instance — src/index.ts 가 enable/disable 슬래시에서 접근 ──
-let instance: SchedulerPlugin | null = null;
-
-export const getSchedulerInstance = (): SchedulerPlugin | null => instance;
-
 export default class SchedulerPluginFactory extends SchedulerPlugin {
   constructor() {
     super();
-    instance = this;
   }
 }

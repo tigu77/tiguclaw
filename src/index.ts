@@ -20,22 +20,18 @@ import {
   handleStatus,
 } from "./core/entry/slash-commands.js";
 import { formatResetAt, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
+import { signInGuideFor } from "./core/llm-runtime/sign-in-guide.js";
 import { flushEnvLoadLog } from "./core/load-env.js";
 import { endTurn, refuseWhileClosing } from "./core/entry/turn-lifecycle.js";
 import { repairRipgrepAtBoot } from "./core/ripgrep.js";
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
 import os from "node:os";
-import { randomUUID } from "node:crypto";
 import {
   DEFAULT_SESSION_ID,
   setChannelSessionBindingLookup,
 } from "./core/threadkey.js";
 import {
   getChannelSessionBinding,
-  setChannelSessionBinding,
-  clearChannelSessionBinding,
-  clearBindingsForSession,
-  setSessionArchived,
 } from "./store/channel-session.js";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
@@ -63,10 +59,6 @@ import {
   runUserPromptSubmitHooks,
   setHookObserver,
 } from "./core/entry/hook-runner.js";
-import {
-  collectInventory,
-  formatInventoryForUser,
-} from "./core/plugins/inventory.js";
 import { loadPlugins } from "./core/plugins/loader.js";
 import { seedDefaultHomeWidgets } from "./core/home-widgets.js";
 import {
@@ -85,46 +77,24 @@ import { route } from "./core/router.js";
 import {
   createSteeringChannel,
   type SteeringChannel,
-  type SteeringInput,
 } from "./core/steering.js";
-import {
-  contextPressureLabel,
-  lookupContextWindow,
-} from "./core/llm-runtime/context-windows.js";
-import { followHomeCredentials, runRegionA, resolveModelChain, unresolvedModelSpecs, unresolvedOverrideNote } from "./core/llm-runtime/index.js";
+import { followHomeCredentials, unresolvedModelSpecs, unresolvedOverrideNote } from "./core/llm-runtime/index.js";
 import { appVersion, appBuildId } from "./core/version.js";
-import { getCodexTokenExpiry } from "./core/llm-runtime/adapters/openai-codex-oauth.js";
 import {
-  addMemory,
-  countArchivedMemories,
-  countMemories,
-  deleteMemory,
-  listMemories,
-  loadThreadHistory,
-} from "./store/memory.js";
-import {
-  deleteSchedule,
   listSchedules,
-  updateSchedule,
 } from "./store/schedules.js";
 import {
   canonicalSessionChannel,
   clearSessionModelOverride,
   getMostRecentTelegramChatId,
-  getSession,
   getSessionChannelMeta,
   telegramTargetFor,
   getSessionModelOverride,
   initStore,
   setSessionModelOverride,
   SESSION_STORAGE_CHANNEL,
-  listThreads,
   getThreadName,
-  setThreadName,
-  setThreadArchived,
-  sessionDisplayName,
 } from "./store/sessions.js";
-import { getFirstUserText } from "./store/chat-log.js";
 // 컨텍스트 리셋 — `/clear` 가 claude(세션)·codex/openai(재전송 히스토리 경계·롤링 요약)를
 // 모두 끊는다. 세 걸음은 `thread-reset.ts` 한 곳(스케줄 이력 정책과 공유).
 import { resetThreadContext } from "./store/thread-reset.js";
@@ -141,10 +111,8 @@ import {
   errorDetail,
   resolveModelSpecs,
   describeBasePool,
-  listActiveCooldowns,
   poolDiversityWarning,
   restoreCooldowns,
-  clearCooldowns,
 } from "./core/llm-runtime/index.js";
 import { appRoot, ensureHome, getPaths, migrateLegacyAgent } from "./core/paths.js";
 import { readSystem } from "./core/identity.js";
@@ -162,7 +130,6 @@ import {
   cleanupSelfRestartTask,
 } from "./core/restart.js";
 import { initFileLogging, logFatal } from "./core/logging.js";
-import { backupInfo } from "./store/backup.js";
 import { acquireHomeLock } from "./store/home-lock.js";
 import { startEventPersistence } from "./core/event-persist.js";
 import {
@@ -550,6 +517,9 @@ const formatRegionAError = (detail: string, errorName?: string): string => {
   //  이 정규식엔 false 였다. 주석은 "진실 통일"이라 적혀 있었는데 사실이 아니었다.
   // 이름이 먼저(`failureKind`) — 우리 타입 오류의 문장엔 서드파티 이름이 섞인다(도구 이름에 `rate_limit` 이 있으면 도구 멈춤이
   //  «사용량 한도» 안내로 나갔다, 2026-10-05 재검토). 이름이 없는 상류 오류는 종전처럼 문자열로 판정한다.
+  // 계정이 없거나 거절됐으면 **다시 로그인** 으로 잇는다(판정은 리프 `sign-in-guide.ts`).
+  const signIn = signInGuideFor(d, errorName);
+  if (signIn !== undefined) return signIn;
   const isLimit = failureKind(d, errorName) === "limit";
   if (!isLimit) return translate("srv.turn.error", { detail });
   const provMatch = d.match(/codex|anthropic|claude|openai|gemini|ollama/i);
@@ -812,24 +782,6 @@ const fanOutEgress = async (
   }
 };
 
-/**
- * 다음 메시지 제안 발행 — **이제 별도 LLM 호출이 없다** (2026-08-25).
- *
- * 종전엔 답을 보낸 뒤 `runRegionA` 를 한 번 더 불렀다. 실측: 그 호출의 컨텍스트 상한이
- * **39,600자(≈13~20K 토큰)** 였고 매 턴 바뀌는 대화라 프리픽스 캐시도 못 탔다. (코드
- * 주석엔 "최근 6턴 × 600자" 라고 적혀 있었는데 상수가 조용히 11배로 올라 있었다.)
- * 이제 메인 턴이 답변 꼬리에 `<next-message>` 로 같이 뱉고, 코어가 한 곳에서 뜯는다 —
- * 남은 비용은 출력 토큰 스무 개 남짓이고, 데드라인·폴백·프로파일 배관이 통째로 사라졌다.
- *
- * ★여기 남은 판단은 **보여줄 자리인가** 하나뿐이다: 파생 스레드(스케줄러·매니저·엔드포인트)
- *  는 사람이 보는 세션이 아니다. `synthetic` 검사는 **뺐다** — 사용자 지정이 바뀌었다:
- *  *"메인턴이 응답을 보낼 때마다"* (2026-08-25). 매니저 완료 정리 턴도 메인 턴이다.
- */
-/**
- * 이미 경고한 프로파일 이름 — 같은 warn 을 매 턴 찍으면 배경소음이 되고, 배경소음은
- * 실제로 12일간 묻힌 적이 있다([[feedback_logs_must_stand_alone]]). 이름당 한 번만 말한다.
- */
-const warnedSuggestionProfiles = new Set<string>();
 
 const maybeSuggestNextMessage = (
   msg: IncomingMessage,

@@ -53,9 +53,9 @@ OpenAI API 를 말하는 엔드포인트라면 무엇이든 정식 provider 가 
 
 ### 키·토큰 발급 가이드
 
-단계별 — 고른 provider 1개 (+ 채팅 원하면 텔레그램 봇) 만 있으면 됩니다. `onboard` 가 각 항목을 물어보며 이 힌트를 인라인으로 보여줍니다.
+단계별 — 고른 provider 1개만 있으면 됩니다(대화는 웹 대시보드에서 · 텔레그램에서도 쓰려면 봇 하나 더). `onboard` 가 각 항목을 물어보며 이 힌트를 인라인으로 보여줍니다.
 
-**텔레그램 봇 토큰** (채팅 인터페이스)
+**텔레그램 봇 토큰** (선택 — 텔레그램에서도 대화하려면)
 1. 텔레그램에서 **[@BotFather](https://t.me/BotFather)** 열고 `/newbot` 전송.
 2. 봇 표시 이름 입력 → 그다음 `bot` 으로 끝나는 username 입력 (예: `my_assistant_bot`).
 3. BotFather 가 `123456:ABC-DEF…` 형태 토큰을 줍니다 — 복사.
@@ -63,6 +63,8 @@ OpenAI API 를 말하는 엔드포인트라면 무엇이든 정식 provider 가 
 
 **내 텔레그램 user ID** (소유자 allowlist)
 - 가장 쉬움: `onboard` 중에 봇에게 메시지 1번 보내면 ID 자동 감지.
+- 설치를 마친 뒤라면: 대시보드 → 플러그인 → **telegram-channel** 에서 토큰을 넣고 재시작한 뒤, 봇에게 말을 한 번 걸고
+  «내 ID 찾기» 에서 자기 이름을 고릅니다(`.env` 를 직접 고칠 필요 없음).
 - 수동: **[@userinfobot](https://t.me/userinfobot)** 에게 메시지 → 숫자 `Id` 확인.
 
 **Anthropic API 키** (`sk-ant-…`)

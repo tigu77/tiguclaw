@@ -96,7 +96,7 @@ export const check: RegressionCheck = {
     //  ★같은 환경변수 이름인데 기본값이 달랐다. 한쪽만 고치면 다시 갈린다.
     const dash = await readFile(new URL("../../../packages/dashboard/index.ts", import.meta.url), "utf8");
     const bridge = await readFile(new URL("../../../plugins/http-bridge/index.ts", import.meta.url), "utf8");
-    const dashHost = /HTTP_BRIDGE_HOST\s*\?\?\s*"([^"]+)"/.exec(dash)?.[1];
+    const dashHost = /HTTP_BRIDGE_HOST\?\.trim\(\)\s*\|\|\s*"([^"]+)"/.exec(dash)?.[1];
     const bridgeHost = /HTTP_BRIDGE_HOST\?\.trim\(\)\s*\|\|\s*"([^"]+)"/.exec(bridge)?.[1];
     out.push(
       assert(

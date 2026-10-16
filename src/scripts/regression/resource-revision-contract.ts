@@ -22,7 +22,6 @@
  */
 import { probeSpec, spawnProbe } from "./_probe-helpers.js";
 import { readSourceSync } from "./_wiring.js";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -32,7 +31,6 @@ import {
   currentRevision,
   decideApply,
   revisionEpoch,
-  stampFor,
 } from "../../core/resource-revision.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 

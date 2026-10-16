@@ -31,6 +31,7 @@
  * `.claude` 자동발견 0 → discoverSkills 로 전체 인덱스 직접 구성, codex 도 동일).
  */
 import { coreMcpServer } from "./_core-server.js";
+import { activePluginDirs } from "../../plugins/active-dirs.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -93,7 +94,7 @@ export interface Skill {
  * (α 2026-05-25: cwd 무관 앱 설치 루트. dev=레포=cwd 동치, prod 정정).
  * 미존재 디렉터리는 빈 배열 (throw 0).
  *
- * V9.5 — 동일 이름 충돌 dedup(`dedupeBySource`): project > plugin > user override,
+ * V9.5 — 동일 이름 충돌 dedup(`dedupeWithShadows`): project > plugin > user override,
  * 이름당 1개만 (인덱스↔fetch 단일 진실). `getSkillBody` 의 `project ?? plugin ?? first`
  * 와 동일 규칙을 discover 레벨로 확장 (contract `_workspace/v95_architect_contract.md`).
  *
@@ -159,18 +160,8 @@ export const discoverSkills = async (
  * 부재 plugins/ 디렉터리는 빈 배열.
  */
 const walkPluginsRoot = async (pluginsRoot: string): Promise<Skill[]> => {
-  let entries: Array<{ name: string; isDirectory: () => boolean }>;
-  try {
-    entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const pluginDirs = entries
-    .filter(
-      (e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules",
-    )
-    .map((e) => ({ id: e.name, dir: path.join(pluginsRoot, e.name) }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+  // 꺼 둔 플러그인의 자산은 싣지 않는다 — 판정은 한 곳(`activePluginDirs`).
+  const pluginDirs = await activePluginDirs(pluginsRoot);
 
   const perPlugin = await Promise.all(
     pluginDirs.map(async ({ id, dir }) => {
@@ -536,19 +527,7 @@ export const formatSkillIndex = (
   return `${header}\n\n자주 쓰는 ${top.length}개만 표시합니다. 나머지 ${rest}개는 \`find_skills\` 로 검색하세요(인자 없이 부르면 전체 목록).\n\n${fmt(top)}`;
 };
 
-/**
- * 스킬 이름 → SKILL.md raw 본문 (frontmatter 포함).
- * 매 호출 fs read (cache 0). 미발견 시 undefined.
- *
- * 이름 매칭 우선순위 — project source 가 user 보다 우선 (project 가 cwd 컨텍스트
- * 정확). 동일 source 안에서는 발견 순서.
- */
-export const getSkillBody = async (
-  name: string,
-  cwd: string = process.cwd(),
-): Promise<string | undefined> => (await getSkillFile(name, cwd))?.body;
-
-/** 스킬 파일 경로 + 본문 — `getSkillBody` 와 **같은 선택 규칙**(아래 한 곳). */
+/** 스킬 이름 → SKILL.md 경로 + raw 본문(frontmatter 포함). 매 호출 fs read · 미발견 시 undefined. 우선순위는 아래 한 곳. */
 export const getSkillFile = async (
   name: string,
   cwd: string = process.cwd(),
@@ -556,7 +535,7 @@ export const getSkillFile = async (
   const skills = await discoverSkills(cwd);
   const candidates = skills.filter((s) => s.name === name);
   if (candidates.length === 0) return undefined;
-  // 우선순위 (2026-06-06 갱신, dedupeBySource 와 동일):
+  // 우선순위 (2026-06-06 갱신, dedupeWithShadows 와 동일):
   //   project > user(home) > plugin > builtin (=appRoot/skills).
   // discoverSkills 기본 deduped 라 candidates.length===1 인 경우가 대부분 (find 들이
   // 사실상 redundant). dedupe=false escape hatch 시 명시 우선순위로 안전 선택.

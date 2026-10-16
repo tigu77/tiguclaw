@@ -413,17 +413,6 @@
         scheduleRelayout();
       };
 
-      const vtRemove = (node) => {
-        const it = vtIndex.get(node);
-        if (!it) return;
-        vtObserver.unobserve(node);
-        vtIndex.delete(node);
-        const idx = vtItems.indexOf(it);
-        if (idx !== -1) vtItems.splice(idx, 1);
-        if (node.parentNode === vtWindow) vtWindow.removeChild(node);
-        scheduleRelayout();
-      };
-
       const vtClear = () => {
         for (const it of vtItems) {
           vtObserver.unobserve(it.node);

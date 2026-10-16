@@ -448,15 +448,17 @@
       // 데몬 재시작 — POST /api/restart (bridge POST /restart, admin 토큰 server-side 주입).
       // 메시지 큐를 타지 않는 아웃오브밴드 제어라 턴이 멈춰도 동작. 오발 방지 확인 다이얼로그.
       let restartInFlight = false;
+      /** 재시작을 실제로 보냈으면 true(확인 취소·거절·실패면 false) — 부르는 쪽이 «할 일» 표시를 그때만 내린다. */
       const restartDaemon = async () => {
-        if (restartInFlight) return;
-        if (!window.confirm(i18n("daemon.restart.confirm"))) return;
+        if (restartInFlight) return false;
+        if (!window.confirm(i18n("daemon.restart.confirm"))) return false;
         restartInFlight = true;
         showToast(i18n("daemon.restart.requesting"), "warn");
         try {
           const r = await fetch("/api/restart", { method: "POST" });
           if (r.ok || r.status === 202) {
             showToast(i18n("daemon.restart.running"), "good");
+            return true;
           } else {
             const data = await r.json().catch(() => ({}));
             // 재기동 수단(감독자)이 없어 서버가 거절한 경우 — 코드만 오고 문구는 카탈로그가 낸다.
@@ -470,6 +472,7 @@
         } catch (err) {
           // 데몬이 즉시 종료되면 응답 전에 연결이 끊길 수 있음 — 정상 흐름으로 안내.
           showToast(i18n("daemon.restart.sent"), "warn");
+          return true;
         } finally {
           setTimeout(() => { restartInFlight = false; }, 6000);
         }

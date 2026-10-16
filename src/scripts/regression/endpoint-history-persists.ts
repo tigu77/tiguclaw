@@ -13,13 +13,9 @@
  *  헤드리스로 보기 전까지 통과처럼 보였다. 그래서 **고리마다** 단언한다.
  *  (프록시 고리는 `dashboard-api-proxy-complete` 가 전 경로에 대해 일반적으로 지킨다.)
  */
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { readSourceSync } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 /** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
 const read = (rel: string): string => readSourceSync(rel);
 

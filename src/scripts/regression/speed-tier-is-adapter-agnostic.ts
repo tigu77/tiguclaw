@@ -32,7 +32,7 @@
  */
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 import ts from "typescript";
-import { readSourceSync, stripComments, callArgTexts } from "./_wiring.js";
+import { readSourceSync, callArgTexts } from "./_wiring.js";
 
 /**
  * `runClaude` 의 `options: Options = { … }` 리터럴이 **직접** `...claudeSpeedSettings(input.speed)`

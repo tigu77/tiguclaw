@@ -29,8 +29,6 @@ const ADAPTERS = [
   "openai-agents-sdk.ts",
 ] as const;
 
-const hooksIn = (src: string): Set<string> =>
-  new Set(src.match(/run[A-Za-z]+Hooks/g) ?? []);
 
 /** import 줄·주석을 뺀 **실제 호출**만 — import 만 있고 안 부르면 파리티가 아니다. */
 const calledIn = (src: string): Set<string> => {

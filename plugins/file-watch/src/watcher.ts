@@ -97,8 +97,6 @@ export const matchesEventFilter = (
 // ─── module-scope watcher Map — registerWatcher/unregisterWatcher 가 공유 ──
 const watchers = new Map<number, FSWatcher>();
 
-export const isRegistered = (id: number): boolean => watchers.has(id);
-
 export const registerWatcher = (
   row: WatchRow,
   bus: EventBus,

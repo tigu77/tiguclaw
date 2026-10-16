@@ -741,8 +741,13 @@ export const runOpenAi = async (
       //  ★선점 스캔의 `listSafely` 는 **스캔만** 지킨다 — 죽은 브리지는 그 뒤로도
       //   `mcpServers` 에 남아 있었다. 여기서 빼야 비로소 턴이 산다.
       //  ★최악은 «이 턴에서 그 서버를 못 쓴다» 여야지 «턴이 죽는다» 가 아니다.
-      //   다시 켜면 다음 턴에 복구된다(캐시가 재연결한다).
-      if ((await probeBridgeTools(bridge)) === null) continue;
+      //   다시 켜면 다음 턴에 복구된다(끊긴 연결은 다음 맞추기가 다시 연결한다 — external-mcp.ts).
+      //  ★건너뛰는 래퍼는 **여기서 놓는다** — mcpServers 에 안 들어가 턴 끝 close 에 안 닿는다(놓지 않으면 설정이 바뀐
+      //   옛 연결이 shutdown 까지 안 닫힌다).
+      if ((await probeBridgeTools(bridge)) === null) {
+        await bridge.close();
+        continue;
+      }
       mcpServers.push(bridge);
       // ★**출처를 적어둔다** (2026-09-15 아스트라 지적) — 재실행 안전 판정이 «외부 MCP 인가»
       //  를 봐야 하는데, 이 어댑터의 브리지는 무접두사 규약이라 이름만으론 구분이 안 된다.

@@ -136,7 +136,6 @@ import {
   runPreToolUseHooks,
   runPostToolUseHooks,
   formatToolBlock,
-  normalizeToolName,
 } from "../../entry/hook-runner.js";
 import type {
   RegionAActivityPayload,
@@ -174,7 +173,6 @@ import {
   CODEX_BASE_URL,
   parseCapEnv,
   parsePosIntEnv,
-  parseCodexSse,
   buildMediaContentItems,
   type ResponseMediaItem,
   buildTurnHistory,
@@ -1044,11 +1042,12 @@ export const runOpenAiCodex = async (
     }
 
     // ★외부 MCP 실연결(Phase 2, #2) — <home>/mcp.json 서버를 @mcp/sdk 클라이언트로 연결한
-    // persistent 브리지 도구를 노출(claude 네이티브와 parity). ★allBridges 에 넣지 않는다
-    // — 외부 브리지는 persistent(캐시)라 per-turn 일괄 close 대상이 아니다(연결 유지). depth0만.
-    // 메인 턴(전역) 또는 프로젝트 위임 서브/매니저(전역+프로젝트 <cwd>/.mcp.json — 지연연결 캐시).
+    // 브리지 도구를 노출(claude 네이티브와 parity). 메인 턴(전역) 또는 프로젝트 위임 서브/매니저(전역+프로젝트 <cwd>/.mcp.json).
+    // ★받은 것은 **이 턴의 래퍼**라 allBridges 에 넣는다 — 턴 끝 close() 가 «놓기» 다(연결은 안 끊는다 — 설정이 바뀐
+    //  옛 연결만, 마지막으로 쥔 턴이 놓을 때 닫힌다. 2026-10-16 설정 핫 반영).
     if (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd)) {
       for (const extBridge of await getConnectedExternalMcpBridges(input.cwd)) {
+        allBridges.push(extBridge);
         // ★죽은 브리지 하나가 **턴 전체를 무너뜨리지 않게** 한다 (2026-08-19 실사고).
         //  외부 브리지는 persistent 캐시라, 연결된 뒤 대상 앱이 꺼지면(Unity Editor 종료,
         //  stdio 프로세스 사망) 캐시엔 **죽은 클라이언트**가 남는다. 그 상태에서 여기
@@ -1235,7 +1234,6 @@ export const runOpenAiCodex = async (
     return innerAbortName === null ? "no" : `inner:${innerAbortName}`;
   };
   let turnChunks = 0;
-  let turnBytes = 0;
   let lastSseEvent = "(없음)";
   /** 같은 창의 도구 이름 — 설계상 턴을 끝내는 도구(prompt_options)를 구분하기 위함. */
   let toolNamesSinceText: string[] = [];

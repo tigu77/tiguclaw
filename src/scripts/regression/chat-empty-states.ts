@@ -209,6 +209,30 @@ export const check: RegressionCheck = {
           : "더보기는 전체 상태 무관",
       ),
     );
+    // ⑤ 빈 대화엔 예시 질문(첫 실행 안내 — 2026-10-16 대시보드 중심 온보딩). 로딩·실패엔 없다. 누르면 채우기만(보내지 않는다).
+    {
+      const r = view("ready", 0) as unknown as { examples?: string[] };
+      const ex = r.examples ?? [];
+      const none = ["loading", "error"].every((st) => ((view(st, 0) as unknown as { examples?: string[] }).examples ?? []).length === 0);
+      out.push(
+        assert(
+          "★빈 대화엔 예시 질문이 번역돼 나오고(키 그대로가 아님) · 로딩·실패엔 없다",
+          ex.length >= 2 && new Set(ex).size === ex.length && ex.every((e) => e !== "" && !e.startsWith("chat.start.")) && none,
+          { ex, none },
+        ),
+      );
+      const fill = sliceFn(core, "fillChatInput") ?? "";
+      const wired = /b\.addEventListener\("click", \(\) => fillChatInput\(ex\)\)/.test(core) && /b\.type = "button"/.test(core);
+      const noSend = fill !== "" && !/requestSubmit|\.submit\(|sendChat|chatSend|postMessage/.test(fill) && /input\.value = text/.test(fill);
+      out.push(
+        assert(
+          "★예시를 누르면 입력창에 채우기만 한다 — 보내지 않는다(type=button · 채우기 함수에 전송 없음)",
+          wired && noSend,
+          { wired, noSend, fillLen: fill.length },
+        ),
+      );
+    }
+
     return out;
   },
 };

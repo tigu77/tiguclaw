@@ -37,7 +37,6 @@ import {
   readSettingsRootLenient,
 } from "../../core/settings-file.js";
 import { effectiveSettings, writePluginSetting } from "../../core/plugins/settings.js";
-import { getPaths } from "../../core/paths.js";
 import { setDefaultProfile, setEgressChannels } from "../../core/settings.js";
 import { writeSettingsRootAtomic } from "../../core/settings-file.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";

@@ -34,7 +34,7 @@ import { getRecentChatLog } from "../store/chat-log.js";
 import { backupInfo } from "../store/backup.js";
 import { listMemoriesForIndex } from "../store/memory.js";
 // 실패 분류는 런타임과 **같은 판정**을 쓴다 — 여기서 정규식을 또 만들면 두 곳이 갈린다.
-import { isModelOverloaded, isRateLimited } from "./llm-runtime/rate-limit.js";
+import { isModelOverloaded } from "./llm-runtime/rate-limit.js";
 import { failureKind } from "./worker-jobs.js";
 import { translate } from "./i18n.js";
 import { MEMORY_INDEX_CAP_BYTES } from "./prompt-assembly.js";

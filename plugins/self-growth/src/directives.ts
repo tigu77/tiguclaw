@@ -1,9 +1,7 @@
 import {
-  addMemory,
   deleteMemory,
   listMemories,
 } from "../../../src/store/memory.js";
-import { getPaths } from "../../../src/core/paths.js";
 import {
   upsertDirective,
 } from "../../../src/store/self-growth-md.js";

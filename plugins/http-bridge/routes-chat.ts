@@ -15,7 +15,7 @@ import { isCancelledTurnResult, isSteeredTurnResult } from "../../src/core/worke
 import { getRecentChatLog } from "../../src/store/chat-log.js";
 import { ingestAttachments, publishOutboundAttachment } from "./attachments.js";
 import { historyActivities } from "./history-activities.js";
-import { BODY_LIMIT_ATTACHMENTS, BodyTooLargeError, readJsonBody, bodyErrorStatus } from "./http-body.js";
+import { BODY_LIMIT_ATTACHMENTS, readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
 
 export const handleMessages = async (ctx: RouteCtx): Promise<void> => {

@@ -6,12 +6,13 @@
  * ★`/attachments/` 는 프리픽스 라우트다(그 아래 임의 경로).
  */
 import * as nodeFs from "node:fs";
+import { systemOpener } from "../../src/core/onboard-ready.js";
 import crypto from "node:crypto";
 import { resolveTranscriptionProvider } from "../../src/core/llm-runtime/transcription/index.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { getPaths } from "../../src/core/paths.js";
 import { listProjects } from "../../src/store/projects.js";
-import { ATTACH_MAX_FILE_BYTES, AUDIO_EXT_BY_MIME, CONTENT_TYPE_BY_EXT, sanitizeFilename } from "./attachments.js";
+import { ATTACH_MAX_FILE_BYTES, AUDIO_EXT_BY_MIME, CONTENT_TYPE_BY_EXT, contentDispositionFor } from "./attachments.js";
 import { BODY_LIMIT_AUDIO, readJsonBody, bodyErrorStatus } from "./http-body.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
@@ -84,7 +85,7 @@ export const handlePluginIcon = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleAttachmentServe = async (ctx: RouteCtx): Promise<void> => {
-  const { res, pathname } = ctx;
+  const { res, pathname, url } = ctx;
   try {
     const rel = decodeURIComponent(pathname.slice("/attachments/".length));
     const dir = getPaths().attachmentsDir;
@@ -128,13 +129,18 @@ export const handleAttachmentServe = async (ctx: RouteCtx): Promise<void> => {
     //  ②알려진 안전 타입이 아니면 `attachment` — 다운로드로만 열리고 렌더되지 않는다.
     //  ③CSP sandbox — 혹시 렌더돼도 스크립트·같은 오리진 권한이 없다.
     const inlineSafe = CONTENT_TYPE_BY_EXT[ext] !== undefined;
+    // 받는 이름 — 화면이 원래 이름을 `?name=` 으로 싣는다(저장 이름은 해시라). `download=1` 이면 안전한 형식도 저장으로.
+    const wanted = url.searchParams.get("name") ?? "";
+    const asDownload = url.searchParams.get("download") === "1" || !inlineSafe;
+    const disposition =
+      asDownload || wanted !== ""
+        ? contentDispositionFor(asDownload ? "attachment" : "inline", wanted, path.basename(abs))
+        : undefined;
     res.writeHead(200, {
       "Content-Type": ctype,
       "X-Content-Type-Options": "nosniff",
       "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:",
-      ...(inlineSafe
-        ? {}
-        : { "Content-Disposition": `attachment; filename="${sanitizeFilename(path.basename(abs))}"` }),
+      ...(disposition !== undefined ? { "Content-Disposition": disposition } : {}),
       "Cache-Control": "private, max-age=86400",
       "Content-Length": buf.length,
     });
@@ -146,7 +152,7 @@ export const handleAttachmentServe = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleTranscribe = async (ctx: RouteCtx): Promise<void> => {
-  const { req, res, pathname } = ctx;
+  const { req, res } = ctx;
   let tbody: Record<string, unknown>;
   try {
     // 오디오(base64)가 오는 경로 — 상한은 파일당 첨부 한도에서 유도된다.
@@ -219,7 +225,7 @@ export const handleTranscribe = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleOpenPath = async (ctx: RouteCtx): Promise<void> => {
-  const { req, res, pathname } = ctx;
+  const { req, res } = ctx;
   let obody: Record<string, unknown>;
   try {
     obody = await readJsonBody(req);
@@ -285,14 +291,9 @@ export const handleOpenPath = async (ctx: RouteCtx): Promise<void> => {
     return;
   }
   const match = { path: real };
-  // darwin=open · win32=explorer · 그 외=xdg-open. 폴더 열기는 fire-and-forget(즉시 200).
+  // OS 기본 앱으로 연다(판정은 코어 한 곳 — 온보딩의 브라우저 열기와 같다). 폴더 열기는 fire-and-forget(즉시 200).
   // Windows explorer 는 성공해도 exit 1 을 내는 알려진 quirk → win32 는 에러를 무시한다.
-  const opener =
-    process.platform === "darwin"
-      ? "open"
-      : process.platform === "win32"
-        ? "explorer"
-        : "xdg-open";
+  const opener = systemOpener(process.platform);
   execFile(opener, [match.path], (err) => {
     if (err !== null && process.platform !== "win32") {
       console.warn(

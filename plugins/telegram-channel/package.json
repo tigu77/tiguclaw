@@ -21,12 +21,17 @@
       {
         "key": "botToken",
         "type": "secret",
-        "env": "TELEGRAM_BOT_TOKEN"
+        "env": "TELEGRAM_BOT_TOKEN",
+        "labelKey": "settings.botToken"
       },
       {
         "key": "allowedUserIds",
         "type": "string",
-        "env": "TELEGRAM_ALLOWED_USER_IDS"
+        "env": "TELEGRAM_ALLOWED_USER_IDS",
+        "labelKey": "settings.allowedUserIds",
+        "suggest": "owner-candidates",
+        "editable": true,
+        "live": true
       }
     ]
   }

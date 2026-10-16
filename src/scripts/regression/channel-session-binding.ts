@@ -18,7 +18,6 @@ import {
   getChannelSessionBinding,
   setChannelSessionBinding,
   clearChannelSessionBinding,
-  clearBindingsForSession,
   setSessionArchived,
 } from "../../store/channel-session.js";
 import { listThreads, getDb, setThreadArchived, deleteSession } from "../../store/sessions.js";

@@ -2265,7 +2265,7 @@ const runUpdate = (c) => {
   //  ★자동 조치의 기준(되돌릴 수 있나 · 최악이 사소한가)을 통과한다: `npm rebuild` 는
   //   그 폴더의 네이티브 모듈만 다시 만들고, 실패해도 아래 롤백이 그대로 돈다.
   const nativeOk = () =>
-    run(process.execPath, ["-e", "require('better-sqlite3')"]) === 0;
+    run(process.execPath, [path.join(c.repoRoot, "bin", "check-native.cjs")]) === 0;
   if (!nativeOk()) {
     console.log("   The native module won't load — rebuilding it (npm rebuild).");
     run("npm", ["rebuild", "better-sqlite3", "--ignore-scripts=false"], { shell: isWin });

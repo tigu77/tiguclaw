@@ -43,10 +43,8 @@ import { withRateLimitUntil } from "../rate-limit.js";
 import { ProviderUnavailableError } from "../rate-limit.js";
 import { createFastModeReporter } from "../fast-mode-view.js";
 import { claudeAuthAvailable } from "../provider-availability.js";
-import { promises as fs } from "node:fs";
 import {
   query,
-  type AgentDefinition,
   type Options,
   type SDKMessage,
   type SDKUserMessage,
@@ -100,21 +98,12 @@ import {
   formatSkillIndex,
 } from "../capabilities/skill-registry.js";
 import {
-  deriveToolPolicy,
   discoverAgents,
   formatAgentIndex,
   createSpawnAgentMcpServer,
   type Agent,
 } from "../capabilities/agent-registry.js";
 import { createWorkerMcpServer } from "../capabilities/worker-registry.js";
-import {
-  registerJob,
-  markDone,
-  markFailed,
-  setCancelHook,
-  clearCancelHook,
-  WorkerCancelledError,
-} from "../../worker-jobs.js";
 import { createEndpointToolsMcpServer } from "../capabilities/endpoint-tools-mcp.js";
 import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
@@ -157,7 +146,6 @@ import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { ToolHangError, watchToolStart } from "../tool-watchdog.js";
 import { createSteeringLedger } from "./_steering-ledger.js";
 import {
-  SDK_SUBAGENT_TOOLS,
   withSdkSubagentsBlocked,
 } from "../subagent-tools.js";
 import { JOB_OWNING_TOOL_CALL_TIMEOUT_MS, asFiniteTimeoutMs } from "../../worker-jobs.js";

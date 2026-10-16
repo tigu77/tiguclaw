@@ -17,6 +17,7 @@
  *    registry 자체는 빌트인 인지 책임 없음 — 발견·정규화만.
  */
 import { promises as fs } from "node:fs";
+import { activePluginDirs } from "../plugins/active-dirs.js";
 import path from "node:path";
 import { parseFrontmatter } from "../llm-runtime/capabilities/skill-registry.js";
 import { dedupeWithShadows, warnShadowed } from "../llm-runtime/capabilities/dedup-by-source.js";
@@ -95,7 +96,7 @@ const normalizeMode = (raw: string | undefined): EndpointMode => {
  * cwd 는 user/project 발견에만 영향 — plugins 줄은 앱 번들(appRoot, cwd 무관).
  * 미존재 디렉터리는 빈 배열(데몬 생존 — fs 실패 격리).
  *
- * 동일 name 충돌 dedup(`dedupeBySource`): project > user > plugin override, 이름당 1개.
+ * 동일 name 충돌 dedup(`dedupeWithShadows`): project > user > plugin override, 이름당 1개.
  */
 export const discoverEndpoints = async (
   cwd: string = process.cwd(),
@@ -161,18 +162,8 @@ const walkEndpointsDir = async (
 const walkPluginsEndpoints = async (
   pluginsRoot: string,
 ): Promise<Endpoint[]> => {
-  let entries: Array<{ name: string; isDirectory: () => boolean }>;
-  try {
-    entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const pluginDirs = entries
-    .filter(
-      (e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules",
-    )
-    .map((e) => ({ id: e.name, dir: path.join(pluginsRoot, e.name) }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+  // 꺼 둔 플러그인의 자산은 싣지 않는다 — 판정은 한 곳(`activePluginDirs`).
+  const pluginDirs = await activePluginDirs(pluginsRoot);
 
   const perPlugin = await Promise.all(
     pluginDirs.map(async ({ id, dir }) => {

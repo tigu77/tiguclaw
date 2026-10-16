@@ -10,7 +10,7 @@
  * 등급: **동작** — 순수 함수 실행. 새 턴 주입부(index.ts)는 배선만 본다.
  */
 import { readFileSync } from "node:fs";
-import { clipReplyQuote, REPLY_QUOTE_MAX_CHARS, withReplyQuote } from "../../core/reply-quote.js";
+import { clipReplyQuote, REPLY_QUOTE_MAX_CHARS } from "../../core/reply-quote.js";
 import { buildReinjectMessage, reinjectTextFor, toSteeringInput } from "../../core/steering.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 

@@ -20,6 +20,8 @@ NEED_NODE=0
 
 say() { printf '%s\n' "$*"; }
 die() { printf '\n🔴 %s\n' "$*" >&2; exit 1; }
+# 붙여넣는 명령에 싣는 경로 — 작은따옴표로 감싼다(공백·`$`·백틱·`"` 가 있어도 그대로). 안의 `'` 는 `'\''` 로.
+shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 say ""
 say "=== Installing tiguclaw ==="
@@ -32,8 +34,13 @@ command -v git >/dev/null 2>&1 || die "git is not installed. Please install it f
 # ── 이미 있으면 덮지 않는다 — 업데이트는 update 의 일이다 ────────────────────
 if [ -e "$DIR" ]; then
   if [ -d "$DIR/.git" ]; then
+    # 전용 Node 로 설치했으면 그 셸엔 npx 가 없다 — 명령 안에 PATH 를 싣는다(아래 재시도 안내와 같은 이유, 2026-10-16 재검토 2차 P5).
+    UPDATE_CMD="cd $(shq "$DIR") && npx tiguclaw update"
+    if [ -x "$DIR/.node/bin/node" ]; then
+      UPDATE_CMD="cd $(shq "$DIR") && PATH=$(shq "$DIR/.node/bin"):\"\$PATH\" npx tiguclaw update"
+    fi
     die "tiguclaw is already installed in $DIR.
-   To update:  cd $DIR && npx tiguclaw update
+   To update:  $UPDATE_CMD
    (It stops the daemon, updates dependencies, rebuilds, and starts it again.)"
   fi
   die "$DIR already exists but is not a tiguclaw install. Use another path:
@@ -190,15 +197,19 @@ if [ "$NEED_NODE" = "1" ]; then place_node; fi
 #  전용 Node 는 이 스크립트 프로세스 안에서만 PATH 에 오른다(프로필·setx 어디에도 안 남긴다
 #  — 시스템을 안 건드린다는 약속이 그것이다). 그래서 아래 안내가 `npm run onboard` 라고
 #  적으면 **그 사람 셸엔 npm 이 없다.** 문자열은 남는데 실행이 안 되는 상태였다.
-#  절대경로로 적는다 — 붙여넣으면 그냥 된다.
+# ★npm 절대경로만으로도 안 된다 (2026-10-16 아스트라 «초보자 설치 검토» 2번) — npm 의 첫 줄이
+#  `#!/usr/bin/env node` 라 새 셸에선 `env: node: No such file or directory`(127)로 죽는다(실측).
+#  그래서 붙여넣는 명령 **안에** 전용 Node 를 PATH 로 싣는다 — 프로필은 여전히 안 건드린다.
+#  경로는 `shq` 로 감싼다(설치 폴더에 공백·`$` 가 있을 수 있다).
+RETRY_CD="cd $(shq "$DIR")"
 if [ "$NEED_NODE" = "1" ]; then
-  NPM_CMD="$NODE_DIR/bin/npm"
+  NPM_SHOW="PATH=$(shq "$NODE_DIR/bin"):\"\$PATH\" npm"
   HOWTO_TAIL="
    (This install uses a private Node — to keep using it from your terminal, add this to your PATH:
       export PATH=\"$NODE_DIR/bin:\$PATH\"
     Even without it, you can update from chat with /update.)"
 else
-  NPM_CMD="npm"
+  NPM_SHOW="npm"
   HOWTO_TAIL=""
 fi
 
@@ -210,7 +221,7 @@ say "→ Installing dependencies… (building native modules can take 1–2 minu
 if ! npm ci --no-audit --no-fund --ignore-scripts=false; then
   die "Dependency install failed.
    You may need build tools — Linux: build-essential + python3 / macOS: xcode-select --install
-   Then retry:  cd $DIR && $NPM_CMD ci"
+   Then retry:  $RETRY_CD && $NPM_SHOW ci --ignore-scripts=false"
 fi
 
 # ★설치가 "성공" 해도 **쓸 수 있는지는 별개다** (2026-08-19 실사고 — 윈도우).
@@ -218,15 +229,15 @@ fi
 #  바인딩이 안 생긴다. 설치는 끝난 것처럼 보이고 데몬은 부팅마다 죽는다(실측 6회 연속).
 #  종료코드는 "명령이 실패했나" 지 "결과가 쓸 만한가" 가 아니다 — 열어봐야 안다.
 say "→ Checking native modules…"
-if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+if ! node bin/check-native.cjs >/dev/null 2>&1; then
   # ★알려주고 끝내지 않는다 — **스스로 한 번 고쳐본다**(사용자가 명령을 외우게 하지 않는다).
   say "   A native module failed to load — rebuilding…"
   npm rebuild better-sqlite3 --ignore-scripts=false >/dev/null 2>&1 || true
 fi
-if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+if ! node bin/check-native.cjs >/dev/null 2>&1; then
   die "Cannot load the SQLite native module — the daemon would crash on every start.
    Build tools are required — Linux: build-essential + python3 / macOS: xcode-select --install
-   Then:  cd $DIR && $NPM_CMD rebuild better-sqlite3"
+   Then:  $RETRY_CD && $NPM_SHOW rebuild better-sqlite3 --ignore-scripts=false"
 fi
 
 # ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────
@@ -240,16 +251,29 @@ fi
 #
 # 그래서 `exec` 도 쓰지 않는다 — 껍데기를 남겨 둬야 실패했을 때 안내를 낼 수 있다.
 say ""
+RAN_ONBOARD=0
 if [ -t 0 ]; then
-  "$NPM_CMD" run onboard && exit 0
+  RAN_ONBOARD=1
+  npm run onboard && exit 0
 elif { : < /dev/tty; } 2>/dev/null; then
-  "$NPM_CMD" run onboard < /dev/tty && exit 0
+  RAN_ONBOARD=1
+  npm run onboard < /dev/tty && exit 0
+fi
+
+# onboard 가 돌다가 멈췄으면(서비스가 안 떴거나 점검에 막는 문제) «설정만 남았다» 가 아니다 — 위에 적힌 문제를 고치고 다시 돌리면 된다.
+if [ "$RAN_ONBOARD" = 1 ]; then
+  say ""
+  say "⚠️  Setup stopped before finishing — see the messages above, fix the problem, then run it again (your settings are kept):"
+  say ""
+  say "   $RETRY_CD && $NPM_SHOW run onboard"
+  say ""
+  exit 1
 fi
 
 say ""
 say "✅ Code and dependencies are ready — only setup is left."
 say ""
-say "   cd $DIR && $NPM_CMD run onboard"
+say "   $RETRY_CD && $NPM_SHOW run onboard"
 say ""
 say "   (The setup wizard walks you through choosing an LLM, entering keys, registering the service, and checking that it works.)$HOWTO_TAIL"
 say ""

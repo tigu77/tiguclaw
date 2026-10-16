@@ -25,8 +25,7 @@ import { backupInfo } from "../../store/backup.js";
 import { addMemory, countArchivedMemories, deleteMemory, listMemories } from "../../store/memory.js";
 import { presentAndClose, replyCommand } from "./reply-command.js";
 import { getEventBus } from "../eventbus.js";
-import { route } from "../router.js";
-import { expandCommand, isEphemeralCommandText, parseSlashCommand } from "../entry/command-registry.js";
+import { isEphemeralCommandText, parseSlashCommand } from "../entry/command-registry.js";
 import { getFirstUserText } from "../../store/chat-log.js";
 import { randomUUID } from "node:crypto";
 import { clearChannelSessionBinding, getChannelSessionBinding, setChannelSessionBinding, setSessionArchived } from "../../store/channel-session.js";
@@ -88,7 +87,7 @@ export interface SlashCtx {
 }
 
 export const handleMemo = async (ctx: SlashCtx): Promise<void> => {
-  const { msg, args, trimmed, sidChannel } = ctx;
+  const { msg, args } = ctx;
     if (args === "") {
       await replyCommand(msg, translate("srv.memo.usage"));
       return;
@@ -113,7 +112,7 @@ export const handleMemo = async (ctx: SlashCtx): Promise<void> => {
 };
 
 export const handleForget = async (ctx: SlashCtx): Promise<void> => {
-  const { msg, args, trimmed, sidChannel } = ctx;
+  const { msg, args } = ctx;
     if (args === "") {
       await replyCommand(msg, translate("srv.forget.usage"));
       return;
@@ -133,7 +132,7 @@ export const handleForget = async (ctx: SlashCtx): Promise<void> => {
 };
 
 export const handleMemos = async (ctx: SlashCtx): Promise<void> => {
-  const { msg, args, trimmed, sidChannel } = ctx;
+  const { msg, args } = ctx;
     // 인자 옵셔널 (기본 10, 1~50 클램프). 숫자 아니면 기본 10.
     let limit = 10;
     if (args !== "") {
@@ -160,7 +159,7 @@ export const handleMemos = async (ctx: SlashCtx): Promise<void> => {
 };
 
 export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
-  const { msg, args, trimmed, sidChannel } = ctx;
+  const { msg, args } = ctx;
     // /schedule list | delete <id> | enable <id> | disable <id>
     // add 는 V1 미포함 — 인용 파싱 회피, 비서 자연어 MCP tool 권장.
     const subSepIdx = args.search(/\s/);
@@ -275,7 +274,7 @@ export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
 };
 
 export const handleSessions = async (ctx: SlashCtx): Promise<void> => {
-  const { msg, args, trimmed, sidChannel } = ctx;
+  const { msg, args, trimmed } = ctx;
     // ★휘발성 여부는 **하나의 판정**이 정한다 (2026-08-23 2라운드 E1). 인바운드 에코를
     //  건너뛰는 판단(`handler` 최상단)과 응답을 안 남기는 판단이 갈리면 **반쪽만 휘발**
     //  한다: 종전엔 `{ephemeral:true}` 가 성공 분기 둘에만 붙어 있어서, 오류 분기와
@@ -686,7 +685,7 @@ export const handleCompact = async (ctx: SlashCtx): Promise<void> => {
 };
 
 export const handleCooldown = async (ctx: SlashCtx): Promise<void> => {
-  const { msg, args, trimmed, sidChannel } = ctx;
+  const { msg, args } = ctx;
     const sub = args.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
     const target = args.trim().slice(sub.length).trim();
     if (sub === "clear") {
@@ -722,7 +721,7 @@ export const handleCooldown = async (ctx: SlashCtx): Promise<void> => {
 };
 
 export const handlePlugins = async (ctx: SlashCtx): Promise<void> => {
-  const { msg, args, trimmed, sidChannel } = ctx;
+  const { msg } = ctx;
     // 인자 무 (V1). 라우터 우회 — 인벤토리 직접 조회 후 사용자 포맷으로 응답.
     try {
       const inv = await collectInventory();
@@ -737,7 +736,7 @@ export const handlePlugins = async (ctx: SlashCtx): Promise<void> => {
 };
 
 export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
-  const { msg, args, trimmed, sidChannel } = ctx;
+  const { msg, sidChannel } = ctx;
     // 라우터 우회 — 데몬 현재 상태 직접 조회. 전부 DB/env/상수 읽기 (LLM 호출 0, route 미경유).
     try {
       const specs = resolveModelSpecs();

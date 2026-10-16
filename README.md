@@ -101,9 +101,11 @@ get a global `tiguclaw` command, and from then on **`tiguclaw update`** pulls, i
 restarts in one step.
 </details>
 
-That's it. `onboard` walks you through everything: pick an LLM, paste a key (or a Telegram bot token),
-`.env`, the always-on service, and verification. Then **message your Telegram bot** and it answers.
-(Only the owner ID you entered is allowed — an empty allowlist locks the bot.)
+That's it. `onboard` walks you through everything: pick an LLM and paste a key (or sign in to a
+subscription), and it sets up `.env`, the always-on service and the checks in one go. Once the service
+answers, it shows the **dashboard address** and opens it if this machine has a browser — start your
+first chat there. Telegram is optional; if you set it up, your bot answers too (only the owner ID you
+entered is allowed).
 
 ### Open the dashboard
 

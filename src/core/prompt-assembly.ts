@@ -15,7 +15,7 @@ import { extractTelegramChatId } from "./threadkey.js";
 import { listMemoriesForIndex } from "../store/memory.js";
 import type { RetrievedContext } from "./memory.js";
 import { readMemoryIndexCapBytes } from "./settings.js";
-import { loadModelProfiles, poolSpecs, type ModelProfile } from "./settings.js";
+import { poolSpecs, type ModelProfile } from "./settings.js";
 import { listLiveChildJobs, resolveOwnerThreadKey } from "./worker-jobs.js";
 import { pendingOptionsLine } from "./pending-options.js";
 import { scopeConstitution } from "./constitution-scope.js";

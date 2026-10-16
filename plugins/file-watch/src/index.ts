@@ -193,14 +193,8 @@ const defaultRunClaude: WatcherDeps["runClaude"] = async (input) => {
   );
 };
 
-// ─── singleton instance — src/index.ts 가 enable/disable 슬래시에서 접근 ──
-let instance: FileWatchPlugin | null = null;
-
-export const getFileWatchInstance = (): FileWatchPlugin | null => instance;
-
 export default class FileWatchPluginFactory extends FileWatchPlugin {
   constructor() {
     super();
-    instance = this;
   }
 }

@@ -15,14 +15,10 @@
  *  (`sessionDisplayName`): 커스텀 이름 > 첫 대화 발췌 > 폴백. 대시보드가 *남의* 세션을
  *  띄울 때 이미 쓰던 규칙이라, 흩어져 있던 걸 합쳤을 뿐이다.
  */
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { readSourceSync, readEntrySource } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 /** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
 const read = (rel: string): string => readSourceSync(rel);
 

@@ -55,8 +55,8 @@ reach: main
 
 **절차** (상세·형식·지표 = `references/eval-method.md`):
 1. **테스트셋**: `{id, prompt, assertions}` 2~3개. 기존 기능 보존 assertion과 개선 효과 assertion을 함께 둔다. 양쪽이 통과해도 보존 검사를 제거하지 않는다. 실패 유도 1개.
-2. **대조 실행**: 각 eval 을 `runs`(기본 3)회 × 두 config 로 `spawn_agent({name:"skill-eval-runner"})`. baseline=스킬없음/이전스냅샷, candidate=프롬프트에 `<skill-guidance>현재 SKILL.md 본문</skill-guidance>` 주입. (동일 모델·reasoning·도구·초기 상태·과제·채점 기준을 고정하고 버전 지침만 다르게 한다. 실행별 홈·작업 디렉터리를 격리한다.)
-3. **채점**: `spawn_agent({name:"skill-eval-grader"})` — 엄격 JSON(pass/passed_count/total_count + weak_assertions/missing_checks).
+2. **대조 실행**: 각 eval 을 `runs`(기본 3)회 × 두 config 로 러너를 띄운다(`spawn_agent` 에 `tier` + «러너 지침», references/eval-method.md §2). baseline=스킬없음/이전스냅샷, candidate=프롬프트에 `<skill-guidance>현재 SKILL.md 본문</skill-guidance>` 주입. (동일 모델·reasoning·도구·초기 상태·과제·채점 기준을 고정하고 버전 지침만 다르게 한다. 실행별 홈·작업 디렉터리를 격리한다.)
+3. **채점**: 채점자를 띄운다(`tier: "high"` + «채점자 지침», 같은 문서 §3) — 엄격 JSON(pass/passed_count/total_count + weak_assertions/missing_checks).
 4. **집계**: 채점을 `{skill, runs:[...]}` 로 모아 `node <이 스킬>/scripts/aggregate.mjs <results.json> --baseline baseline --candidate candidate` → pass_rate(mean±sd)·time·tokens + **Δ + 판정**.
 5. **개선 반복**: 개별 실패·비용·분산을 검토해 개선 필요성을 판단한다. 동률만으로 재작성하거나 보존 검사를 지우지 않는다. grader의 weak/missing 경고는 사람이 근거를 검토한다.
 6. **human-gate**: 표(Δ + 경고)를 채널로 보고, 승인 후에만 반영. 오래 걸리면 백그라운드 매니저 + 완료 알림.

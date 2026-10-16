@@ -16,15 +16,13 @@
  *
  * 등급: **동작 검사**(해석기·env 렌더를 실제로 부른다) + 소스 대조(doctor·어댑터 배선).
  */
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { findBundledClaude, bundledClaudeMissingHint } from "../../core/claude-cli.js";
 import { formatEnvContext } from "../../core/runtime-env.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 /** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
 const read = (rel: string): string => readSourceSync(rel);
 const strip = (s: string): string =>

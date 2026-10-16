@@ -1,0 +1,8 @@
+{
+  "settings.botToken": "Bot token",
+  "settings.allowedUserIds": "Owner ID",
+  "suggest.allowedUserIds": "Find my ID",
+  "suggest.note.token-missing": "Enter the bot token first.",
+  "suggest.note.no-messages-yet": "No messages to the bot yet — send it anything on Telegram, then try again.",
+  "suggest.note.restart-first": "If you've saved the token, press «Restart now» above first, send the bot anything on Telegram, then try again."
+}

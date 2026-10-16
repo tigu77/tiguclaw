@@ -19,13 +19,9 @@
  *
  * 등급: **동작**(발행 계약을 실행으로 확인) + **판정**(원시 호출 0).
  */
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { readEntrySource } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 export const check: RegressionCheck = {
   name: "inbound-turn-always-closes",

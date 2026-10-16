@@ -45,7 +45,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { loadSettingsLayers, loadSettingsLayersWithSource } from "../settings.js";
+import { loadSettingsLayersWithSource } from "../settings.js";
 import { isTrustedProjectDir } from "../project-trust.js";
 
 interface HookCommand {

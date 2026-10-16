@@ -95,10 +95,6 @@ export const check: RegressionCheck = {
       if (LITERAL.test(code)) literalIn.push(rel.split("/").pop() ?? rel);
     }
 
-    const adapter = await sourceHas(
-      "../../core/llm-runtime/adapters/claude-agent-sdk.ts",
-      [/isSdkSubagentTool\(toolName\)/],
-    );
     const watchdog = await sourceHas("../../core/llm-runtime/tool-watchdog.ts", [
       /isLongRunningByDesign\(tool\)/,
     ]);

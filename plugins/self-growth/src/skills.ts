@@ -1,6 +1,6 @@
 import { isDerivedThread } from "../../../src/core/threadkey.js";
 import { homeFields, suggestHome } from "./home.js";
-import { addMemory, peekMemory } from "../../../src/store/memory.js";
+import { peekMemory } from "../../../src/store/memory.js";
 import { isStrongerSignal, upsertReflection } from "./analysis.js";
 import { getRecentActivities } from "../../../src/store/events.js";
 import {

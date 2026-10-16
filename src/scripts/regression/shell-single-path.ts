@@ -33,7 +33,7 @@ export const check: RegressionCheck = {
   guards:
     "셸이 세 어댑터에서 같은 경로 — claude 만 카드에 출력이 안 뜨던 것(SDK 서브프로세스라 파이프를 못 쥠)",
   run: async (): Promise<Assertion[]> => {
-    const { createFileOpsMcpServer, SHELL_TOOL_NAMES, SEARCH_TOOL_NAMES, tailShell } = await import(
+    const { createFileOpsMcpServer, SEARCH_TOOL_NAMES, tailShell } = await import(
       "../../core/llm-runtime/capabilities/file-ops-mcp.js"
     );
     const src = (await readFile(new URL(ADAPTER, import.meta.url), "utf8"))

@@ -18,7 +18,6 @@
  * ★등급: **행동 게이트**(키 집합 대조는 실제 파일·소스에서 뽑고, 보간은 두 구현을 돌린다).
  */
 import { readFile, readdir } from "node:fs/promises";
-import { interpolate } from "../../core/i18n.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const readRel = (rel: string): Promise<string> => readFile(new URL(rel, import.meta.url), "utf8");

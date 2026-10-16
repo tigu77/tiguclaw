@@ -26,6 +26,7 @@
  *    이 발견·실행. 이전 "SDK 자동 발견 — 본 모듈 호출 0" 전제는 거짓이었다.
  */
 import { untrustedDelegationNote } from "../../project-trust.js";
+import { activePluginDirs } from "../../plugins/active-dirs.js";
 import { coreMcpServer } from "./_core-server.js";
 import { tierDescription, unresolvableTierText } from "./tier-description.js";
 import { getEventBus } from "../../eventbus.js";
@@ -86,7 +87,7 @@ export interface Agent {
  * 설치 루트. dev=레포=cwd 동치, prod 정정).
  * 미존재 디렉터리는 빈 배열 (throw 0).
  *
- * V9.5 — 동일 이름 충돌 dedup(`dedupeBySource`): project > plugin > user override,
+ * V9.5 — 동일 이름 충돌 dedup(`dedupeWithShadows`): project > plugin > user override,
  * 이름당 1개만 (인덱스↔fetch 단일 진실). `getAgentDefinition` 의 `project ?? plugin ??
  * first` 와 동일 규칙을 discover 레벨로 확장. codex `agentIndex` 가 중복 제거 혜택,
  * claude 측은 SDK 가 agents 자동발견(Task tool)이라 discoverAgents 인덱스 미사용 →
@@ -97,7 +98,7 @@ export const discoverAgents = async (
 ): Promise<Agent[]> => {
   // 빌트인 범용 에이전트 (appRoot()/agents) — 앱과 함께 배포되는 quick/general 등.
   // 사용자가 명세를 안 써도 저티어(quick=low) 즉석 위임이 되게. skills 의 appRoot()/skills
-  // 미러. dedupeBySource rank 최하(builtin) — 홈에 같은 이름 두면 사용자 것이 우선.
+  // 미러. dedupeWithShadows rank 최하(builtin) — 홈에 같은 이름 두면 사용자 것이 우선.
   const builtinRoot = path.join(appRoot(), "agents");
   const userRoot = getPaths().commonAgents;
   const projectRoot = projectScope(cwd).agents; // .tiguclaw/agents (우선)
@@ -173,18 +174,8 @@ const walkAgentsDir = async (
  * 각 plugin 디렉터리의 `agents/` 서브디렉터리 회수, pluginId 박음.
  */
 const walkPluginsAgents = async (pluginsRoot: string): Promise<Agent[]> => {
-  let entries: Array<{ name: string; isDirectory: () => boolean }>;
-  try {
-    entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const pluginDirs = entries
-    .filter(
-      (e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules",
-    )
-    .map((e) => ({ id: e.name, dir: path.join(pluginsRoot, e.name) }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+  // 꺼 둔 플러그인의 자산은 싣지 않는다 — 판정은 한 곳(`activePluginDirs`).
+  const pluginDirs = await activePluginDirs(pluginsRoot);
 
   const perPlugin = await Promise.all(
     pluginDirs.map(async ({ id, dir }) => {
@@ -311,32 +302,6 @@ export const formatAgentIndex = (
   return `${header}\n\n${AGENT_INDEX_CAP}개만 표시합니다. 나머지 ${rest}개는 \`find_agents({query})\` 로 검색하세요.\n\n${fmt(top)}`;
 };
 
-/**
- * agent 이름 → .md raw 본문 (frontmatter 포함). V7.2.b spawn 에서 system prompt 로 사용.
- * 매 호출 fs read (cache 0). 미발견 시 undefined.
- * 우선순위: project > plugin > user.
- */
-export const getAgentDefinition = async (
-  name: string,
-  cwd: string = process.cwd(),
-): Promise<string | undefined> => {
-  const agents = await discoverAgents(cwd);
-  // ★대소문자를 구분하지 않는다 (2026-08-08 검토). 모델이 SDK 어휘를 습관으로 쓰면
-  //  `Explore`(대문자)로 오는데 우리 정의는 `explore` 다 — 한 글자 차이로 미발견이었다.
-  //  이름은 파일명에서 오고 관례상 소문자라, 대소문자 무시가 충돌을 만들지 않는다.
-  const lower = name.toLowerCase();
-  const candidates = agents.filter((a) => a.name.toLowerCase() === lower);
-  if (candidates.length === 0) return undefined;
-  const project = candidates.find((a) => a.source === "project");
-  const plugin = candidates.find((a) => a.source === "plugin");
-  const chosen = project ?? plugin ?? candidates[0]!;
-  try {
-    return await fs.readFile(chosen.filePath, "utf8");
-  } catch {
-    return undefined;
-  }
-};
-
 // ─── spawn_agent MCP server (V7.2.b) ─────────────────────────────────────
 // codex 측 sub-agent spawn — claude 어댑터는 SDK Task tool 자동 (회귀 0).
 //
@@ -441,8 +406,6 @@ export const startDetachedAgent = (o: {
       clearSteerChannel,
       getSteerChannel,
       WORKER_STEERING_ENABLED,
-      notifyJobOwner,
-      getJob,
       SUBAGENT_TIMEOUT_MS,
       WORKER_HARD_GRACE_MS,
       WorkerTimeoutError,
@@ -681,11 +644,10 @@ export const createSpawnAgentMcpServer = (
       // markDone/markFailed 는 재주입을 안 타므로 U-I1(재주입=매니저만) 자동 충족.
       // 자식 실행 threadKey = `agent:<jobId>` → 활동(llm.activity)이 그 좌표로 흘러
       // 대시보드가 매니저(`worker:`)와 동형으로 서브 카드에 귀속(per-step 관측).
-      const { registerJob, markDone, markFailed, createJobAbort, WorkerCancelledError, SUBAGENT_TIMEOUT_MS, spawnNotifyDest } =
+      const { registerJob, markFailed, createJobAbort, WorkerCancelledError, SUBAGENT_TIMEOUT_MS, spawnNotifyDest } =
         await import("../../worker-jobs.js");
       // 중복 스폰 판정 — LLM 무관 공용(어댑터 3종에 흩어지지 않게 코어에 둔다).
       const { findDuplicateSpawn, rememberSpawn, spawnKey } = await import("../../spawn-dedupe.js");
-      const { toolsWereExpected } = await import("./tools-expected.js");
       let jobId: string | undefined;
       let abort: ReturnType<typeof createJobAbort> | undefined;
       try {

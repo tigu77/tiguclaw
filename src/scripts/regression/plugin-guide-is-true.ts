@@ -339,10 +339,10 @@ export const check: RegressionCheck = {
           : `배포 트리 · 여기 plugins/ 가 곧 배포본 → 예약 ${String(reserved.length)}개`,
       ),
     );
-    for (const [label, body, section] of [
-      ["ko", guide, "예약"],
-      ["en", existsSync(enPath) ? readFileSync(enPath, "utf8") : "", "reserved"],
-    ] as Array<[string, string, string]>) {
+    for (const [label, body] of [
+      ["ko", guide],
+      ["en", existsSync(enPath) ? readFileSync(enPath, "utf8") : ""],
+    ] as Array<[string, string]>) {
       const missing = reserved.filter((n) => !new RegExp("`" + n + "`").test(body));
       out.push(
         assert(

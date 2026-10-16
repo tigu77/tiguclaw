@@ -54,9 +54,9 @@ than `openai`, `claude`, or `codex-oauth` is rejected rather than half-working.
 
 ### Getting your keys & tokens
 
-Step-by-step — you only need the provider you picked (+ a Telegram bot if you want chat). `onboard` prompts you for each and shows these hints inline.
+Step-by-step — you only need the provider you picked (you chat in the web dashboard; add a Telegram bot if you also want Telegram). `onboard` prompts you for each and shows these hints inline.
 
-**Telegram bot token** (the chat interface)
+**Telegram bot token** (optional — to chat from Telegram too)
 1. In Telegram, open **[@BotFather](https://t.me/BotFather)** → send `/newbot`.
 2. Give it a display name, then a username ending in `bot` (e.g. `my_assistant_bot`).
 3. BotFather replies with a token like `123456:ABC-DEF…` — copy it.
@@ -64,6 +64,8 @@ Step-by-step — you only need the provider you picked (+ a Telegram bot if you 
 
 **Your Telegram user ID** (the owner allowlist)
 - Easiest: during `onboard`, just send your bot one message — it auto-detects your ID.
+- Already installed? In the dashboard, open Plugins → **telegram-channel**, put in the token and restart, then message the
+  bot once and pick yourself under «Find my ID» (no `.env` editing).
 - Manual: message **[@userinfobot](https://t.me/userinfobot)** — it replies with your numeric `Id`.
 
 **Anthropic API key** (`sk-ant-…`)

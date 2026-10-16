@@ -108,22 +108,28 @@
        *  확인된다. 뽑으면 실행해서 지킬 수 있다(이 레포의 상수 — 검사가 껄끄러우면
        *  코드가 잘못 놓인 것).
        *
-       * @returns {{show:boolean, title:string, body:string}}
+       * ★빈 대화엔 **예시 질문**도 준다 (2026-10-16 대시보드 중심 온보딩 — 정태님 «대시보드에 튜토리얼»). 처음 온 사람이
+       *  무엇을 할지 모르는 자리가 여기다. 누르면 입력창에 **채우기만** 한다(보내기는 사용자가 — 비서가 맘대로 시작하지 않고 문장을
+       *  보고 고칠 수 있게). 첫 답이 곧 AI 연결 확인이다. 단계별 투어는 만들지 않는다(화면이 바뀔 때마다 낡는다).
+       *
+       * @returns {{show:boolean, title:string, body:string, examples:string[]}}
        */
       const chatEmptyView = (state, count) => {
-        if (count > 0) return { show: false, title: "", body: "" };
+        if (count > 0) return { show: false, title: "", body: "", examples: [] };
         if (state === "loading")
-          return { show: true, title: i18n("chat.loading"), body: "" };
+          return { show: true, title: i18n("chat.loading"), body: "", examples: [] };
         if (state === "error")
           return {
             show: true,
             title: i18n("chat.loadFailed"),
             body: i18n("chat.loadFailed.hint"),
+            examples: [],
           };
         return {
           show: true,
           title: i18n("chat.empty"),
           body: i18n("chat.empty.hint"),
+          examples: [i18n("chat.start.ex1"), i18n("chat.start.ex2"), i18n("chat.start.ex3")],
         };
       };
 
@@ -147,6 +153,32 @@
         strong.textContent = v.title;
         chatEmpty.appendChild(strong);
         if (v.body !== "") chatEmpty.appendChild(document.createTextNode(v.body));
+        if (v.examples.length > 0) {
+          const list = document.createElement("div");
+          list.className = "chat-start-examples";
+          for (const ex of v.examples) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "chat-start-ex";
+            b.textContent = ex;
+            b.addEventListener("click", () => fillChatInput(ex));
+            list.appendChild(b);
+          }
+          chatEmpty.appendChild(list);
+        }
+      };
+
+      /** 입력창에 채운다(보내지 않는다) — 다음 메시지 제안 수락과 같은 방식: autoGrow·슬래시 등 입력 파이프라인이 알게 input 이벤트. */
+      const fillChatInput = (text) => {
+        const input = document.getElementById("chat-input");
+        if (!input) return;
+        input.value = text;
+        try {
+          if (input.parentElement && input.parentElement.dataset) input.parentElement.dataset.replicatedValue = input.value;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.focus();
+          input.setSelectionRange(input.value.length, input.value.length);
+        } catch { /* noop */ }
       };
 
       filterEl.addEventListener("input", () => {

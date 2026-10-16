@@ -8,7 +8,6 @@
  *
  * 본 모듈 잔존:
  *  - `retrieveContext`: searchMemories(query) (+ 선택적 transcripts 검색).
- *  - `searchTranscriptsHelper`: §9 transcript 검색 wrapper.
  *  - `resolveJsonlPath`: SDK 가 만든 jsonl 위치 글로빙.
  */
 import fs from "node:fs";
@@ -121,12 +120,6 @@ export const retrieveContext = (
   }
   return out;
 };
-
-// ─── §9 transcript 검색 wrapper ─────────────────────────────────────────
-export const searchTranscriptsHelper = (
-  query: string,
-  opts?: Parameters<typeof searchTranscripts>[1],
-): TranscriptHit[] => searchTranscripts(query, opts);
 
 // ─── resolveJsonlPath — SDK 가 만든 jsonl 위치 글로빙 ────────────────────
 // SDK 는 ~/.claude/projects/<cwd-key>/<sessionId>.jsonl 에 저장. cwd-key 변환 규칙은

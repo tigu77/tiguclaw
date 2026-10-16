@@ -30,7 +30,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { isValidPluginName } from "../../core/plugins/loader.js";
 import {
   KNOWN_NEED_KEYS,
@@ -41,7 +40,6 @@ import {
 } from "../../core/plugins/host.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 export const check: RegressionCheck = {
   name: "plugin-boundaries-hold",

@@ -671,7 +671,7 @@ export const runSelfUpdate = async (
         // ★설치 성공 ≠ 사용 가능. 열어보고, 안 되면 한 번 자가 복구하고, 그래도 안 되면
         //  **롤백**한다(옛 버전은 최소한 돌고 있었다). 종료코드만 보면 이 상태를 통과시킨다.
         try {
-          await run(process.execPath, ["-e", "require('better-sqlite3')"], cwd, {
+          await run(process.execPath, [path.join(cwd, "bin", "check-native.cjs")], cwd, {
             shell: false,
           });
         } catch {
@@ -679,7 +679,7 @@ export const runSelfUpdate = async (
             await run("npm", ["rebuild", "better-sqlite3", "--ignore-scripts=false"], cwd, {
               shell: isWindows,
             });
-            await run(process.execPath, ["-e", "require('better-sqlite3')"], cwd, {
+            await run(process.execPath, [path.join(cwd, "bin", "check-native.cjs")], cwd, {
               shell: false,
             });
           } catch (e2) {

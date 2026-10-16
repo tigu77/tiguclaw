@@ -124,15 +124,14 @@ export const callbackUpdate = (fromId: number, data: string): unknown => ({
 });
 
 /** 시작한 채널이 들고 있는 env(소유자 목록)를 잠깐 바꿔 띄운다. */
+/**
+ * 소유자 목록을 세우고 채널을 시작한다. ★목록은 **켜 둔 채로 둔다** (2026-10-16) — 채널이 소유자 목록을 메시지마다 다시 읽게 바뀌었다
+ *  (설정 화면 «내 ID 찾기» 로 고르면 재시작 없이 통하게). 종전처럼 시작 직후 되돌리면 뒤이은 update 가 빈 목록(잠금)을 본다.
+ *  다음 `startWithOwners` 가 덮어쓴다 — 이 변수를 읽는 검사는 텔레그램 하네스뿐이다.
+ */
 export const startWithOwners = async (channel: ChannelLike, owners: string, handler: Handler): Promise<void> => {
-  const saved = process.env.TELEGRAM_ALLOWED_USER_IDS;
   process.env.TELEGRAM_ALLOWED_USER_IDS = owners;
-  try {
-    await channel.start(handler);
-  } finally {
-    if (saved === undefined) delete process.env.TELEGRAM_ALLOWED_USER_IDS;
-    else process.env.TELEGRAM_ALLOWED_USER_IDS = saved;
-  }
+  await channel.start(handler);
 };
 
 /** 비차단 발사(`void handler(msg)`)가 끝날 틈. */

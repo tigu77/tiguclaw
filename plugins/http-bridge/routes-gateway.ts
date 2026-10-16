@@ -12,9 +12,8 @@
  * ★인증이 다르다 — 이 둘은 브리지 role 표가 아니라 **자기 게이트웨이 토큰**으로 가르고,
  *  그래서 role 표 앞에서 일찍 반환한다(회귀 `bridge-role-table-complete` 가 그 예외를 지킨다).
  */
-import type http from "node:http";
 import type { RouteCtx } from "./route-ctx.js";
-import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
+import { safeUnsubscribe } from "../../src/core/eventbus.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { runRegionA } from "../../src/core/llm-runtime/index.js";
 import { turnSpend } from "../../src/core/llm-runtime/turn-spend.js";

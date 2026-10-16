@@ -19,14 +19,11 @@
  *  `if (false)` 로 뚫린다. 승격하려면 응답 조립을 순수 함수로 뽑아야 한다(백로그).
  *  그때까지는 이 검사가 **문구가 아니라 구조**를 보도록 유지한다.
  */
-import { readFile } from "node:fs/promises";
 import { readSource } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const BRIDGE = "../../../plugins/http-bridge";
 
-const strip = (s: string): string =>
-  s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
 export const check: RegressionCheck = {
   name: "gateway-always-answers",

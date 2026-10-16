@@ -8,6 +8,30 @@
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-10-16
+
+### Added
+
+- **텔레그램을 대시보드에서 연결합니다.** 플러그인 → 텔레그램 채널 설정에 봇 토큰을 넣고 재시작한 뒤, 봇에게 한 번 말을 걸고 «내 ID 찾기»에서 자기 이름을 고르면 됩니다. `.env` 를 직접 고칠 필요가 없고, 토큰은 채팅을 거치지 않습니다.
+- **처음 여는 빈 대화에 예시 질문이 나옵니다.** 누르면 입력창에 채워지고, 보내기는 직접 합니다.
+- **플러그인 설정 화면에서 비밀값을 넣고 바꿀 수 있습니다.** 값은 홈 `.env` 에 저장되고 화면에 다시 나오지 않습니다. 플러그인은 `editable` 로 화면에서 고칠 수 있는 칸을, `suggest` 로 값 후보를 내줄 수 있습니다.
+
+### Changed
+
+- **외부 MCP 서버를 등록·변경·제거하면 재시작 없이 다음 턴부터 반영됩니다.** Codex·OpenAI 모델에서도 Claude 처럼 바로 붙습니다.
+- **`tiguclaw onboard` 는 서비스가 실제로 응답하고 점검에 막는 문제가 없을 때만 완료로 표시합니다.** 끝나면 대시보드 주소를 보여주고, 이 기계에 브라우저가 있으면 바로 엽니다. 텔레그램은 선택이며 점검에서도 실패로 표시하지 않습니다.
+- **계정이 없거나 만료돼 답을 못 하면 다시 로그인하는 방법을 안내합니다.**
+
+### Fixed
+
+- **대시보드에서 비서가 보낸 파일이 원래 이름이 아니라 저장 이름으로 받아지던 문제.** 한글 이름도 그대로 받아집니다.
+- **꺼 둔 플러그인의 스킬·에이전트·커맨드가 비서의 목록에 남던 문제.**
+- **끊긴 외부 MCP 연결이 재시작 전까지 다시 붙지 않던 문제(Codex·OpenAI).** 대상 앱을 다시 켜면 다음 턴에 붙습니다.
+- **설치·업데이트가 SQLite 네이티브 모듈이 빠진 것을 놓치던 문제.** 이제 실제로 열어 보고, 안 열리면 스스로 다시 빌드합니다.
+- **전용 Node 로 설치한 맥·리눅스에서, 설치가 멈춘 뒤 안내한 재시도 명령이 새 터미널에서 실행되지 않던 문제.**
+- **`.env` 에 `DASHBOARD_HOST=` 처럼 값을 비워 두면 대시보드가 모든 네트워크 주소에 열리던 문제.** 이제 빈 값은 기본값으로 읽어 이 기계 안에서만 열립니다. 브리지 포트를 비워 두면 데몬이 시작하지 못하던 것도 함께 고쳤습니다.
+- **설정 안내가 실제 설정과 어긋나던 문제.** 설정 마법사는 onboard 도중 손으로 할 단계를 늘어놓지 않고, 점검(`doctor`)은 브리지 주소 설정을 따릅니다.
+
 ## [0.72.0] - 2026-10-15
 
 ### Added
@@ -2549,7 +2573,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...HEAD
+[0.73.0]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...v0.71.0
 [0.70.1]: https://github.com/tigu77/tiguclaw/compare/v0.70.0...v0.70.1

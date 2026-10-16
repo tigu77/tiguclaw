@@ -14,13 +14,23 @@
  *
  * 판정 기준(오탐 최소화):
  *  - **값 export 만**(const/function/class). type·interface 는 문서 가치가 있고 harm 0.
- *  - 다른 src 파일 / plugins / packages / skills / agents 어디에도 이름이 안 나오고,
+ *  - 정의는 `src/`·`plugins/` 의 `.ts` 를 본다.
+ *  - 다른 **코드 파일**(src·plugins·packages·bin 의 ts/js/mjs, 주석 제거) 어디에도 이름이 안 나오고,
  *  - **자기 파일 안에서도** 선언 1회뿐인 것(자기 파일에서 쓰이면 죽은 코드가 아니라
  *    export 만 불필요한 것 — 별개 문제라 여기서 안 잡는다).
+ *
+ * ★사각을 막았다 (2026-10-16 효율 감사 — 이 검사가 초록인 채로 죽은 export 7건이 살아 있었다):
+ *  - 정의를 `src/` 만 봐서 **`plugins/` 의 export 는 검사 대상이 아니었다**(`getSchedulerInstance` 등).
+ *  - 이름이 **주석·문서(md)** 에 나와도 «쓰임» 이었다(`dedupeBySource` 는 주석 6곳에만 남아 있었다).
+ *  - 다른 파일이 **같은 이름을 따로 선언**해도 «쓰임» 이었다(`isBuiltRuntime` — self-update 에 동명 비공개 함수).
+ *  안 쓰는 지역·import 는 **TS 파일에 한해** 컴파일러(`noUnusedLocals`, `tsconfig.check.json`)가 맡는다 — 여기선 export 만 본다.
+ *  `bin/daemon.mjs`·대시보드 클래식 스크립트(js/*.js)의 안 쓰는 지역은 그물 밖이다(효율 감사 §9 가 사람 눈으로 본다).
+ *  알려진 미탐: 다른 파일의 **문자열·정규식 리터럴** 안 언급도 «쓰임» 으로 센다(주석만 뗀다).
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { stripComments } from "./_wiring.js";
 import { fileURLToPath } from "node:url";
 
 const walkTs = (dir: string, out: string[]): void => {
@@ -31,12 +41,14 @@ const walkTs = (dir: string, out: string[]): void => {
   }
 };
 
-const readAll = (dir: string, out: string[]): void => {
+/** 코드 파일만(문서·설정의 언급은 쓰임이 아니다) — 주석을 뗀 본문. `node_modules`·`dist` 는 안 본다. */
+const readCode = (dir: string, out: Map<string, string>): void => {
   for (const e of readdirSync(dir)) {
+    if (e === "node_modules" || e === "dist") continue;
     const p = join(dir, e);
     try {
-      if (statSync(p).isDirectory()) readAll(p, out);
-      else if (/\.(ts|js|md|json)$/.test(p)) out.push(readFileSync(p, "utf8"));
+      if (statSync(p).isDirectory()) readCode(p, out);
+      else if (/\.(ts|js|mjs|cjs)$/.test(p)) out.set(p, stripComments(readFileSync(p, "utf8")));
     } catch {
       /* 읽기 실패 파일은 건너뛴다(판정에 불리하게=오탐 쪽으로 가지 않음). */
     }
@@ -67,34 +79,39 @@ const devToolingPresent = (root: string): boolean => {
 };
 
 const findDead = (): string[] => {
-  const files: string[] = [];
-  walkTs(join(repoRoot(), "src"), files);
-  const src = new Map(files.map((f) => [f, readFileSync(f, "utf8")]));
-  const extra: string[] = [];
-  for (const d of ["plugins", "packages", "skills", "agents"]) {
+  const defs: string[] = [];
+  for (const d of ["src", "plugins"]) walkTs(join(repoRoot(), d), defs);
+  const code = new Map<string, string>();
+  for (const d of ["src", "plugins", "packages", "bin"]) {
     try {
-      readAll(join(repoRoot(), d), extra);
+      readCode(join(repoRoot(), d), code);
     } catch {
       /* 없으면 무시 */
     }
   }
   const dead: string[] = [];
-  for (const [f, code] of src) {
-    for (const m of code.matchAll(EXPORT_RE)) {
+  for (const f of defs) {
+    if (f.includes("/node_modules/")) continue;
+    const own = code.get(f) ?? stripComments(readFileSync(f, "utf8"));
+    for (const m of own.matchAll(EXPORT_RE)) {
       const name = m[1] ?? "";
       if (name === "") continue;
       const re = new RegExp(`\\b${name}\\b`);
+      // 같은 이름을 **스스로 선언**한 파일의 언급은 그 파일 자기 것이다(가져다 쓴 게 아니다). 선언은 **줄머리**에서만 센다
+      //  (문자열·정규식 안의 글자는 선언이 아니다). 단 import·속성 접근으로 **가져오는** 꼴이 있으면 선언해도 소비자다 —
+      //  `const X = (await import("…")).X` · `import { X as Y }` 뒤 `export const X = Y` (적대 검토 10-16 오탐 실측).
+      const declares = new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var|(?:async\\s+)?function|class)\\s+${name}\\b`, "m");
+      const imports = new RegExp(`import\\s*(?:type\\s+)?\\{[^}]*\\b${name}\\b|\\.${name}\\b|\\{[^}]*\\b${name}\\b[^}]*\\}\\s*=\\s*(?:await\\s+)?import\\(`);
       let used = false;
-      for (const [g, other] of src) {
-        if (g !== f && re.test(other)) {
+      for (const [g, other] of code) {
+        if (g !== f && re.test(other) && (!declares.test(other) || imports.test(other))) {
           used = true;
           break;
         }
       }
-      if (!used) for (const o of extra) if (re.test(o)) { used = true; break; }
       if (used) continue;
-      const selfHits = (code.match(new RegExp(`\\b${name}\\b`, "g")) ?? []).length;
-      if (selfHits <= 1) dead.push(`${f}:${name}`);
+      const selfHits = (own.match(new RegExp(`\\b${name}\\b`, "g")) ?? []).length;
+      if (selfHits <= 1) dead.push(`${f.slice(repoRoot().length)}:${name}`);
     }
   }
   return dead;

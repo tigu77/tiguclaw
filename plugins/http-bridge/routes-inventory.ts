@@ -26,7 +26,7 @@ import path from "node:path";
 import type { RouteCtx } from "./route-ctx.js";
 
 export const handleInventory = async (ctx: RouteCtx): Promise<void> => {
-  const { res, pathname } = ctx;
+  const { res } = ctx;
   try {
     const inv = await collectInventory();
     let schedules: Array<Record<string, unknown>> = [];
@@ -92,7 +92,7 @@ export const handleInventory = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleInventoryItem = async (ctx: RouteCtx): Promise<void> => {
-  const { res, url, pathname } = ctx;
+  const { res, url } = ctx;
   const source = url.searchParams.get("source") ?? "";
   if (source.trim() === "") {
     writeJson(res, 400, { error: "source required" });
@@ -140,7 +140,7 @@ export const handleInventoryItem = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleContextMenuItems = async (ctx: RouteCtx): Promise<void> => {
-  const { res, pathname } = ctx;
+  const { res } = ctx;
   try {
     const contributions = await collectContextMenuContributions();
     const items: Array<{
@@ -176,7 +176,7 @@ export const handleContextMenuItems = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleCommands = async (ctx: RouteCtx): Promise<void> => {
-  const { res, pathname } = ctx;
+  const { res } = ctx;
   try {
     const cmds = await getAllCommands();
     writeJson(res, 200, { commands: cmds });
@@ -188,7 +188,7 @@ export const handleCommands = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleMcpTools = async (ctx: RouteCtx): Promise<void> => {
-  const { res, url, pathname } = ctx;
+  const { res, url } = ctx;
   const want = (url.searchParams.get("name") ?? "").trim();
   if (want === "") {
     writeJson(res, 400, { error: "name 파라미터가 필요합니다" });
@@ -224,7 +224,7 @@ export const handleMcpTools = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handleHomeWidgets = async (ctx: RouteCtx): Promise<void> => {
-  const { res, pathname } = ctx;
+  const { res } = ctx;
   const known = new Set(listLivePlugins().map((p) => p.name));
   const { widgets, rejected } = readHomeWidgets(known);
   // ★**어느 위젯이 값을 받아올 수 있나**(2026-08-28, 증분 5). 관례상 데이터 라우트
@@ -311,7 +311,7 @@ export const handlePluginData = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handlePlugins = async (ctx: RouteCtx): Promise<void> => {
-  const { res, pathname } = ctx;
+  const { res } = ctx;
   const { listAllPlugins } = await import("../../src/core/plugins/manager.js");
   const { PLUGIN_SCHEMA_VERSION } = await import("../../src/core/plugins/loader.js");
   writeJson(res, 200, {
@@ -349,7 +349,7 @@ export const handlePlugins = async (ctx: RouteCtx): Promise<void> => {
 };
 
 export const handlePluginsAction = async (ctx: RouteCtx): Promise<void> => {
-  const { req, res, pathname } = ctx;
+  const { req, res } = ctx;
   const body = (await readJsonBody(req)) as {
     action?: unknown;
     name?: unknown;
@@ -410,17 +410,23 @@ export const handlePluginsAction = async (ctx: RouteCtx): Promise<void> => {
       const nodePath = (await import("node:path")).default;
       // ★선언의 정본은 **매니페스트**다 — 목록 응답을 되읽지 않는다(두 벌이면 갈린다).
       //  번들이 먼저다(로더·자산 라우트와 같은 우선순위).
-      const specs =
-        (
-          await Promise.all(
-            [nodePath.join(appRoot(), "plugins"), getPaths().commonPlugins].map((root) =>
-              scanPluginManifests(root),
-            ),
-          )
-        )
-          .flat()
-          .find((x) => x.manifest.name === name)?.manifest.settings ?? [];
-      const r = writePluginSetting(
+      const [bundledFound, homeFound] = await Promise.all(
+        [nodePath.join(appRoot(), "plugins"), getPaths().commonPlugins].map(async (root) =>
+          (await scanPluginManifests(root)).find((x) => x.manifest.name === name),
+        ),
+      );
+      const found = bundledFound ?? homeFound;
+      const specs = found?.manifest.settings ?? [];
+      // secret·`.env` 칸은 홈 `.env` 로 — 쓸 수 있는 이름인지·한 줄인지 판정은 코어가 한다(번들/홈 출처로 범위가 다르다).
+      const { writePluginEnvSetting } = await import("../../src/core/plugins/settings.js");
+      const envR = await writePluginEnvSetting(
+        name,
+        specs,
+        key,
+        v === null || v === undefined ? undefined : String(v),
+        bundledFound !== undefined ? "bundled" : "home",
+      );
+      const r = envR ?? writePluginSetting(
         name,
         specs,
         key,
@@ -432,7 +438,7 @@ export const handlePluginsAction = async (ctx: RouteCtx): Promise<void> => {
         res,
         r.ok ? 200 : 400,
         r.ok
-          ? { ok: true }
+          ? { ok: true, ...("restartNeeded" in r && r.restartNeeded === true ? { restartNeeded: true } : {}) }
           : {
               ok: false,
               reason: r.error,

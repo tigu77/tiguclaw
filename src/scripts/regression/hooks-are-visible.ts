@@ -16,13 +16,9 @@
  * 동작 검증은 헤드리스(`_workspace/run_hook_verify.sh`, 7/7)가 픽스처를 넣고 확인한다.
  * 여기서는 매번 싸게 배선을 지킨다.
  */
-import { readFile } from "node:fs/promises";
 import { readSourceSync } from "./_wiring.js";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 /** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
 const read = async (rel: string): Promise<string> => {
   try {
@@ -53,8 +49,8 @@ export const check: RegressionCheck = {
       assert(
         // ★여기가 빠져 있어서 서버가 보내는데도 화면에 안 나왔다.
         "★프런트 카테고리 목록에 hook 이 있다(서버와 안 갈린다)",
-        /CATEGORIES = \[[^\]]*"hook"/.test(consts) &&
-          /hook:\s*i18n\("common\.cat\.hook"\)/.test(consts),
+        // ★라벨 표(`CATEGORY_LABEL`)는 아무도 안 읽는 죽은 표였다(2026-10-16 효율 감사로 지움) — 화면이 실제로 도는 건 이 목록이다.
+        /CATEGORIES = \[[^\]]*"hook"/.test(consts),
         /CATEGORIES = \[[^\]]*"hook"/.test(consts) ? "확인" : "★목록 누락 — 화면에 안 나온다",
       ),
       assert(

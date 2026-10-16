@@ -5,8 +5,6 @@
  *  "어디 있더라" 를 매번 묻게 되는 부류라 자리부터 정했다.
  */
 import http from "node:http";
-import type { IncomingMessage } from "../../src/channels/types.js";
-import { runRegionA } from "../../src/core/llm-runtime/index.js";
 import { ATTACH_MAX_FILE_BYTES, ATTACH_MAX_TOTAL_BYTES } from "./attachments.js";
 
 /**

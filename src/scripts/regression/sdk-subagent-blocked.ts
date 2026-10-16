@@ -9,7 +9,7 @@
  *  없어서, `spawn_agent` 을 depth 0 에만 주는 게이트를 우회해 자식이 다시 서브를 띄울 수
  *  있었다("손자 금지는 하드" 가 claude 경로에서만 소프트였다 — 프로브로 실증).
  *
- * 이 검사가 지키는 것은 **판정·차단·alias 셋이 같은 출처를 본다**는 것이다. 이름을 새로
+ * 이 검사가 지키는 것은 **판정·차단 둘이 같은 출처를 본다**는 것이다(alias 는 2026-08-08 에 철회돼 그 대조도 없다). 이름을 새로
  * 열거하지 않는다 — `SDK_SUBAGENT_TOOLS` 하나에서 파생되는지만 본다([[hand-maintained-lists]]).
  * 상류가 또 개명하면(0.1 `Task` → 0.3 `Agent` 처럼) 배열 한 줄만 고치면 셋이 따라와야 한다.
 
@@ -29,7 +29,7 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 export const check: RegressionCheck = {
   name: "sdk-subagent-blocked",
   guards:
-    "SDK 빌트인 서브에이전트 도구 차단 + alias 회수 — 팬아웃 단일 경로와 손자 금지의 실제 집행",
+    "SDK 빌트인 서브에이전트 도구 차단 — 팬아웃 단일 경로와 손자 금지의 실제 집행",
   run: async (): Promise<Assertion[]> => {
     const { SDK_SUBAGENT_TOOLS, isSdkSubagentTool, withSdkSubagentsBlocked } =
       await import("../../core/llm-runtime/subagent-tools.js");
@@ -39,16 +39,6 @@ export const check: RegressionCheck = {
       import.meta.url,
     );
     const adapter = await readFile(adapterUrl, "utf8");
-    const registryUrl = new URL(
-      "../../core/llm-runtime/capabilities/agent-registry.ts",
-      import.meta.url,
-    );
-    const registry = await readFile(registryUrl, "utf8");
-
-    // MCP 서버 이름은 agent-registry 가 정한다(`createSdkMcpServer({ name: "agents" })`).
-    // alias 대상이 그 서버를 가리키는지 대조 — 서버를 개명하면 alias 가 **조용히** 없는
-    // 도구를 가리키게 된다(그 실패는 런타임에만 보인다).
-    const serverName = /createSdkMcpServer\(\{\s*name:\s*"([^"]+)"/.exec(registry)?.[1];
 
     // ★"고친 자리 200자 창" 이 아니라 **모델이 읽는 텍스트 전수**를 본다 (2026-08-08 검토).
     //  종전 검사는 `formatAgentIndex(...)` 주변 200자만 봤고, 그래서 같은 지시가 헌법

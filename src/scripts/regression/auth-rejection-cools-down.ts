@@ -20,7 +20,7 @@ import {
   parseModelSpec,
   registerCooldownIfRateLimited,
 } from "../../core/llm-runtime/index.js";
-import { AUTH_COOLDOWN_MS, isAuthRejected, isRateLimited, keepsFoldBudget } from "../../core/llm-runtime/rate-limit.js";
+import { AUTH_COOLDOWN_MS, isAuthRejected, keepsFoldBudget } from "../../core/llm-runtime/rate-limit.js";
 import { saveCooldown } from "../../store/cooldowns.js";
 import { IdleTimeoutError } from "../../core/llm-runtime/idle-timeout.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";

@@ -61,11 +61,21 @@ export interface PluginSettingSpec {
    * **기존 설치가 깨진다**. 이 한 칸이면 옮기지 않고도 «봇 토큰이 있나»·«포트가 몇이지» 가
    * 화면에 뜬다 — 선언만 추가하면 된다.
    *
-   * ★그래서 이건 **읽기 전용**이다. 플러그인이 여전히 env 를 직접 읽으므로 화면에서 고쳐도
-   *  안 먹는다 — 편집 가능하게 두면 «누를 수 있다고 말하고 안 되는» 화면이 또 하나 생긴다.
-   *  `secret` 이 이미 같은 대접(값은 .env, 화면은 표시만)이라 새 개념이 아니다.
+   * ★그래서 이건 **기본 읽기 전용**이다(2026-09-02). 플러그인이 env 를 직접 읽으므로 화면에서 고쳐도 재시작 전엔 안 먹고, 포트 같은
+   *  값은 잘못 넣으면 대시보드 자체가 죽어 화면에서 되돌릴 길이 없다(10-16 적대 검토 P1 — 전부 열었다가 되돌림). 화면에서 고치게
+   *  하려면 플러그인이 `editable: true` 로 **명시**한다(`writePluginEnvSetting`). `secret` 은 넣기만 하는 칸이라 늘 쓸 수 있다.
    */
   readonly env?: string;
+  /** `env` 칸을 설정 화면에서 고쳐도 되는가 — 플러그인이 명시할 때만(기본 읽기 전용). 예: 텔레그램 소유자 ID. */
+  readonly editable?: boolean;
+  /** 플러그인이 이 값을 **쓸 때마다** 읽는다(재시작 없이 바로 먹는다) — 화면이 «재시작 필요» 를 말하지 않게. 예: 텔레그램 소유자 ID. */
+  readonly live?: boolean;
+  /**
+   * **값 후보를 내주는 이 플러그인의 데이터 라우트 이름** (2026-10-16) — 화면이 칸 옆에 «찾기» 를 그리고, 누르면
+   *  `GET /api/plugin-data/<플러그인>/<suggest>` 의 `{ items: [{ value, label }], note? }` 를 보여준다. 사용자가 하나를 골라야
+   *  저장된다(자동으로 넣지 않는다). 예: 텔레그램 «내 ID 찾기» — 봇에게 말을 건 사람 목록.
+   */
+  readonly suggest?: string;
   /**
    * **이 값은 손대는 게 아니다** — 플러그인이 그렇게 말한 경우 (2026-09-02 정태님:
    * *"읽기 전용인지, 설정 가능인지 뭐 이런것들도 공통적으로 다 가능한가?"*).
@@ -136,6 +146,9 @@ export const readSettingsSpec = (raw: unknown): SettingsSpecVerdict => {
       default?: string | number | boolean;
       env?: string;
       readOnly?: boolean;
+      suggest?: string;
+      editable?: boolean;
+      live?: boolean;
     } = { key, type: type as PluginSettingType };
     if (typeof e.labelKey === "string" && e.labelKey !== "") spec.labelKey = e.labelKey;
     if (e.env !== undefined) {
@@ -152,6 +165,15 @@ export const readSettingsSpec = (raw: unknown): SettingsSpecVerdict => {
     // ★`true` 만 받는다 — `false` 는 «풀어달라» 는 뜻인데 그건 선언으로 되는 일이 아니다.
     //  받아서 저장하면 화면·서버가 그 값을 참고할 위험이 생기므로 아예 안 담는다.
     if (e.readOnly === true) spec.readOnly = true;
+    if (e.editable === true) spec.editable = true;
+    if (e.live === true) spec.live = true;
+    if (e.suggest !== undefined) {
+      if (typeof e.suggest !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(e.suggest)) {
+        problems.push(`${at}: suggest 는 이 플러그인의 데이터 라우트 이름이어야 합니다(소문자·숫자·하이픈, 받은 값: ${String(e.suggest)})`);
+        continue;
+      }
+      spec.suggest = e.suggest;
+    }
     if (type === "enum") {
       const vs = e.values;
       if (!Array.isArray(vs) || vs.length === 0 || vs.some((v) => typeof v !== "string")) {
@@ -389,4 +411,71 @@ export const writePluginSetting = (
   else raw[key] = value;
   writeSettingsRootAtomic(settingsFile(plugin), raw);
   return { ok: true };
+};
+
+/**
+ * **secret·`.env` 칸을 화면에서 저장한다** — 홈 `.env` 에 쓴다 (2026-10-16, 정태님 «텔레그램 채널 플러그인에서 쉽게 연결»).
+ *
+ * ★종전엔 이 칸들이 «있다/없다» 만 보이고 쓰기는 거절됐다 — 그래서 텔레그램 토큰 하나 넣으려고 사용자가 `.env` 를 직접 고쳐야
+ *  했다. 정본은 여전히 홈 `.env` 다(두 벌 없음) — 이 함수는 그 파일에 쓰는 **문**일 뿐이고, 쓰기는 공용 `upsertHomeEnvVars`
+ *  (원자적·0600·직렬)가 한다. 값은 응답·로그에 싣지 않는다. 토큰이 채팅·모델을 거치지 않는다.
+ *
+ * ★**쓸 수 있는 이름을 좁힌다** — 사용자가 설치한(홈) 플러그인이 `env: "CLAUDE_CODE_OAUTH_TOKEN"` 처럼 코어 키를 선언하면, 이 화면이
+ *  코어 인증을 덮는 문이 된다. 앱과 함께 오는 플러그인의 선언 `env` 이거나, 그 플러그인 자기 이름공간(`TIGUCLAW_PLUGIN_<이름>_<키>`)만.
+ *
+ * 반환 `undefined` = 이 칸은 `.env` 칸이 아니다(파일 칸 — `writePluginSetting` 이 맡는다).
+ * 플러그인은 대개 부팅 때 값을 읽으므로 적용엔 재시작이 필요하다(`restartNeeded`). `process.env` 는 즉시 바뀐다(데이터 라우트는 바로 본다).
+ */
+export const writePluginEnvSetting = async (
+  plugin: string,
+  specs: readonly PluginSettingSpec[],
+  key: string,
+  value: string | undefined,
+  source: "bundled" | "home",
+): Promise<(WriteVerdict & { restartNeeded?: boolean }) | undefined> => {
+  const spec = specs.find((s) => s.key === key);
+  if (spec === undefined || (spec.type !== "secret" && spec.env === undefined)) return undefined;
+  if (spec.readOnly === true) {
+    return { ok: false, error: `'${key}' 는 읽기 전용입니다 — 이 플러그인이 그렇게 선언했습니다.`, errorKey: "plugins.reason.settingReadOnly", errorArgs: { key } };
+  }
+  // `.env` 칸(비밀 아님)은 플러그인이 명시한 것만 — 포트처럼 잘못 넣으면 대시보드가 죽어 되돌릴 길이 없는 값이 있다(적대 검토 P1).
+  if (spec.type !== "secret" && spec.editable !== true) {
+    return {
+      ok: false,
+      error: `'${key}' 의 정본은 홈 .env 의 ${spec.env} 입니다 — 거기서 고치세요. 이 플러그인은 그 환경변수를 직접 읽습니다.`,
+      errorKey: "plugins.reason.settingComesFromEnv",
+      errorArgs: { key, env: spec.env ?? "" },
+    };
+  }
+  const own = secretEnvName(plugin, key);
+  const name = spec.env ?? own;
+  if (source === "home" && name !== own) {
+    return {
+      ok: false,
+      error: `'${key}' 는 이 화면에서 쓸 수 없는 이름(${name})을 가리킵니다 — 직접 설치한 플러그인은 ${own} 만 쓸 수 있습니다.`,
+      errorKey: "plugins.reason.envNameNotOwn",
+      errorArgs: { key, env: name, own },
+    };
+  }
+  const v = (value ?? "").trim();
+  // 한 줄 값만 — 줄바꿈이 들어가면 `.env` 에 **다른 키**를 몰래 심을 수 있다.
+  if (/[\r\n\0]/.test(v) || v.length > 8192) {
+    return { ok: false, error: `'${key}' 값은 한 줄(8192자 이하)이어야 합니다`, errorKey: "plugins.reason.envValueOneLine", errorArgs: { key } };
+  }
+  // ★따옴표·`#`·역슬래시는 받지 않는다 — `.env` 파서가 따옴표로 시작하는 값을 **다음 줄까지** 읽어 뒤 키(예: HTTP_BRIDGE_TOKEN)를
+  //  삼키고, `#` 뒤는 주석으로 잘랐다(적대 검토 P2 실측). 이 칸에 들어갈 값(토큰·ID·이름)엔 안 쓰이는 문자다.
+  if (/['"`#\\]/.test(v)) {
+    return { ok: false, error: `'${key}' 값에 따옴표·#·역슬래시는 쓸 수 없습니다`, errorKey: "plugins.reason.envValueUnsafe", errorArgs: { key } };
+  }
+  if (v !== "" && spec.type === "number" && !Number.isFinite(Number(v))) {
+    return { ok: false, error: `'${key}' 값이 type 'number' 과 맞지 않습니다`, errorKey: "plugins.reason.settingTypeMismatch", errorArgs: { key, type: spec.type } };
+  }
+  if (v !== "" && spec.type === "enum" && !(spec.values ?? []).includes(v)) {
+    return { ok: false, error: `'${key}' 값이 type 'enum' 과 맞지 않습니다`, errorKey: "plugins.reason.settingTypeMismatch", errorArgs: { key, type: spec.type } };
+  }
+  const { upsertHomeEnvVars } = await import("../env-file.js");
+  await upsertHomeEnvVars({ [name]: v });
+  console.log(`[plugin:${plugin}] 설정 '${key}' 을 홈 .env 의 ${name} 에 저장(${v === "" ? "비움" : `${v.length}자`}) — ${spec.live === true ? "바로 적용" : "적용엔 재시작"}`);
+  // 플러그인이 쓸 때마다 읽는 값(`live`)은 바로 먹는다 — 그때 «재시작 필요» 라고 하면 사실과 다르다(레드팀 A: 소유자를 골라도 막대가 떴다).
+  return spec.live === true ? { ok: true } : { ok: true, restartNeeded: true };
 };

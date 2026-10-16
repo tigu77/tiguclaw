@@ -9,7 +9,6 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import os from "node:os";
 import { appRoot, getPaths } from "../paths.js";
 import { discoverSkills } from "../llm-runtime/capabilities/skill-registry.js";
 import { discoverAgents } from "../llm-runtime/capabilities/agent-registry.js";
@@ -396,9 +395,17 @@ export const isSelfReferentialModule = (name: string): boolean =>
  *  ([[feedback_hand_maintained_lists]]). 브리지 엔드포인트의 거절은 **다른 판정**이라
  *  (=사용자가 바꿀 수 있는가) 그대로 둔다.
  */
-export const isModuleActive = (name: string): boolean =>
-  isCoreModule(name) ||
-  (!isModuleDisabled(name) && (!isDefaultOffModule(name) || isModuleExplicitlyEnabled(name)));
+export const isModuleActive = (name: string): boolean => moduleActivityJudge()(name);
+
+/**
+ * 같은 판정을 **여러 이름에 한 번에** — 번들 매니페스트와 끔 목록을 한 번만 읽는다 (2026-10-16 적대 검토 P3 실측: 레지스트리가 플러그인
+ *  폴더마다 `isModuleActive` 를 불러 한 번 훑는 데 동기 파일 읽기 325건). `isModuleActive` 도 이걸 쓴다 — 판정은 한 곳.
+ */
+export const moduleActivityJudge = (): ((name: string) => boolean) => {
+  const blocks = bundledManifestBlocks();
+  const flag = (name: string, f: string): boolean => blocks.some((m) => m["name"] === name && m[f] === true);
+  return (name) => flag(name, "core") || (!isModuleDisabled(name) && (!flag(name, "defaultOff") || isModuleExplicitlyEnabled(name)));
+};
 
 /**
  * **기본은 꺼진 채로 오는 번들인가**(manifest `tiguclaw.defaultOff`, 2026-10-14 — 자가성장 은퇴).
@@ -453,46 +460,7 @@ const collectBundledPlugins = (repoRoot: string): PluginEntry[] => {
 
 // ─── (b) 외부 plugin ─────────────────────────────────────────────────────
 
-const readEnabledPlugins = (repoRoot: string): Set<string> => {
-  const enabled = new Set<string>();
-  for (const file of ["settings.json", "settings.local.json"]) {
-    const p = path.join(repoRoot, ".claude", file);
-    const data = safeReadJson(p) as
-      | { enabledPlugins?: Record<string, unknown> }
-      | undefined;
-    const ep = data?.enabledPlugins;
-    if (!ep || typeof ep !== "object") continue;
-    for (const [k, v] of Object.entries(ep)) {
-      if (v) enabled.add(k);
-    }
-  }
-  return enabled;
-};
 
-/** semver-aware 비교; 실패 시 lexical fallback. 단순+견고. */
-const pickLatestVersion = (versions: string[]): string | undefined => {
-  if (versions.length === 0) return undefined;
-  const parsed = versions.map((v) => {
-    const parts = v.replace(/^v/, "").split(".").map((s) => parseInt(s, 10));
-    return { v, parts };
-  });
-  const allNumeric = parsed.every(
-    (p) => p.parts.length > 0 && p.parts.every((n) => Number.isFinite(n)),
-  );
-  if (allNumeric) {
-    parsed.sort((a, b) => {
-      const len = Math.max(a.parts.length, b.parts.length);
-      for (let i = 0; i < len; i += 1) {
-        const ai = a.parts[i] ?? 0;
-        const bi = b.parts[i] ?? 0;
-        if (ai !== bi) return bi - ai;
-      }
-      return 0;
-    });
-    return parsed[0].v;
-  }
-  return [...versions].sort().reverse()[0];
-};
 
 /**
  * 2026-06-06 — `~/.claude/plugins/cache/` (Claude Code 마켓플레이스 캐시) walk 폐기.
@@ -538,67 +506,6 @@ const collectExternalPlugins = (): PluginEntry[] => {
 
 // ─── (c)(d) 스킬 / 에이전트 ──────────────────────────────────────────────
 
-const collectFrontmatterFiles = (
-  category: "skill" | "agent",
-  bases: { dir: string; layer: PluginLayer }[],
-  pattern: "skill" | "agent",
-): PluginEntry[] => {
-  const out: PluginEntry[] = [];
-  for (const { dir: base, layer } of bases) {
-    try {
-      if (!fs.existsSync(base)) continue;
-      if (pattern === "skill") {
-        // <base>/<dir>/SKILL.md
-        for (const dir of safeReaddir(base)) {
-          try {
-            const skillFile = path.join(base, dir, "SKILL.md");
-            if (!fs.existsSync(skillFile)) continue;
-            const fm = parseFrontmatter(skillFile);
-            out.push({
-              category,
-              layer,
-              name: fm.name ?? dir,
-              description: fm.description,
-              source: skillFile,
-              enabled: true,
-            });
-          } catch {
-            // 한 entry 실패 무시.
-          }
-        }
-      } else {
-        // agent: <base>/<file>.md
-        let entries: fs.Dirent[];
-        try {
-          entries = fs.readdirSync(base, { withFileTypes: true });
-        } catch {
-          continue;
-        }
-        for (const ent of entries) {
-          try {
-            if (!ent.isFile() || !ent.name.endsWith(".md")) continue;
-            const filePath = path.join(base, ent.name);
-            const fm = parseFrontmatter(filePath);
-            const fallbackName = ent.name.replace(/\.md$/, "");
-            out.push({
-              category,
-              layer,
-              name: fm.name ?? fallbackName,
-              description: fm.description,
-              source: filePath,
-              enabled: true,
-            });
-          } catch {
-            // 한 entry 실패 무시.
-          }
-        }
-      }
-    } catch {
-      // 한 base 실패 무시.
-    }
-  }
-  return out;
-};
 
 /**
  * 2026-06-06 — 데몬 발견 경로(discoverSkills)와 일치. 옛 `.claude/skills` walk 는
@@ -908,13 +815,11 @@ const collectHooks = (cwd: string): PluginEntry[] => {
 
 export const collectInventory = async (opts?: {
   repoRoot?: string;
-  homeDir?: string;
 }): Promise<InventoryResult> => {
   // α (2026-05-25): plugins·.mcp.json 루트를 appRoot 로 정정 (앱 배포 아티팩트).
   //  결정 A: .mcp.json 은 appRoot 단일 (home 머지는 별도 라운드). dev=레포=cwd 동치라
   //  회귀 0. opts.repoRoot 명시 호출은 그대로 존중 (collectInventory({repoRoot}) 테스트·격리).
   const repoRoot = path.resolve(opts?.repoRoot ?? appRoot());
-  const homeDir = opts?.homeDir ?? os.homedir();
 
   // 5 영역 격리 — 한 영역 throw 가 다른 영역 막지 X.
   const safe = <T>(fn: () => T, fallback: T): T => {

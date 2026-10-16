@@ -8,9 +8,11 @@
 
 ## [Unreleased]
 
+## [0.73.1] - 2026-10-16
+
 ### Fixed
 
-- **윈도우에서 `.env` 의 포트·주소 값을 비워 두면, 서비스는 정상인데 `onboard`·`doctor` 가 다른 포트를 확인해 실패로 표시하던 문제.**
+- **윈도우에서 설치할 때 지정한 포트·주소를 `.env` 에 빈 값으로 두면, 서비스는 정상인데 `onboard`·`doctor` 가 다른 포트를 확인해 실패로 표시하던 문제.**
 
 ## [0.73.0] - 2026-10-16
 
@@ -2577,7 +2579,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...HEAD
+[0.73.1]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...v0.73.1
 [0.73.0]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...v0.71.0

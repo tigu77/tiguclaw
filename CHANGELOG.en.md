@@ -8,9 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.73.1] - 2026-10-16
+
 ### Fixed
 
-- **On Windows, leaving a port or address empty in `.env` made `onboard` and `doctor` check a different port and report failure while the service was fine.**
+- **On Windows, if a port or address given at install time was left empty in `.env`, `onboard` and `doctor` checked a different port and reported failure while the service was fine.**
 
 ## [0.73.0] - 2026-10-16
 
@@ -1027,7 +1029,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...HEAD
+[0.73.1]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...v0.73.1
 [0.73.0]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/tigu77/tiguclaw/compare/v0.70.1...v0.71.0

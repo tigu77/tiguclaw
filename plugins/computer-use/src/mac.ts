@@ -27,7 +27,7 @@ import {
   type CheckedTarget,
   type ScreenRect,
 } from "./observe.js";
-import { postTimeoutMs, type LowEvent } from "./control.js";
+import { keyDryEvents, postTimeoutMs, type LowEvent } from "./control.js";
 
 /** 자식 하나의 시한 — 캡처는 보통 수백 ms 다. 넘으면 권한 대화상자를 의심한다. */
 const CHILD_TIMEOUT_MS = 4_000;
@@ -365,6 +365,10 @@ const POST_SCRIPT = [
   //  ★공통 이름은 **양쪽에 다 있거나, 어느 쪽에도 없어야** 한다.
   "'.':47,tab:48,space:49,backspace:51,'delete':117,esc:53,escape:53,",
   "home:115,end:119,pageup:116,pagedown:121,",
+  // 기능키(Events.h kVK_F1~F20) · CapsLock · 숫자패드(kVK_ANSI_Keypad*) — 2026-10-18. 맥에 없는 키(Insert·PrintScreen…)는 표에 없다(`PLATFORM_ONLY_KEY_NAMES`).
+  "f1:122,f2:120,f3:99,f4:118,f5:96,f6:97,f7:98,f8:100,f9:101,f10:109,f11:103,f12:111,f13:105,f14:107,f15:113,f16:106,f17:64,f18:79,f19:80,f20:90,",
+  "capslock:57,num0:82,num1:83,num2:84,num3:85,num4:86,num5:87,num6:88,num7:89,num8:91,num9:92,",
+  "numdecimal:65,nummultiply:67,numadd:69,numdivide:75,numenter:76,numsubtract:78,",
   "left:123,right:124,down:125,up:126};",
   "var MODK = {cmd:55, shift:56, alt:58, ctrl:59};",
   "var MODF = {cmd:0x100000, shift:0x20000, alt:0x80000, ctrl:0x40000};",
@@ -556,6 +560,8 @@ const DRY_EVENTS: readonly LowEvent[] = [
   { t: "wait", ms: 1 },
   // ★**일부러 어긋나는 값**을 준다 — 가드가 «멈춘다» 를 빈 연습에서 확인하는 유일한 길이다.
   //  실제 전면 창이 무엇이든 이 값과 같을 수 없다.
+  // 모든 이름 있는 키(이 플랫폼) — 표가 이름을 다 푸는지(2026-10-18). 가드보다 **앞**이어야 지나간다.
+  ...keyDryEvents("darwin"),
   { t: "guard", front: "(없는 창)::tiguclaw-dry" },
 ];
 

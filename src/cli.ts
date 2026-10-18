@@ -213,7 +213,7 @@ const onboard = async (): Promise<number> => {
   // AI 연결은 여기서 단언하지 않는다 — 인증이 있다는 것과 모델이 답한다는 것은 다르다. 첫 대화가 그 확인이다(답을 못 하면 그 자리에서 고칠 것을 말한다).
   console.log("   Your first message there is also the AI connection check — if it can't answer, the reply says what to fix.");
   if (canOpenBrowser(process.env, process.platform)) {
-    openInBrowser(dashboardUrl);
+    openInBrowser(`${dashboardUrl}/?view=chat`); // 도착점은 첫 대화 — 첫 방문은 저장된 화면이 없어 홈이 뜬다.
     console.log("   (opening it in your browser…)");
   } else {
     console.log("   (no local browser here — open that address on this machine, or reach it through your own private network)");

@@ -78,6 +78,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommand[] = [
   { name: "providers", get description() { return translate("srv.cmd.desc.providers"); } },
   { name: "schedule", get description() { return translate("srv.cmd.desc.schedule"); } },
   { name: "stop", get description() { return translate("srv.cmd.desc.stop"); } },
+  { name: "mcp_login", get description() { return translate("srv.cmd.desc.mcp_login"); } },
 ] as const;
 
 /**

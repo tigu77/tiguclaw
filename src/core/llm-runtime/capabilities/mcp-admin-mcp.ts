@@ -29,9 +29,13 @@ import {
   removeExternalMcpServer,
   readExternalMcpServers,
   describeExternalMcpConfig,
+  skippedMcpServers,
   isProjectMcpCwd,
+  findRemoteMcpServer,
+  readProjectMcpServers,
   type ExternalMcpConfig,
 } from "../../external-mcp.js";
+import { mcpOAuthStatus, startMcpLogin } from "../../mcp-oauth.js";
 import { onDemand } from "../tool-load-policy.js";
 
 const okText = (text: string) => ({ content: [{ type: "text" as const, text }] });
@@ -51,19 +55,27 @@ export const createMcpAdminMcpServer = (turnCwd?: string): McpSdkServerConfigWit
     tools: onDemand([
       tool(
         "add_mcp_server",
-        "외부 MCP 서버를 등록합니다. path 미지정=전역(<home>/mcp.json, 어디서나) / path 지정=그 프로젝트 폴더 전용(<path>/.mcp.json, 그 프로젝트에 위임할 때만 도구 노출). stdio 는 command(+args,env), sse 는 url. **다음 턴부터 붙습니다 — 재시작은 필요 없습니다**(프로젝트 전용은 그 프로젝트에 위임하는 턴에). 다음 턴에도 그 서버의 도구가 안 보이면 연결이 실패한 것입니다 — 데몬 로그의 `external-mcp: … 연결 실패` 로 원인을 확인하세요. ★**특정 프로젝트에서만 의미 있는 서버는 반드시 path 를 지정하세요 — 전역에 넣지 마세요.** 판정: 그 서버가 특정 폴더·앱·저장소를 전제하면(예: 에디터 연동, 그 레포의 코드 색인) 프로젝트 전용입니다. 전역은 *어느 대화에서나 쓸 수 있는 것*만(예: 범용 검색). 전역에 잘못 넣으면 무관한 대화에도 도구가 실려 판단이 흐려지고, 그 앱이 안 떠 있는 기계에서는 **연결 실패가 계속 반복**됩니다(실사례 있음). 애매하면 사용자에게 물어보고, 기본은 프로젝트 전용입니다. ⚠️ 이 도구는 임의 명령(command)을 실행하고 그 서버의 도구를 당신에게 노출합니다 — Bash 급 위험이므로, 사용자가 명시적으로 요청/승인하지 않았으면 실행 전 반드시 확인하세요.",
+        "외부 MCP 서버를 등록합니다. path 미지정=전역(<home>/mcp.json, 어디서나) / path 지정=그 프로젝트 폴더 전용(<path>/.mcp.json, 그 프로젝트에 위임할 때만 도구 노출). stdio 는 command(+args,env), 원격은 url — 기본은 Streamable HTTP(지금 표준), 옛 SSE 서버만 transport='sse'. 토큰이 필요하면 headers(예: {Authorization: 'Bearer ${GITHUB_TOKEN}'}) — **토큰은 값 대신 `${변수}` 로 적고 홈 .env 에 두게 하세요**(읽을 때 바뀌고, 파일엔 이름만 남는다). ★홈 .env 는 데몬이 **시작할 때** 읽습니다 — 변수를 .env 에 새로 넣었으면 재시작(/restart) 뒤에 붙고, 그 전엔 그 서버를 건너뜁니다(list_mcp_servers 에 «변수 없음» 으로 보임). 변수가 이미 있으면 **다음 턴부터 붙습니다 — 재시작은 필요 없습니다**(프로젝트 전용은 그 프로젝트에 위임하는 턴에). 다음 턴에도 그 서버의 도구가 안 보이면 연결이 실패한 것입니다 — 데몬 로그의 `external-mcp: … 연결 실패` 로 원인을 확인하세요. ★**특정 프로젝트에서만 의미 있는 서버는 반드시 path 를 지정하세요 — 전역에 넣지 마세요.** 판정: 그 서버가 특정 폴더·앱·저장소를 전제하면(예: 에디터 연동, 그 레포의 코드 색인) 프로젝트 전용입니다. 전역은 *어느 대화에서나 쓸 수 있는 것*만(예: 범용 검색). 전역에 잘못 넣으면 무관한 대화에도 도구가 실려 판단이 흐려지고, 그 앱이 안 떠 있는 기계에서는 **연결 실패가 계속 반복**됩니다(실사례 있음). 애매하면 사용자에게 물어보고, 기본은 프로젝트 전용입니다. ⚠️ 이 도구는 임의 명령(command)을 실행하고 그 서버의 도구를 당신에게 노출합니다 — Bash 급 위험이므로, 사용자가 명시적으로 요청/승인하지 않았으면 실행 전 반드시 확인하세요.",
         {
           name: z.string().min(1),
           command: z.string().optional(),
           args: z.array(z.string()).optional(),
           env: z.record(z.string(), z.string()).optional(),
           url: z.string().optional(),
+          transport: z.enum(["http", "sse"]).optional(),
+          headers: z.record(z.string(), z.string()).optional(),
           path: z.string().optional(),
         },
         async (args) => {
           let config: ExternalMcpConfig;
           if (args.url !== undefined && args.url.trim() !== "") {
-            config = { type: "sse", url: args.url.trim() };
+            // ★URL 이면 기본 Streamable HTTP (2026-10-18) — 종전엔 무조건 SSE 로 저장해 지금 표준인 원격 서버(GitHub·Linear·Notion 류)에
+            //  붙지 못했다. SSE 는 옛 서버를 위해 명시할 때만.
+            config = {
+              type: args.transport ?? "http",
+              url: args.url.trim(),
+              ...(args.headers !== undefined && Object.keys(args.headers).length > 0 ? { headers: args.headers } : {}),
+            };
           } else if (args.command !== undefined && args.command.trim() !== "") {
             config = {
               command: args.command.trim(),
@@ -72,7 +84,7 @@ export const createMcpAdminMcpServer = (turnCwd?: string): McpSdkServerConfigWit
             };
           } else {
             return errText(
-              "command(stdio) 또는 url(sse) 중 하나는 필요합니다.",
+              "command(stdio) 또는 url(원격 — http/sse) 중 하나는 필요합니다.",
             );
           }
           const projectPath =
@@ -119,7 +131,11 @@ export const createMcpAdminMcpServer = (turnCwd?: string): McpSdkServerConfigWit
                   ? `★이 폴더는 등록된 프로젝트가 아니라 아직 붙지 않습니다 — 사용자에게 묻고 project_register 로 등록하면 그 프로젝트에 위임하는 턴부터 붙습니다.`
                   : projectPath !== undefined
                     ? `★그 프로젝트에 위임하는 턴부터 그 서버의 도구가 붙습니다(재시작 불필요).`
-                    : `★다음 턴부터 그 서버의 도구가 붙습니다(재시작 불필요).`),
+                    : `★다음 턴부터 그 서버의 도구가 붙습니다(재시작 불필요).`) +
+                // 원격인데 토큰을 안 줬으면 — 브라우저 로그인(OAuth)이 필요한 서버일 수 있다. 다음 턴 목록에 «인증 필요» 로 보이면 login_mcp_server.
+                ("type" in config && config.type !== undefined && config.headers === undefined
+                  ? ` 원격 서버라 로그인이 필요할 수 있습니다 — 다음 턴 list_mcp_servers 에 «인증 필요» 로 보이면 login_mcp_server 로 로그인 링크를 받으세요.`
+                  : ""),
             );
           } catch (e) {
             return errText(e instanceof Error ? e.message : String(e));
@@ -138,17 +154,60 @@ export const createMcpAdminMcpServer = (turnCwd?: string): McpSdkServerConfigWit
                 : undefined;
             const servers = await readExternalMcpServers(cwd);
             const names = Object.keys(servers);
-            if (names.length === 0) {
+            // ★쓰는 환경변수가 없어 건너뛴 서버도 보인다 — 안 보이면 «등록 안 됨» 으로 읽혀 같은 서버를 또 등록한다(리뷰 10-18).
+            const skipped = skippedMcpServers(cwd).filter((x) => !(x.name in servers));
+            const skippedLines = skipped.map((x) => `- ${x.name} · ★건너뜀 — 환경변수 없음: ${x.missing.join(", ")} (홈 .env 에 넣었으면 재시작 뒤 붙습니다)`);
+            if (names.length === 0 && skippedLines.length === 0) {
               return okText("등록된 외부 MCP 서버가 없습니다.");
             }
-            const lines = names.map(
-              (n) => `- ${describeExternalMcpConfig(n, servers[n]!)}`,
-            );
+            // 원격 서버는 로그인 상태도 — 그 이름이 실제로 있는 파일(프로젝트가 같은 이름을 덮으면 프로젝트 파일)로 찾는다.
+            const projectNames = cwd !== undefined ? new Set(Object.keys(await readProjectMcpServers(cwd))) : new Set<string>();
+            const lines = await Promise.all(names.map(async (n) => {
+              const c = servers[n]!;
+              let auth = "";
+              if ("type" in c && (c.type === "http" || c.type === "sse")) {
+                const t = await findRemoteMcpServer(n, projectNames.has(n) ? cwd : undefined);
+                if (t !== null && !t.userAuthorization) {
+                  const st = await mcpOAuthStatus({ file: t.file, name: n, url: t.url });
+                  auth = st === "authorized" ? " · 로그인됨" : st === "login-needed" ? " · ★인증 필요 — login_mcp_server 로 로그인하거나 headers 로 토큰을 주세요" : "";
+                }
+              }
+              return `- ${describeExternalMcpConfig(n, c)}${auth}`;
+            }));
             return okText(
-              `등록된 외부 MCP 서버 ${names.length}개${cwd ? ` (전역+프로젝트 ${cwd})` : " (전역)"}:\n${lines.join("\n")}`,
+              `등록된 외부 MCP 서버 ${names.length + skipped.length}개${cwd ? ` (전역+프로젝트 ${cwd})` : " (전역)"}:\n${[...lines, ...skippedLines].join("\n")}`,
             );
           } catch (e) {
             return errText(e instanceof Error ? e.message : String(e));
+          }
+        },
+      ),
+      tool(
+        "login_mcp_server",
+        "원격 MCP 서버에 OAuth 로 로그인합니다(브라우저 로그인이 필요한 서버 — Notion·Atlassian 류). 로그인 링크를 돌려주니 **그대로 사용자에게 주세요**. 링크를 만든 것은 로그인 성공이 아닙니다 — 사용자가 로그인을 마쳐야 붙습니다. path 는 add_mcp_server 와 같다(프로젝트 전용이면 그 폴더). 토큰을 headers 로 준 서버는 로그인이 필요 없습니다.",
+        { name: z.string().min(1), path: z.string().optional() },
+        async (args) => {
+          const projectPath =
+            args.path !== undefined && args.path.trim() !== ""
+              ? path.resolve(turnCwd ?? getPaths().home, args.path.trim())
+              : undefined;
+          const t = await findRemoteMcpServer(args.name, projectPath);
+          if (t === null) return errText(`'${args.name}' 은(는) ${projectPath ? `${projectPath}/.mcp.json` : "전역 mcp.json"} 의 원격(http/sse) 서버가 아닙니다 — list_mcp_servers 로 이름·위치를 확인하세요.`);
+          if (t.userAuthorization) return okText(`'${args.name}' 은(는) 직접 준 Authorization 헤더로 인증합니다 — OAuth 로그인은 필요 없습니다(그 토큰이 틀렸으면 headers 를 고치세요).`);
+          try {
+            const r = await startMcpLogin({ file: t.file, name: args.name, url: t.url });
+            if (r.status === "authorized") return okText(`'${args.name}' 은(는) 이미 로그인돼 있습니다.`);
+            return okText(
+              `'${args.name}' 로그인 링크(${Math.round(r.expiresInMs / 60000)}분 유효) — 사용자에게 그대로 주세요:\n${r.url}\n\n` +
+                `· 이 컴퓨터의 브라우저로 열면 로그인 뒤 저절로 끝납니다.\n` +
+                `· 다른 기기(폰 등)에서 열었다면 로그인 뒤 «연결할 수 없음» 화면이 나옵니다 — 그 화면의 **주소창 주소 전체**를 \`/mcp_login <주소>\` 로 보내라고 안내하세요. ` +
+                `그 명령은 비서에게 가지 않고 기록에도 주소가 남지 않습니다(주소 안의 일회용 코드 보호). 그 주소를 당신(비서)에게 직접 붙여넣게 하지 마세요.`,
+            );
+          } catch (e) {
+            return errText(
+              `'${args.name}' 은(는) OAuth 로그인을 시작하지 못했습니다(${e instanceof Error ? e.name : "error"}) — 이 서버가 OAuth 정보를 내지 않거나 지원하지 않는 등록 방식일 수 있습니다. ` +
+                `서비스가 API 토큰을 준다면 add_mcp_server 의 headers 로 넣는 길이 있습니다.`,
+            );
           }
         },
       ),

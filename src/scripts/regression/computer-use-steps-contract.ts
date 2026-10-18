@@ -366,14 +366,33 @@ export const check: RegressionCheck = {
       //  통과하고 실행부가 **열 한가운데서** 던진다. 앞 step 은 이미 발사된 뒤다.
       //  요지는 «이미 아는 한 입력을 막았다» 가 아니라 **«어떤 미지원 입력도 앞선 행동을
       //  실행시키지 않는다»** 이다.
+      //  ★(2026-10-18) f5 는 이제 지원한다(기능키 전체) — 예시는 **정말 없는 이름**(`f99`)으로 바꿨다. 그리고 «이 플랫폼에만 없는 키» 도 같은 길이다:
+      //   맥에서 `printscreen`(Windows 전용)이 든 열도 앞 click 이 나가기 전에 거절돼야 한다.
       const withF5 = planSteps(
-        [{ t: "click", x: 1, y: 1 }, { t: "keydown", key: "f5" }, { t: "keyup", key: "f5" }],
+        [{ t: "click", x: 1, y: 1 }, { t: "keydown", key: "f99" }, { t: "keyup", key: "f99" }],
+        frame("A:1"),
+        "win32",
+      );
+      const winOnlyOnMac = planSteps(
+        [{ t: "click", x: 1, y: 1 }, { t: "keydown", key: "printscreen" }, { t: "keyup", key: "printscreen" }],
+        frame("A:1"),
+        "darwin",
+      );
+      const altF4 = planSteps(
+        [{ t: "keydown", key: "alt" }, { t: "keydown", key: "F4" }, { t: "keyup", key: "F4" }, { t: "keyup", key: "alt" }],
         frame("A:1"),
         "win32",
       );
       out.push(
         assert(
-          "★★양쪽 표에 **없는 이름**(f5)이 든 열은 거절된다 — 앞의 click 이 먼저 나가면 안 된다",
+          "★기능키·플랫폼 전용 키 — `alt`+`F4` 는 통과(대소문자 무관) · 맥에서 Windows 전용 키(printscreen)가 든 열은 앞 click 전에 거절",
+          altF4.ok && !winOnlyOnMac.ok && winOnlyOnMac.why === "unsupported-key",
+          JSON.stringify({ altF4: altF4.ok, winOnlyOnMac: winOnlyOnMac.ok ? "통과" : winOnlyOnMac.why }),
+        ),
+      );
+      out.push(
+        assert(
+          "★★양쪽 표에 **없는 이름**(f99)이 든 열은 거절된다 — 앞의 click 이 먼저 나가면 안 된다",
           !withF5.ok && withF5.why === "unsupported-key",
           withF5.ok ? `통과시켰다 — 이벤트 ${String(withF5.events.length)}개` : `why=${withF5.why}`,
         ),
@@ -381,8 +400,8 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "★거절 문구가 **무엇이 문제인지** 짚는다(사유만 던지면 같은 이름으로 다시 온다)",
-          planRejection("unsupported-key", "f5").includes("f5"),
-          planRejection("unsupported-key", "f5").split("\n")[0] ?? "",
+          planRejection("unsupported-key", "f99").includes("f99"),
+          planRejection("unsupported-key", "f99").split("\n")[0] ?? "",
         ),
       );
       out.push(

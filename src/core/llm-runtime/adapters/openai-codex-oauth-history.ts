@@ -156,6 +156,8 @@ export interface CodexToolCall {
   callId: string; // `call_id` — function_call_output 의 match key
   name: string;
   partialJson: string;
+  /** 접힌 도구를 펼쳐 부른 호출의 묶음 이름(도구 접기, 2026-10-17). 펼친 도구면 없다. */
+  namespace?: string;
 }
 
 export interface CodexSseResult {
@@ -164,6 +166,12 @@ export interface CodexSseResult {
   /** 정상 완료된 출력 항목. 같은 실행의 다음 요청에만 원래 순서로 재전송한다. */
   replayOutput?: ResponseInputItem[];
   text: string;
+  /**
+   * ★**최종 답 글만**(2026-10-18, 회사돌쇠 «답변에 작성용 메모 혼입») — 이 응답에 `phase:"commentary"` 메시지가 있을 때만 채운다.
+   *  gpt-6 계열은 메시지마다 `phase`(`commentary`=도구 앞 중간 해설 · `final_answer`=최종 답)를 보내는데(2026-10-18 실측), `text` 는
+   *  둘을 그대로 이어 붙인다. 사용자에게 갈 최종 답은 이 값을 쓴다(OpenClaw 와 같은 판단 — final_answer 를 고른다). 없으면 `text`.
+   */
+  answerText?: string;
   responseId: string | undefined;
   toolCalls: CodexToolCall[];
   /**
@@ -296,7 +304,8 @@ export const parseCodexSse = async (
   onChunk?: () => void,
   // llm.delta fan-out — output_text.delta 누적 시점마다 증분 텍스트 호출(onChunk 선례).
   // 미지정 = no-op(회귀 0). coalesce·publish 는 호출부 책임(파서 순수성 보존).
-  onTextDelta?: (delta: string) => void,
+  //  두 번째 인자 = 이 조각이 중간 해설(phase:"commentary")인가 — 끊김 복구가 이어받는 글에서 해설을 가른다.
+  onTextDelta?: (delta: string, commentary?: boolean) => void,
   // 진전(progress) heartbeat — *실제 진전* 이벤트에만 호출. no-progress 타이머 reset 용
   // (in_progress heartbeat 는 진전 아님 → 미호출).
   // 진전으로 세는 것: output_text.delta · function_call 시작 · **function_call 인자 델타**.
@@ -340,6 +349,10 @@ export const parseCodexSse = async (
   const decoder = new TextDecoder();
   let buffer = "";
   let text = "";
+  /** 메시지 항목별 phase(`response.output_item.added` 가 델타보다 먼저 준다) · 해설이 아닌 글 · 해설을 봤나. */
+  const messagePhase = new Map<string, string>();
+  let answerText = "";
+  let sawCommentary = false;
   let responseId: string | undefined;
   let cacheAttribution: CacheAttribution | undefined;
   let usage:
@@ -446,11 +459,19 @@ export const parseCodexSse = async (
             typeof event.delta === "string"
           ) {
             text += event.delta;
+            const phase = typeof event.item_id === "string" ? messagePhase.get(event.item_id) : undefined;
+            if (phase === "commentary") sawCommentary = true;
+            else answerText += event.delta; // phase 모름(옛 모델·항목 없음)은 답으로 — 지금 동작 그대로.
             if (sawToolCall) textAfterTool += event.delta.length; // 순서 계수(관측 전용).
             // llm.delta fan-out — 순수 텍스트 증분만(누적본 아님). 호출부 coalescer 가
             // ~80ms∥120자로 묶어 publish. 미지정(onTextDelta===undefined)이면 no-op.
-            onTextDelta?.(event.delta);
+            onTextDelta?.(event.delta, phase === "commentary");
             onProgress?.("text"); // 실제 output = 진전 → no-progress 타이머 reset.
+          }
+          // 메시지 phase 기억 — 델타의 item_id 로 찾는다.
+          if (event.type === "response.output_item.added" && event.item?.type === "message") {
+            const it = event.item as { id?: unknown; phase?: unknown };
+            if (typeof it.id === "string" && typeof it.phase === "string") messagePhase.set(it.id, it.phase);
           }
           // V5.3 — function_call lifecycle 1 분기: output_item.added.
           // OpenClaw L407-418 답습 — partialJson 시작값 = item.arguments (대개 "").
@@ -518,11 +539,13 @@ export const parseCodexSse = async (
               typeof event.item.arguments === "string" && event.item.arguments !== ""
                 ? event.item.arguments
                 : currentToolCall.partialJson;
+            const ns = (event.item as { namespace?: unknown }).namespace;
             toolCalls.push({
               id: event.item.id ?? currentToolCall.id,
               callId: event.item.call_id ?? currentToolCall.callId,
               name: event.item.name ?? currentToolCall.name,
               partialJson: finalJson,
+              ...(typeof ns === "string" && ns !== "" ? { namespace: ns } : {}),
             });
             currentToolCall = null;
           }
@@ -656,6 +679,7 @@ export const parseCodexSse = async (
   // lastEvent — 빈 응답 진단용(2026-07-30). `response.completed` 가 안 왔는지 로그로 가른다.
   return {
     text,
+    ...(sawCommentary ? { answerText } : {}),
     responseId,
     toolCalls,
     ...(replayOutput !== undefined ? { replayOutput } : {}),
@@ -738,6 +762,8 @@ export type ResponseInputFunctionCall = {
   call_id: string;
   name: string;
   arguments: string;
+  /** 접힌 도구를 펼쳐 부른 호출의 묶음 이름 — 다시 실을 때 보존한다(도구 접기, 2026-10-17). */
+  namespace?: string;
 };
 
 // V5.3 — OpenClaw L324-342 답습. function_call_output 도 input array 의 1 원소.
@@ -753,7 +779,31 @@ export type ResponseInputItem =
   | ResponseInputFunctionCall
   | ResponseInputFunctionCallOutput
   | ResponseInputReasoning
-  | ResponseInputWebSearchCall;
+  | ResponseInputWebSearchCall
+  | ResponseInputToolSearchCall
+  | ResponseInputToolSearchOutput;
+
+/**
+ * 도구 검색 한 번(서버 실행) — **같은 턴의 다음 요청에 다시 싣는다**(도구 접기, 2026-10-17). 웹 검색과 같은 이유다: 빼면 펼친 정의가
+ *  사라지고 응답 전체가 재전송에서 빠져 `namespace` 까지 잃는다. 서버 실행은 `call_id: null` 이 정상 형식. 다시 실을 땐 `id` 를 뺀다
+ *  (`store:false` — 실측 T1: 빼도 받고 다시 검색하지 않는다).
+ */
+export type ResponseInputToolSearchCall = {
+  type: "tool_search_call";
+  id?: string;
+  execution: string;
+  call_id: string | null;
+  status: "completed";
+  arguments: unknown;
+};
+export type ResponseInputToolSearchOutput = {
+  type: "tool_search_output";
+  id?: string;
+  execution: string;
+  call_id: string | null;
+  status: "completed";
+  tools: unknown[];
+};
 
 /**
  * 서버 내장 웹 검색 한 번 — **같은 턴의 다음 요청에 다시 싣는다** (2026-10-12 맥돌쇠 2시간 반복의 근본 원인).
@@ -772,6 +822,10 @@ export type ResponseInputWebSearchCall = {
 
 /** 다음 요청에 실을 모양으로 — 검색 항목만 다듬고 나머지는 받은 그대로. */
 const toReplayItem = (item: ResponseInputItem): ResponseInputItem => {
+  if (item.type === "tool_search_call" || item.type === "tool_search_output") {
+    const { id: _id, ...rest } = item;
+    return rest as ResponseInputItem;
+  }
   if (item.type !== "web_search_call") return item;
   const { sources: _sources, ...action } = item.action;
   return { type: "web_search_call", status: "completed", action };
@@ -803,7 +857,14 @@ const isReplayableOutput = (raw: unknown): raw is ResponseInputItem => {
           typeof (c as Record<string, unknown>).text === "string");
     case "function_call":
       return typeof item.call_id === "string" && typeof item.name === "string" &&
-        typeof item.arguments === "string";
+        typeof item.arguments === "string" && (item.namespace === undefined || typeof item.namespace === "string");
+    // 도구 검색 — 완료된 것만(위 status 조건). 서버 실행은 call_id 가 null 이다.
+    case "tool_search_call":
+      return typeof item.execution === "string" && (item.call_id === null || typeof item.call_id === "string") &&
+        item.arguments !== null && typeof item.arguments === "object";
+    case "tool_search_output":
+      return typeof item.execution === "string" && (item.call_id === null || typeof item.call_id === "string") &&
+        Array.isArray(item.tools);
     case "web_search_call":
       return item.action !== null && typeof item.action === "object" && !Array.isArray(item.action);
     default:
@@ -827,7 +888,7 @@ export const compatibleReplayOutput = (result: CodexSseResult): ResponseInputIte
   if (calls.length !== result.toolCalls.length || calls.some((call, i) => {
     const executed = result.toolCalls[i];
     return call.call_id !== executed?.callId || call.name !== executed.name ||
-      call.arguments !== (executed.partialJson || "{}");
+      call.arguments !== (executed.partialJson || "{}") || call.namespace !== executed.namespace;
   })) return undefined;
   if (messages.map(item => item.content.map(c => "text" in c ? c.text : "").join("")).join("") !== result.text) return undefined;
   return output;
@@ -1940,7 +2001,7 @@ const steeringItems = new WeakSet<ResponseInputItem>();
 const originalToolOutputs = new WeakMap<ResponseInputItem, string>();
 
 const historyInputItem = (it: CodexTurnItem): ResponseInputItem => {
-  if (it.type === "function_call") return { type: "function_call", call_id: it.call_id, name: it.name, arguments: it.arguments };
+  if (it.type === "function_call") return { type: "function_call", call_id: it.call_id, name: it.name, arguments: it.arguments, ...(it.namespace !== undefined ? { namespace: it.namespace } : {}) };
   if (it.type === "function_call_output") {
     const o: ResponseInputItem = { type: "function_call_output", call_id: it.call_id, output: it.output };
     historyToolOutputs.add(o);
@@ -1981,7 +2042,8 @@ export const collectTurnItems = (turnSlice: readonly ResponseInputItem[], finalT
     // ★저장 전에 비밀값을 가린다(전체 검토 2026-09-28) — 도구 결과(예: 모델이 읽은 `.env`)가 이제 DB 에 남고 다음 턴에
     //  다시 보내진다. 턴 안에선 원문을 봤으니 다음 턴엔 가려진 값이면 충분하다. 중간 발화는 모델의 글이라 그대로.
     if (it.type === "function_call") {
-      if (outs.has(it.call_id)) out.push({ type: "function_call", call_id: it.call_id, name: it.name, arguments: redactSecrets(it.arguments) });
+      // 접힌 도구 호출이면 묶음 이름을 같이 남긴다 — 정의는 저장하지 않는다(다음 턴에 현재 정의로 재구성, 도구 접기 계약 A).
+      if (outs.has(it.call_id)) out.push({ type: "function_call", call_id: it.call_id, name: it.name, arguments: redactSecrets(it.arguments), ...(it.namespace !== undefined ? { namespace: it.namespace } : {}) });
     } else if (it.type === "function_call_output") {
       if (calls.has(it.call_id)) out.push({ type: "function_call_output", call_id: it.call_id, output: redactSecrets(originalToolOutputs.get(it) ?? it.output) });
     } else if (it.type === "message") {
@@ -2330,6 +2392,9 @@ export const settleThreadCompaction = async (threadKey: string): Promise<void> =
 export const compactHistoryAfterTurn = (threadKey: string): Promise<void> | undefined => {
   const args = lastCompactArgs.get(threadKey);
   lastCompactArgs.delete(threadKey);
+  // ★취소된 턴이 남긴 설정은 쓰지 않는다 (2026-10-18 적대 검토 P3-1) — 그 요약 클로저는 이미 끊긴 신호를 잡고 있어, 다음 턴(예: Claude)
+  //  뒤에 돌면 요약 0회로 «요약 취소됨» 만 찍고 미리 접기 한 번이 사라졌다. 다음 요청이 다시 판정한다.
+  if (args?.signal?.aborted === true) return undefined;
   if (args === undefined || isDerivedThread(threadKey) || postTurnQueued.has(threadKey)) return undefined;
   postTurnQueued.add(threadKey);
   // 접을지·얼마나의 기준은 드라이버(`compactThreadHistoryUnlocked` 의 postTurn 분기)에 있다 — 직전 크기로 판정, 몫 0 저수위까지.

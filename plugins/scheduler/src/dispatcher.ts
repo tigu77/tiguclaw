@@ -7,7 +7,7 @@
  * 구현 X). 여기선 스케줄 식별 라벨만 얹어 위임한다.
  */
 import type { EventBus } from "../../../src/core/eventbus.js";
-import { deliverOutbound } from "../../../src/core/outbound.js";
+import { deliverOutbound, sessionOfDestination } from "../../../src/core/outbound.js";
 
 export interface DispatchInput {
   scheduleId: number;
@@ -15,8 +15,6 @@ export interface DispatchInput {
   destTarget: string | null;
   text: string;
   bus: EventBus;
-  /** 관측(세션 귀속)용 threadKey — 세션 미지정 스케줄은 기본 세션. 배달 좌표와 독립. */
-  sessionThreadKey: string;
 }
 
 export const dispatch = async (input: DispatchInput): Promise<void> => {
@@ -31,7 +29,8 @@ export const dispatch = async (input: DispatchInput): Promise<void> => {
     text: input.text,
     bus: input.bus,
     label: `scheduler:${input.scheduleId}`,
-    observeThreadKey: input.sessionThreadKey,
+    // 표시 세션 = 목적지가 가리키는 세션(대시보드 대화를 목적지로 잡았으면 그 대화, 아니면 기본 세션) — 판정은 코어 한 곳.
+    observeThreadKey: sessionOfDestination(input.destChannel, input.destTarget),
   });
   if (!r.delivered) {
     throw new Error(`Schedule delivery failed — ${r.reason ?? "not delivered"}`);

@@ -28,6 +28,7 @@ import { credentialFollowAvailable } from "../core/credential-env.js";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
 import { createAuthorizationFlow } from "../core/llm-runtime/adapters/openai-codex-oauth.js";
+import { canOpenBrowser, openInBrowser } from "../core/onboard-ready.js";
 // ★파싱·CSRF 검증·토큰 저장·쿨다운 해제는 **코어에 있다** — 대시보드 인증 버튼이 같은 일을
 //  하게 되면서 꺼냈다(2026-09-05). 복사하면 한쪽만 고쳐지는 날 한쪽 사용자가 조용히
 //  로그아웃된다. 여기 남는 것은 터미널 문구와 readline 뿐이다.
@@ -68,11 +69,18 @@ const successPage = `<!doctype html><html lang="en"><meta charset="utf-8">
 const main = async (): Promise<void> => {
   const flow = await createAuthorizationFlow();
   console.log("\n=== tiguclaw Codex OAuth flow ===\n");
-  console.log("Open the URL below in a browser, sign in to ChatGPT and allow access:\n");
+  // ★브라우저를 **연다** (2026-10-18, 깨끗한 윈도우 실기). 종전엔 콘솔에 줄바꿈된 400자 주소만 찍어서 손으로 옮겨야 했다 —
+  //  초보자에게 가장 어려운 손동작이다. 열 수 없는 자리(SSH·화면 없음)에서만 주소를 옮기게 한다.
+  const autoOpen = canOpenBrowser(process.env, process.platform);
+  console.log(
+    autoOpen
+      ? "Opening your browser — sign in to ChatGPT and allow access. (If it doesn't open, open the URL below.)\n"
+      : "Open the URL below in a browser, sign in to ChatGPT and allow access:\n",
+  );
   console.log(flow.url);
   console.log(`\nWaiting for the callback (localhost:${PORT}${CALLBACK_PATH})...`);
   console.log(
-    "★If it doesn't continue on its own: after signing in, copy the browser's **full address bar URL**, paste it here and press Enter.\n",
+    "★If it doesn't continue on its own: after signing in, copy the browser's full address bar URL, paste it here and press Enter.\n",
   );
 
   let settled = false;
@@ -179,7 +187,8 @@ const main = async (): Promise<void> => {
       }
       fail(err);
     });
-    server.listen(PORT);
+    // 콜백을 받을 준비가 된 뒤에 연다 — 먼저 열면 빠른 로그인의 콜백이 아직 없는 포트에 닿는다.
+    server.listen(PORT, () => { if (autoOpen) openInBrowser(flow.url); });
 
     // ── 수동 경로 — 주소창 붙여넣기 ────────────────────────────────────────
     rl.on("line", (line) => {

@@ -85,13 +85,14 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const launch = d.winLaunchEnv({}, home);
       assert.equal(launch.HTTP_BRIDGE_TOKEN, undefined); assert.equal(launch.NODE_OPTIONS, undefined);
     });
-    test("★VBS 는 환경을 심지 않는다 — 심으면 그 값이 «실행 환경» 이 되어 홈 .env 를 이긴다", () => {
-      const vbs = d.buildWinVbs(c);
-      const envLines = vbs.split("\r\n").filter((l: string) => l.includes('sh.Environment("PROCESS")'));
-      assert.equal(envLines.length, 1, envLines.join(" | ")); // node 폴더를 PATH 앞에 세우는 한 줄뿐
-      assert(envLines[0].includes('("PATH")') && vbs.includes("--home"));
-      assert(!vbs.includes("TOKEN"));
-      return `env 줄 ${envLines.length}`;
+    test("★예약작업 액션은 환경을 심지 않는다 — 심으면 그 값이 «실행 환경» 이 되어 홈 .env 를 이긴다", () => {
+      const a = d.winTaskAction(c);
+      assert.equal(a.execute, d.winConhostPath());
+      assert(a.argument.startsWith("--headless ") && a.argument.includes("--home"), a.argument);
+      assert(!/TOKEN|PATH=|\bset\b/i.test(a.argument), a.argument);
+      // 값으로도 본다 — 키 이름 검사만으론 토큰 **값**을 덧붙이는 변이가 통과했다(적대 검토 G5).
+      for (const v of ["do-not-persist-test-token", "do-not-persist-test-oauth", "private-test-only", "injected-secret"]) assert(!a.argument.includes(v), v);
+      return "액션 = conhost --headless 감독자 · 환경 0";
     });
     test("손상된 저장본: 다른 기본 인스턴스로 fallback 금지(던진다)", () => {
       const file = path.join(home, "win-service-env.json"); const before = fs.readFileSync(file, "utf8");
@@ -200,23 +201,159 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       assert(/winEnsureTask\(c\)/.test(startSrc) && !/capture/.test(startSrc), "start 가 붙잡는다");
       return `시나리오 ${all.length}개 저장 0`;
     });
+    // ★winEnsureTask 를 실제 본문으로 돌린다 — 의존은 기록형 가짜(적대 검토 G2: 삭제가 «있다» 만 보고 «성공 뒤에만» 은 안 봤다).
+    const ensureSrc = source.slice(source.indexOf("const winEnsureTask = (c, opts = {}) => {"), source.indexOf("\n};\n", source.indexOf("const winEnsureTask = (c, opts = {}) => {")) + 3);
+    const runEnsure = (o: { capture?: boolean; register?: boolean; exists?: boolean; fallback?: string | null; supported?: boolean; legacyStartup?: boolean } = {}) => {
+      const ev: string[] = [];
+      const ensure = new Function("winRemoveLegacyAutostart", "mkdirSync", "warnWinServiceToken", "saveWinServiceEnv", "rmSync", "winLegacyVbsPath",
+        "winPs", "psq", "winTaskName", "buildWinTaskScript", "winRemoveStartupFallback", "winTaskExists", "console", "winWriteStartupFallback",
+        "winHeadlessSupported", "winKillRunning", "os", "winLegacyStartupVbsPath", "existsSync",
+        ensureSrc + "; return winEnsureTask;")(() => ev.push("legacy-autostart"), () => {}, () => ev.push("warn"), () => ev.push("save"),
+        (p: string) => ev.push("rm:" + path.basename(p)), () => "H\\win-launch.vbs",
+        (script: string) => {
+          if (script === "REGISTER") { ev.push("register"); return o.register === false ? { status: 0, stdout: "TASK_ERR: denied", stderr: "" } : { status: 0, stdout: "TASK_REGISTERED", stderr: "" }; }
+          ev.push("disable-stop"); return { status: 0, stdout: "", stderr: "" };
+        },
+        (x: string) => x, () => "task", () => "REGISTER", () => { ev.push("remove-fallback"); return false; }, () => o.exists === true,
+        { log: () => {}, warn: () => {}, error: () => {} }, () => { ev.push("write-fallback"); return o.fallback ?? null; },
+        () => o.supported !== false, () => { ev.push("kill"); return []; }, { release: () => "10.0.14393" },
+        () => "Startup\\tiguclaw.vbs", () => o.legacyStartup === true);
+      return { mode: ensure(c, o.capture === true ? { capture: true } : {}), ev };
+    };
     test("★예약작업 등록(winEnsureTask)은 capture 를 받았을 때만 붙잡는다 — 업데이트 뒤 재가동(start)이 붙잡으면 데몬 환경이 박힌다", () => {
-      const fn = source.slice(source.indexOf("const winEnsureTask = (c, opts = {}) => {"), source.indexOf("\n};\n", source.indexOf("const winEnsureTask = (c, opts = {}) => {")) + 3);
-      const runEnsure = (opts?: { capture?: boolean }) => {
-        const saves: string[] = [];
-        const ensure = new Function("winRemoveLegacyAutostart", "mkdirSync", "warnWinServiceToken", "saveWinServiceEnv", "writeVbs", "winVbsPath", "buildWinVbs",
-          "winPs", "psq", "winTaskName", "buildWinTaskScript", "winRemoveStartupFallback", "spawnSync", "console", "winWriteStartupFallback",
-          fn + "; return winEnsureTask;")(() => {}, () => {}, () => saves.push("warn"), () => saves.push("save"), () => {}, () => "x.vbs", () => "",
-          () => ({ status: 0, stdout: "TASK_REGISTERED", stderr: "" }), (x: string) => x, () => "task", () => "", () => false, () => ({ status: 0 }),
-          { log: () => {}, warn: () => {}, error: () => {} }, () => null);
-        const mode = ensure(c, opts);
-        return { mode, saves };
-      };
       const start = runEnsure();
       const install = runEnsure({ capture: true });
-      assert.equal(start.mode, true); assert.deepEqual(start.saves, []);
-      assert(install.saves.includes("save"));
-      return `start 저장 ${start.saves.length} · install 저장 ${install.saves.filter((x) => x === "save").length}`;
+      assert.equal(start.mode, true); assert(!start.ev.includes("save"), start.ev.join(","));
+      assert(install.ev.includes("save"));
+      return `start 저장 0 · install 저장 ${install.ev.filter((x) => x === "save").length}`;
+    });
+    test("★옛 VBS 런처는 새 등록이 성공한 뒤에만 지운다 · 성공하면 폴백을 걷는다 · 등록이 프로세스를 죽이지 않는다(셸 도구로 부르면 자기 자신까지 죽었다)", () => {
+      const ok = runEnsure();
+      assert.deepEqual(ok.ev.filter((x) => x !== "legacy-autostart"), ["disable-stop", "register", "rm:H\\win-launch.vbs", "remove-fallback"]);
+      const all = [runEnsure({ capture: true }), runEnsure({ register: false, exists: true }), runEnsure({ register: false, exists: false, fallback: null })];
+      assert(all.every((r) => !r.ev.includes("kill")), "winEnsureTask 가 프로세스를 죽인다");
+      const keep = runEnsure({ register: false, exists: true });
+      assert.equal(keep.mode, true); assert(!keep.ev.some((x) => x.startsWith("rm:")), keep.ev.join(","));
+      const fb = runEnsure({ register: false, exists: false, fallback: "X.lnk" });
+      assert.equal(fb.mode, "fallback"); assert(!fb.ev.some((x) => x.startsWith("rm:")), fb.ev.join(","));
+      return `성공 ${ok.ev.join("→")} · 실패 갈래 삭제 0`;
+    });
+    test("★자동시작을 둘 다 못 걸어도 «지금만» 으로 돌려준다(호출부가 띄운다) — 종전엔 감독자를 아예 안 띄웠다", () => {
+      const r = runEnsure({ register: false, exists: false, fallback: null });
+      assert.equal(r.mode, "now-only");
+      const bodyOf = (fn: string) => source.slice(source.indexOf(fn), source.indexOf("\n};\n", source.indexOf(fn)));
+      assert(/mode === "now-only"\) \{[\s\S]{0,600}?winLaunchSupervisor\(c\);\s*process\.exitCode = 1;\s*\} else if \(mode === false\)/.test(bodyOf("const winInstall = (c) => {")), "install");
+      return `mode=${r.mode}`;
+    });
+    // ★winStart 를 실제 본문으로 — 모드별로 무엇을 하나(재검토 G1·G2: now-only 갈래를 무력화해도 정규식 검사는 초록이었다).
+    const startSrc = source.slice(source.indexOf("const winStart = (c) => {"), source.indexOf("\n};\n", source.indexOf("const winStart = (c) => {")) + 3);
+    const runStart = (o: { running?: boolean; mode?: unknown; enableFails?: boolean }) => {
+      const ev: string[] = [];
+      const prevCode = process.exitCode;
+      process.exitCode = undefined;
+      const start = new Function("isDaemonRunning", "winPort", "winEnsureTask", "winTaskName", "winLaunchSupervisor", "winPs", "winEnableStartScript",
+        "reportLaunch", "waitForListening", "listeningOnBridge", "path", "console", "winLaunchLegacyStartup", startSrc + "; return winStart;")(
+        () => o.running === true, () => 7021, () => { ev.push("ensure"); return o.mode; }, () => "task", () => ev.push("launch"),
+        (x: string) => { ev.push(x); return { status: o.enableFails === true ? 1 : 0, stdout: "", stderr: "" }; }, () => "ENABLE_START",
+        () => ev.push("report"), () => true, () => true, path, { log: () => {}, warn: () => ev.push("warn"), error: () => ev.push("error") },
+        () => ev.push("launch-legacy"));
+      start(c);
+      const code = process.exitCode;
+      process.exitCode = prevCode;
+      return { ev, code };
+    };
+    test("★start: 이미 돌면 아무것도 안 한다(등록·기동 0) · 예약작업=켜고 띄움 · 폴백·지금만=직접 기동 · 지금만은 실패 코드 없이 경고 · 등록 불가=실패", () => {
+      const running = runStart({ running: true, mode: true });
+      assert.deepEqual(running.ev, []); assert.equal(running.code, undefined);
+      const task = runStart({ mode: true });
+      assert.deepEqual(task.ev, ["ensure", "ENABLE_START", "report"]); assert.equal(task.code, undefined);
+      const fb = runStart({ mode: "fallback" });
+      assert.deepEqual(fb.ev, ["ensure", "launch", "report"]);
+      const now = runStart({ mode: "now-only" });
+      assert.deepEqual(now.ev, ["ensure", "warn", "launch", "report"]); assert.equal(now.code, undefined);
+      const none = runStart({ mode: false });
+      assert.deepEqual(none.ev, ["ensure", "error"]); assert.equal(none.code, 1);
+      // 1809 미만 + 옛 시작프로그램 — /update 뒤 start 가 그 런처로 띄운다(리뷰 10-18: 종전엔 아무것도 안 떴다).
+      const legacy = runStart({ mode: "legacy-startup" });
+      assert.deepEqual(legacy.ev, ["ensure", "launch-legacy", "report"]); assert.equal(legacy.code, undefined);
+      return "모드 5갈래";
+    });
+    test("작업 존재 판정 = schtasks /query 의 종료 코드", () => {
+      const fn = source.slice(source.indexOf("const winTaskExists = (c) =>"), source.indexOf(";\n", source.indexOf("const winTaskExists = (c) =>")) + 2);
+      const mk = (status: number) => new Function("spawnSync", "winTaskName", fn + " return winTaskExists;")(
+        (cmd: string, args: string[]) => { assert.equal(cmd, "schtasks"); assert.deepEqual(args, ["/query", "/tn", "task"]); return { status }; }, () => "task");
+      assert.equal(mk(0)(c), true); assert.equal(mk(1)(c), false);
+    });
+    test("★--headless 를 모르는 옛 윈도우는 아무것도 바꾸지 않는다(옛 등록 유지) · 판정은 1809(17763)부터", () => {
+      const keep = runEnsure({ supported: false, exists: true });
+      const none = runEnsure({ supported: false, exists: false });
+      // 예약작업이 막혀 옛 시작프로그램 `.vbs` 로 돌던 기계 — 그 런처를 그대로 쓴다(리뷰 10-18: false 를 돌려 /update 뒤 아무것도 안 떴다).
+      const legacy = runEnsure({ supported: false, exists: false, legacyStartup: true });
+      assert.equal(keep.mode, true); assert.equal(none.mode, false); assert.equal(legacy.mode, "legacy-startup");
+      assert.deepEqual([...keep.ev, ...none.ev, ...legacy.ev], []);
+      const cases = { "10.0.17134": false, "10.0.17763": true, "10.0.26200": true, "25.3.0": true } as Record<string, boolean>;
+      for (const [rel, want] of Object.entries(cases)) assert.equal(d.winHeadlessSupported(rel), want, rel);
+      return "옛 빌드 변경 0";
+    });
+    test("★등록 스크립트의 실제 출력 — 액션 한 줄이 winTaskAction 그대로(conhost 절대경로·작업 폴더) · 대입 한 번", () => {
+      const script: string = d.buildWinTaskScript(c);
+      const a = d.winTaskAction(c);
+      const q = (x: string) => `'${x.replace(/'/g, "''")}'`;
+      const lines = script.split("\n").filter((l) => /New-ScheduledTaskAction/.test(l));
+      assert.deepEqual(lines, [`$action = New-ScheduledTaskAction -Execute ${q(a.execute)} -Argument ${q(a.argument)} -WorkingDirectory ${q(c.repoRoot)}`]);
+      assert.equal((script.match(/^\$action\s*=/gm) ?? []).length, 1);
+      assert(/Register-ScheduledTask [^\n]*-Action \$action /.test(script));
+      assert.equal(d.winConhostPath({ SystemRoot: "D:\\Win" }), "D:\\Win\\System32\\conhost.exe");
+      assert.equal(d.winConhostPath({}), "C:\\Windows\\System32\\conhost.exe");
+      return a.execute;
+    });
+    test("★시작프로그램 폴백 = 같은 액션의 .lnk(창 최소화) · 걷을 때 .lnk 와 옛 .vbs 둘 다", () => {
+      const a = d.winTaskAction(c);
+      const q = (x: string) => `'${x.replace(/'/g, "''")}'`;
+      const sc: string = d.buildWinShortcutScript(c, "X.lnk");
+      for (const part of [`CreateShortcut('X.lnk')`, `$s.TargetPath = ${q(a.execute)};`, `$s.Arguments = ${q(a.argument)};`, `$s.WorkingDirectory = ${q(c.repoRoot)};`, "$s.WindowStyle = 7;", "'LNK_OK'"]) assert(sc.includes(part), part);
+      const prev = process.env.APPDATA;
+      const appData = fs.mkdtempSync(path.join(home, "appdata-"));
+      try {
+        process.env.APPDATA = appData;
+        const lnk: string = d.winStartupLnkPath(c);
+        assert(lnk.endsWith(path.join("Startup", `${c.label}.lnk`)), lnk);
+        fs.mkdirSync(path.dirname(lnk), { recursive: true });
+        fs.writeFileSync(lnk, ""); fs.writeFileSync(path.join(path.dirname(lnk), `${c.label}.vbs`), "");
+        assert.equal(d.winRemoveStartupFallback(c), true);
+        assert.deepEqual(fs.readdirSync(path.dirname(lnk)), []);
+      } finally { if (prev === undefined) delete process.env.APPDATA; else process.env.APPDATA = prev; }
+      return "폴백 .lnk · 걷기 2/2";
+    });
+    test("★옛 VBS 런처 경로 = 옛 코드가 쓰던 바로 그 파일(홈의 win-launch.vbs) — 이름이 갈리면 넘어온 기계에 옛 파일이 남는다", () => {
+      assert.equal(d.winLegacyVbsPath(c), path.join(home, "win-launch.vbs"));
+    });
+    test("★감독자 직접 기동(폴백·지금만) = conhost --headless 절대경로 · 분리 실행 · 실패를 말한다", () => {
+      const fn = source.slice(source.indexOf("const winLaunchSupervisor = (c) => {"), source.indexOf("\n};\n", source.indexOf("const winLaunchSupervisor = (c) => {")) + 3);
+      const calls: Array<{ cmd: string; args: string[]; opts: Record<string, unknown> }> = [];
+      const handlers: Record<string, (e: Error) => void> = {};
+      const errors: string[] = [];
+      const launch = new Function("spawn", "winConhostPath", "winSuperviseArgv", "console", fn + "; return winLaunchSupervisor;")(
+        (cmd: string, args: string[], opts: Record<string, unknown>) => { calls.push({ cmd, args, opts }); return { on: (n: string, h: (e: Error) => void) => { handlers[n] = h; }, unref: () => {} }; },
+        d.winConhostPath, d.winSuperviseArgv, { error: (m: string) => errors.push(m), log: () => {}, warn: () => {} });
+      launch(c);
+      const call = calls[0];
+      assert(call !== undefined && call.cmd === d.winConhostPath() && call.args[0] === "--headless", JSON.stringify(call));
+      assert.deepEqual(call.args.slice(1), d.winSuperviseArgv(c)); assert.equal(call.opts.detached, true);
+      handlers.error?.(new Error("ENOENT conhost"));
+      assert(errors.some((m) => m.includes("ENOENT conhost")), "기동 실패를 삼켰다");
+      return call.cmd;
+    });
+    test("★uninstall 이 옛 VBS 런처·폴백을 걷는다", () => {
+      const fn = source.slice(source.indexOf("const winUninstall = (c) => {"), source.indexOf("\n};\n", source.indexOf("const winUninstall = (c) => {")) + 3);
+      const ev: string[] = [];
+      const un = new Function("winPs", "psq", "winTaskName", "winKillRunning", "winRemoveLegacyAutostart", "winRemoveStartupFallback", "rmSync", "winLegacyVbsPath", "console",
+        fn + "; return winUninstall;")((s: string) => { ev.push(/Unregister/.test(s) ? "unregister" : "ps"); return { status: 0 }; }, (x: string) => x, () => "task",
+        () => { ev.push("kill"); return []; }, () => ev.push("legacy-autostart"), () => { ev.push("remove-fallback"); return true; },
+        (p: string) => ev.push("rm:" + path.basename(p)), () => "H\\win-launch.vbs", { log: () => {}, warn: () => {}, error: () => {} });
+      un(c);
+      for (const want of ["unregister", "kill", "remove-fallback", "rm:H\\win-launch.vbs"]) assert(ev.includes(want), `${want} 없음: ${ev.join(",")}`);
+      return ev.join("→");
     });
     test("★위임 CLI 의 pull 이 실패해도(네트워크 등) HEAD 를 되돌린다 — 안 그러면 코드만 새것으로 고착", () => {
       const r = simulate("pull-fail", { notify: true, handoff: "0000000" });
@@ -249,9 +386,14 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       };
       const fakeProcess = { platform: "win32", env: { SUPERVISOR_ONLY: "1" }, on: () => {}, exit: () => {}, stdout: { write: () => {} } };
       const run = new Function("process", "spawn", "mkdirSync", "appendFileSync", "path", "execStrings", "winLaunchEnv", "WIN_SERVICE_ENV_KEYS", "Date", "setTimeout",
+        "spawnSync", "winSupervisorQueryArgs", "winSupervisorIsDuplicate", "statSync", "writeFileSync", "net", "winSupervisorPipeName",
         sup + "; return runSupervise;")(fakeProcess, spawn, () => {}, () => {}, path, () => ["node", "x"], d.winLaunchEnv, d.WIN_SERVICE_ENV_KEYS,
         // 오래 산 것으로 보이게(스로틀 없이 즉시 재기동) — 시계를 30초씩 민다.
-        class extends Date { static t = 0; static now() { this.t += 30_000; return this.t; } }, () => {});
+        class extends Date { static t = 0; static now() { this.t += 30_000; return this.t; } }, () => {},
+        // 다른 감독자 없음(질의 결과 빈 것 — 판정은 `windows-single-supervisor` 가 본다).
+        () => ({ stdout: "" }), () => [], d.winSupervisorIsDuplicate, () => ({ mtimeMs: 0 }), () => {},
+        // 잠금은 바로 잡힌다(판정은 `windows-single-supervisor` 가 본다).
+        { createServer: () => ({ on: () => {}, listen: (_n: string, cb: () => void) => cb() }) }, () => "pipe");
       run({ ...c, homeAbs: h, homeRaw: h, logsDir: path.join(h, "logs"), launchEnv: { LAUNCH_ONLY: "1" } });
       const first = envs[0]?.DASHBOARD_PORT;
       fs.writeFileSync(path.join(h, ".env"), "DASHBOARD_PORT=7099\n"); // 사용자가 .env 를 고치고 /restart

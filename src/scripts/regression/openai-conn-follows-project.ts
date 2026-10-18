@@ -118,6 +118,7 @@ export const check: RegressionCheck = {
         const seen: unknown[][] = [];
         const ctx = vm.createContext({
           assertLiveModelAllowed: () => {},
+          regressionModel: () => undefined, // 회귀 주입 없음 — 실모델 가드 경로(위 가짜)로 간다
           pickOpenAiConn: (...a: unknown[]) => {
             seen.push(a);
             throw new Error("SEAM_STOP");

@@ -488,6 +488,7 @@ export const planRejection = (why: PlanReject, detail?: string): string => {
       return (
         `${detail === undefined ? "그 키" : `«${detail}»`} 는 이 플랫폼에서 낼 수 없습니다.\n` +
         `쓸 수 있는 것: 수식키(${MODIFIERS.join("·")}) · 이름 있는 키(${KEY_NAMES.join("·")}) · ` +
+        `Windows 에서만: ${(PLATFORM_ONLY_KEY_NAMES.win32 ?? []).join("·")} · ` +
         "**기본 평면의 한 글자**(`a`·`가`·`5` 처럼).\n" +
         // ★★**거절만 하고 다음 길을 안 알려주면 모델은 같은 것을 다시 보낸다**
         //  (2026-09-19, 아스트라 4차 §3). 계약을 좁혔으면 **안내도 같이** 좁혀야 한다 —
@@ -659,7 +660,34 @@ export const PLATFORM_KEY_GAPS: Readonly<Record<string, readonly string[]>> = {
 export const KEY_NAMES: readonly string[] = [
   "enter", "return", "tab", "esc", "escape", "space", "backspace", "delete",
   "up", "down", "left", "right", "home", "end", "pageup", "pagedown",
+  // 기능키 · CapsLock · 숫자패드 (2026-10-18 정태님 «알트든 F4든 어떤 키든») — 두 실행부 표에 다 있다.
+  "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20",
+  "capslock",
+  "num0", "num1", "num2", "num3", "num4", "num5", "num6", "num7", "num8", "num9",
+  "numadd", "numsubtract", "nummultiply", "numdivide", "numdecimal", "numenter",
 ];
+
+/**
+ * **한 플랫폼에만 있는 이름 있는 키** — 그 플랫폼에서만 통과한다(다른 플랫폼은 쏘기 전에 «이 플랫폼에서 낼 수 없습니다»).
+ * ★맥 자판엔 이 키들이 **없다**(Insert·PrintScreen·ScrollLock·Pause·NumLock·메뉴키·한/영·한자·F21~24). 볼륨·미디어·브라우저 키는 맥에서
+ *  일반 키 이벤트가 아니라 시스템 정의 이벤트라 이 실행부가 못 낸다 — 비슷한 키로 바꿔 «먹혔다» 고 말하지 않는다(`win` 과 같은 원칙).
+ * ★회귀가 Windows 표와 대조한다 — 표에만 있고 여기 없으면(못 쓰는 키) · 여기만 있고 표에 없으면(발사 도중 던짐) 빨개진다.
+ */
+export const PLATFORM_ONLY_KEY_NAMES: Readonly<Record<string, readonly string[]>> = {
+  win32: [
+    "f21", "f22", "f23", "f24",
+    "insert", "printscreen", "scrolllock", "pause", "numlock", "menu", "hangul", "hanja",
+    "volumemute", "volumedown", "volumeup", "medianext", "mediaprev", "mediastop", "mediaplaypause",
+    "browserback", "browserforward", "browserrefresh", "browserstop", "browsersearch", "browserfavorites", "browserhome",
+  ],
+};
+
+/**
+ * **빈 연습용 — 이 플랫폼이 받는 모든 이름 있는 키의 누름·뗌** (2026-10-18). 실행부 `selfCheck` 가 제품 스크립트로 흘려,
+ *  표가 모든 이름을 실제로 푸는지 본다(입력 0). 목록은 허용 목록에서 뽑는다 — 손으로 다시 적지 않는다.
+ */
+export const keyDryEvents = (platform: string): LowEvent[] =>
+  [...KEY_NAMES, ...(PLATFORM_ONLY_KEY_NAMES[platform] ?? [])].flatMap((key): LowEvent[] => [{ t: "keydown", key }, { t: "keyup", key }]);
 
 /**
  * **이 플랫폼에서 그 키를 낼 수 있나** — 순수.
@@ -691,6 +719,9 @@ export const supportedKey = (rawName: string, platform?: string): boolean => {
   if (gaps.includes(name)) return false;
   if (isModifier(name)) return true;
   if (KEY_NAMES.includes(name)) return true;
+  // 플랫폼 전용 — 그 플랫폼이면 통과. 플랫폼을 모르면(순수 검사) 어느 한 곳에라도 있으면 통과(«그 검사를 건너뛴다» 와 같은 뜻).
+  const only = platform === undefined ? Object.values(PLATFORM_ONLY_KEY_NAMES).flat() : (PLATFORM_ONLY_KEY_NAMES[platform] ?? []);
+  if (only.includes(name)) return true;
   // ★★**실행부와 «한 글자» 의 뜻이 같아야 한다** (2026-09-19, 아스트라 3차 §2).
   //  처음엔 `[...name].length`(코드포인트)로 셌는데 **양 실행부는 UTF-16 길이**로 본다
   //  (`String(name).length !== 1` · `$n.Length -ne 1`). 그래서 `🙂`(코드포인트 1 · UTF-16 2)가

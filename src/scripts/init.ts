@@ -158,6 +158,16 @@ const rl = createInterface({ input: process.stdin, output: process.stdout });
 const ask = async (prompt: string): Promise<string> =>
   (await rl.question(prompt)).trim();
 
+/**
+ * 구독 로그인 안내 — onboard 가 부른 init 이면 **다음 단계가 대신 한다**고만 말한다 (2026-10-18, 깨끗한 윈도우 실기).
+ * ★종전 codex 문구는 «설정 뒤 `npm run codex-auth` 로 토큰을 받아야 한다» 였는데 onboard 가 바로 그걸 하고,
+ *  전용 Node 로 설치한 사람의 셸엔 `npm` 도 없다. 단독 init 일 때만 명령을 적는다.
+ */
+const subscriptionSignInNote = (cmd: "codex-auth" | "claude-auth"): string[] =>
+  process.env.TIGUCLAW_FROM_ONBOARD === "1"
+    ? ["     Sign-in comes next — when the browser opens, just sign in. tiguclaw saves the token for you."]
+    : [`     After setup, sign in with \`npm run ${cmd}\` — it opens the browser and saves the token for you.`];
+
 /** 빈 값이면 안내문구로 재질문. */
 const askRequired = async (prompt: string, retryHint: string): Promise<string> => {
   for (;;) {
@@ -239,8 +249,7 @@ const collectProviderConfig = async (
     //  [2/5] 가 `npm run claude-auth` 를 대신 돌린다 — 사용자는 브라우저 로그인만 하면 된다.
     //  종전엔 "CLI 를 깔고 → 토큰을 받고 → 붙여넣으세요" 세 걸음이었고, 첫 걸음은 이미
     //  `npm ci` 로 받아둔 259MB 를 한 번 더 받는 것이었다.
-    console.log("     The token is issued automatically in the next step (`npm run claude-auth`).");
-    console.log("     When the browser opens, just sign in — tiguclaw saves the token for you.");
+    for (const l of subscriptionSignInNote("claude-auth")) console.log(l);
     return {
       anthropicKey: "",
       claudeOauthToken: "",
@@ -263,7 +272,7 @@ const collectProviderConfig = async (
   // codex
   console.log("");
   console.log("  → codex uses ChatGPT subscription OAuth. There is no key to enter here.");
-  console.log("     After setup, you must get an OAuth token with `npm run codex-auth`.");
+  for (const l of subscriptionSignInNote("codex-auth")) console.log(l);
   return {
     anthropicKey: "",
     claudeOauthToken: "",
@@ -295,12 +304,13 @@ const chooseModelMode = async (tier: {
   console.log("");
   console.log("  ── Models ────────────────────────────────────────");
   console.log("  1) Auto (recommended) — nothing is written. The daemon asks the backend and");
-  console.log("     builds high/mid/low from the **latest** models of your signed-in providers every time.");
+  console.log("     builds high/mid/low from the latest models of your signed-in providers every time.");
   console.log("     It follows new models as they ship. Each tier only moves within its family");
   console.log("     (opus→opus), so the cost tier never rises silently.");
   console.log("  2) Fixed — writes the currently known values into settings.json. For when you need");
   console.log("     reproducibility or a specific model. To change them later, edit that file.");
-  console.log(`     (currently known: high=${tier.high} · mid=${tier.mid} · low=${tier.low})`);
+  // ★«지금 알려진 값» 이라 하지 않는다 (2026-10-18 실기) — 로그인 전이라 카탈로그를 못 봤고, 이건 이 판에 든 표다(실측: gpt-5.5 로 찍힘, 첫 대화는 gpt-6.1).
+  console.log(`     (built into this version: high=${tier.high} · mid=${tier.mid} · low=${tier.low} — Auto may pick newer ones)`);
   const v = await ask("  Choice [1/2] (default 1): ");
   if (v === "" || v === "1") return "auto";
   const pick = async (label: string, cur: string): Promise<string> => {

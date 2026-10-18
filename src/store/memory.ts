@@ -820,7 +820,7 @@ export const appendTranscript = (input: {
  * 그래서 타입이 그 둘을 담을 자리를 두지 않는다. 생산자는 어댑터 `collectTurnItems` 하나다.
  */
 export type CodexTurnItem =
-  | { type: "function_call"; call_id: string; name: string; arguments: string }
+  | { type: "function_call"; call_id: string; name: string; arguments: string; namespace?: string }
   | { type: "function_call_output"; call_id: string; output: string }
   | { type: "message"; role: "user" | "assistant"; text: string };
 

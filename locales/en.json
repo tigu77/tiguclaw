@@ -1195,5 +1195,16 @@
   "plugins.reason.envValueUnsafe": "'{key}' can't contain quotes, # or backslashes.",
   "srv.turn.signIn.codex": "⚠️ You need to sign in to ChatGPT (Codex). In the dashboard, open Plugins → codex-subscription-auth and press its sign-in button, or run `tiguclaw codex-auth` in a terminal.",
   "srv.turn.signIn.claude": "⚠️ You need to sign in to Claude. In the dashboard, open Plugins → claude-subscription-auth and press its sign-in button, or check ANTHROPIC_API_KEY in the home `.env`.",
-  "srv.turn.signIn.other": "⚠️ The account details (API key) for this model are missing or wrong. Check the key in the home `.env`. (Cause: {detail})"
+  "srv.turn.signIn.other": "⚠️ The account details (API key) for this model are missing or wrong. Check the key in the home `.env`. (Cause: {detail})",
+  "srv.cmd.desc.mcp_login": "Finish a remote MCP sign-in — paste the address bar URL after signing in on another device",
+  "srv.mcpLogin.usage": "Usage: /mcp_login <the full address bar URL after signing in> — sign in with the link the assistant gave you, then paste the address of the «can't connect» page as is.",
+  "srv.mcpLogin.done": "Signed in to '{name}'. Its tools are available from your next message.",
+  "srv.mcpLogin.failed": "Couldn't finish signing in — {reason}",
+  "srv.mcpLogin.reason.unknownOrUsed": "This sign-in was already used or isn't known. Ask the assistant for a new sign-in link.",
+  "srv.mcpLogin.reason.expired": "The sign-in link expired (10 minutes). Ask the assistant for a new one.",
+  "srv.mcpLogin.reason.stale": "That server's registration changed or was removed while you were signing in.",
+  "srv.mcpLogin.reason.denied": "The sign-in was denied or cancelled.",
+  "srv.mcpLogin.reason.exchangeFailed": "The server didn't accept the sign-in code. Try again in a moment.",
+  "srv.mcpLogin.page.ok": "Signed in to '{name}'. You can close this window.",
+  "srv.mcpLogin.page.failed": "Couldn't finish signing in — {reason}"
 }

@@ -8,8 +8,7 @@
  * watcher.ts 의 fireWatch 가 runClaude 결과를 여기로 보낸다(2026-10-09 — 종전엔 아무도 안 불러 dest_channel 이 장식이었다).
  */
 import type { EventBus } from "../../../src/core/eventbus.js";
-import { deliverOutbound } from "../../../src/core/outbound.js";
-import { DEFAULT_SESSION_ID } from "../../../src/core/threadkey.js";
+import { deliverOutbound, sessionOfDestination } from "../../../src/core/outbound.js";
 
 export interface DispatchInput {
   watchId: number;
@@ -28,8 +27,8 @@ export const dispatch = async (input: DispatchInput): Promise<void> => {
     text: input.text,
     bus: input.bus,
     label: `file-watch:${input.watchId}`,
-    // 세션 귀속 = 기본 세션(file-watch 는 세션 없는 파일 트리거). 배달은 dest 그대로.
-    observeThreadKey: DEFAULT_SESSION_ID,
+    // 표시 세션 = 목적지가 가리키는 세션(대시보드 대화를 목적지로 잡았으면 그 대화, 아니면 기본 세션) — 판정은 코어 한 곳.
+    observeThreadKey: sessionOfDestination(input.destChannel, input.destTarget),
   });
   if (!r.delivered) {
     throw new Error(`Watch delivery failed — ${r.reason ?? "not delivered"}`);

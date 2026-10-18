@@ -25,8 +25,7 @@ type Daemon = {
   parseDaemonFlags: (args: readonly string[]) => string | undefined;
   winSuperviseArgv: (c: { nodePath: string; repoRoot: string; homeRaw: string; runtime: string }) => string[];
   winQuoteArg: (s: string) => string;
-  buildWinVbs: (c: { nodePath: string; repoRoot: string; homeRaw: string; runtime: string }) => string;
-  writeVbs: (p: string, text: string) => void;
+  winTaskAction: (c: { nodePath: string; repoRoot: string; homeRaw: string; runtime: string }) => { execute: string; argument: string };
   PS_UTF8_OUTPUT: string;
   winPsArgs: (script: string) => string[];
   winProcQueryArgs: () => string[];
@@ -201,26 +200,15 @@ export const check: RegressionCheck = {
 
     const daemonSrc0 = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     // ★예약작업 명령줄 왕복 — 끝에 역슬래시가 붙은 홈도 감독자가 같은 값으로 받는가(재검토 F-C).
-    //  ★**실제 런처 VBS 를 만들어** 그 `sh.Run` 줄을 꺼내 VBS 이스케이프(`""`)를 풀고 왕복한다(재검토 A — 종전엔
-    //   `.map(winQuoteArg)` 글자만 grep 해서 `join("")` 처럼 모든 설치를 깨는 변이가 초록이었다).
+    //  ★**실제 예약작업 액션을 만들어** 그 인자(`--headless` 뒤)를 왕복한다(재검토 A — 종전엔 `.map(winQuoteArg)` 글자만
+    //   grep 해서 `join("")` 처럼 모든 설치를 깨는 변이가 초록이었다). 2026-10-18 VBS 런처 → `conhost --headless`.
     const roundTrip = ["C:\\Users\\M\\.tiguclaw-test\\", "C:\\Users\\John Doe\\.tiguclaw", "D:\\t\\\\", "C:\\Users\\홍길동\\.tiguclaw"].map((home) => {
       const ctx = { nodePath: "C:\\Program Files\\nodejs\\node.exe", repoRoot: "C:\\r\\", homeRaw: home, runtime: "built" };
       const argv = d.winSuperviseArgv(ctx);
-      const run = /^sh\.Run "(.*)", 0, True$/m.exec(d.buildWinVbs(ctx))?.[1];
-      const parsed = run === undefined ? [] : winArgv(run.replace(/""/g, '"'));
+      const action = d.winTaskAction(ctx);
+      const parsed = /\\System32\\conhost\.exe$/i.test(action.execute) && action.argument.startsWith("--headless ") ? winArgv(action.argument.slice("--headless ".length)) : [];
       return { home, same: JSON.stringify(parsed) === JSON.stringify(argv), parsed };
     });
-    // ★VBS 는 UTF-16LE + BOM 으로 쓴다(WSH 가 BOM 없으면 CP949 로 읽어 한글 경로가 깨진다 — 집 윈도우 실측) ·
-    //  PowerShell 출력은 UTF-8 로 받는다(같은 실측: 기본이면 명령줄의 «홍길동» 이 깨져 감독자를 못 찾는다).
-    const tmpV = fs.mkdtempSync(path.join(os.tmpdir(), "tc-vbs-"));
-    let written: Buffer;
-    try {
-      const p = path.join(tmpV, "x.vbs");
-      d.writeVbs(p, "C:\\Users\\홍길동");
-      written = fs.readFileSync(p);
-    } finally {
-      fs.rmSync(tmpV, { recursive: true, force: true });
-    }
     // 주석 줄을 뺀 소스 — 주석 처리한 배선이 글자로 남아 초록이 되지 않게(재검토 M2·M6).
     const code = daemonSrc0.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
     const body = (name: string): string => {
@@ -230,10 +218,8 @@ export const check: RegressionCheck = {
     const psDecoded = Buffer.from(d.winPsArgs("X")[3] ?? "", "base64").toString("utf16le");
     const enableStart = d.winEnableStartScript({ label: "L" });
     const encoding = {
-      vbsBom: written[0] === 0xff && written[1] === 0xfe && written.subarray(2).toString("utf16le") === "C:\\Users\\홍길동",
-      // VBS 를 쓰는 자리는 writeVbs 하나뿐 — 두 VBS 가 그걸 지나고, 다른 writeFileSync 는 VBS 를 안 쓴다.
-      vbsOnlyViaHelper: (code.match(/writeVbs\(/g) ?? []).length === 2 &&
-        !/writeFileSync\([^)]*vbs/i.test(code.replace(/export const writeVbs = [^\n]*/, "")),
+      // ★VBS 를 더는 쓰지 않는다(2026-10-18 — VBScript 없는 윈도우에서 서비스가 안 떴다). 옛 파일은 지우기만 한다.
+      noVbsWritten: !/writeVbs|writeFileSync\([^)]*vbs/i.test(code),
       // 값을 **정확히** 본다 — `; ` 하나만 빠져도 모든 PowerShell 스크립트가 파싱 오류가 된다(재검토 M1·M10).
       psExact: d.PS_UTF8_OUTPUT === "[Console]::OutputEncoding = [Text.Encoding]::UTF8; ",
       psArgs: psDecoded === d.PS_UTF8_OUTPUT + "X" && (d.winProcQueryArgs()[2] ?? "").startsWith(d.PS_UTF8_OUTPUT),

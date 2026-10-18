@@ -113,7 +113,7 @@ import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp
 import { assembleMcpServers, warnShadowedOnce } from "../plugin-mcp-merge.js";
 import { reaches, turnKindOf } from "../capability-reach.js";
 import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
-import { readExternalMcpServers, isProjectMcpCwd } from "../../external-mcp.js";
+import { cliOwnAuthToolNames, moveRemoteHeadersToEnv, readExternalMcpServers, isProjectMcpCwd, noteRemoteAuthorized, noteRemoteAuthRequired, noteRemoteConnectFailed, type ExternalMcpConfig } from "../../external-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
@@ -764,11 +764,11 @@ export const runClaude = async (
   // 실패=빈 맵(external-mcp never-throw) → 데몬 생존(#3). codex/openai 는 Phase 2 브리지.
   // 메인 턴(전역) 또는 프로젝트 위임 서브/매니저(그 프로젝트 <cwd>/.mcp.json — readExternalMcpServers
   // 가 전역+프로젝트 병합). 비프로젝트 서브/매니저는 기존대로 생략(재spawn 회피). lean 생략.
-  const externalMcpServers =
-    !toolsNone &&
-    (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd))
-      ? ((await readExternalMcpServers(input.cwd)) as Options["mcpServers"])
-      : {};
+  // ★헤더 값은 환경변수로 — 설정은 CLI 명령줄로 넘어간다(`moveRemoteHeadersToEnv` 주석).
+  const externalRead =
+    !toolsNone && (reaches("external-mcp", turnKind) || isProjectMcpCwd(input.cwd)) ? await readExternalMcpServers(input.cwd) : {};
+  const externalHandoff = moveRemoteHeadersToEnv(externalRead);
+  const externalMcpServers = externalHandoff.servers as Options["mcpServers"];
 
   // find_capabilities (P1, capability-awareness contract §3c) — 위 두 맵(leanMcpServers·
   // externalMcpServers) 이 *이번 턴 실제 빌드된* 활성 서버명 집합. 병렬 static
@@ -1127,6 +1127,10 @@ export const runClaude = async (
     // 작동헌법 + 안정 스캐폴딩 (위에서 조립). override 시 그 값이 전부 대체.
     systemPrompt: { type: "custom", prompt: systemChannel, snapshot: false },
     permissionMode: "bypassPermissions",
+    // 원격 MCP 헤더 값(위 `externalHandoff`) — 없으면 SDK 기본(이 프로세스 환경)을 그대로 쓴다.
+    ...(Object.keys(externalHandoff.env).length > 0
+      ? { env: { ...(Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined))), ...externalHandoff.env } }
+      : {}),
     // ★«빠름» — codex 와 **같은 중립 신호**(`input.speed`)를 이 백엔드의 낱말로 옮긴다
     //  (2026-09-11). v0.52.0 이 계약·파서·화면·codex 번역까지 내보내고 **이 한 줄만**
     //  빠뜨려서, 같은 설정이 어댑터마다 다르게 굴렀다([[feedback_every_feature_llm_agnostic]]).
@@ -1164,6 +1168,8 @@ export const runClaude = async (
     disallowedTools: withSdkSubagentsBlocked([
       ...DISALLOWED_TOOLS,
       "AskUserQuestion",
+      // CLI 자체 MCP 로그인 도구 — 로그인은 `login_mcp_server` 한 길(`cliOwnAuthToolNames` 주석).
+      ...cliOwnAuthToolNames(Object.keys(externalMcpServers ?? {})),
       // ★SDK 빌트인 셸·검색 차단 — 위 file-ops 가 대체한다. 이름을 여기 다시 적지 않고
       //  **정의점에서 가져온다**(손으로 관리하는 목록 금지). 파일 도구는 안 막는다 —
       //  우리 Read 가 PDF 를 못 줘서(MCP 콘텐츠 타입 한계) 막으면 능력 손실이다.
@@ -1778,6 +1784,16 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     }
 
     if (msg.type === "system" && msg.subtype === "init") {
+      // 외부 원격 MCP 가 인증을 요구했으면(SDK `needs-auth`) 코어에 이름만 알린다 — 브리지 경로의 401 판정과 같은 «인증 필요» 로 모인다.
+      for (const s of (msg as { mcp_servers?: Array<{ name?: unknown; status?: unknown }> }).mcp_servers ?? []) {
+        if (typeof s.name !== "string" || !(s.name in (externalMcpServers ?? {}))) continue;
+        // 이 턴에 실제로 보낸 헤더 — 401 이 어느 토큰에 대한 것인지 코어가 가른다(재검토 P2-a).
+        const sent = (externalRead[s.name] as { headers?: Record<string, string> } | undefined)?.headers;
+        if (s.status === "needs-auth") void noteRemoteAuthRequired(s.name, input.cwd, sent).catch(() => undefined);
+        else if (s.status === "connected") void noteRemoteAuthorized(s.name, input.cwd, sent).catch(() => undefined);
+        // 우리 토큰이 거절돼도 CLI 는 `failed` 로만 알린다 — 직접 한 번 물어 401 이면 같은 판정으로(`noteRemoteConnectFailed` 주석).
+        else if (s.status === "failed") void noteRemoteConnectFailed(s.name, input.cwd, externalRead[s.name] as ExternalMcpConfig | undefined).catch(() => undefined);
+      }
       if (typeof msg.model === "string") {
         lastModel = msg.model;
         deltaStream.setModel(msg.model); // 델타 라벨 보정(늦게 알게 된 모델).

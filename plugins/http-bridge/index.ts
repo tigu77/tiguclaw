@@ -95,6 +95,8 @@ import {
   handleSetSessionProfile, handleSetModuleEnabled, handleGetModelProfiles,
   handleGetProviders,
 } from "./routes-settings.js";
+import { serveMcpOAuthCallback } from "./routes-mcp-oauth.js";
+import { MCP_OAUTH_CALLBACK_PATH } from "../../src/core/mcp-oauth.js";
 import { handleSessions, handleSessionName, handleSessionArchive, handleSessionFork, handleSessionCarry } from "./routes-sessions.js";
 import {
   handleAuthProviders,
@@ -345,6 +347,12 @@ class HttpBridge implements Channel, Observer {
       writeJson(res, 403, {
         error: rebindRejectionMessage(req.headers.host, "HTTP_BRIDGE_ALLOWED_HOSTS"),
       });
+      return;
+    }
+
+    // 원격 MCP OAuth 콜백 — 인증 무(브라우저 리다이렉트라 토큰을 못 싣는다). 1회용 state 가 지킨다 · 정확한 경로·GET 만.
+    if (pathname === MCP_OAUTH_CALLBACK_PATH && method === "GET") {
+      await serveMcpOAuthCallback(url, res);
       return;
     }
 

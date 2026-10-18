@@ -18,7 +18,11 @@ $MinNode  = 20
 # 자동 설치할 때 고를 LTS 계열 — 네이티브 미리빌드가 LTS 를 따라간다(sh 판과 같은 값).
 $LtsMajor = if ($env:TIGUCLAW_NODE_MAJOR) { $env:TIGUCLAW_NODE_MAJOR } else { '22' }
 
-function Die($msg) { Write-Host "`n[X] $msg" -ForegroundColor Red; exit 1 }
+# ★`exit` 를 쓰지 않는다 (2026-10-18, 깨끗한 윈도우 실기). `irm | iex` 는 사용자 창 안에서 돌아서, `exit 1` 이
+#  **사용자의 PowerShell 창 자체를 닫았다** — 빨간 안내를 읽기도 전에 창이 사라졌다. 던져서 맨 아래 catch 가 받는다.
+function Die($msg) { Write-Host "`n[X] $msg" -ForegroundColor Red; throw 'TIGUCLAW_DIE' }
+
+try {
 
 Write-Host ""
 Write-Host "=== Installing tiguclaw ===" -ForegroundColor Cyan
@@ -232,3 +236,12 @@ $ErrorActionPreference = 'Stop'
 # ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────
 Write-Host ""
 & $Npm run onboard
+} catch {
+  # Die 는 이미 안내를 찍었다. 그 밖의 오류(네트워크 끊김 등)는 날것의 PowerShell 오류 대신 한 줄로.
+  if ("$_" -ne 'TIGUCLAW_DIE') {
+    Write-Host "`n[X] Installation stopped: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "   If this is a network problem, check your connection and run the same command again."
+  }
+  # 파일로 실행했을 때만 종료 코드를 남긴다 — `irm | iex` 에서 exit 는 사용자 창을 닫는다.
+  if ($PSCommandPath) { exit 1 }
+}

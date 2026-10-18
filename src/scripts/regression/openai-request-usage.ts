@@ -21,7 +21,19 @@ export const check: RegressionCheck = {
     const entries = result?.requestUsageEntries;
     assertions.push(assert("실제 SDK의 두 요청 경계 보존", entries?.length === 2 && entries[0]?.inputTokens === 150_000 && entries[1]?.inputTokens === 300_000, entries));
     assertions.push(assert("출력·캐시 0·압축 endpoint 보존", entries?.[0]?.cachedTokens === 0 && entries[1]?.outputTokens === 200 && entries[1]?.endpoint === "responses.compact", entries));
-    assertions.push(assert("기존 합계 소비 계약은 그대로", result?.inputTokens === 450_000 && result.outputTokens === 300 && result.cachedTokens === 250_000, result));
+    // ★계약(types.ts) 의미로 (2026-10-18, 동등성 감사 7번) — 종전엔 이 줄이 «inputTokens = run 합계» 를 지켰는데 그건 계약 이탈이었다
+    //  (codex·claude 는 마지막 호출). 합계는 *Total 로 — 실비용(`turnSpend`)·게이트웨이는 호출 2회 이상이면 *Total 을 읽어 값이 그대로다.
+    // 사용량을 못 받은 요청이 섞이면 «마지막 관측 요청 ≠ 실제 마지막 요청» 일 수 있다 — 그 수를 낸다(재검토 10-18 그물 구멍).
+    const gap = new Usage();
+    gap.add(new Usage({ inputTokens: 100, outputTokens: 10 }));
+    gap.add(new Usage({ requests: 1, inputTokens: 0, outputTokens: 0, totalTokens: 0 }));
+    gap.add(new Usage({ inputTokens: 120, outputTokens: 12 }));
+    const gapUsage = extractUsage({ state: { usage: gap } });
+    assertions.push(assert("사용량을 못 받은 요청 수를 unreportedRequests 로 낸다(요청 3 · 항목 2 → 1)",
+      gapUsage?.unreportedRequests === 1 && gapUsage.inputTokens === 120 && gapUsage.iterations === 2, gapUsage));
+    assertions.push(assert("마지막 호출 = 마지막 요청 항목 · 턴 합계 = *Total · 호출 수",
+      result?.inputTokens === 300_000 && result.outputTokens === 200 && result.cachedTokens === 250_000 &&
+        result.inputTokensTotal === 450_000 && result.outputTokensTotal === 300 && result.cachedTokensTotal === 250_000 && result.iterations === 2, result));
     sdk.requestUsageEntries![0]!.inputTokens = 9;
     assertions.push(assert("SDK 후속 변경이 반환 기록을 바꾸지 않음", entries?.[0]?.inputTokens === 150_000, entries));
     const zero = extractUsage({ state: { usage: new Usage({ inputTokens: 10, outputTokens: 2, inputTokensDetails: { cached_tokens: 0 } }) } });

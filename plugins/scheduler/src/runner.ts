@@ -14,7 +14,6 @@ import type { ScheduleRow } from "../../../src/store/schedules.js";
 import { getSchedule, recordScheduleRun } from "../../../src/store/schedules.js";
 import { loadSchedulerRetryEnabled } from "../../../src/core/settings.js";
 import { dispatch } from "./dispatcher.js";
-import { DEFAULT_SESSION_ID } from "../../../src/core/threadkey.js";
 import { canonicalSessionChannel } from "../../../src/store/sessions.js";
 import { applyScheduleHistory } from "../../../src/store/thread-reset.js";
 import { enqueueThreadTurn } from "../../../src/core/worker-jobs.js";
@@ -131,7 +130,6 @@ const scheduleDispatchRetry = (
           destTarget: current.destTarget,
           text,
           bus,
-          sessionThreadKey: DEFAULT_SESSION_ID,
         });
         deps.recordFiring(schedule.id, { ok: true });
         console.log(
@@ -223,7 +221,6 @@ export const runScheduleFiring = async (
           destTarget: schedule.destTarget,
           text,
           bus,
-          sessionThreadKey: DEFAULT_SESSION_ID, // LLM 경유와 동일 귀속(아래 호출부와 정합).
         });
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -379,10 +376,7 @@ export const runScheduleFiring = async (
         destTarget: schedule.destTarget,
         text: resultText,
         bus,
-        // 세션 귀속 = 기본 세션(dashboard:default). 스케줄엔 아직 세션 지정 필드가 없다
-        // (옵션 B 확장점: 생기면 `schedule.sessionId ?? DEFAULT_SESSION_ID`). 배달은
-        // destChannel/destTarget(telegram 등) 그대로 — 세션과 채널 분리.
-        sessionThreadKey: DEFAULT_SESSION_ID,
+        // 표시 세션은 dispatcher 가 목적지에서 정한다(`sessionOfDestination` — 대시보드 대화 목적지면 그 대화, 아니면 기본 세션).
       });
       deps.recordFiring(schedule.id, { ok: true });
       bus.publish({

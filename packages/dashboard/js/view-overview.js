@@ -14,10 +14,24 @@
       //  복원이 읽기도 전에 값이 "overview" 로 덮인다. 그래서 **모듈 로드 시점에** 값을
       //  얼려 두고(아래) 복원은 그 얼린 값을 본다. 읽는 시점이 쓰는 시점보다 먼저다.
       const VIEW_LS = "dash.activeView.v1";
+      // ★주소의 `?view=` 가 있으면 그것이 먼저다 (2026-10-18, 깨끗한 윈도우 실기) — onboard 의 도착점은 «첫 대화» 인데
+      //  첫 방문엔 저장값이 없어 홈이 떴다. 한 번 쓰고 주소에서 뗀다(새로고침은 다시 마지막 본 화면을 따른다).
+      let viewHint = null;
       try {
-        window.__dashBootView = localStorage.getItem(VIEW_LS);
+        const q = new URLSearchParams(location.search);
+        viewHint = q.get("view");
+        if (viewHint !== null) {
+          q.delete("view");
+          const rest = q.toString();
+          history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash);
+        }
       } catch {
-        window.__dashBootView = null; // 프라이빗 모드·quota — 복원 없이 기존 동작.
+        viewHint = null;
+      }
+      try {
+        window.__dashBootView = viewHint || localStorage.getItem(VIEW_LS);
+      } catch {
+        window.__dashBootView = viewHint; // 프라이빗 모드·quota — 복원 없이 기존 동작.
       }
 
       /**

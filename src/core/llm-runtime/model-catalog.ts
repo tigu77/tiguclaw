@@ -80,6 +80,11 @@ export interface ModelCatalog {
   context?: Record<string, number>;
   /** `provider:model` → 도구 지원. **선언이 있을 때만**(부재 = 모름). */
   tools?: Record<string, boolean>;
+  /**
+   * `provider:model` → **도구 검색(`tool_search`) 지원** — 벤더가 선언할 때만(codex `/models` 의 `supports_search_tool`,
+   *  2026-10-17). 부재 = 모름 = 도구를 접지 않는다(지금처럼 전부 펼침).
+   */
+  toolSearch?: Record<string, boolean>;
 }
 
 /**
@@ -134,6 +139,10 @@ const ensureLoaded = (): void => {
       models: o.models,
       ...(o.reasoning !== null && typeof o.reasoning === "object"
         ? { reasoning: o.reasoning }
+        : {}),
+      // 도구 검색 지원도 되살린다 — 안 그러면 재시작 직후 첫 조회 전까지 도구를 펼쳤다가 조회 뒤 접어, 도구 목록이 한 번 바뀐다(캐시 손실).
+      ...(o.toolSearch !== null && typeof o.toolSearch === "object"
+        ? { toolSearch: o.toolSearch }
         : {}),
     };
   } catch {
@@ -249,9 +258,10 @@ const codexModelsAt = async (
   slugs: string[];
   reasoning: Record<string, string>;
   reasoningFloor: Record<string, string>;
+  toolSearch: Record<string, boolean>;
 }> => {
   const auth = getAuthProvider("codex");
-  if (auth === undefined) return { slugs: [], reasoning: {}, reasoningFloor: {} };
+  if (auth === undefined) return { slugs: [], reasoning: {}, reasoningFloor: {}, toolSearch: {} };
   const token = await auth.getAccessToken();
   const headers: Record<string, string> = {
     authorization: `Bearer ${token}`,
@@ -275,15 +285,19 @@ const codexModelsAt = async (
       slug?: unknown;
       default_reasoning_level?: unknown;
       supported_reasoning_levels?: unknown;
+      supports_search_tool?: unknown;
     }>;
   };
   const rows = Array.isArray(json.models) ? json.models : [];
   const slugs: string[] = [];
   const reasoning: Record<string, string> = {};
   const reasoningFloor: Record<string, string> = {};
+  const toolSearch: Record<string, boolean> = {};
   for (const r of rows) {
     if (typeof r.slug !== "string" || r.slug === "") continue;
     slugs.push(r.slug);
+    // 도구 검색 지원 — 불리언으로 말했을 때만 담는다(모양이 다르면 모름).
+    if (typeof r.supports_search_tool === "boolean") toolSearch[r.slug] = r.supports_search_tool;
     // ★**최저 수용 강도** — 첫 원소를 쓴다(목록은 오름차순으로 온다).
     //  모양이 다르면 조용히 건너뛴다 — 지어내는 것보다 모르는 게 낫다.
     const lv = r.supported_reasoning_levels;
@@ -299,7 +313,7 @@ const codexModelsAt = async (
       reasoning[`codex:${r.slug}`] = r.default_reasoning_level;
     }
   }
-  return { slugs, reasoning, reasoningFloor };
+  return { slugs, reasoning, reasoningFloor, toolSearch };
   // ★여기서 거르지 않는다 — 캐시는 백엔드가 말한 그대로 둔다(레코드 보존).
   //  등급 후보에서 빼는 판단은 `catalogTierModel`(선택) 몫이다.
 };
@@ -451,6 +465,8 @@ interface DiscoverResult {
   context?: Record<string, number>;
   /** 모델별 도구 지원 — 벤더가 **선언했을 때만**. 부재 = 모름(≠ 지원 안 함). */
   tools?: Record<string, boolean>;
+  /** 모델별 도구 검색(`tool_search`) 지원 — 벤더가 선언했을 때만. 부재 = 모름. */
+  toolSearch?: Record<string, boolean>;
   /**
    * ★**이 목록의 순서에 의미가 없다**(2026-08-31). 표준 `/models` 는 정렬을 약속하지 않고
    *  종류도 섞여 나온다(정품 openai 는 임베딩·TTS·이미지까지 한 배열이다). 그런데
@@ -510,6 +526,7 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
   const nextUnranked = new Set<string>(cache?.unranked ?? []);
   const nextContext: Record<string, number> = { ...(cache?.context ?? {}) };
   const nextTools: Record<string, boolean> = { ...(cache?.tools ?? {}) };
+  const nextToolSearch: Record<string, boolean> = { ...(cache?.toolSearch ?? {}) };
   let changed = false;
   // ★조회 대상을 **손으로 적지 않는다** (2026-08-31). 종전엔 배열에 둘을 적어뒀고, 그래서
   //  새 provider 를 붙여도 목록이 영원히 비어 있었다([[feedback_hand_maintained_lists]]).
@@ -543,6 +560,10 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
       else nextUnranked.delete(provider);
       for (const [m, n] of Object.entries(res.context ?? {})) nextContext[`${provider}:${m}`] = n;
       for (const [m, t] of Object.entries(res.tools ?? {})) nextTools[`${provider}:${m}`] = t;
+      for (const [m, t] of Object.entries(res.toolSearch ?? {})) {
+        if (nextToolSearch[`${provider}:${m}`] !== t) changed = true;
+        nextToolSearch[`${provider}:${m}`] = t;
+      }
       // ★그 provider 의 키를 **통째로 교체**한다 (적대 검토 B1 곁가지). 병합만 하면 벤더가
       //  어떤 모델의 `default_reasoning_level` 을 없애도 우리 옛 값이 영구히 이긴다 —
       //  신선도 미요구와 겹쳐 되돌릴 방법이 없어진다. 조회가 **성공했을 때만** 교체하므로
@@ -570,6 +591,7 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
     ...(nextUnranked.size > 0 ? { unranked: [...nextUnranked].sort() } : {}),
     ...(Object.keys(nextContext).length > 0 ? { context: nextContext } : {}),
     ...(Object.keys(nextTools).length > 0 ? { tools: nextTools } : {}),
+    ...(Object.keys(nextToolSearch).length > 0 ? { toolSearch: nextToolSearch } : {}),
   };
   if (changed || !existsSync(CATALOG_FILE())) {
     try {
@@ -698,6 +720,10 @@ export const catalogContextTokens = (provider: string, model: string): number | 
  */
 export const catalogSupportsTools = (provider: string, model: string): boolean | undefined =>
   (ensureLoaded(), cache?.tools?.[`${provider}:${model}`]);
+
+/** 그 모델이 도구 검색(`tool_search`)을 받는가 — 벤더 선언 그대로(부재 = 모름 = 접지 않는다). */
+export const catalogSupportsToolSearch = (provider: string, model: string): boolean | undefined =>
+  (ensureLoaded(), cache?.toolSearch?.[`${provider}:${model}`]);
 
 /**
  * `provider:model` → 화면이 쓸 능력 꼬리표 재료. **`/models` 렌더러에 주입한다.**

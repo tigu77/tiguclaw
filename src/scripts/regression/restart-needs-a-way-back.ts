@@ -126,7 +126,7 @@ const run = async (): Promise<Assertion[]> => {
       // 정의점 하나 — install·start 가 같은 함수로 수렴한다.
       //  ★등록 **전에 멈춘다**: 작업이 돌고 있으면 `Register -Force` 가 실패해 수렴이
       //   조용히 건너뛰어진다(실측: 갱신 중 반복 트리거가 되살려 등록이 안 바뀌었다).
-      /const winEnsureTask = \(c, opts = \{\}\) => \{[\s\S]{0,1600}?Stop-ScheduledTask[\s\S]{0,300}?buildWinTaskScript\(c\)/,
+      /const winEnsureTask = \(c, opts = \{\}\) => \{[\s\S]{0,2400}?Stop-ScheduledTask[\s\S]{0,900}?buildWinTaskScript\(c\)/,
       /const winInstall = \(c\) => \{[\s\S]{0,300}?winEnsureTask\(c[,)]/,
       /const winStart = \(c\) => \{[\s\S]{0,900}?winEnsureTask\(c\)/,
       // 재등록 실패해도 기존 등록이 있으면 진행 — 일시 실패가 기동을 막지 않는다.
@@ -224,17 +224,18 @@ const run = async (): Promise<Assertion[]> => {
       /RepetitionInterval/, // 감독자까지 죽었을 때의 바닥 그물
       /ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/, // 없으면 기본 3일 후 강제 종료
       /"supervise"/, // 작업이 실행하는 것 = 감독자
-      // ★창을 없애는 수단 = **숨김 런처(VBS)** 지 principal 이 아니다 (2026-08-22).
-      //  경위: node 직접 실행(창 뜸) → S4U(내 SSH 에선 됐지만 실사용 경로에서 `액세스가
-      //  거부되었습니다`) → wscript 런처. 액션이 wscript 여야 하고,
-      //  런처는 `sh.Run(cmd, 0, True)` 여야 한다 — `0`=숨김, **`True`=대기**.
-      //  대기를 빼면 wscript 가 즉시 끝나 작업 인스턴스도 끝나고, `IgnoreNew` 가 무효가 돼
-      //  **1분마다 감독자가 하나씩 더 뜬다**(같은 홈·같은 포트 = 사고).
-      /New-ScheduledTaskAction -Execute 'wscript\.exe'/,
+      // ★창을 없애는 수단 = **숨김 런처** 지 principal 이 아니다 (2026-08-22).
+      //  경위: node 직접 실행(창 뜸) → S4U(내 SSH 에선 됐지만 실사용 경로에서 `액세스가 거부되었습니다`) → wscript VBS 런처 →
+      //  ★2026-10-18 `conhost --headless`(VBScript 없는 윈도우에서 서비스가 안 떴다 — 깨끗한 샌드박스 실측).
+      //  런처는 감독자를 **기다려야** 한다 — 안 기다리면 작업 인스턴스가 끝나 `IgnoreNew` 가 무효가 돼
+      //  **1분마다 감독자가 하나씩 더 뜬다**(같은 홈·같은 포트 = 사고). conhost 는 자식(감독자)이 끝날 때까지 산다(실측: 반복 뒤에도 감독자 1).
+      /execute: winConhostPath\(\)/,
+      /export const winConhostPath = [\s\S]{0,200}?"System32", "conhost\.exe"\)/,
+      /argument: \["--headless", \.\.\.winSuperviseArgv\(c\)\.map\(winQuoteArg\)\]\.join\(" "\)/,
+      /New-ScheduledTaskAction -Execute \$\{psq\(action\.execute\)\} -Argument \$\{psq\(action\.argument\)\}/,
       /-LogonType Interactive/,
-      /sh\.Run "\$\{cmd\.replace\(\/"\/g, '""'\)\}", 0, True/,
-      // 런처를 **등록 전에** 쓴다 — 없으면 등록은 성공하고 실행만 조용히 실패한다.
-      /writeVbs\(winVbsPath\(c\), buildWinVbs\(c\)\);[\s\S]{0,400}?buildWinTaskScript\(c\)/,
+      // 옛 VBS 런처는 **새 등록이 성공한 뒤에만** 지운다 — 재등록이 실패해 기존 등록으로 계속할 때 그 등록이 VBS 를 가리킨다.
+      /TASK_REGISTERED"\)\) \{[\s\S]{0,300}?rmSync\(winLegacyVbsPath\(c\)/,
     ]);
     out.push(
       assert(
@@ -308,7 +309,7 @@ const run = async (): Promise<Assertion[]> => {
   {
     const gate = await sourceHas("../../../bin/daemon.mjs", [
       /const winStopTask = \(c\) => \{[\s\S]{0,900}?Disable-ScheduledTask/,
-      /const winStart = \(c\) => \{[\s\S]{0,900}?winEnableStartScript\(c\)/,
+      /const winStart = \(c\) => \{[\s\S]{0,1600}?winEnableStartScript\(c\)/,
       /const winRestart = \(c\) => \{[\s\S]{0,900}?winEnableStartScript\(c\)/,
       /export const winEnableStartScript = [\s\S]{0,200}?Enable-ScheduledTask/,
     ]);

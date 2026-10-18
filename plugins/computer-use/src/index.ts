@@ -995,7 +995,12 @@ const actionTools = (w: Wiring, host?: PluginHost) => [
                 "keydown·keyup 의 키 이름. 수식키는 `cmd`·`ctrl`·`alt`·`shift`·`win` 이고 " +
                   "`cmd` 는 **그 플랫폼의 주 수식키**로 갑니다(Windows 에서는 Ctrl).\n" +
                   "이름: enter · tab · space · backspace · delete · esc · up · down · left · right " +
-                  "· 또는 **기본 평면의 한 글자**(`a`·`가`·`5`).\n" +
+                  "· f1 ~ f20 · capslock · num0 ~ num9 · numadd · numsubtract · nummultiply · numdivide · numdecimal · numenter " +
+                  "· 또는 **기본 평면의 한 글자**(`a`·`가`·`5`). 단축키는 수식키를 keydown 한 채로 키를 누릅니다(예: `alt` 누른 채 `f4`).\n" +
+                  "**Windows 에서만**: f21~f24 · insert · printscreen · scrolllock · pause · numlock · menu · hangul(한/영) · hanja · " +
+                  "volumemute · volumedown · volumeup · medianext · mediaprev · mediastop · mediaplaypause · " +
+                  "browserback · browserforward · browserrefresh · browserstop · browsersearch · browserfavorites · browserhome " +
+                  "(맥에는 그 키가 없거나 이 방식으로 못 냅니다 — 쏘기 전에 거절합니다).\n" +
                   "★`🙂`·`𝐀` 같은 **보충 평면 문자는 키로 못 냅니다** — 글자를 넣는 것이 " +
                   "목적이면 이 열의 **`type` 원소**를 쓰세요(거기는 됩니다).\n" +
                   "★★`home`·`end`·`pageup`·`pagedown` 은 **쓰지 마세요 — 두 플랫폼에서 뜻이 다릅니다.** " +

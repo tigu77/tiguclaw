@@ -74,13 +74,26 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ② 부팅 값을 얼려서 읽는다 ────────────────────────────────────────────
   {
-    const freezes = /window\.__dashBootView\s*=\s*localStorage\.getItem/.test(overview);
+    const freezes = /window\.__dashBootView\s*=\s*(?:viewHint\s*\|\|\s*)?localStorage\.getItem/.test(overview);
     const readsFrozen = /const saved = window\.__dashBootView/.test(activity);
     const rereads = /restoreLastView[\s\S]{0,400}?localStorage\.getItem/.test(activity);
     out.push({
       name: "★복원은 부팅 시점에 얼린 값을 본다(showOverview 가 덮기 전 값)",
       ok: freezes && readsFrozen && !rereads,
       got: `얼림=${freezes} 얼린값사용=${readsFrozen} 재읽기=${rereads} (기대 true/true/false)`,
+    });
+  }
+
+  // ── ②-b 주소의 `?view=` 가 저장값보다 먼저다 — onboard 가 첫 대화로 연다 (2026-10-18 실기: 첫 방문은 홈이 떴다) ──
+  {
+    const hintFirst = /window\.__dashBootView\s*=\s*viewHint\s*\|\|\s*localStorage\.getItem/.test(overview);
+    const hintDropped = /q\.delete\("view"\)[\s\S]{0,200}?history\.replaceState/.test(overview);
+    const cli = code(readFileSync(path.join(REPO, "src/cli.ts"), "utf8"));
+    const onboardOpensChat = /openInBrowser\(`\$\{dashboardUrl\}\/\?view=chat`\)/.test(cli);
+    out.push({
+      name: "★onboard 는 대시보드를 채팅으로 연다 — `?view=` 가 저장값보다 먼저 · 한 번 쓰고 주소에서 뗀다",
+      ok: hintFirst && hintDropped && onboardOpensChat,
+      got: `힌트우선=${hintFirst} 주소에서뗌=${hintDropped} onboard=${onboardOpensChat}`,
     });
   }
 

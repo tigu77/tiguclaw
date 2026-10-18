@@ -298,6 +298,23 @@ const run = async (): Promise<Assertion[]> => {
       got: exposed.length === 0 ? `노출 0 · 끝 상태 ${mode}` : `🔴 ${exposed.join(" / ").slice(0, 160)}`,
     });
   }
+  // ★install.ps1 은 `exit` 로 끝내지 않는다 (2026-10-18, 깨끗한 윈도우 실기). `irm | iex` 는 사용자 창 안에서 돌아서
+  //  `exit 1` 이 **사용자의 PowerShell 창을 닫았다**(안내를 읽기 전에 사라짐). 중단은 던지고, 맨 아래 catch 가 받는다 —
+  //  종료 코드는 파일로 실행했을 때(`$PSCommandPath`)만.
+  {
+    const lines = codeOnly(ps).split("\n");
+    const bareExit = lines.filter((l) => /\bexit\b/.test(l) && !/\$PSCommandPath/.test(l)).map((l) => l.trim());
+    const dieThrows = /function Die\([^)]*\)\s*\{[^}]*\bthrow\b/.test(ps);
+    const tryIdx = lines.findIndex((l) => /^try \{\s*$/.test(l));
+    const catchIdx = lines.findIndex((l) => /^\} catch \{\s*$/.test(l));
+    const bodyCovered = tryIdx >= 0 && catchIdx > tryIdx && lines.slice(catchIdx).every((l) => !/^\s*(&|Write-Host "=== |git clone)/.test(l)) &&
+      lines.slice(0, tryIdx).every((l) => !/git clone|& \$Npm/.test(l));
+    out.push({
+      name: "★install.ps1: 중단이 사용자 창을 닫지 않는다 — exit 없음(파일 실행 갈래 제외) · Die 는 던진다 · 본문 전체가 try 안",
+      ok: bareExit.length === 0 && dieThrows && bodyCovered,
+      got: JSON.stringify({ bareExit, dieThrows, bodyCovered }),
+    });
+  }
   for (const [name, src] of installers) {
     out.push({
       name: `${name}: 설치 후 네이티브 모듈을 **실제로 열어** 확인한다(공용 판정 bin/check-native.cjs)`,

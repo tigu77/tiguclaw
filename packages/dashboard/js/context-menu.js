@@ -188,7 +188,14 @@
               row.appendChild(ic);
             }
             const lb = document.createElement("span"); lb.className = "cm-label"; lb.textContent = it.label || it.id || "";
-            row.appendChild(lb);
+            if (it.detail) {
+              // 설명 줄 — 이름 아래에 **줄바꿈해서 끝까지** 보인다. 한 줄 말줄임이면 커맨드 설명이 잘려 볼 길이 없었다(정태님 10-18 · 모바일은 hover 도 없다).
+              const box = document.createElement("span"); box.className = "cm-text";
+              const dt = document.createElement("span"); dt.className = "cm-detail"; dt.textContent = it.detail;
+              box.append(lb, dt);
+              row.classList.add("cm-two-line");
+              row.appendChild(box);
+            } else row.appendChild(lb);
             const hasSub = Array.isArray(it.children) && it.children.length > 0;
             if (hasSub) {
               // ★하위 메뉴 — 마우스는 올리면 펼친다(관례). 터치·클릭·Enter 는 눌러서 펼친다(올려 둘 마우스가 없다).

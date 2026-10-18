@@ -131,7 +131,9 @@ import { getEventBus } from "../../eventbus.js";
 import { loadModelInputLimits } from "../../settings.js";
 import { resolveReasoningEffort,
   catalogReasoningFloor,
+  catalogSupportsToolSearch,
 } from "../model-catalog.js";
+import { foldCodexTools, namespaceMatches, toolSearchStats, withRestoredToolSearch } from "./_codex-tool-folding.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -1147,6 +1149,16 @@ export const runOpenAiCodex = async (
       inputSchema?: unknown;
     }>,
   );
+  // ★도구 접기(2026-10-17, 계약 `docs/decisions/2026-10-17-tool-folding-contract.md`) — 드문 도구(`onDemand`)를 소속 서버별 묶음으로 접고
+  //  기본 `tool_search` 로 펼친다. **기본 꺼짐**(`CODEX_TOOL_SEARCH=1` 일 때만) — 채택 시험과 OpenAI 단계 전엔 켜지 않는다(원칙 #2).
+  //  켜도 모델 카탈로그가 `supports_search_tool` 을 말한 모델에서만(부재 = 모름 = 지금처럼 전부 펼침).
+  const toolFolding = foldCodexTools(
+    functionTools.map((tool, i) => {
+      const hint = ((mcpTools[i] as { _meta?: Record<string, unknown> } | undefined)?._meta ?? {})["anthropic/searchHint"];
+      return { tool, server: toolBridgeMap.get(tool.name)?.name ?? "", hint: typeof hint === "string" ? hint : null };
+    }),
+    !toolsNone && process.env.CODEX_TOOL_SEARCH === "1" && catalogSupportsToolSearch("codex", model) === true,
+  );
 
   // V7.6 (parity P1) — codex backend native web_search tool. claude 어댑터는
   // SDK builtin WebSearch 제공, codex 는 그간 WebFetch 만 → parity 갭. OpenClaw
@@ -1164,8 +1176,10 @@ export const runOpenAiCodex = async (
   // toolPolicy:none 으로 tiguclaw 도구를 꺼도 앱 함수 스키마는 그대로 노출된다(스파이크 §1.1
   // 확정, architect 결정 불요 — 순수 배열 concat).
   const responsesTools = [
-    ...(webSearchEnabled ? [...functionTools, { type: "web_search" as const, user_location: { type: "approximate" as const, timezone: localTimeZone() } }] : functionTools),
+    ...(webSearchEnabled ? [...toolFolding.tools, { type: "web_search" as const, user_location: { type: "approximate" as const, timezone: localTimeZone() } }] : toolFolding.tools),
     ...externalFunctionTools,
+    // 접힌 도구가 있을 때만 — 없이 실으면 400(`tools.tool_search requires at least one deferred tool`).
+    ...(toolFolding.searchTool ? [{ type: "tool_search" as const }] : []),
   ];
 
   const headers: Record<string, string> = {
@@ -1365,6 +1379,9 @@ export const runOpenAiCodex = async (
   let streamedInFlight = "";
   /** 이 시도가 흘린 답변 글 — 화면 스트림 여부와 무관(끊김 복구가 «이어 쓰기» 재료로 쓴다). 시도마다 초기화. */
   let attemptText = "";
+  /** 그중 중간 해설이 아닌 글 · 해설이 있었나 — 끊김 복구가 최종 답에서 해설을 빼는 데 쓴다(아래 `carriedAnswer`). */
+  let attemptAnswer = "";
+  let attemptSawCommentary = false;
   /** 이 시도가 외부 도구 호출 조각을 이미 밖(게이트웨이 클라이언트)으로 흘렸나 — 그러면 끊김 복구를 하지 않는다(다시 보내면 반쪽 호출 뒤에 새 호출이 이어진다). */
   let attemptToolDeltaOut = false;
   const tracePush = (delta: string): void => {
@@ -1566,8 +1583,12 @@ export const runOpenAiCodex = async (
       //  검색 항목이 있으면 서버가 «response protection is unavailable» 로 거부한다(실측 2/2, 빼면 200). 검색 도구가 있으면
       //  `inputArray` **그 배열**을 그대로 쓴다 — 끊김 복구가 같은 배열에 덧붙인 뒤 본문을 다시 만든다(아래 `requestInput()`).
       const searchToolOn = webSearchEnabled && !finalFlushRequested;
+      // 이력 구간의 접힌 도구 호출을 이번 요청에 맞춘다(첫 호출 앞에 현재 정의로 검색 항목 재구성 · 이번엔 없는 묶음이면 `namespace` 떼기) —
+      //  배열을 바꾸지 않고 **보낼 사본**에만(`turnStart`·구성 경계 같은 위치값이 그대로 유효하다).
+      const foldedHistory = (): ResponseInputItem[] =>
+        withRestoredToolSearch(inputArray, turnStart, toolFolding.searchTool && !finalFlushRequested ? toolFolding.namespaces : null) as ResponseInputItem[];
       const requestInput = (): ResponseInputItem[] =>
-        searchToolOn ? inputArray : inputArray.filter((it) => it.type !== "web_search_call");
+        searchToolOn ? foldedHistory() : foldedHistory().filter((it) => it.type !== "web_search_call");
       const body: Record<string, unknown> = {
         model,
         // persistence 보강 — 공유 헌법 + codex 전용 persistence delta (claude 무영향)
@@ -1800,6 +1821,9 @@ export const runOpenAiCodex = async (
       let cutAttempt = 0;
       /** 끊기기 전에 이미 흘린 글 — 이어 쓰기로 복구하면 이번 요청의 글 = 이것 + 이어 쓴 것. */
       let carriedText = "";
+      /** 그중 중간 해설이 아닌 글 · 해설이 섞였나 — 최종 답은 해설을 뺀 것으로 만든다(끊김 전 해설이 답에 붙던 것, 리뷰 10-18). */
+      let carriedAnswer = "";
+      let carriedSawCommentary = false;
       /** 이어 쓰기로 inputArray 에 붙인 첫 자리(-1 = 없음) — 이 요청이 끝내 실패하면 떼어 낸다(다음 턴 이력에 부분 글이 겹치지 않게, 재검토 F2). */
       let cutInsertStart = -1;
       /** 무진전으로 재시도를 시작한 시각 — 결과(완료·소진·취소)를 로그에 남길 때 쓴다. 0 = 이 요청은 재시도 안 함. */
@@ -1909,6 +1933,8 @@ export const runOpenAiCodex = async (
         // 끊김 뒤 이어 쓰는 시도면 앞에 흘린 글을 안고 시작한다 — 끝내 실패하면 삼킴 안내가 앞부분까지 싣는다(화면 스트림이 꺼진 턴의 유일한 재료).
         streamedInFlight = carriedText;
         attemptText = "";
+        attemptAnswer = "";
+        attemptSawCommentary = false;
         attemptToolDeltaOut = false;
         sseResult = await parseCodexSseObserved(
           sseObs,
@@ -1920,8 +1946,10 @@ export const runOpenAiCodex = async (
             iterLastChunkAt = Date.now();
             firstEventAt ??= iterLastChunkAt;
           },
-          (delta) => {
+          (delta, commentary) => {
             attemptText += delta;
+            if (commentary === true) attemptSawCommentary = true;
+            else attemptAnswer += delta;
             deltaStream.push(delta); // llm.delta fan-out (coalesce → publish, depth-0).
             tracePush(delta); // 매니저/서브에이전트 서술 로그 트레이스(deltaStream 꺼진 턴만).
           },
@@ -2149,6 +2177,8 @@ export const runOpenAiCodex = async (
           const partial = attemptText;
           if (partial !== "") {
             carriedText += partial;
+            carriedAnswer += attemptAnswer;
+            if (attemptSawCommentary) carriedSawCommentary = true;
             if (cutInsertStart < 0) cutInsertStart = inputArray.length;
             inputArray.push(
               { type: "message", role: "assistant", content: [{ type: "output_text", text: partial }] },
@@ -2427,7 +2457,12 @@ export const runOpenAiCodex = async (
       //  iteration 이 앞 텍스트를 지움)는 `text !== ""` 가드가 그대로 막는다 —
       //  빈 응답이면 덮어쓰지 않고 마지막 실질 텍스트를 유지. 완전 무텍스트 턴은 아래 폴백 관할.
       if (text !== "") {
-        finalText = text;
+        // ★중간 해설(phase:"commentary")은 최종 답에 넣지 않는다 — 최종 답 글이 있을 때만(해설뿐인 응답은 지금처럼 그 글).
+        //  한 응답에 최종 답과 해설이 같이 오면 둘이 이어 붙어 사용자 답에 작성용 메모가 섞였다(회사돌쇠 10-17 텔레그램).
+        //  ★끊김 뒤 이어 쓴 요청이면 앞에 흘린 글에도 해설이 있을 수 있다 — 이어받은 글도 해설을 뺀 것(`carriedAnswer`)으로 잇는다.
+        const answer = sseResult.answerText;
+        const answerPart = carriedAnswer + (answer ?? continuationText);
+        finalText = (answer !== undefined || carriedSawCommentary) && answerPart.trim() !== "" ? answerPart : text;
         toolCallsSinceText = 0; // 보고가 나왔다 — 이후 도구부터 다시 센다.
         toolNamesSinceText = [];
       }
@@ -2486,6 +2521,9 @@ export const runOpenAiCodex = async (
       // 자연 종료와 tools=[] 마무리가 같은 관측 계약을 사용한다.
       // 최종 마무리는 아래 자연 종료 분기 전에 빠져나가므로 여기서 함께 정의한다.
       const logTurnEnd = (closing: boolean): void => {
+        // 도구 접기 관측(계약 F) — 접기가 켜진 턴만 한 줄.
+        const foldNote = toolSearchStats(inputArray.slice(turnStart), toolFolding);
+        if (foldNote !== null) console.log(`${foldNote} threadKey=${input.threadKey}`);
         const tail = finalText.replace(/\s+/g, " ").slice(-100);
         console.log(
           `[codex-turn-end] ${input.threadKey} model=${model} iter=${iteration} steered=${steeredTotal} ` +
@@ -2822,6 +2860,7 @@ export const runOpenAiCodex = async (
           call_id: tc.callId,
           name: tc.name,
           arguments: tc.partialJson === "" ? "{}" : tc.partialJson,
+          ...(tc.namespace !== undefined ? { namespace: tc.namespace } : {}),
         });
       }
       const toolOutputs = await Promise.all(
@@ -2864,8 +2903,9 @@ export const runOpenAiCodex = async (
                 // V5.5 — bridge 라우팅. memory 도구는 memoryBridge, file-ops 도구는 fileOpsBridge.
                 // 미등록 tool 명 시 명확 에러 (LLM 환각 호출 방어).
                 const bridge = toolBridgeMap.get(tc.name);
-                if (bridge === undefined) {
-                  throw new Error(`unknown tool: ${tc.name}`);
+                // 펼친 도구 호출은 묶음 이름이 등록 정보의 소속 서버와 같아야 한다 — 검색 결과·기록이 실행 권한을 주지 않는다(계약 B).
+                if (bridge === undefined || !namespaceMatches(tc.namespace, bridge.name)) {
+                  throw new Error(`unknown tool: ${tc.namespace !== undefined ? `${tc.namespace}.` : ""}${tc.name}`);
                 }
                 // 부작용 도구가 돌았으면 표시 — 아래 catch 가 이걸 보고 throw 여부를 정한다.
                 //  판정 근거는 위 `isSideEffectTool` 주석 참조(열거 아님).

@@ -11,7 +11,7 @@
  *   install | uninstall | restart | stop | start | status | logs | print | update.
  *   - macOS  → launchd LaunchAgent (KeepAlive, 자동 respawn).
  *   - Linux  → systemd **user** 유닛 (Restart=always).
- *   - Windows→ 예약작업(로그온 + 1분 반복) + 숨김 VBS 감독자. 예약작업이 막힌 기계는 시작프로그램 폴더 폴백(감독자는 있고, 감독자가 죽으면 다음 로그온까지).
+ *   - Windows→ 예약작업(로그온 + 1분 반복) + 숨김 런처(`conhost --headless`) 감독자. 예약작업이 막힌 기계는 시작프로그램 폴더 폴백(감독자는 있고, 감독자가 죽으면 다음 로그온까지).
  *
  * update = 터미널 직접 자가 갱신(채팅 /update 와 별개). dep-free 라 깨진
  *   node_modules/tsx/typescript 에서도 `npm ci` 로 스스로 복구한다. 순서:
@@ -56,10 +56,13 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   watchFile,
   writeFileSync,
   writeSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
+import net from "node:net";
 import os from "node:os";
 import * as nodeUtil from "node:util";
 import path from "node:path";
@@ -428,7 +431,7 @@ const buildCtx = () => {
 };
 
 /**
- * 데몬 실행 argv — 모드별 분기(D2). 유닛(plist/systemd)·VBS·안내가 전부 이 하나만 쓴다.
+ * 데몬 실행 argv — 모드별 분기(D2). 유닛(plist/systemd)·예약작업·안내가 전부 이 하나만 쓴다.
  *   source: [node, tsxCli, src/index.ts]  — 종전과 **바이트 동일**(dev 무회귀 보장).
  *   built:  [node, dist/src/index.js]      — tsx 미경유 순수 node.
  * WorkingDirectory·TIGUCLAW_HOME 등 나머지 유닛 필드는 모드 무관 동일.
@@ -801,7 +804,7 @@ const linuxPrint = (c) => {
   console.log(`# Start at boot: loginctl enable-linger ${os.userInfo().username}`);
 };
 
-// ───────────────────────────── Windows (예약작업 + 숨김 VBS 감독자) ──────────
+// ───────────────────────────── Windows (예약작업 + 숨김 런처 감독자) ──────────
 // 2026-08-22 부터 예약작업(로그온 + 1분 반복, 관리자 권한 불요)이 감독자를 띄운다 — 아래 winEnsureTask.
 // 예약작업 생성이 정책으로 막힌 기계는 시작프로그램 폴더 폴백(로그온 자동시작만). 옛 HKCU Run 키는
 // 이제 **걷어내는 대상**이다(winRemoveLegacyAutostart — 남아 있으면 로그온 때 두 개 뜬다).
@@ -905,11 +908,8 @@ const reportLaunch = (c, pids, verb, hint) => {
   process.exitCode = 1;
 };
 
-/**
- * @param {Ctx} c
- * @returns {string}
- */
-const winVbsPath = (c) => path.join(c.homeAbs, "win-launch.vbs");
+/** 옛 런처 VBS — 이제 쓰지 않는다(아래 `winTaskAction`). 재등록이 **성공한 뒤** 지우고, uninstall 이 지운다. @param {Ctx} c */
+export const winLegacyVbsPath = (c) => path.join(c.homeAbs, "win-launch.vbs");
 
 /**
  * 브리지 포트를 LISTEN 하는 PID(윈도우) 또는 표식(맥·리눅스).
@@ -954,18 +954,6 @@ const winPort = (c) =>
   readHomeEnvValue(c.homeAbs, "HTTP_BRIDGE_PORT") ?? (process.env.HTTP_BRIDGE_PORT?.trim() || "17011");
 
 /**
- * VBS 파일 내용(바이트) — **UTF-16LE + BOM** (2026-10-03 적대 검토 C, 집 윈도우 실측). WSH 는 BOM 없는 파일을
- * 시스템 ANSI(한국어 윈도우 = CP949)로 읽는다. UTF-8 로 쓰면 `C:\Users\홍길동\…` 이 `C:\Users\?띻만??…` 로 깨져
- * 감독자가 엉뚱한 홈으로 떴다(한글 계정명이면 기본 홈 경로가 한글이다). BOM 이 있으면 WSH 가 유니코드로 읽는다.
- * @param {string} text
- * @returns {Buffer}
- */
-export const vbsBytes = (text) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
-
-/** VBS 를 쓰는 **유일한** 자리 — 두 VBS(런처·시작프로그램 폴백)가 이걸 지난다. @param {string} p @param {string} text */
-export const writeVbs = (p, text) => writeFileSync(p, vbsBytes(text));
-
-/**
  * PowerShell 출력을 UTF-8 로 내게 하는 머리 한 줄 — 우리는 출력을 utf8 로 읽는다. 기본(콘솔 코드페이지 CP949)이면
  * 한글 경로가 깨져 명령줄에서 이 홈의 감독자를 못 찾고(stop·restart·uninstall 이 못 죽인다), 오류 문구도 깨진다
  * (2026-10-03 적대 검토 C, 집 윈도우 실측).
@@ -999,36 +987,42 @@ export const winSuperviseArgv = (c) => [
 ];
 
 /**
- * 숨김 런처 VBS — 예약작업이 이걸 실행하고, 이게 **감독자**를 창 없이 띄운다.
- *
- * ★두 인자가 핵심이다: `sh.Run(cmd, 0, True)`
- *   - `0` = 창 숨김. 예약작업이 `node` 를 직접 띄우면 콘솔 창이 뜬다(사용자 화면으로 확인).
- *   - `True` = **기다린다**. 안 기다리면 wscript 가 즉시 끝나 작업 인스턴스도 끝나고,
- *     그러면 `IgnoreNew` 가 무효가 돼 **1분마다 감독자가 하나씩 더 뜬다**. 기다리면
- *     wscript 가 감독자만큼 살아 중복 방지가 그대로 성립한다 — 감독자에 별도 중복 가드를
- *     만들지 않아도 되는 이유다(부품을 안 늘린다).
- *
- * ★환경변수는 안 심는다 — `supervise --home/--runtime` **인자**로 넘기고, 셸에서만 준 인스턴스 값은 감독자가
- *  홈의 `win-service-env.json` 에서 **기동마다** 다시 읽는다(`winLaunchEnv`). 종전 VBS 는 `cmd /c set …` 체인을
- *  썼는데 그 모양이 Defender 오탐의 재료였다. ★2026-10-05 에 한 번 VBS 에 값을 심었다가 걷어냈다 — VBS 가 준 값은
- *  «실행 환경» 이 되어 홈 `.env` 를 고쳐도 이겼다.
- * @param {Ctx} c
- * @returns {string}
+ * conhost **절대경로** — 상대 이름이면 바로가기 저장·spawn 이 cwd(레포)부터 찾는다(2026-10-18 적대 검토 P2-b).
+ * @param {NodeJS.ProcessEnv} [env]
  */
-export const buildWinVbs = (c) => {
-  const cmd = winSuperviseArgv(c)
-    .map(winQuoteArg)
-    .join(" ");
-  return [
-    'Set sh = CreateObject("WScript.Shell")',
-    `sh.CurrentDirectory = "${c.repoRoot.replace(/"/g, '""')}"`,
-    // ★node 가 사는 폴더를 PATH 앞에 세운다 — plist·systemd 와 **같은 판단**이다.
-    `sh.Environment("PROCESS")("PATH") = "${path.dirname(c.nodePath).replace(/"/g, '""')};" & sh.ExpandEnvironmentStrings("%PATH%")`,
-    // 0 = 숨김, True = 감독자가 끝날 때까지 대기(작업 인스턴스 유지 → IgnoreNew 성립).
-    `sh.Run "${cmd.replace(/"/g, '""')}", 0, True`,
-    "",
-  ].join("\r\n");
+export const winConhostPath = (env = process.env) =>
+  path.win32.join(env.SystemRoot || env.windir || "C:\\Windows", "System32", "conhost.exe");
+
+/**
+ * `conhost --headless` 를 아는 윈도우인가 — 10.0.17763(1809) 부터다(적대 검토 P3-f). 그 전 빌드(LTSB 2016·Server 2016)는
+ *  설치는 되고 기동만 조용히 실패한다. 윈도우 릴리스 모양이 아니면(다른 OS) 판정하지 않는다.
+ * @param {string} [release]
+ */
+export const winHeadlessSupported = (release = os.release()) => {
+  const m = /^10\.0\.(\d+)/.exec(String(release));
+  return m === null || Number(m[1]) >= 17763;
 };
+
+/**
+ * **숨김 런처 = `conhost.exe --headless`** — 예약작업이 이걸 실행하고, 이게 **감독자**를 창 없이 띄우고 기다린다 (2026-10-18).
+ *
+ * ★VBS 런처(`wscript win-launch.vbs`)를 걷어냈다 — **VBScript 가 없는 윈도우에선 서비스가 아예 안 떴다**(깨끗한 Windows Sandbox 실측:
+ *  `There is no script engine for file extension ".vbs"` · 로그 0줄). 마이크로소프트가 VBScript 를 선택 기능으로 돌리고 단계적으로 끄는
+ *  중이라 새 PC 일수록 늘어난다(`docs/decisions/2026-10-18-windows-firstrun-sandbox.md`).
+ * ★VBS 가 하던 두 일을 그대로 한다(같은 샌드박스·집 윈도우 실측):
+ *   - 창 숨김 — 보이는 콘솔 창 0. 기본 터미널이 Windows Terminal 이어도 위임을 타지 않는다.
+ *   - **기다림** — conhost 가 감독자만큼 살아 작업 인스턴스가 유지되고 `IgnoreNew` 가 성립한다(1분 반복 뒤에도 감독자 1 ·
+ *     감독자를 죽이면 인스턴스가 끝나고 다음 반복이 12초 만에 다시 띄움).
+ * ★작업 폴더는 액션의 `WorkingDirectory`, node 폴더의 PATH 앞세우기는 감독자(`buildCtx`)가 한다 — VBS 의 그 두 줄은 중복이었다.
+ * ★환경변수는 안 심는다 — `supervise --home/--runtime` **인자**로 넘기고, 셸에서만 준 인스턴스 값은 감독자가 홈의
+ *  `win-service-env.json` 에서 **기동마다** 다시 읽는다(`winLaunchEnv`).
+ * @param {Pick<Ctx, "nodePath" | "repoRoot" | "homeRaw" | "runtime">} c
+ * @returns {{ execute: string; argument: string }}
+ */
+export const winTaskAction = (c) => ({
+  execute: winConhostPath(),
+  argument: ["--headless", ...winSuperviseArgv(c).map(winQuoteArg)].join(" "),
+});
 
 /**
  * 윈도우 외부 명령(PowerShell·schtasks) 상한 — 먹통이면 매달리지 말고 포기한다.
@@ -1106,40 +1100,52 @@ const winPs = (script) => {
  *  OpenClaw 는 같은 상황에서 시작프로그램 폴더로 폴백한다. 런처가 감독자를 띄우므로 죽은 데몬은
  *  되살아나지만, 감독자까지 죽으면 1분 반복이 없어 다음 로그온까지 안 뜬다 — 없는 것보다 훨씬 낫다.
  *
- * ★`.vbs` 를 둔다(`.cmd` 아님): 시작프로그램의 `.cmd` 는 콘솔 창을 띄운다. `.vbs` 는
- *  wscript 가 조용히 실행하고, 내용은 **정본 런처를 가리키기만** 한다(정의점 하나).
+ * ★바로가기(`.lnk`)를 둔다(`.cmd` 아님): 시작프로그램의 `.cmd` 는 콘솔 창을 띄운다. 바로가기는 예약작업과 같은 `conhost --headless`
+ *  액션을 가리킨다(정의점 하나). 종전 `.vbs` 는 VBScript 없는 윈도우에서 안 돌았다(2026-10-18).
  * @param {Ctx} c
  * @returns {string | null} APPDATA 를 못 찾으면 null
  */
-const winStartupVbsPath = (c) => {
+const winStartupDir = (c) => {
   const appData = process.env.APPDATA?.trim();
   if (!appData) return null;
-  return path.join(
-    appData,
-    "Microsoft",
-    "Windows",
-    "Start Menu",
-    "Programs",
-    "Startup",
-    `${c.label}.vbs`,
+  return path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup");
+};
+/** 시작프로그램 폴백 바로가기 — `.lnk` 가 `conhost --headless` 로 감독자를 띄운다(VBScript 없이, 2026-10-18). @param {Ctx} c */
+export const winStartupLnkPath = (c) => {
+  const dir = winStartupDir(c);
+  return dir === null ? null : path.join(dir, `${c.label}.lnk`);
+};
+/** 옛 폴백(`.vbs`) — 이제 쓰지 않는다. 새 폴백을 쓸 때·폴백을 걷을 때 같이 지운다. @param {Ctx} c */
+const winLegacyStartupVbsPath = (c) => {
+  const dir = winStartupDir(c);
+  return dir === null ? null : path.join(dir, `${c.label}.vbs`);
+};
+
+/**
+ * 시작프로그램 바로가기 스크립트 — 대상은 예약작업과 **같은 액션**(`winTaskAction`, 내용 복제 금지). 회귀가 출력을 직접 본다.
+ * @param {Ctx} c @param {string} lnkPath
+ */
+export const buildWinShortcutScript = (c, lnkPath) => {
+  const a = winTaskAction(c);
+  return (
+    `$s = (New-Object -ComObject WScript.Shell).CreateShortcut(${psq(lnkPath)}); ` +
+    `$s.TargetPath = ${psq(a.execute)}; $s.Arguments = ${psq(a.argument)}; $s.WorkingDirectory = ${psq(c.repoRoot)}; ` +
+    `$s.WindowStyle = 7; $s.Save(); 'LNK_OK'`
   );
 };
 
 /** 폴백 설치(멱등). 성공하면 경로, 실패하면 null. @param {Ctx} c */
 const winWriteStartupFallback = (c) => {
-  const p = winStartupVbsPath(c);
+  const p = winStartupLnkPath(c);
   if (p === null) return null;
   try {
     mkdirSync(path.dirname(p), { recursive: true });
-    // 정본 런처(win-launch.vbs)를 그대로 부른다 — 내용 복제 금지(두 벌은 반드시 갈린다).
-    writeVbs(
-      p,
-      [
-        'Set sh = CreateObject("WScript.Shell")',
-        `sh.Run "wscript.exe //B //Nologo ""${winVbsPath(c).replace(/"/g, '""')}""", 0, True`,
-        "",
-      ].join("\r\n"),
-    );
+    // 바로가기는 셸 COM(`WScript.Shell`)으로 만든다 — VBScript 엔진이 아니라 셸 객체라 VBScript 없는 윈도우에서도 된다(샌드박스 실측).
+    //  대상은 예약작업과 **같은 액션**(`winTaskAction`) — 내용 복제 금지(두 벌은 반드시 갈린다).
+    const r = winPs(buildWinShortcutScript(c, p));
+    if (r.status !== 0 || !r.stdout.includes("LNK_OK")) return null;
+    const legacy = winLegacyStartupVbsPath(c);
+    if (legacy !== null) rmSync(legacy, { force: true });
     return p;
   } catch {
     return null;
@@ -1147,22 +1153,40 @@ const winWriteStartupFallback = (c) => {
 };
 
 /**
- * 런처를 직접 띄운다 — 폴백 모드(예약작업 없음)에서 "지금 가동" 에 쓴다.
- * 숨김은 런처(VBS) 안의 windowStyle 0 이 책임진다.
+ * 감독자를 직접 띄운다 — 폴백 모드(예약작업 없음)에서 "지금 가동" 에 쓴다. 예약작업과 같은 `conhost --headless` 로 창 없이.
+ * ★기다리지 않는다(분리 실행) — 감독자가 사는 동안 이 명령이 붙잡혀 있을 이유가 없다.
  * @param {Ctx} c
  */
-const winLaunchVbs = (c) =>
-  spawnSync("wscript", ["//B", "//Nologo", winVbsPath(c)], {
+const winLaunchSupervisor = (c) => {
+  const child = spawn(winConhostPath(), ["--headless", ...winSuperviseArgv(c)], {
+    cwd: c.repoRoot,
+    detached: true,
     stdio: "ignore",
     windowsHide: true,
   });
+  // 못 띄웠으면 말한다 — 종전엔 삼켜서 «로그 0줄» 이 됐다(적대 검토 P2-b).
+  child.on("error", (e) => console.error(`   🔴 Could not start the supervisor: ${e.message}`));
+  child.unref();
+};
 
-/** 폴백 제거(멱등) — 예약작업이 살아나면 **반드시** 지운다(둘 다 있으면 두 개 뜬다). @param {Ctx} c */
-const winRemoveStartupFallback = (c) => {
-  const p = winStartupVbsPath(c);
-  if (p === null || !existsSync(p)) return false;
-  rmSync(p, { force: true });
-  return true;
+/** 1809 미만 + 옛 시작프로그램 `.vbs` — 그 런처로 지금 띄운다(`--headless` 를 모르는 윈도우라 `winLaunchSupervisor` 를 못 쓴다). @param {Ctx} c */
+const winLaunchLegacyStartup = (c) => {
+  const p = winLegacyStartupVbsPath(c);
+  if (p === null) return;
+  const child = spawn("wscript.exe", [p], { detached: true, stdio: "ignore", windowsHide: true });
+  child.on("error", (e) => console.error(`   🔴 Could not start the supervisor: ${e.message}`));
+  child.unref();
+};
+
+/** 폴백 제거(멱등) — 예약작업이 살아나면 **반드시** 지운다(둘 다 있으면 두 개 뜬다). 옛 `.vbs` 폴백도 같이. @param {Ctx} c */
+export const winRemoveStartupFallback = (c) => {
+  let removed = false;
+  for (const p of [winStartupLnkPath(c), winLegacyStartupVbsPath(c)]) {
+    if (p === null || !existsSync(p)) continue;
+    rmSync(p, { force: true });
+    removed = true;
+  }
+  return removed;
 };
 
 /** PowerShell 작은따옴표 문자열 리터럴로 안전하게 감싼다(내부 `'` 는 `''`). */
@@ -1188,10 +1212,10 @@ const psq = (/** @type {string} */ s) => `'${String(s).replace(/'/g, "''")}'`;
  *    중첩 spawn(task→powershell→node→powershell)으로 부르면 거부. 내 SSH 는 **관리자
  *    토큰**이라 계속 성공해서, 검증 환경이 실사용자보다 권한이 높다는 걸 늦게 알았다.
  *    → S4U 는 우리 호출 경로에서 신뢰할 수 없으므로 접는다.
- *  - ★그래서 `Interactive`(어디서나 성공·관리자 불요) + **`wscript` 숨김 런처**다.
- *    ★런처는 `sh.Run(cmd, 0, True)` 로 **기다린다** — 이게 핵심이다. 안 기다리면 wscript 가
- *    즉시 끝나 작업 인스턴스도 끝나고, 그러면 `IgnoreNew` 가 무효가 돼 1분마다 감독자가
- *    하나씩 더 뜬다. 기다리면 wscript 가 감독자만큼 살아 중복 방지가 그대로 성립한다.
+ *  - ★그래서 `Interactive`(어디서나 성공·관리자 불요) + **숨김 런처**다. 2026-08-22~10-17 은 `wscript` VBS 런처였고,
+ *    2026-10-18 부터 `conhost --headless`(VBScript 없는 윈도우에서 서비스가 안 떠서 — `winTaskAction` 주석).
+ *    ★런처는 감독자를 **기다린다** — 이게 핵심이다. 안 기다리면 런처가 즉시 끝나 작업 인스턴스도 끝나고,
+ *    그러면 `IgnoreNew` 가 무효가 돼 1분마다 감독자가 하나씩 더 뜬다. 기다리면 런처가 감독자만큼 살아 중복 방지가 성립한다.
  *  - Defender 가 이 등록을 막지 않는다. 오탐의 원인은 VBS 자체가 아니라 **런타임 작업
  *    생성 + `ping` 지연** 조합이었다(그건 이미 없앴다).
  *
@@ -1200,10 +1224,9 @@ const psq = (/** @type {string} */ s) => `'${String(s).replace(/'/g, "''")}'`;
  * @param {Ctx} c
  * @returns {string}
  */
-const buildWinTaskScript = (c) => {
-  // 액션 = `wscript //B //Nologo <vbs>` — VBS 가 감독자를 **숨김으로** 띄우고 기다린다.
-  //  `//B`(batch) = 스크립트 오류 대화상자 억제. 창은 VBS 안의 windowStyle 0 이 없앤다.
-  const args = [`"${winVbsPath(c)}"`].join(" ");
+export const buildWinTaskScript = (c) => {
+  // 액션 = `conhost --headless <감독자>` — 창 없이 띄우고 기다린다(`winTaskAction` 주석).
+  const action = winTaskAction(c);
   // ★실패 이유를 **stdout 으로** 낸다 (2026-08-22). `$ErrorActionPreference='Stop'` 만 두면
   //  예외가 stderr 로 가는데, powershell.exe 는 stderr 가 리다이렉트되면 오류를 **CLIXML 로
   //  직렬화**한다 — 실측 로그에 `(#< CLIXML` 만 남아 왜 실패했는지 알 수 없었다. 진단면이
@@ -1211,13 +1234,13 @@ const buildWinTaskScript = (c) => {
   return [
     `$ErrorActionPreference = 'Stop'`,
     `try {`,
-    `$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ${psq(`//B //Nologo ${args}`)} -WorkingDirectory ${psq(c.repoRoot)}`,
+    `$action = New-ScheduledTaskAction -Execute ${psq(action.execute)} -Argument ${psq(action.argument)} -WorkingDirectory ${psq(c.repoRoot)}`,
     `$atLogon = New-ScheduledTaskTrigger -AtLogOn -User ${psq(process.env.USERNAME ?? os.userInfo().username)}`,
     // 반복 트리거 = 바닥 그물. StartBoundary 를 과거로 둬서 등록 즉시 유효해진다.
     `$repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1) -RepetitionInterval (New-TimeSpan -Minutes 1)`,
     `$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)`,
     // ★`Interactive` — 어디서나 등록되고 관리자 권한이 필요 없다(위 주석). 창은 principal 이
-    //  아니라 **VBS 런처**가 없앤다. S4U 는 우리 호출 경로에서 거부돼 철회했다.
+    //  아니라 **숨김 런처(`conhost --headless`)**가 없앤다. S4U 는 우리 호출 경로에서 거부돼 철회했다.
     `$principal = New-ScheduledTaskPrincipal -UserId ${psq(process.env.USERNAME ?? os.userInfo().username)} -LogonType Interactive -RunLevel Limited`,
     `Register-ScheduledTask -TaskName ${psq(winTaskName(c))} -Action $action -Trigger $atLogon,$repeat -Settings $settings -Principal $principal -Force | Out-Null`,
     `'TASK_REGISTERED'`,
@@ -1331,6 +1354,50 @@ export const winPortDaemonPids = ({ netstat, procsCsv, port }) => {
   return parseNetstatListenerPids(netstat, port).filter((pid) => /index\.(js|ts)\b/i.test(procs.get(pid) ?? ""));
 };
 
+/**
+ * 감독자 배타 소유권 — 홈마다 이름 있는 파이프 하나. **OS 가 보장한다**: 두 번째 `listen` 은 `EADDRINUSE`, 주인이 죽으면(강제 종료 포함)
+ *  바로 회수, 이름은 대소문자를 가리지 않는다(2026-10-18 샌드박스 실측, Windows 11 26100). 아스트라 회신 Q3 — CIM 판정은 질의가 실패하면 둘 다
+ *  뜰 수 있는 완화책이었다. 이름 = 홈 경로(소문자·정규화)의 해시 — 같은 홈만 겹친다.
+ * @param {string} homeAbs
+ */
+export const winSupervisorPipeName = (homeAbs) =>
+  `\\\\.\\pipe\\tiguclaw-supervisor-${createHash("sha256").update(path.win32.resolve(String(homeAbs)).toLowerCase()).digest("hex").slice(0, 16)}`;
+
+/**
+ * 감독자 목록 질의 — `pid,시작시각(FILETIME),명령줄` 한 줄씩. 감독자 중복 판정(`winSupervisorIsDuplicate`)의 재료.
+ * @returns {string[]}
+ */
+export const winSupervisorQueryArgs = () => [
+  "-NoProfile",
+  "-Command",
+  PS_UTF8_OUTPUT +
+    "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -like '*supervise*' } | " +
+    "ForEach-Object { '{0},{1},{2}' -f $_.ProcessId, $_.CreationDate.ToFileTimeUtc(), $_.CommandLine }",
+];
+
+/**
+ * 이 홈의 감독자가 **나보다 먼저** 떠 있나 — 그러면 내가 중복이다(먼저 뜬 쪽이 남는다 · 동시면 PID 작은 쪽).
+ * ★왜 감독자 스스로 판단하나 (리뷰 10-18): 돌고 있을 때 `install` 하면 예약작업을 멈춰도(`Stop-ScheduledTask`) 작업이 띄운 감독자는
+ *  살아남고, 새 작업이 하나 더 띄워 둘이 같은 홈·SQLite 를 다퉜다. 밖에서 먼저 죽이는 길은 비서가 셸로 부를 때 자기를 죽였다(10-18 재검토 P2).
+ *  띄우는 길(작업·시작프로그램·직접)이 여럿이라, 막는 자리는 **뜨는 쪽 하나**다.
+ * @param {{ lines: string, home: string, selfPid: number }} input
+ * @returns {string | null} 남을 감독자 PID(내가 중복일 때) · null = 내가 남는다
+ */
+export const winSupervisorIsDuplicate = ({ lines, home, selfPid }) => {
+  // 시각은 FILETIME(100ns, ~1.3e17) — Number 정밀도(2^53)를 넘으니 BigInt 로 비교한다.
+  /** @type {{ pid: number, at: bigint }[]} */
+  const ours = [];
+  for (const l of String(lines ?? "").split(/\r?\n/)) {
+    const m = /^(\d+),(\d+),(.*)$/.exec(l.trim());
+    if (m === null || !cmdlineHasHome(m[3] ?? "", home)) continue;
+    ours.push({ pid: Number(m[1]), at: BigInt(m[2] ?? "0") });
+  }
+  const self = ours.find((x) => x.pid === selfPid);
+  if (self === undefined) return null; // 나를 못 찾으면 판단하지 않는다(질의 실패 = 종전처럼 뜬다)
+  const older = ours.find((x) => x.pid !== selfPid && (x.at < self.at || (x.at === self.at && x.pid < selfPid)));
+  return older === undefined ? null : String(older.pid);
+};
+
 /** @param {Ctx} c */
 const winScan = (c) => {
   const netstat = spawnSync("netstat", ["-ano"], { encoding: "utf8" }).stdout ?? "";
@@ -1381,14 +1448,17 @@ const winRemoveLegacyAutostart = (c) => {
     winReg(["delete", RUN_KEY, "/v", c.label, "/f"]);
     console.log(`   Removed the old autostart — HKCU Run\\${c.label} (replaced by a scheduled task)`);
   }
-  // ★VBS 는 **지우지 않는다** — 예약작업의 액션이 이걸 실행한다(창 숨김). 한때 지웠는데
-  //  (액션을 node 직접 실행으로 바꿨을 때) 그 구성은 콘솔 창이 떠서 철회했다. 내용은
-  //  `winEnsureTask` 가 매번 다시 쓴다(경로·런타임이 바뀌어도 수렴).
+  // ★옛 VBS 런처는 여기서 지우지 않는다 — 재등록이 실패해 «기존 등록으로 계속» 하는 갈래의 기존 등록이 그걸 가리킬 수 있다.
+  //  지우는 자리는 `winEnsureTask` 의 등록 **성공** 갈래와 uninstall 뿐이다(2026-10-18).
   // 옛 self-restart 1회성 작업(Defender 가 악성으로 본 그것)도 남아 있으면 정리.
   spawnSync("schtasks", ["/delete", "/tn", `${c.label}-selfrestart`, "/f"], {
     stdio: "ignore",
   });
 };
+
+/** @param {Ctx} c */
+const winTaskExists = (c) =>
+  spawnSync("schtasks", ["/query", "/tn", winTaskName(c)], { stdio: "ignore", windowsHide: true }).status === 0;
 
 /**
  * 예약작업 등록을 **코드가 말하는 모양으로 수렴**시킨다 — 멱등(`-Force`).
@@ -1404,9 +1474,23 @@ const winRemoveLegacyAutostart = (c) => {
  *  기동을 막지 않는다 — 견고함 > 단순함.
  * @param {Ctx} c
  * @param {{ capture?: boolean }} [opts] capture = 셸에서만 준 인스턴스 값을 붙잡는다 — **`install` 만** 준다(아래 주석).
- * @returns {true | "fallback" | false} true=예약작업 정상 · "fallback"=시작프로그램(감독자만 — 1분 반복 없음) · false=둘 다 실패
+ * @returns {boolean | "fallback" | "now-only" | "legacy-startup"} true=예약작업 정상 · "fallback"=시작프로그램(감독자만 — 1분 반복 없음)
+ *  · "legacy-startup"=1809 미만에서 옛 시작프로그램 `.vbs` 를 그대로 쓴다(지금 띄우는 것도 그것으로)
+ *  · "now-only"=자동시작은 못 걸었고 지금만 띄운다 · false=아무것도 못 함(옛 윈도우에 등록도 없음)
  */
 const winEnsureTask = (c, opts = {}) => {
+  // ★`--headless` 를 모르는 옛 윈도우는 **아무것도 바꾸지 않는다**(적대 검토 P3-f) — 거기서 돌던 옛 등록(VBS)은 그대로 돈다.
+  if (!winHeadlessSupported()) {
+    const exists = winTaskExists(c);
+    // ★예약작업이 막혀 옛 시작프로그램 `.vbs` 로 돌던 기계도 그대로 둔다(리뷰 10-18) — 종전엔 false 를 돌려 `/update` 뒤 start 가 아무것도 안 띄웠다.
+    const legacy = exists ? null : winLegacyStartupVbsPath(c);
+    const hasLegacy = legacy !== null && existsSync(legacy);
+    console.warn(
+      `   ⚠ This Windows (${os.release()}) is older than 10.0.17763 (version 1809) — the windowless launcher needs 1809 or newer. ` +
+        (exists ? "Keeping the existing registration." : hasLegacy ? "Keeping the existing Startup-folder launcher." : "Autostart can't be set up here."),
+    );
+    return exists ? true : hasLegacy ? "legacy-startup" : false;
+  }
   winRemoveLegacyAutostart(c);
   // ★런처를 **먼저** 쓴다 — 작업 액션이 이 파일을 가리키므로, 없으면 등록은 성공하고
   //  실행만 조용히 실패한다(2026-08-15 에 겪은 바로 그 형상: "런처가 없는데 성공 보고").
@@ -1420,7 +1504,6 @@ const winEnsureTask = (c, opts = {}) => {
     warnWinServiceToken(c);
     saveWinServiceEnv(c);
   }
-  writeVbs(winVbsPath(c), buildWinVbs(c));
   // ★**돌고 있으면 먼저 멈춘다** (2026-08-22, /update 실측으로 잡음). 작업이 실행 중이면
   //  `Register-ScheduledTask -Force` 가 실패해 수렴이 조용히 건너뛰어진다. 실제로 갱신
   //  도중 **1분 반복 트리거가 데몬을 되살려** 작업이 돌고 있었고, 그래서 등록이 옛
@@ -1430,8 +1513,13 @@ const winEnsureTask = (c, opts = {}) => {
     `Disable-ScheduledTask -TaskName ${psq(winTaskName(c))} -EA SilentlyContinue | Out-Null; ` +
       `Stop-ScheduledTask -TaskName ${psq(winTaskName(c))} -EA SilentlyContinue`,
   );
+  // ★여기서 남은 감독자·데몬을 죽이지 않는다 (2026-10-18 재검토 P2) — 한때 넣었더니, 비서가 셸 도구로 `start`·`install` 을 부르면
+  //  CLI 가 데몬의 자손이라 `taskkill /T` 에 같이 죽고 작업은 위에서 건 Disable 로 남았다(재부팅해도 안 뜬다).
+  //  «돌고 있는데 start → 감독자 둘» 은 `winStart` 가 실행 중이면 아무것도 안 하는 것으로 닫는다(맥과 같다).
   const r = winPs(buildWinTaskScript(c));
   if (r.status === 0 && r.stdout.includes("TASK_REGISTERED")) {
+    // ★옛 VBS 런처는 **새 등록이 성공한 뒤에만** 지운다 — 재등록이 실패해 «기존 등록으로 계속» 하는 갈래의 기존 등록이 그걸 가리킨다.
+    rmSync(winLegacyVbsPath(c), { force: true });
     // ★예약작업이 살아났으면 폴백은 **반드시 걷는다** — 둘 다 있으면 로그온 때 두 개 뜬다
     //  (HKCU Run 잔재와 같은 부류의 사고). 정상 경로가 복구되면 안전망은 치운다.
     if (winRemoveStartupFallback(c)) {
@@ -1439,11 +1527,7 @@ const winEnsureTask = (c, opts = {}) => {
     }
     return true;
   }
-  const exists =
-    spawnSync("schtasks", ["/query", "/tn", winTaskName(c)], {
-      stdio: "ignore",
-      windowsHide: true,
-    }).status === 0;
+  const exists = winTaskExists(c);
   // ★이유는 **양쪽 갈래에서 다 찍는다** (2026-08-22). 종전엔 "기존 등록이 있을 때" 만
   //  찍어서, 작업이 아예 없는 첫 등록이 실패하면 `🔴 등록 실패` 만 남고 **왜인지가 사라졌다**
   //  (실측: 제한 토큰 install 이 그렇게 실패했고 이유를 못 봤다). 실패를 말하면서 원인을
@@ -1467,24 +1551,38 @@ const winEnsureTask = (c, opts = {}) => {
     );
     return "fallback";
   }
-  return false;
+  // ★자동시작을 못 걸어도 **지금은 띄운다** (적대 검토 P2-a) — 종전엔 바로가기까지 실패하면 감독자를 아예 안 띄워, 위임 `/update` 뒤
+  //  다음 로그온까지 비서가 꺼져 있었다. 대가(로그온 때 안 뜸)는 호출부가 말한다.
+  return "now-only";
 };
 
 /** @param {Ctx} c */
 const winInstall = (c) => {
   mkdirSync(c.logsDir, { recursive: true });
   const mode = winEnsureTask(c, { capture: true });
-  if (mode === false) {
+  if (mode === "now-only") {
+    console.error(`🔴 Autostart registration failed (${winTaskName(c)}) — starting it now, but it will not start by itself at logon.`);
+    console.error("   Neither a scheduled task nor the Startup folder can be used — check with your administrator, or use WSL2.");
+    winLaunchSupervisor(c);
+    process.exitCode = 1;
+  } else if (mode === false) {
     console.error(`🔴 Autostart registration failed (${winTaskName(c)}).`);
     console.error(
-      "   Neither a scheduled task nor the Startup folder can be used — check with your administrator, or use WSL2.",
+      winHeadlessSupported()
+        ? "   Neither a scheduled task nor the Startup folder can be used — check with your administrator, or use WSL2."
+        : "   This Windows version is too old for the windowless launcher — update Windows to version 1809 or newer.",
     );
     process.exitCode = 1;
     return;
   }
-  if (mode === "fallback") {
+  if (mode === "now-only") {
+    // 위에서 띄웠다 — 아래에서 기동 결과만 본다.
+  } else if (mode === "legacy-startup") {
+    console.log(`Kept the existing Startup-folder launcher (Windows older than 1809). TIGUCLAW_HOME=${c.homeRaw}`);
+    winLaunchLegacyStartup(c);
+  } else if (mode === "fallback") {
     console.log(`Registered autostart in the Startup folder (fallback). TIGUCLAW_HOME=${c.homeRaw}`);
-    winLaunchVbs(c); // 예약작업이 없으니 런처를 직접 띄운다.
+    winLaunchSupervisor(c); // 예약작업이 없으니 감독자를 직접 띄운다.
   } else {
     console.log(
       `Registered the KeepAlive scheduled task (no admin rights needed). TIGUCLAW_HOME=${c.homeRaw}`,
@@ -1520,7 +1618,7 @@ const winUninstall = (c) => {
   winRemoveLegacyAutostart(c);
   // 폴백도 함께 걷는다 — 안 지우면 uninstall 후에도 로그온마다 되살아난다.
   if (winRemoveStartupFallback(c)) console.log(`   Removed the Startup-folder fallback.`);
-  rmSync(winVbsPath(c), { force: true });
+  rmSync(winLegacyVbsPath(c), { force: true });
   console.log(`✅ Unregistered (removed the scheduled task and launcher, ${c.label}).`);
 };
 
@@ -1610,6 +1708,12 @@ const winReenable = (c) => {
 // start = 재실행(숨김 VBS). Run 키·VBS 는 이미 있어야 한다.
 /** @param {Ctx} c */
 const winStart = (c) => {
+  // ★이미 돌고 있으면 아무것도 안 한다 (2026-10-18 재검토) — 맥(`launchctl bootstrap` 이 실패)과 같은 계약. 업데이트·롤백은
+  //  늘 stop 뒤에 start 를 부르므로 등록 수렴은 잃지 않는다. 종전엔 등록을 다시 하며 감독자가 하나 더 떴다.
+  if (isDaemonRunning(c)) {
+    console.log(`daemon start: already running (port ${winPort(c)}) — nothing to do. To restart it: restart`);
+    return;
+  }
   // ★**start 가 등록을 수렴시킨다** (2026-08-22). `runUpdate` 는 install 을 다시 돌리지
   //  않고 stop→ci→build→**start** 만 한다. 그래서 기존 사용자에게 등록 변경을 배달하는
   //  **유일한 길이 여기**다. 두 부류를 다 고쳐야 한다:
@@ -1626,8 +1730,14 @@ const winStart = (c) => {
     process.exitCode = 1;
     return;
   }
-  if (mode === "fallback") {
-    winLaunchVbs(c); // 예약작업이 없는 환경 — 런처를 직접 띄운다.
+  if (mode === "legacy-startup") {
+    winLaunchLegacyStartup(c);
+  } else if (mode === "fallback" || mode === "now-only") {
+    if (mode === "now-only") {
+      // ★실패 코드는 세우지 않는다(재검토 P3-3) — 세우면 업데이트가 «다시 못 띄웠다» 고 말하는데 실제로는 떠 있다. 대가만 말한다.
+      console.warn(`daemon start: autostart registration failed (${winTaskName(c)}) — starting it now only; it won't start by itself at logon. Run \`tiguclaw install\` to repair autostart.`);
+    }
+    winLaunchSupervisor(c); // 예약작업이 없는 환경 — 감독자를 직접 띄운다.
   } else {
     // Enable 이 먼저다 — `stop` 이 비활성화해 뒀다(winStopTask 주석 참조).
     const r = winPs(
@@ -1661,6 +1771,14 @@ const winStatus = (c) => {
       `⚠ An old HKCU Run entry is still present — two daemons will start at logon. Run 'install' again to clean it up.`,
     );
   }
+  // ★옛 VBS 런처로 등록된 채면 말한다 (적대 검토 P3-g) — 넘어오기는 start·install 에서만 일어나서, restart 만 쓰는 기계는 옛 등록이
+  //  남고, 윈도우가 VBScript 를 끄면 다음 로그온부터 조용히 안 뜬다.
+  const act = winPs(`(Get-ScheduledTask -TaskName ${psq(winTaskName(c))} -EA SilentlyContinue).Actions[0].Execute`);
+  if (/wscript/i.test(act.stdout ?? "")) {
+    // ★`stop` 뒤 `start` 를 권한다(재검토 10-18) — 등록을 새 런처로 수렴시키는 것은 start 다(`restart` 는 재등록하지 않는다).
+    //  도는 중의 `install` 은 작업이 띄운 옛 감독자를 못 멈춘다.
+    console.log("⚠ Registered with the old VBScript launcher — Windows is phasing VBScript out. Run 'stop' and then 'start' to switch to the new one.");
+  }
   const pids = winListeningPids(c);
   if (pids.length > 0) {
     console.log(`running: yes (pid ${pids.join(", ")}, port ${winPort(c)})`);
@@ -1677,12 +1795,11 @@ const winPrint = (c) => {
     "# Windows: KeepAlive scheduled task (no admin rights needed) — logon trigger + 1-minute repeat (safety net)",
   );
   console.log(`# Task name: ${winTaskName(c)}`);
-  console.log(`#   Action = wscript.exe //B //Nologo "${winVbsPath(c)}"`);
-  console.log(`#   The launcher (VBS) starts the supervisor **without a window** and waits on it — waiting keeps`);
-  console.log(`#   the task instance alive, which is what makes IgnoreNew (no duplicates) work.`);
+  const action = winTaskAction(c);
+  console.log(`#   Action = ${action.execute} ${action.argument}`);
+  console.log(`#   conhost --headless starts the supervisor **without a window** and waits on it — waiting keeps`);
+  console.log(`#   the task instance alive, which is what makes IgnoreNew (no duplicates) work. No VBScript needed.`);
   console.log(`#   The supervisor starts the daemon and restarts it when it dies (same as launchd KeepAlive).`);
-  console.log("# --- Launcher VBS ---");
-  console.log(buildWinVbs(c));
   console.log("# --- Registration script ---");
   console.log(buildWinTaskScript(c));
 };
@@ -1868,8 +1985,65 @@ const runSupervise = (c) => {
     });
   };
 
-  log(`supervisor started — label=${c.label}`);
-  spawnOnce();
+  // ★이 홈의 감독자가 이미 있으면 물러난다. 알림은 한 시간에 한 번 — 옛 감독자가 남은 동안엔 작업의 1분 반복이 매번 새 감독자를 띄우고,
+  //  그때마다 한 줄씩 쌓이면 로그가 묻힌다.
+  /** @param {string} who */
+  const noteDuplicate = (who) => {
+    const mark = path.join(c.logsDir, ".supervise-duplicate");
+    let quiet = false;
+    try {
+      quiet = Date.now() - statSync(mark).mtimeMs < 60 * 60 * 1000;
+    } catch {
+      /* 처음 */
+    }
+    if (quiet) return;
+    log(`another supervisor for this home is already running (${who}) — exiting (this is a duplicate start; noted at most once an hour)`);
+    try {
+      writeFileSync(mark, String(Date.now()));
+    } catch {
+      /* 기록 실패해도 물러난다 */
+    }
+  };
+  let begun = false;
+  const begin = () => {
+    if (begun) return; // listen 콜백과 error 가 둘 다 오는 경로가 있어도 한 번만(재검토 10-18)
+    begun = true;
+    // ★파이프를 잡은 뒤에도 CIM 으로 한 번 더 본다 — 파이프를 모르는 **옛 버전** 감독자가 남아 있는 전환기를 덮는다(그건 파이프를 안 잡았다).
+    //  시한 15초 — WMI 가 멈추면 감독자가 데몬을 띄우기 전에 무기한 멈췄다(재검토 10-18). 실패하면 판단 안 함(뜬다).
+    if (process.platform === "win32") {
+      const q = spawnSync("powershell", winSupervisorQueryArgs(), { encoding: "utf8", windowsHide: true, timeout: 15_000 });
+      const keeper = winSupervisorIsDuplicate({ lines: q.stdout ?? "", home: String(c.homeRaw ?? ""), selfPid: process.pid });
+      if (keeper !== null) {
+        noteDuplicate(`pid=${keeper}`);
+        process.exit(0); // 잡은 파이프는 종료와 함께 OS 가 놓는다
+        return;
+      }
+    }
+    log(`supervisor started — label=${c.label}`);
+    spawnOnce();
+  };
+  if (process.platform !== "win32") {
+    begin();
+    return;
+  }
+  // 배타 소유권(`winSupervisorPipeName` 주석) — 이미 잡혀 있으면 물러난다 · 그 밖의 오류면 **가용성 우선**으로 뜬다(아스트라 회신 Q3: 이 선택을 적는다 —
+  //  잠금을 못 만들었다고 비서를 안 띄우는 쪽이 사용자에겐 더 나쁘다. 그때의 중복은 CIM 판정이 한 번 더 거른다).
+  // ★붙었다 바로 끊는 클라이언트의 EPIPE 가 처리되지 않은 예외로 감독자를 죽이지 않게(싱크 전 적대 검토 10-18 — 300회에 재현) —
+  //  감독자가 죽으면 데몬은 남고 1분 반복이 새 감독자를 띄워 같은 홈에 데몬이 하나 더 뜬다.
+  const lock = net.createServer((sock) => {
+    sock.on("error", () => undefined);
+    sock.end(String(process.pid));
+  });
+  lock.on("error", (/** @type {NodeJS.ErrnoException} */ e) => {
+    if (e.code === "EADDRINUSE") {
+      noteDuplicate("supervisor lock is held");
+      process.exit(0);
+      return;
+    }
+    log(`supervisor lock unavailable (${e.code ?? e.message}) — starting anyway (availability first)`);
+    begin();
+  });
+  lock.listen(winSupervisorPipeName(c.homeAbs), begin);
 };
 
 // ───────────────────────────── dispatch ─────────────────────────────────────

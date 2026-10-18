@@ -1648,6 +1648,17 @@ const queueHandler: MessageHandler = (msg) => {
       await replyCommand(msg, text).catch(() => {});
     })();
   }
+  // 아웃오브밴드 `/mcp_login <주소>` — 원격 MCP OAuth 로그인 완료(다른 기기에서 로그인해 루프백 콜백이 못 온 경우의 붙여넣기).
+  //  ★모델에 보내지 않는다 — 주소에 일회용 code·state 가 있다(아스트라 회신 D: 대화·모델 입력·도구 기록에 남기지 않는다).
+  //  입력 메아리는 **가려서, 적재 없이**(ephemeral) — 대시보드 «대기 중» 버블만 풀어 준다. 답에도 서버 이름·결과 이름만.
+  if (msg.text.trim().split(/\s+/)[0] === "/mcp_login") {
+    console.log(inboundLine(msg, "command"));
+    publishInboundEcho({ ...msg, text: "/mcp_login …" }, { ephemeral: true });
+    return (async (): Promise<void> => {
+      const { runMcpLoginCommand } = await import("./core/mcp-oauth.js");
+      await replyCommand(msg, await runMcpLoginCommand(msg.text)).catch(() => {});
+    })();
+  }
   // @unlisted diagnose — 사용자가 할 수 있는 일이 없는 내부 진단이다(아래 근거).
   // ★**일부러 명령 목록에 안 넣는다** (2026-09-05 정태님 지적으로 되돌림).
   //  오늘 `commands-have-handlers` 가 «처리기는 있는데 목록에 없다» 를 보고했고, 내가 그걸

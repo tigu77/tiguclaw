@@ -69,16 +69,19 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★**이름 집합이 같다** — 한쪽에만 있으면 그 기계에서 던진다.
+    // ★**이름 집합의 차이가 계약에 적힌 그대로다** — 한쪽에만 있는 이름은 `PLATFORM_ONLY_KEY_NAMES` 에 적혀 있어야 한다(그래야 계획기가 쏘기 전에 거른다).
+    //  (2026-10-18 종전엔 «같다» 였다 — 기능키·미디어 키를 넣으며 맥에 없는 키가 생겼다. 수식키 `win` 과 같은 규칙으로.)
+    const { PLATFORM_ONLY_KEY_NAMES: ONLY } = await loadPluginModule<{ PLATFORM_ONLY_KEY_NAMES: Record<string, readonly string[]> }>(
+      "../../../plugins/computer-use/src/control.ts",
+    );
     const onlyMac = [...m].filter((k) => !w.has(k));
     const onlyWin = [...w].filter((k) => !m.has(k));
+    const declaredWin = new Set(ONLY.win32 ?? []);
     out.push(
       assert(
-        "★★**양쪽 표의 키 이름이 같다** — 한쪽에만 있으면 그 기계에서 «알 수 없는 키» 로 던진다",
-        onlyMac.length === 0 && onlyWin.length === 0,
-        onlyMac.length + onlyWin.length === 0
-          ? `공통 ${m.size}개`
-          : `mac 만: ${onlyMac.join(",") || "-"} · win 만: ${onlyWin.join(",") || "-"}`,
+        "★★**양쪽 표의 차이 = 계약(PLATFORM_ONLY_KEY_NAMES)** — 말없이 한쪽에만 있으면 그 기계에서 «알 수 없는 키» 로 던진다",
+        onlyMac.length === 0 && onlyWin.every((k) => declaredWin.has(k)) && [...declaredWin].every((k) => onlyWin.includes(k)),
+        `mac 만: ${onlyMac.join(",") || "-"} · win 만(계약 밖): ${onlyWin.filter((k) => !declaredWin.has(k)).join(",") || "-"} · 계약인데 차이 아님: ${[...declaredWin].filter((k) => !onlyWin.includes(k)).join(",") || "-"}`,
       ),
     );
 
@@ -175,6 +178,22 @@ export const check: RegressionCheck = {
         missingMac.length + missingWin.length === 0
           ? `허용 ${String(KEY_NAMES.length)}개 · 양쪽 모두 보유`
           : `mac 없음: ${missingMac.join(",") || "-"} · win 없음: ${missingWin.join(",") || "-"}`,
+      ),
+    );
+    // ── 플랫폼 전용 키(2026-10-18 — 기능키·미디어 등 «모든 키») ────────────────────────────
+    //  ★Windows 전용 목록은 **Windows 표에 전부 있고 · 맥 표엔 없다** · Windows 표의 이름은 공통 ∪ Windows 전용 안에 다 있다(못 쓰는 키 없음).
+    const { PLATFORM_ONLY_KEY_NAMES } = await loadPluginModule<{ PLATFORM_ONLY_KEY_NAMES: Record<string, readonly string[]> }>(
+      "../../../plugins/computer-use/src/control.ts",
+    );
+    const winOnly = PLATFORM_ONLY_KEY_NAMES.win32 ?? [];
+    const winOnlyMissing = winOnly.filter((k) => !w.has(k));
+    const winOnlyOnMac = winOnly.filter((k) => m.has(k));
+    const winUnlisted = [...w].filter((k) => k.length > 1 && !KEY_NAMES.includes(k) && !winOnly.includes(k));
+    out.push(
+      assert(
+        "★Windows 전용 키 — Windows 표에 전부 있고 맥 표엔 없다 · Windows 표에 있는데 어느 목록에도 없는 이름(못 쓰는 키)이 없다",
+        winOnly.length >= 20 && winOnlyMissing.length === 0 && winOnlyOnMac.length === 0 && winUnlisted.length === 0,
+        `전용 ${String(winOnly.length)}개 · win 표에 없음: ${winOnlyMissing.join(",") || "-"} · 맥 표에 있음: ${winOnlyOnMac.join(",") || "-"} · 목록 밖: ${winUnlisted.join(",") || "-"}`,
       ),
     );
     out.push(

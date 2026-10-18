@@ -134,7 +134,7 @@ export const check: RegressionCheck = {
       // ★지금 실행 — 루틴을 실제로 돌리고 결과를 목적지로 보낸다. 폴백이 되부르면 리포트가 두 번 간다.
       "run_schedule",
       "project_forget", "project_register", "project_update",
-      "register_command", "register_endpoint", "remove_mcp_server",
+      "register_command", "register_endpoint", "remove_mcp_server", "login_mcp_server",
       "run_in_background", "send_file", "spawn_agent", "steer_worker",
       "update_memory", "update_schedule", "update_self",
       // 세션 이름 변경 — 되돌릴 수 있지만 상태를 바꾼다(읽기전용 폴백 대상 아님).

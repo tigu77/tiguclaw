@@ -1566,7 +1566,8 @@
       .slash-group { padding:8px 10px 3px; font-size:0.65625rem; font-weight:650; color:var(--text-mute); border-top:1px solid var(--border); margin-top:4px; }
       .slash-name { color:var(--accent); font-weight:750; font-size:0.75rem; white-space:nowrap; }
       .slash-folder { color:var(--text-dim); font-size:0.71875rem; white-space:nowrap; }
-      .slash-desc { color:var(--text-mute); font-size:0.6875rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      /* 설명은 줄바꿈해서 끝까지 — 좁은 화면(모바일)에서 커맨드 설명이 잘렸다(10-18). */
+      .slash-desc { color:var(--text-mute); font-size:0.6875rem; min-width:0; white-space:normal; overflow-wrap:anywhere; }
       #chat-form { display:flex; gap:8px; align-items:flex-end; }
       /* CSS-only 자동 높이 — 매 키입력마다 height=auto + scrollHeight 읽기(강제 동기 리플로우,
          mount된 stream 크기에 비례: 실측 최대 ~15ms)를 없앤다. 보이지 않는 복제(::after)가 같은
@@ -1862,6 +1863,10 @@
       .cm-item.cm-disabled { color:var(--text-dim); cursor:default; opacity:.55; }
       .cm-item .cm-icon { flex:none; font-size:0.8125rem; width:16px; text-align:center; }
       .cm-item .cm-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      /* 설명이 있는 항목(커맨드) — 이름은 한 줄, 설명은 아래 줄에서 줄바꿈해 끝까지(말줄임하면 볼 길이 없다). */
+      .cm-item.cm-two-line { align-items:flex-start; }
+      .cm-item .cm-text { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+      .cm-item .cm-detail { color:var(--text-mute); font-size:0.6875rem; line-height:1.4; white-space:normal; overflow-wrap:anywhere; }
       .cm-item .cm-sub-arrow { flex:none; margin-left:auto; color:var(--text-dim); }
       .cm-item.cm-open { background:var(--card-hover); }
       .cm-sep { height:1px; margin:5px 4px; background:var(--border); flex:none; }

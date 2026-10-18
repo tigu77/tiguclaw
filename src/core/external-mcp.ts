@@ -5,8 +5,12 @@
  * 표준 MCP config 형태(`.mcp.json` 동형, inventory.ts 가 이미 읽는 shape — 커스텀 DSL 0):
  *   { "mcpServers": {
  *       "github": { "command": "npx", "args": [...], "env": {...} },   // stdio
- *       "docs":   { "type": "sse", "url": "https://..." }              // sse
+ *       "docs":   { "type": "sse", "url": "https://..." }              // sse(옛 원격 방식)
+ *       "linear": { "type": "http", "url": "https://…/mcp",              // Streamable HTTP(지금 원격 표준)
+ *                   "headers": { "Authorization": "Bearer ${LINEAR_TOKEN}" } }
  *   } }
+ * ★값 안의 `${VAR}`·`${VAR:-기본}` 은 **읽을 때** 데몬 환경(홈 `.env` 포함)으로 바꾼다 — Claude Code `.mcp.json` 과 같은 문법.
+ *  토큰을 파일에 적지 않고 `.env` 에 둘 수 있게. 쓰기 경로는 바꾸지 않는다(비밀이 파일에 되써지지 않게).
  *
  * ★역할 분리:
  *  - claude 어댑터 = 이 config 를 SDK `options.mcpServers` 유니온에 *그대로* 주입(네이티브 연결).
@@ -21,11 +25,14 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { MCPServer } from "@openai/agents-core";
 // ★시크릿 판정은 `outbound-sanitize` 가 유일 정본이다 — 여기 사본을 두면 어긋난다
 //  (2026-08-01 감사: 실제로 어긋나 있었다. 사본 쪽에만 CREDENTIAL 이 있었다).
-import { SECRET_KEY_NAME_RE } from "./outbound-sanitize.js";
+import { SECRET_KEY_NAME_RE, redactSecrets } from "./outbound-sanitize.js";
 import { getPaths } from "./paths.js";
+import { createHash } from "node:crypto";
+import { forgetMcpOAuth, hasUnverifiedForcedToken, hasUserAuthorization, mcpAccessToken, noteMcpAuthorized, noteMcpUnauthorized } from "./mcp-oauth.js";
 
 /** stdio 서버 config (claude McpStdioServerConfig 동형). */
 export interface StdioMcpConfig {
@@ -39,7 +46,40 @@ export interface SseMcpConfig {
   url: string;
   headers?: Record<string, string>;
 }
-export type ExternalMcpConfig = StdioMcpConfig | SseMcpConfig;
+/** Streamable HTTP 서버 config (claude McpHttpServerConfig 동형) — 원격 MCP 의 지금 표준(2026-10-18). */
+export interface HttpMcpConfig {
+  type: "http";
+  url: string;
+  headers?: Record<string, string>;
+}
+export type ExternalMcpConfig = StdioMcpConfig | SseMcpConfig | HttpMcpConfig;
+
+/** 원격(sse·http) 설정인가 — 연결·표시가 갈리는 유일한 판정. */
+const isRemote = (c: ExternalMcpConfig): c is SseMcpConfig | HttpMcpConfig =>
+  "type" in c && (c.type === "sse" || c.type === "http");
+
+/**
+ * `${VAR}`·`${VAR:-기본}` 확장 — 문자열 값 전부(command·args·env·url·headers). 정의 안 된 변수(기본값도 없음)는 **빈 값으로 보내지 않는다** —
+ *  `Bearer ` 같은 반쪽 헤더로 붙으면 서버는 «인증 실패» 만 말하고 원인이 안 보인다. 그 서버만 건너뛰고 변수 **이름**을 돌려준다(값은 안 싣는다).
+ */
+export const expandMcpConfigEnv = (
+  config: ExternalMcpConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): { ok: true; config: ExternalMcpConfig } | { ok: false; missing: string[] } => {
+  const missing = new Set<string>();
+  const one = (v: string): string =>
+    v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (_m, name: string, dflt: string | undefined) => {
+      const got = env[name];
+      if (got !== undefined && got !== "") return got;
+      if (dflt !== undefined) return dflt;
+      missing.add(name);
+      return "";
+    });
+  const walk = (x: unknown): unknown =>
+    typeof x === "string" ? one(x) : Array.isArray(x) ? x.map(walk) : x !== null && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, walk(v)])) : x;
+  const out = walk(config) as ExternalMcpConfig;
+  return missing.size > 0 ? { ok: false, missing: [...missing] } : { ok: true, config: out };
+};
 
 interface McpJsonFile {
   mcpServers?: Record<string, ExternalMcpConfig>;
@@ -78,19 +118,86 @@ const readMcpFileState = async (
   try {
     raw = await fs.readFile(file, "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return { ok: true, servers: {} };
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
+      skippedForMissingEnv.delete(file); // 파일이 없어졌으면 건너뛴 서버도 없다(낡은 표시를 남기지 않는다)
+      return { ok: true, servers: {} };
+    }
     return { ok: false, reason: `읽기 실패(${(e as NodeJS.ErrnoException)?.code ?? "unknown"})` };
   }
   try {
     const servers = (JSON.parse(raw) as McpJsonFile)?.mcpServers;
-    if (servers === undefined || servers === null) return { ok: true, servers: {} };
+    if (servers === undefined || servers === null) {
+      skippedForMissingEnv.delete(file);
+      return { ok: true, servers: {} };
+    }
     if (typeof servers !== "object") return { ok: false, reason: "mcpServers 가 객체가 아님" };
-    return { ok: true, servers };
+    // `${VAR}` 확장 — 읽는 경로 한 곳(Claude 의 그대로 넘기기·브리지 연결이 둘 다 여기를 지난다). 못 채운 서버는 빼고 말한다.
+    const ready: Array<[string, ExternalMcpConfig, ExternalMcpConfig]> = [];
+    const skipped = new Map<string, string[]>();
+    for (const [name, c] of Object.entries(servers)) {
+      const r = expandMcpConfigEnv(c);
+      if (!r.ok) {
+        warnMissingEnvOnce(file, name, r.missing);
+        skipped.set(name, r.missing);
+        continue;
+      }
+      ready.push([name, r.config, c]);
+    }
+    skippedForMissingEnv.set(file, skipped);
+    // 토큰 조회는 서버끼리 **함께** 기다린다 — 차례로 기다리면 갱신이 늦을 때 서버 수만큼 턴이 막힌다(적대 검토 P1).
+    const withTokens = await Promise.all(
+      ready.map(async ([name, c, raw]) => {
+        const done = await withOAuthToken(file, name, c);
+        templateOf.set(done, raw);
+        return [name, done] as const;
+      }),
+    );
+    return { ok: true, servers: Object.fromEntries(withTokens) };
   } catch {
     // ★파서 메시지를 싣지 않는다 — V8 은 «Unexpected token» 에 원문 조각을 넣어, 따옴표 없이 적은 토큰이 로그(→ /logs 로 채팅)에
     //  찍혔다(적대 검토 F4). 크기만 남긴다.
     return { ok: false, reason: `JSON 형식 오류(${raw.length}자 — 내용은 싣지 않음)` };
   }
+};
+
+/**
+ * 읽은 설정 → 파일에 적힌 **원래 모양**(`${VAR}` 그대로). Claude CLI 에는 이것을 넘긴다(CLI 가 자기 환경에서 채운다) · 목록 표시도 이것으로.
+ * ★채운 값을 넘기면 stdio args·env·URL 의 비밀이 매 턴 CLI 명령줄에 실린다 — `${VAR}` 확장을 읽기로 옮기기 전엔 CLI 가 채워서 안 실렸다(리뷰 10-18).
+ */
+const templateOf = new WeakMap<object, ExternalMcpConfig>();
+/** 파일별 — 마지막 읽기에서 «쓰는 환경변수가 없어» 건너뛴 서버와 그 변수 이름. 목록 도구가 보여 준다(조용히 사라지지 않게). */
+const skippedForMissingEnv = new Map<string, Map<string, string[]>>();
+/** 건너뛴 서버 — 전역 + (믿는 프로젝트면) 그 프로젝트. 이름 → 없는 변수. */
+export const skippedMcpServers = (cwd?: string): Array<{ name: string; missing: string[] }> => {
+  const files = [mcpJsonPath(), ...(isProjectMcpCwd(cwd) ? [projectMcpPath(cwd)] : [])];
+  return files.flatMap((f) => [...(skippedForMissingEnv.get(f) ?? new Map<string, string[]>())].map(([name, missing]) => ({ name, missing })));
+};
+
+/**
+ * 원격 서버에 OAuth 로그인 토큰을 헤더로 합성한다(`mcp-oauth` 가 소유 — 갱신도 거기서 한 번에 하나). 사용자가 인증 헤더를 직접 줬으면 손대지 않는다.
+ * ★지문(설정 JSON)에 토큰이 들어가므로, 갱신으로 토큰이 바뀌면 브리지는 새 헤더로 다시 연결한다 · Claude 는 그 턴의 설정을 그대로 받는다.
+ * 어느 이름에 합성했는지 적어 둔다 — 연결이 401 이면 «사용자 토큰이 틀림» 과 «로그인이 필요함» 을 가르는 데 쓴다.
+ */
+const oauthInjected = new Set<string>();
+const withOAuthToken = async (file: string, name: string, c: ExternalMcpConfig): Promise<ExternalMcpConfig> => {
+  if (!isRemote(c) || hasUserAuthorization(c.headers)) return c;
+  const token = await mcpAccessToken({ file, name, url: c.url }).catch(() => undefined);
+  const k = `${path.resolve(file)}\u0000${name}`;
+  if (token === undefined) {
+    oauthInjected.delete(k);
+    return c;
+  }
+  oauthInjected.add(k);
+  return { ...c, headers: { ...(c.headers ?? {}), Authorization: `Bearer ${token}` } };
+};
+
+/** 같은 «변수 없음» 은 한 번만 말한다 — 설정은 턴마다 읽히므로 그대로 두면 매 턴 같은 경고가 쌓인다. */
+const missingEnvWarned = new Set<string>();
+const warnMissingEnvOnce = (file: string, name: string, missing: string[]): void => {
+  const key = `${file}\u0000${name}\u0000${missing.join(",")}`;
+  if (missingEnvWarned.has(key)) return;
+  missingEnvWarned.add(key);
+  console.warn(`external-mcp: '${name}' 건너뜀 — 설정이 쓰는 환경변수가 없음: ${missing.join(", ")} (${file}). 홈 .env 에 넣거나 \${VAR:-기본} 으로 기본값을 주세요.`);
 };
 
 /** 한 mcp.json/.mcp.json 파일의 mcpServers 읽기 — 부재/손상 시 빈 맵(throw 0). 표시·Claude 경로용(맞추기는 위 상태판을 쓴다). */
@@ -179,7 +286,8 @@ const readMcpFileForWrite = async (file: string): Promise<Record<string, unknown
  */
 const writeMcpFile = async (file: string, content: Record<string, unknown>): Promise<void> => {
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, `${JSON.stringify(content, null, 2)}\n`, "utf8");
+  // 새로 만들 때만 0600 — 헤더·env 에 토큰이 들어간다. 있는 파일은 사용자가 정한 권한을 그대로 둔다(mode 는 생성 때만 먹는다).
+  await fs.writeFile(file, `${JSON.stringify(content, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 };
 
 /** name→config upsert 후 파일 저장(디렉터리 ensure). projectPath = 프로젝트 .mcp.json 대상. */
@@ -207,17 +315,165 @@ export const removeExternalMcpServer = async (
     if (!(name in doc.mcpServers)) return false;
     delete doc.mcpServers[name];
     await writeMcpFile(file, doc);
+    // 그 서버의 로그인 기록도 로컬에서 지운다(공급자 쪽 폐기는 하지 않는다 — `forgetMcpOAuth` 주석).
+    await forgetMcpOAuth(file, name).catch(() => 0);
     return true;
   });
 };
 
+/**
+ * 로그인 대상 찾기 — 그 이름이 **어느 파일**에 원격 서버로 있나(projectPath 지정=그 프로젝트 `.mcp.json`, 아니면 전역). `${VAR}` 는 바꾸되
+ * 로그인 토큰은 합성하지 않는다(로그인 판단의 재료라서). 원격이 아니거나 없으면 null.
+ */
+export const findRemoteMcpServer = async (
+  name: string,
+  projectPath?: string,
+): Promise<{ file: string; url: string; type: "http" | "sse"; userAuthorization: boolean } | null> => {
+  const file = resolveWriteFile(projectPath);
+  let raw: unknown;
+  try {
+    raw = (JSON.parse(await fs.readFile(file, "utf8")) as McpJsonFile).mcpServers?.[name];
+  } catch {
+    return null;
+  }
+  if (raw === undefined || raw === null) return null;
+  const r = expandMcpConfigEnv(raw as ExternalMcpConfig);
+  if (!r.ok || !isRemote(r.config)) return null;
+  return { file, url: r.config.url, type: r.config.type, userAuthorization: hasUserAuthorization(r.config.headers) };
+};
+
+/**
+ * 어댑터가 «이 원격 서버가 인증을 요구했다» 를 알릴 때 — Claude 는 SDK 가 직접 연결해 401 이 브리지 경로를 안 지난다(SDK 의 `needs-auth` 상태로 온다).
+ * 판정은 여기 한 곳: 그 이름이 실제로 있는 파일(프로젝트가 덮으면 프로젝트)의 원격 서버이고 **사용자가 인증 헤더를 직접 주지 않았으면** «인증 필요».
+ */
+export const noteRemoteAuthRequired = async (name: string, cwd?: string, sentHeaders?: Record<string, string>): Promise<void> => {
+  const t = (isProjectMcpCwd(cwd) ? await findRemoteMcpServer(name, cwd) : null) ?? (await findRemoteMcpServer(name));
+  if (t === null || t.userAuthorization) return;
+  await noteMcpUnauthorized({ file: t.file, name, url: t.url }, bearerOf(sentHeaders));
+};
+
+/** Claude 경로 — SDK init 에서 이 원격 서버가 붙었다(`connected`). 401 판정의 «새 토큰으로 성공한 적 있나» 재료(`noteMcpAuthorized`). */
+export const noteRemoteAuthorized = async (name: string, cwd?: string, sentHeaders?: Record<string, string>): Promise<void> => {
+  const sent = bearerOf(sentHeaders);
+  if (sent === undefined || !hasUnverifiedForcedToken()) return; // 대개 여기서 끝난다(디스크 읽기 0)
+  const t = (isProjectMcpCwd(cwd) ? await findRemoteMcpServer(name, cwd) : null) ?? (await findRemoteMcpServer(name));
+  if (t !== null) noteMcpAuthorized({ file: t.file, name, url: t.url }, sent);
+};
+
+/**
+ * Claude 경로 — SDK init 이 이 원격 서버를 `failed` 로 알렸다. ★실제 CLI 는 **우리가 넣은 토큰이 거절돼도 `needs-auth` 가 아니라 `failed`** 를
+ *  낸다(헤더 없이 401 일 때만 needs-auth — 싱크 전 적대 검토 10-18, 실 CLI 0.3.280 확인). 그대로 두면 강제 갱신도 «로그인 필요» 도 없이 매 턴
+ *  조용히 실패한다. `failed` 만으론 401 과 네트워크 오류를 못 가르니, **그 토큰으로 한 번** 직접 물어 401 일 때만 브리지와 같은 판정으로 넘긴다.
+ * 토큰마다 한 번(같은 토큰으로 매 턴 묻지 않는다) · 시한 10초 · 실패해도 조용히(판정 보조일 뿐).
+ */
+/** 토큰별 마지막 확인 — 확정 응답이 왔으면 다시 안 묻고, 네트워크 오류·시한 초과면 10분 뒤 다시 묻는다(재검토 10-18: 결과 전에 표시하면 한 번의 실패로 기회가 사라졌다). */
+const probedTokens = new Map<string, { at: number; settled: boolean }>();
+const PROBE_RETRY_MS = 10 * 60 * 1000;
+export const noteRemoteConnectFailed = async (name: string, cwd: string | undefined, sentConfig: ExternalMcpConfig | undefined): Promise<void> => {
+  if (sentConfig === undefined || !isRemote(sentConfig)) return;
+  const sent = bearerOf(sentConfig.headers);
+  if (sent === undefined) return; // 우리 토큰을 안 보냈다 — 401 이면 CLI 가 needs-auth 로 알린다
+  const t = (isProjectMcpCwd(cwd) ? await findRemoteMcpServer(name, cwd) : null) ?? (await findRemoteMcpServer(name));
+  // ★보내는 곳은 **이 턴에 보낸 설정**의 주소다 — 다시 읽은 주소가 다르면(그새 설정이 바뀜·프로젝트 항목 삭제) 보내지 않는다.
+  //  다시 읽은 값으로 보내면 프로젝트 서버용 토큰·사용자 헤더가 다른 서버로 갈 수 있었다(재검토 10-18, 두 번 읽는 사이의 차이).
+  if (t === null || t.userAuthorization || t.url !== sentConfig.url) return;
+  const mark = createHash("sha256").update(`${t.file}\u0000${name}\u0000${sent}`).digest("hex");
+  const prev = probedTokens.get(mark);
+  if (prev !== undefined && (prev.settled || Date.now() - prev.at < PROBE_RETRY_MS)) return;
+  probedTokens.set(mark, { at: Date.now(), settled: false });
+  const headers: Record<string, string> = { ...(sentConfig.headers ?? {}), accept: "application/json, text/event-stream" };
+  const res = await fetch(sentConfig.url, sentConfig.type === "sse"
+    ? { method: "GET", headers, signal: AbortSignal.timeout(10_000) }
+    : {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "tiguclaw-auth-probe", version: "1" } } }),
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => null);
+  if (res === null) return; // 네트워크 오류·시한 — 판정하지 않고 10분 뒤 다시
+  // ★토큰에 대해 답한 응답(2xx·401·403)만 «확정» — 5xx·429·408 은 토큰과 무관하니 10분 뒤 다시 묻는다(재검토 10-18: 503 뒤 같은 토큰의 401 을 놓쳤다).
+  const settled = (res.status >= 200 && res.status < 300) || res.status === 401 || res.status === 403;
+  probedTokens.set(mark, { at: Date.now(), settled });
+  void res.body?.cancel().catch(() => undefined);
+  // initialize 가 받아들여져 세션이 열렸으면 닫는다(서버에 확인용 세션을 남기지 않는다).
+  const sid = res.headers.get("mcp-session-id");
+  if (sid !== null && sentConfig.type !== "sse") {
+    void fetch(sentConfig.url, { method: "DELETE", headers: { ...(sentConfig.headers ?? {}), "mcp-session-id": sid }, signal: AbortSignal.timeout(5_000) })
+      .then((r) => r.body?.cancel())
+      .catch(() => undefined);
+  }
+  if (res.status === 401) await noteMcpUnauthorized({ file: t.file, name, url: t.url }, sent);
+};
+
+/** 보낸 헤더의 Bearer 토큰(대소문자 무관) — 401 이 **어느 토큰**에 대한 것인지 OAuth 코어에 알린다. 없으면 undefined(헤더 없이 보냄). */
+const bearerOf = (headers: Record<string, string> | undefined): string | undefined => {
+  const v = Object.entries(headers ?? {}).find(([h]) => h.toLowerCase() === "authorization")?.[1];
+  return v === undefined ? undefined : v.replace(/^Bearer\s+/i, "");
+};
+
+/**
+ * Claude CLI 에 넘길 설정 — SDK 는 sdk 형이 아닌 서버를 `--mcp-config <JSON>` **명령줄**로 넘기므로, 거기 비밀 값이 실리지 않게 바꾼다.
+ * - 파일에 `${VAR}` 로 적힌 것(stdio command·args·env, 원격 url·헤더)은 **적힌 그대로** 넘긴다 — CLI 가 자기 환경에서 채운다(2026-10-18 실CLI
+ *   확인: args·env·헤더, `${VAR:-기본}` 포함).
+ * - 그 밖의 원격 헤더 값(OAuth 로 합성한 토큰·파일에 값으로 적은 헤더)은 환경변수 `TIGUCLAW_MCP_HEADER_n` 으로 옮기고 참조만 남긴다(적대 검토 P2-3).
+ * ★이 환경변수는 CLI 가 띄우는 stdio 서버에도 물려진다(실측 — CLI 는 정해진 자기 자격증명 목록만 뺀다). 경계를 새로 넘지는 않는다: 그 서버는
+ *  같은 사용자로 돌아 `<home>/mcp-oauth/` 기록을 직접 읽을 수 있다. 명령줄은 **다른 OS 사용자**에게도 보여서 막는 것이다.
+ * 브리지(Codex·OpenAI)는 같은 프로세스 안에서 연결하므로 해당 없다.
+ */
+export const moveRemoteHeadersToEnv = <T extends Record<string, unknown>>(servers: T): { servers: T; env: Record<string, string> } => {
+  const env: Record<string, string> = {};
+  let n = 0;
+  const out: Record<string, unknown> = {};
+  for (const [name, c] of Object.entries(servers)) {
+    const cfg = c as ExternalMcpConfig;
+    const tpl = typeof c === "object" && c !== null ? templateOf.get(c) : undefined;
+    if (!isRemote(cfg)) {
+      out[name] = tpl ?? c;
+      continue;
+    }
+    const tplRemote = tpl !== undefined && isRemote(tpl) ? tpl : undefined;
+    const base = { ...cfg, url: tplRemote?.url ?? cfg.url };
+    if (cfg.headers === undefined) {
+      out[name] = base;
+      continue;
+    }
+    const headers: Record<string, string> = {};
+    for (const [h, v] of Object.entries(cfg.headers)) {
+      const written = tplRemote?.headers?.[h];
+      if (written !== undefined && written.includes("${")) {
+        headers[h] = written;
+        continue;
+      }
+      const key = `TIGUCLAW_MCP_HEADER_${n++}`;
+      env[key] = v;
+      headers[h] = `\${${key}}`;
+    }
+    out[name] = { ...base, headers };
+  }
+  return { servers: out as T, env };
+};
+
+/**
+ * Claude CLI 가 «로그인 필요» 원격 서버에 스스로 붙이는 로그인 도구 이름(`mcp__<서버>__authenticate`·`complete_authentication`).
+ * ★막는 이유: 후자는 주소창의 code·state 를 담은 콜백 주소를 **모델 인자**로 받는다 — 붙여넣기를 모델로 보내지 않는다는 결정(`/mcp_login`)이
+ *  우회되고, 토큰이 CLI 자체 저장소로 가 Codex·OpenAI 와 갈린다(적대 검토 P2-4, 이름은 CLI 바이너리에서 확인). 로그인은 `login_mcp_server` 한 길.
+ */
+export const cliOwnAuthToolNames = (serverNames: Iterable<string>): string[] =>
+  [...serverNames]
+    // CLI 가 도구 이름에 넣을 때 서버 이름을 바꾸는 규칙 그대로(`[^a-zA-Z0-9_-]` → `_`, 바이너리에서 확인) — 안 맞추면 `notion.so` 같은 이름은 안 막힌다(리뷰 10-18).
+    .map((n) => n.replace(/[^a-zA-Z0-9_-]/g, "_"))
+    .flatMap((n) => [`mcp__${n}__authenticate`, `mcp__${n}__complete_authentication`]);
+
 /** 사람이 읽는 한 줄 요약(list 도구·로그용). */
+/** ★헤더는 **이름만** 보인다 — 값은 토큰이다(목록 도구 답·대시보드·로그로 나간다). */
 export const describeExternalMcpConfig = (
   name: string,
-  c: ExternalMcpConfig,
-): string =>
-  "type" in c && c.type === "sse"
-    ? `${name} (sse: ${c.url})`
+  shown: ExternalMcpConfig,
+): string => describeConfig(name, templateOf.get(shown) ?? shown);
+/** ★읽은 설정이면 파일에 적힌 모양(`${VAR}`)으로 보인다 — 채운 값(인자 속 토큰·URL 의 키)이 목록 도구 답·대화로 나가지 않게(리뷰 10-18). */
+const describeConfig = (name: string, c: ExternalMcpConfig): string =>
+  isRemote(c)
+    ? `${name} (${c.type}: ${c.url}${c.headers !== undefined && Object.keys(c.headers).length > 0 ? ` · headers: ${Object.keys(c.headers).join(", ")}` : ""})`
     : `${name} (stdio: ${(c as StdioMcpConfig).command}${(c as StdioMcpConfig).args?.length ? " " + (c as StdioMcpConfig).args!.join(" ") : ""})`;
 
 // ─── codex/openai 어댑터용 브리지 (Phase 2, ADR §1d) ─────────────────────────
@@ -269,6 +525,8 @@ interface Scope {
   unreadableWarned: boolean;
   /** shutdown 이 닫은 범위 — 늦게 끝난 연결은 게시하지 않고 바로 닫는다(적대 검토 F3: 고아 연결). */
   closed: boolean;
+  /** 이 범위의 설정 파일 — 인증 상태(`mcp-oauth`)의 열쇠. */
+  file: string;
 }
 const GLOBAL_SCOPE = "";
 /** 은퇴했지만 아직 턴이 쥔 연결 — 범위 목록엔 없으니 shutdown 이 여기서 찾아 닫는다. */
@@ -277,7 +535,7 @@ const scopes = new Map<string, Scope>();
 const scopeOf = (key: string): Scope => {
   let sc = scopes.get(key);
   if (sc === undefined) {
-    sc = { conns: new Map(), failed: new Map(), connecting: new Map(), desired: {}, queue: Promise.resolve(), unreadableWarned: false, closed: false };
+    sc = { conns: new Map(), failed: new Map(), connecting: new Map(), desired: {}, queue: Promise.resolve(), unreadableWarned: false, closed: false, file: "" };
     scopes.set(key, sc);
   }
   return sc;
@@ -391,6 +649,29 @@ export const buildChildEnv = (
   return { ...base, ...(extra ?? {}) };
 };
 
+/**
+ * stdio 서버 stderr 의 **끝부분** (2026-10-18, 회사돌쇠 운영점검 — `voxelbuilder-s5` 가 하루 40번 `Connection closed` 만 남기고 원인 0).
+ * ★SDK 기본은 stderr 를 데몬에 그냥 흘린다(`inherit`) — 날짜 로그(`console.*` 미러)에는 안 들어가 원격 인스턴스에선 볼 길이 없었다.
+ *  `pipe` 로 받아 **시도마다** 끝 1,500자만 쥐고, 실패·끊김 로그에 붙인다. 원문·환경변수·실행 인자는 안 싣는다.
+ * ★연결 뒤에도 계속 읽는다 — 안 읽으면 파이프가 차서 자식이 멈춘다. 글자 경계는 `setEncoding` 이 맞추고, 비밀 거르기는 **꺼낼 때** 전체에
+ *  한 번 한다(조각 경계에 걸친 토큰도 걸린다). 비어 있으면 아무것도 안 붙인다 — 원인을 지어내지 않는다.
+ */
+const STDERR_TAIL_CHARS = 1_500;
+const stderrTailOf = (transport: StdioClientTransport): (() => string) => {
+  const stream = transport.stderr as (NodeJS.ReadableStream & { setEncoding?: (e: string) => void }) | null;
+  if (stream === null) return () => "";
+  let tail = "";
+  stream.setEncoding?.("utf8");
+  stream.on("data", (d: unknown) => {
+    tail = (tail + String(d)).slice(-STDERR_TAIL_CHARS);
+    // 도는 동안의 stderr 도 종전(`inherit`)처럼 데몬 stderr 로 흘린다 — 꼬리만 남기면 붙어 있는 서버가 호출마다 내는 오류가
+    //  어디에도 안 남는다(리뷰 10-18). 날짜 로그 미러(`console.*`)는 타지 않는다(종전과 같다 — 양을 모르는 남의 출력이다).
+    process.stderr.write(String(d));
+  });
+  stream.on("error", () => undefined);
+  return () => redactSecrets(tail).replace(/\s*\r?\n\s*/g, " ⏎ ").trim();
+};
+
 const connectOne = async (
   name: string,
   config: ExternalMcpConfig,
@@ -401,20 +682,39 @@ const connectOne = async (
   );
   // 끊김 표시 — 전송이 닫히면(자식 종료·SSE 끊김) SDK 가 부른다. 다음 맞추기가 이걸 보고 다시 연결한다.
   let dead = false;
+  let connected = false;
+  let stderrTail: () => string = () => "";
   client.onclose = () => {
     dead = true;
+    // 붙어 있다가 끊긴 경우만 — 연결 실패는 아래 catch 가 같은 꼬리를 실패 로그에 붙인다.
+    const t = connected ? stderrTail() : "";
+    if (t !== "") console.warn(`external-mcp: '${name}' 연결 끊김 — stderr 끝: ${t}`);
   };
+  // 원격 둘은 SDK 전송이 `requestInit.headers` 를 모든 요청에 붙인다(SSE 는 이벤트 스트림 연결까지).
+  const requestInit = isRemote(config) && config.headers !== undefined ? { headers: config.headers } : undefined;
   const transport =
-    "type" in config && config.type === "sse"
-      ? new SSEClientTransport(new URL(config.url))
+    isRemote(config) && config.type === "http"
+      ? new StreamableHTTPClientTransport(new URL(config.url), requestInit !== undefined ? { requestInit } : undefined)
+      : isRemote(config)
+      ? new SSEClientTransport(new URL(config.url), requestInit !== undefined ? { requestInit } : undefined)
       : new StdioClientTransport({
           command: (config as StdioMcpConfig).command,
           args: (config as StdioMcpConfig).args,
           env: buildChildEnv((config as StdioMcpConfig).env),
+          stderr: "pipe", // 진단 꼬리(`stderrTailOf`) — 시작 전에 스트림이 생긴다.
         });
+  if (transport instanceof StdioClientTransport) stderrTail = stderrTailOf(transport);
   // 실제 프로세스 spawn(stdio) 또는 SSE 연결. 실패하면 SDK 가 스스로 닫는다(`Client.connect` 의 catch → close) — 재시도가
   //  자식을 쌓지 않는 근거다(회귀 mcp-config-hot-reload ⑧ 이 지킨다).
-  await client.connect(transport);
+  try {
+    await client.connect(transport);
+  } catch (e) {
+    const t = stderrTail();
+    if (t === "") throw e;
+    // 실패 로그(`startConnect`)가 이 메시지를 그대로 쓴다 — 서버·범위와 같은 줄에 남는다.
+    throw new Error(`${e instanceof Error ? e.message : String(e)} — stderr 끝: ${t}`, { cause: e });
+  }
+  connected = true;
   // SSE 는 연결 오류를 onclose 가 아니라 **전송의** onerror 로만 알린다(SDK sse.js) — 그대로 두면 끊겨도 «살아 있음» 이라 다시
   //  연결할 길이 없었다(적대 검토 F5). ★클라이언트의 onerror 가 아니라 전송의 것에 건다 — 클라이언트 쪽은 깨진 메시지·늦은 응답
   //  같은 비치명 오류도 내서, 한 건에 매번 재연결(서버 세션 상태 유실)했다(재검토 P3). 연결 뒤에 감싼다(connect 가 자기 것을 건다).
@@ -481,6 +781,10 @@ const connectOne = async (
   };
 };
 
+/** 인증 거절인가 — SDK 전송이 401 을 코드로 싣는다(`StreamableHTTPError`·`SseError`) · 인증 공급자 없는 401 은 `UnauthorizedError`. */
+const isUnauthorized = (e: unknown): boolean =>
+  (e as { code?: unknown } | null)?.code === 401 || (e instanceof Error && e.name === "UnauthorizedError");
+
 /** 실제로 닫는다(멱등) — 은퇴했고 쥔 턴이 없을 때, 또는 shutdown. */
 const closeConn = async (c: Conn): Promise<void> => {
   if (c.closed) return;
@@ -517,6 +821,7 @@ const startConnect = (sc: Scope, key: string, name: string, config: ExternalMcpC
       }
       sc.conns.set(name, { ...ext, fingerprint, holds: 0, retired: false, closed: false });
       sc.failed.delete(name);
+      if (isRemote(config)) noteMcpAuthorized({ file: sc.file, name, url: config.url }, bearerOf(config.headers));
       console.log(`external-mcp: ${scopeLabel(key)}'${name}' 연결됨 (${describeExternalMcpConfig(name, config)}).`);
     } catch (e) {
       // ★지금 시도일 때만 실패로 적는다 — 설정이 바뀌어 대체된 옛 시도가 늦게 실패하면, 그 사이 붙은 연결 위에 실패 기록이 남아
@@ -524,6 +829,10 @@ const startConnect = (sc: Scope, key: string, name: string, config: ExternalMcpC
       if (sc.closed || sc.connecting.get(name) !== entry) return;
       // 격리 — 한 서버 실패가 나머지·데몬을 죽이지 않게(#3).
       sc.failed.set(name, { fingerprint, at: Date.now() });
+      // 원격이 401 인데 사용자가 준 인증이 아니면(헤더 없음·로그인 토큰) — «인증 필요» 로 적는다. 로그인 가능 여부는 로그인 시작이 판정한다.
+      if (isRemote(config) && isUnauthorized(e) && (!hasUserAuthorization(config.headers) || oauthInjected.has(`${path.resolve(sc.file)}\u0000${name}`))) {
+        void noteMcpUnauthorized({ file: sc.file, name, url: config.url }, bearerOf(config.headers)).catch(() => undefined);
+      }
       console.error(
         `external-mcp: ${scopeLabel(key)}'${name}' 연결 실패 — skip, 같은 설정이면 ${RETRY_AFTER_MS / 1000}초 뒤 다시 시도 (${e instanceof Error ? e.message : String(e)}).`,
       );
@@ -587,6 +896,7 @@ const leaseOf = (c: Conn): MCPServer => {
  *  은퇴하지 않은 연결만 있다 — 은퇴는 목록에서 빼는 것과 동시라 쥐기와 사이에 끼지 않는다. */
 const acquireScope = (key: string, file: string): Promise<MCPServer[]> => {
   const sc = scopeOf(key);
+  sc.file = file;
   const run = sc.queue.then(async () => {
     const r = await readMcpFileState(file);
     if (r.ok) {

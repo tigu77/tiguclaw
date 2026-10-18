@@ -35,7 +35,7 @@ import { deliverOutbound } from "../outbound.js";
 import { runOpenAi } from "./adapters/openai-agents-sdk.js";
 import { openaiCarriesSpeed } from "./adapters/_openai-speed.js";
 import { listProviderNames, resolveProviderConn } from "./provider-registry.js";
-import { assertLiveModelAllowed } from "./regression-model-guard.js";
+import { assertLiveModelAllowed, regressionModel } from "./regression-model-guard.js";
 import { runOpenAiCodex } from "./adapters/openai-codex-oauth.js";
 import { compactHistoryAfterTurn, turnItemsReplayedChars } from "./adapters/openai-codex-oauth-history.js";
 import { blendTokenDensity } from "../../store/token-density.js";
@@ -1791,8 +1791,11 @@ const runPool = async (
 // Internal helpers may select a profile before entering runRegionA.
 // ★facade 는 `fetch` 스텁이면 통과시킨다 — 그 뒤 실제 어댑터 입구가 각자 다시 판정한다
 //  (Claude·OpenAI 는 스텁과 무관하게 막힌다). 명시적 fake 어댑터는 종전대로 통과.
+//  회귀가 OpenAI 용 가짜 Model 을 주입했으면(`injectRegressionModel`, 회귀 모드에서만) facade 도 통과 — 모델 호출은 OpenAI 입구가
+//  그 주입으로 받고, Codex·Claude 입구는 각자의 규칙으로 다시 막는다. ★facade 앞단(전사·자격증명 따라가기·티어 해석)도 함께 열리므로
+//  주입은 `fetch` 를 표식 없이 막은 회귀 자식에서만 쓴다(적대 검토 지적 — «OpenAI 경로만 연다» 는 부정확했다).
 export const assertRuntimeModelAllowed = (): void => {
-  if (!adapterForTest) assertLiveModelAllowed({ fetchOnly: true });
+  if (!adapterForTest && regressionModel() === undefined) assertLiveModelAllowed({ fetchOnly: true });
 };
 
 export const runRegionA = async (

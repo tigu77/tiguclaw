@@ -17,6 +17,7 @@ import type { EventBus } from "./eventbus.js";
 import type { IncomingMessage } from "../channels/types.js";
 import { getEventBus } from "./eventbus.js";
 import { recordOutboundMessage } from "../store/outbound-messages.js";
+import { notifySessionThreadKey } from "../store/sessions.js";
 import { checkWidgetAttachments } from "./widget-attachment.js";
 import {
   getChannelOutbound,
@@ -186,6 +187,19 @@ const outboundMapSkipBreakdown = (): string => {
   const head = rows.slice(0, 6).map(([k, n]) => `${k}=${n.toLocaleString()}`);
   return rows.length > 6 ? `${head.join(" · ")} · 외 ${rows.length - 6}종` : head.join(" · ");
 };
+
+/**
+ * **이 배달 좌표가 가리키는 세션** — 세션을 따로 모르는 발신(스케줄·파일 감시)의 표시 세션 (2026-10-17 회사돌쇠 보고).
+ *
+ * ★종전엔 두 플러그인이 «모르니까 기본 세션» 을 `observeThreadKey` 로 **강제**했고, 그 값이 목적지보다 우선해서 목적지를
+ *  대시보드 대화(`dashboard:<id>`)로 잡은 감시·스케줄의 결과가 공통 대화(`dashboard:default`)에 떨어졌다.
+ * ★판정은 매니저 통지가 쓰는 것과 같은 하나(`notifySessionThreadKey`) — 대시보드 세션 좌표면 그 세션, 텔레그램·CLI·내부 키면
+ *  기본 세션(텔레그램 대화의 세션이 곧 기본 세션이다 — 종전 동작 그대로).
+ * ★`deliverOutbound` 의 기본값(표시 세션 미지정 = 물리 키)은 **바꾸지 않는다** — 사본(egress fan-out)이 그 기본값에 기대
+ *  원본 세션 탭에 두 번 보이지 않는다. 세션을 모르는 발신이 이 함수를 **명시적으로** 부른다.
+ */
+export const sessionOfDestination = (channel: string, target: string | null): string =>
+  notifySessionThreadKey(threadKeyForObservation(channel, target));
 
 export const deliverOutbound = async (
   input: OutboundInput,

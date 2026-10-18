@@ -129,7 +129,8 @@
               id: "cmd:" + c.name,
               group: "commands",
               icon: c.run ? "▶" : "💬", // ▶ 실행형(비서 없이 셸) · 💬 프롬프트형(비서에게)
-              label: "/" + c.name + (c.description ? " — " + c.description : ""),
+              label: "/" + c.name,
+              detail: c.description || "", // 둘째 줄 — 줄바꿈해서 끝까지(context-menu 의 `detail`)
               action: { kind: "send_message", template: "/project run " + q + " " + c.name },
             };
             const dir = dirItem(c.folder || "");

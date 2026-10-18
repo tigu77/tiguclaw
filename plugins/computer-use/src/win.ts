@@ -40,7 +40,7 @@ import {
   type CheckedTarget,
   type ScreenRect,
 } from "./observe.js";
-import { postTimeoutMs, type LowEvent } from "./control.js";
+import { keyDryEvents, postTimeoutMs, type LowEvent } from "./control.js";
 
 /**
  * 탐침 한 줄에서 **화면 사각형 목록**을 읽는다. 못 읽으면 `null` — «모른다» 이고,
@@ -714,7 +714,14 @@ const CONTROL_SCRIPT = [
   "$MODVK=@{ cmd=0x11; ctrl=0x11; alt=0x12; shift=0x10; win=0x5B }",
   "$VK=@{ enter=0x0D; 'return'=0x0D; tab=0x09; esc=0x1B; escape=0x1B; space=0x20; backspace=0x08;",
   "       'delete'=0x2E; up=0x26; down=0x28; left=0x25; right=0x27; home=0x24; end=0x23;",
-  "       pageup=0x21; pagedown=0x22 }",
+  "       pageup=0x21; pagedown=0x22;",
+  // 기능키·CapsLock·숫자패드(공통) + Windows 전용 키(`PLATFORM_ONLY_KEY_NAMES.win32`) — 2026-10-18. 값은 winuser.h VK_* 그대로.
+  "       f1=0x70; f2=0x71; f3=0x72; f4=0x73; f5=0x74; f6=0x75; f7=0x76; f8=0x77; f9=0x78; f10=0x79; f11=0x7A; f12=0x7B; f13=0x7C; f14=0x7D; f15=0x7E; f16=0x7F; f17=0x80; f18=0x81; f19=0x82; f20=0x83; f21=0x84; f22=0x85; f23=0x86; f24=0x87;",
+  "       capslock=0x14; num0=0x60; num1=0x61; num2=0x62; num3=0x63; num4=0x64; num5=0x65; num6=0x66; num7=0x67; num8=0x68; num9=0x69;",
+  "       nummultiply=0x6A; numadd=0x6B; numsubtract=0x6D; numdecimal=0x6E; numdivide=0x6F; numenter=0x0D;",
+  "       insert=0x2D; printscreen=0x2C; scrolllock=0x91; pause=0x13; numlock=0x90; menu=0x5D; hangul=0x15; hanja=0x19;",
+  "       volumemute=0xAD; volumedown=0xAE; volumeup=0xAF; medianext=0xB0; mediaprev=0xB1; mediastop=0xB2; mediaplaypause=0xB3;",
+  "       browserback=0xA6; browserforward=0xA7; browserrefresh=0xA8; browserstop=0xA9; browsersearch=0xAA; browserfavorites=0xAB; browserhome=0xAC }",
   "$KEYUP=0x0002; $UNI=0x0004; $EXT=0x0001",
   // ★★**탐색키는 «확장 키» 라고 밝혀야 한다** (2026-09-18, 회사돌쇠 3차 §5-1 가설).
   //  `wScan=0` 으로 VK 만 주면 Windows 가 스캔코드를 `MapVirtualKey` 로 유도하는데,
@@ -722,13 +729,14 @@ const CONTROL_SCRIPT = [
   //  있으면 캐럿은 그래도 움직여서 «되는 것처럼» 보이지만, **Shift 가 눌린 순간 숫자패드는
   //  의미가 뒤집혀** 선택이 안 된다 — 실기에서 본 «캐럿만 이동, selLen 0» 이 정확히 그 모양이다.
   //  ★`click hold:["shift"]` 는 되고 `shift+left` 는 안 됐다는 감별이 여기를 가리켰다.
-  "$EXTVK=@(0x21,0x22,0x23,0x24,0x25,0x26,0x27,0x28,0x2D,0x2E)",
-  "function KeyVk($vk,$down){",
+  // 확장 키 — 탐색키 + 숫자패드 나눗셈·NumLock·메뉴키·미디어·브라우저 키(스캔코드 유도가 다른 키를 가리키지 않게).
+  "$EXTVK=@(0x21,0x22,0x23,0x24,0x25,0x26,0x27,0x28,0x2D,0x2E,0x6F,0x90,0x5D,0xA6,0xA7,0xA8,0xA9,0xAA,0xAB,0xAC,0xAD,0xAE,0xAF,0xB0,0xB1,0xB2,0xB3)",
+  "function KeyVk($vk,$down,$forceExt=$false){",
   "  $i = New-Object TC.In+INPUT; $i.type = 1",
   "  $k = New-Object TC.In+KEYBDINPUT",
   "  $k.wVk = [uint16]$vk; $k.wScan = 0",
   "  $f = if($down){0}else{$KEYUP}",
-  "  if($EXTVK -contains [int]$vk){ $f = $f -bor $EXT }",
+  "  if($forceExt -or ($EXTVK -contains [int]$vk)){ $f = $f -bor $EXT }",
   "  $k.dwFlags = [uint32]$f",
   "  $i.ki = $k; Send $i",
   "}",
@@ -753,6 +761,8 @@ const CONTROL_SCRIPT = [
   "    if($down){ [void]$HELD.Add($n) } else { [void]$HELD.Remove($n) }",
   "    return",
   "  }",
+  // 숫자패드 Enter = VK_RETURN + 확장 플래그(같은 VK 라 표가 아니라 여기서 가른다).
+  "  if($n.ToLower() -eq 'numenter'){ KeyVk 0x0D $down $true; return }",
   "  if($VK.ContainsKey($n.ToLower())){ KeyVk $VK[$n.ToLower()] $down; return }",
   "  if($n.Length -ne 1){ throw ('알 수 없는 키 이름: ' + $n) }",
   // ★★**글자 키는 «진짜 키»로 누른다** (2026-09-17 실기로 확정).
@@ -961,6 +971,8 @@ const DRY_EVENTS: readonly LowEvent[] = [
   { t: "wait", ms: 1 },
   // ★**일부러 어긋나는 값**을 준다 — 가드가 «멈춘다» 를 빈 연습에서 확인하는 유일한 길이다.
   //  실제 전면 창이 무엇이든 이 값과 같을 수 없다.
+  // 모든 이름 있는 키(이 플랫폼) — 표가 이름을 다 푸는지(2026-10-18). 가드보다 **앞**이어야 지나간다.
+  ...keyDryEvents("win32"),
   { t: "guard", front: "(없는 창)::tiguclaw-dry" },
 ];
 

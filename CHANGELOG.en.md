@@ -8,6 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Remote MCP servers (Streamable HTTP).** Register one by URL with token headers; tokens can be written as `${VAR}` and kept in the home `.env`. The same server works whether Claude, Codex, or OpenAI is answering.
+- **Sign in to remote MCP servers that need a browser login (OAuth).** The assistant gives you a sign-in link, and the server connects once you finish. If you signed in on another device, send the address-bar URL after `/mcp_login`.
+- **Computer use can press F1–F20, Caps Lock, and numeric keypad keys.** On Windows it can also press F21–F24, Insert, Print Screen, Scroll Lock, Pause, Num Lock, the menu key, Hangul/Hanja, and volume, media, and browser keys.
+
+### Changed
+
+- **After setup, the dashboard opens on the chat view, and subscription sign-in opens your browser.**
+
+### Fixed
+
+- **On Windows, the service did not start automatically when VBScript was turned off.**
+- **On Windows, running `install` again while the daemon was running started a second supervisor that used the same data.**
+- **The Windows install script closed its window on an error, so the cause could not be read.**
+- **With OpenAI models, `/stop` and timeouts were treated as a successful empty reply, and context usage looked inflated on turns that used tools.**
+- **Codex replies sometimes ended with drafting notes.**
+- **Command descriptions were cut off in the dashboard's 📁 project menu and `/` autocomplete.**
+- **When a stdio MCP server failed to connect, the log did not say why.** The end of that server's error output is now recorded with it.
+- **Schedule and file-watch results showed up in the shared conversation even when a specific dashboard conversation was set as the destination.** They now appear in that conversation.
+
 ## [0.73.1] - 2026-10-16
 
 ### Fixed

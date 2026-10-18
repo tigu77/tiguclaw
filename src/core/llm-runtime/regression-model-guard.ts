@@ -24,3 +24,20 @@ export const assertLiveModelAllowed = (opts?: { fetchOnly?: boolean }): void => 
   if (opts?.fetchOnly === true && networkIsFaked()) return;
   throw new Error("REGRESSION_LIVE_MODEL_BLOCKED: automatic regression requires an explicit fake adapter");
 };
+
+/**
+ * **회귀 전용 가짜 Model 주입점** (2026-10-18, OpenAI 동등성 아스트라 회신 §5).
+ *
+ * ★OpenAI 어댑터는 SDK 내부 경로라 `fetch` 표식으로 열 수 없었고, 그래서 회귀가 `runOpenAi` 를 끝까지 한 번도 못 돌렸다
+ *  (취소가 «빈 성공» 이 된 결함이 그 사각에 있었다). 가드를 여는 대신 **실제 SDK 루프에 끼울 Model 을 주입**한다.
+ * ★회귀 모드(위 latch)가 아니면 던진다 — 운영 입력·환경변수로 가드를 여는 일반 스위치가 아니다. «Model 객체라서 통과» 도 아니다
+ *  (실제 호환 서버도 Model 객체로 붙는다). 어댑터는 주입이 **있을 때만** 실모델 가드를 건너뛰고, 모든 모델 생성 자리가 이 값을 쓴다.
+ */
+let injectedRegressionModel: unknown;
+export const injectRegressionModel = (model: unknown): void => {
+  if (!(regressionNoLiveModel || process.env.TIGUCLAW_REGRESSION_NO_LIVE_MODEL === "1")) {
+    throw new Error("injectRegressionModel: regression mode only");
+  }
+  injectedRegressionModel = model;
+};
+export const regressionModel = (): unknown => injectedRegressionModel;

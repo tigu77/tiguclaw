@@ -288,12 +288,38 @@ export const extractUsage = (
     cached = (cached ?? 0) + v;
   }
   const requestUsageEntries = extractRequestUsageEntries(u.requestUsageEntries);
+  const requests = typeof u.requests === "number" && Number.isSafeInteger(u.requests) && u.requests > 0 ? u.requests : undefined;
+  // ★계약(types.ts): inputTokens·outputTokens·cachedTokens = **마지막 호출 1회**, *Total = 턴 합계 (동등성 감사 7번 · 아스트라 회신 Q5).
+  //  `state.usage` 의 inputTokens 는 run 안 모든 호출의 **합**이라, 그대로 두면 도구를 쓴 턴의 /status 컨텍스트 % 가 호출 수만큼 부풀었다
+  //  (`adapter-contract` 사용량 시나리오: 250 을 마지막 호출로 보고). SDK 가 요청마다 남기는 목록의 **마지막 항목**이 마지막 호출이다.
+  //  목록이 없으면(공급자가 요청별 사용량을 안 줌) 마지막 호출을 알 수 없다 — 종전 값을 그대로 둔다(한 번 호출이면 같은 값이다).
+  const last = requestUsageEntries?.[requestUsageEntries.length - 1];
+  if (last === undefined) {
+    return {
+      ...(requests !== undefined ? { requests } : {}),
+      inputTokens: u.inputTokens,
+      outputTokens: u.outputTokens,
+      ...(cached !== undefined ? { cachedTokens: cached } : {}),
+    };
+  }
+  const many = requestUsageEntries!.length >= 2;
   return {
-    ...(typeof u.requests === "number" && Number.isSafeInteger(u.requests) && u.requests > 0 ? { requests: u.requests } : {}),
-    inputTokens: u.inputTokens,
-    outputTokens: u.outputTokens,
-    ...(cached !== undefined ? { cachedTokens: cached } : {}),
-    ...(requestUsageEntries !== undefined ? { requestUsageEntries } : {}),
+    ...(requests !== undefined ? { requests } : {}),
+    inputTokens: last.inputTokens,
+    outputTokens: last.outputTokens,
+    ...(last.cachedTokens !== undefined ? { cachedTokens: last.cachedTokens } : {}),
+    // 합계는 도구 루프가 2회 이상 돈 턴에만(codex·claude 와 같은 규칙) — 요청 목록과 run 합계는 같은 출처다.
+    ...(many
+      ? {
+          iterations: requestUsageEntries!.length,
+          inputTokensTotal: u.inputTokens,
+          outputTokensTotal: u.outputTokens,
+          ...(cached !== undefined ? { cachedTokensTotal: cached } : {}),
+        }
+      : {}),
+    // 요청 수가 목록보다 많으면 사용량을 못 받은 요청이 있다 — «마지막 관측 요청» 이 실제 마지막 요청이 아닐 수 있다는 표시.
+    ...(requests !== undefined && requests > requestUsageEntries!.length ? { unreportedRequests: requests - requestUsageEntries!.length } : {}),
+    requestUsageEntries,
   };
 };
 
@@ -376,7 +402,7 @@ export const createTurnInputFilter = (deps: {
   };
 };
 
-import { assertLiveModelAllowed } from "../regression-model-guard.js";
+import { assertLiveModelAllowed, regressionModel } from "../regression-model-guard.js";
 import { publishTurnMeta } from "../turn-meta.js";
 import { beginSummaryUsage } from "../auxiliary-usage.js";
 import { ProviderUnavailableError } from "../rate-limit.js";
@@ -450,7 +476,9 @@ export const runOpenAi = async (
 ): Promise<RegionASdkOutput> => {
   // 턴 시작 — 첫 요청 전(프롬프트 조립·도구 준비)을 «턴 준비» 로 재는 기준(`_request-timing.ts`).
   const turnStartAt = Date.now();
-  assertLiveModelAllowed();
+  // 회귀가 주입한 가짜 Model(회귀 모드에서만 설정 가능) — 있으면 아래 모든 모델 생성 자리가 그걸 쓴다.
+  const injectedModel = regressionModel();
+  if (injectedModel === undefined) assertLiveModelAllowed();
   // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(context/transcripts)은 canonical
   // 저장 채널로 키잉. route() 가 정규화 시 sessionChannel 실어보냄, 미지정 → channel 폴백
   // (회귀 0). 표시/감사는 input.channel 유지 — claude 어댑터와 parity(#2).
@@ -479,7 +507,9 @@ export const runOpenAi = async (
   //  - Model 인스턴스를 Agent.model 에 주입하므로 전역 run() 그대로 사용(현행 흐름 보존).
   // baseURL 미지정(정품 openai) → 현행 string model 유지(Responses 경로·회귀 0).
   const modelArg =
-    conn.baseURL === undefined
+    injectedModel !== undefined
+      ? injectedModel
+      : conn.baseURL === undefined
       ? model
       : await new OpenAIProvider({
           apiKey: conn.apiKey,
@@ -1202,6 +1232,13 @@ export const runOpenAi = async (
           }
         }
         await streamed.completed;
+        // ★중단된 요약은 성공이 아니다 — 성공 계측·텍스트 반환보다 먼저 본다(본 턴과 같은 이유). 종전엔 모은 조각을 성공 요약으로
+        //  돌려줘, 잘린 요약이 저장되고 워터마크가 넘어갈 수 있었다(오래된 턴 유실).
+        if (linked.signal.aborted || streamed.cancelled) {
+          throw linked.signal.aborted
+            ? (linked.signal.reason ?? new Error("openai: the summary was aborted"))
+            : new Error("openai: the summary run ended as cancelled without an abort signal");
+        }
         finishUsage(true, extractUsage(streamed));
         if (acc.trim() !== "") return acc;
         // ★**빈 결과는 «왜» 를 남긴다** (2026-09-15). 실측: 실제 압축 6패스 중 2회가
@@ -1234,6 +1271,18 @@ export const runOpenAi = async (
     }
     throw e;
   });
+  // ★요약 중에 턴이 취소됐으면 본 요청에 들어가지 않는다 (적대 검토 P3-2) — 드라이버는 취소를 «실패 아님» 으로 조용히 빠지고
+  //  여기로 돌아온다. 그대로 가면 MCP·SDK 준비를 다 하고 끊긴 신호로 첫 요청까지 시도한다.
+  if (input.abortSignal?.aborted === true) {
+    for (const server of mcpServers) {
+      try {
+        await server.close();
+      } catch {
+        /* noop */
+      }
+    }
+    throw input.abortSignal.reason ?? new Error("openai: the turn was aborted");
+  }
   const { allTurns, summary, watermark } = compacted;
   const priorTurns = recentTurnsAfter(allTurns, watermark, {
     budgetUsedChars: instructions.length + promptWithMemory.length + summary.length,
@@ -1607,6 +1656,16 @@ export const runOpenAi = async (
       }
       // 정리 보장 — 스트림 완료까지 대기 후 finalOutput/usage 가 확정됨.
       await streamed.completed;
+      // ★**중단됐으면 성공으로 돌려주지 않는다** (2026-10-18 동등성 감사 P1). SDK 는 abort 에 던지지 않고 run 루프를 끝낸다
+      //  (`cancelled=true`, 가짜 Model 로 텍스트 중·도구 중 실측) — 종전엔 여기서 그대로 반환해 시한·`/stop`·매니저 시한이
+      //  빈 답의 «성공» 이 됐다. 사유를 보존해 던지고(아래 catch 가 유휴·턴 시한을 그 에러로 승격), SDK 가 취소로 끝냈는데
+      //  신호가 멀쩡한 불일치도 실패로 본다. ★외부 도구 캡처는 abort 가 아니라 `stopAtToolNames` 정상 종료라 여기 안 걸린다 —
+      //  Claude 처럼 «수집했으면 예외» 를 두지 않는다(수집 직후 사용자 취소를 성공으로 덮는다, 아스트라 회신 §1).
+      if (effectiveAc.signal.aborted || streamed.cancelled) {
+        throw effectiveAc.signal.aborted
+          ? (effectiveAc.signal.reason ?? new Error("openai: the turn was aborted"))
+          : new Error("openai: the run ended as cancelled without an abort signal");
+      }
       // ★턴 끝 한 줄 (2026-10-02) — 이 어댑터엔 턴 끝 로그가 없어 «도구 밖 시간» 을 볼 자리가 없었다.
       //  정의는 codex `[codex-turn-end]`·claude `LOOP-EXIT` 의 시간 칸과 같다(`_request-timing.ts`).
       console.log(`[openai-turn-end] ${input.threadKey} model=${input.model ?? "?"} ${requestTimeline.format()}`);

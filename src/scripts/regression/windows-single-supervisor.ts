@@ -78,6 +78,33 @@ export const check: RegressionCheck = {
     // ★업데이트가 데몬을 멈춰 둔 중이면(«업데이트 중» 표식) 감독자는 데몬을 안 띄우고 끝난다 — 제한 권한의 업데이트가 예약작업을 못 꺼
     //  1분 트리거가 감독자를 되살리던 것(윈도우돌쇠 10-19 실측: 되살아난 데몬이 npm ci 를 EPERM 으로 막고 롤백까지 막았다).
     const duringUpdate = runSup(`200,2000,${sup(HOME)}`, 200, undefined, { pid: 4242 });
+    // ★이미 돌고 있는 감독자의 **재기동**도 같은 판정을 지난다(아스트라 10-20) — 처음엔 표식 없이 떴다가, 데몬이 죽어 재기동을 기다리는
+    //  사이 업데이트가 시작된 경우. 지연(크래시 스로틀 10초)·즉시(오래 살다 죽음) 두 경로 모두, 표식이 없으면 종전대로 다시 띄운다.
+    const runRespawn = (how: "throttled" | "immediate", lockBeforeRespawn: boolean): { spawned: number; exited: boolean; logs: string[] } => {
+      let spawned = 0, exited = false, now = 0;
+      let updateLock: { pid: number } | null = null;
+      const logs: string[] = []; const exits: Array<() => void> = []; const timers: Array<() => void> = [];
+      const fakeProcess = { platform: "win32", pid: 200, env: {}, on: () => {}, exit: () => { exited = true; }, stdout: { write: (l: string) => void logs.push(l) } };
+      const fakeNet = { createServer: () => ({ on: () => {}, listen: (_n: string, cb: () => void) => cb() }) };
+      const FakeDate = class extends Date { static now() { return now; } };
+      const supSrc = src.slice(src.indexOf("const runSupervise = (c) => {"), src.indexOf("\n};\n", src.indexOf("const runSupervise = (c) => {")) + 3);
+      const run = new Function("process", "spawn", "mkdirSync", "appendFileSync", "path", "execStrings", "winLaunchEnv", "WIN_SERVICE_ENV_KEYS", "Date", "setTimeout",
+        "spawnSync", "winSupervisorQueryArgs", "winSupervisorIsDuplicate", "statSync", "writeFileSync", "net", "winSupervisorPipeName", "activeUpdateLock", supSrc + "; return runSupervise;")(
+        fakeProcess, () => { spawned += 1; return { pid: spawned, kill: () => {}, on: (ev: string, fn: (code: number, sig: null) => void) => { if (ev === "exit") exits.push(() => fn(1, null)); } }; },
+        () => {}, () => {}, path, () => ["node", "x"], () => ({}), [], FakeDate, (fn: () => void) => void timers.push(fn),
+        () => ({ stdout: `200,2000,${sup(HOME)}` }), () => [], d.winSupervisorIsDuplicate, () => { throw new Error("ENOENT"); }, () => {}, fakeNet, () => "pipe", () => updateLock);
+      run({ label: "tiguclaw", runtime: "built", repoRoot: "C:\\r", homeRaw: HOME, homeAbs: HOME, logsDir: "C:\\logs" });
+      now = how === "throttled" ? 1_000 : 60_000; // 1초 만에 죽으면 크래시(10초 뒤) · 1분 살다 죽으면 즉시
+      if (lockBeforeRespawn && how === "immediate") updateLock = { pid: 777 };
+      exits.shift()?.();
+      if (lockBeforeRespawn && how === "throttled") updateLock = { pid: 777 }; // 대기 중에 업데이트가 시작됐다
+      timers.shift()?.();
+      return { spawned, exited, logs };
+    };
+    const respawn = {
+      throttledLock: runRespawn("throttled", true), immediateLock: runRespawn("immediate", true),
+      throttledFree: runRespawn("throttled", false), immediateFree: runRespawn("immediate", false),
+    };
     const pipeA = (d as unknown as { winSupervisorPipeName: (h: string) => string }).winSupervisorPipeName;
     return [
       assert("★같은 홈에 먼저 뜬 감독자가 있으면 나는 물러난다(남을 쪽 PID 를 돌려준다)", older === "100", String(older)),
@@ -90,6 +117,11 @@ export const check: RegressionCheck = {
         JSON.stringify({ noLock, freshLock, staleLock, deadLock, brokenLock })),
       assert("★업데이트 중 표식이 살아 있으면 데몬을 안 띄우고 끝난다(그 사실과 업데이트 pid 를 남긴다)",
         duringUpdate.spawned === 0 && duringUpdate.exited && duringUpdate.logs.some((l) => l.includes("update in progress (pid 4242)")), JSON.stringify(duringUpdate)),
+      assert("★이미 돈 감독자의 재기동(크래시 대기 뒤·즉시)도 업데이트 표식이 생겼으면 안 띄우고 끝난다 · 표식이 없으면 종전대로 다시 띄운다",
+        respawn.throttledLock.spawned === 1 && respawn.throttledLock.exited && respawn.throttledLock.logs.some((l) => l.includes("update in progress (pid 777)")) &&
+          respawn.immediateLock.spawned === 1 && respawn.immediateLock.exited &&
+          respawn.throttledFree.spawned === 2 && !respawn.throttledFree.exited && respawn.immediateFree.spawned === 2 && !respawn.immediateFree.exited,
+        JSON.stringify(Object.fromEntries(Object.entries(respawn).map(([k, v]) => [k, { spawned: v.spawned, exited: v.exited }])))),
       assert("★runSupervise 가 데몬을 띄우기 전에 판정한다(순서가 계약)", guardAt > 0 && firstSpawnCall > guardAt, JSON.stringify({ guardAt, firstSpawnCall })),
       assert("★실제 본문: 먼저 뜬 감독자가 있으면 데몬을 안 띄우고 그 사실을 남긴다 · 혼자면 띄운다 · 질의가 비면(시한 초과) 띄운다",
         // ★«안 띄운다» 만이 아니라 **끝난다**까지 — 안 끝나면 파이프를 쥔 채 데몬 없는 감독자가 남아 이후 감독자가 전부 물러난다(재검토 10-18).

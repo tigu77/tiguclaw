@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **On Windows, the service did not start automatically when VBScript was turned off.**
 - **On Windows, running `install` again while the daemon was running started a second supervisor that used the same data.**
 - **The Windows install script closed its window on an error, so the cause could not be read.**
+- **An update could report «complete» while the previous build kept running.** On Windows, the service could also restart in the middle of an update and make the install and rollback fail.
 - **With OpenAI models, `/stop` and timeouts were treated as a successful empty reply, and context usage looked inflated on turns that used tools.**
 - **Codex replies sometimes ended with drafting notes.**
 - **Command descriptions were cut off in the dashboard's 📁 project menu and `/` autocomplete.**

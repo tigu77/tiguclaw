@@ -1964,7 +1964,18 @@ const runSupervise = (c) => {
     }
   };
 
+  // ★모든 기동이 여기를 지난다 — 최초·즉시 재기동·지연 재기동(아스트라 10-20: 처음엔 `begin` 에만 있어서, 크래시 대기 중이던 감독자가
+  //  그 사이 시작된 업데이트의 표식을 안 보고 설치 도중 데몬을 띄웠다). 업데이트가 데몬을 멈춰 둔 중이면(`activeUpdateLock` — 예약작업을
+  //  못 꺼서 트리거가 우리를 띄웠거나, 데몬이 포트를 안 연 채라 업데이트가 우리를 못 멈춘 경우) 띄우지 않고 끝낸다. 잡은 파이프는 종료와 함께
+  //  OS 가 놓으므로, 업데이트 뒤 재가동이나 다음 1분 트리거의 감독자가 정상으로 뜬다. ★기다리지 않고 끝내는 이유: 남아 있으면 업데이트의
+  //  «정지 직후 되살아남» 판정에 감독자로 세어져 업데이트가 설치 전에 그만둔다.
   const spawnOnce = () => {
+    const lock = activeUpdateLock(c);
+    if (lock !== null) {
+      log(`supervisor: update in progress (pid ${lock.pid}) — not starting the daemon; the update starts it when done.`);
+      process.exit(0);
+      return;
+    }
     const startedAt = Date.now();
     child = spawn(exe, rest, {
       cwd: c.repoRoot,
@@ -2036,13 +2047,6 @@ const runSupervise = (c) => {
         process.exit(0); // 잡은 파이프는 종료와 함께 OS 가 놓는다
         return;
       }
-    }
-    // ★업데이트가 데몬을 멈춰 둔 중이면 띄우지 않는다(위 `activeUpdateLock` — 예약작업을 못 꺼서 트리거가 우리를 띄운 경우다).
-    const lock = activeUpdateLock(c);
-    if (lock !== null) {
-      log(`supervisor: update in progress (pid ${lock.pid}) — not starting the daemon; the update starts it when done.`);
-      process.exit(0);
-      return;
     }
     log(`supervisor started — label=${c.label}`);
     spawnOnce();

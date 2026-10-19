@@ -1637,11 +1637,29 @@ const winStopTask = (c) => {
   //  리눅스는 `systemctl stop` 이라 `start` 전까진 안 돌아오는데 윈도우만 달랐다.
   //  계약(= "실행만 중지, 등록은 유지")을 지키려면 Disable 이 짝이다 — 등록은 남고
   //  트리거만 멎는다. `winStart` 의 Enable 과 쌍으로 읽어라.
-  winPs(
-    `Disable-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue | Out-Null; ` +
-      `Stop-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue`,
+  // ★**정말 꺼졌는지 다시 읽는다** (2026-10-19 윈도우돌쇠 실측). 업데이트의 정지가 비활성화에 실패했는데 오류를 `SilentlyContinue` 로 삼켜,
+  //  정지 도중 1분 반복 트리거가 런처를 띄웠고(22:44:34) 되살아난 데몬이 네이티브 모듈을 잡아 npm ci 가 EPERM — 롤백도 같은 이유로 실패했다.
+  //  같은 명령을 SSH 로 돌리면 된다 → 실패 이유를 **로그로** 남기고 schtasks 로 한 번 더 시도한다.
+  const name = winTaskName(c);
+  const r = winPs(
+    `Disable-ScheduledTask -TaskName ${psq(name)} -ErrorAction Stop | Out-Null; ` +
+      `Stop-ScheduledTask -TaskName ${psq(name)} -ErrorAction SilentlyContinue; ` +
+      `'ENABLED=' + (Get-ScheduledTask -TaskName ${psq(name)}).Settings.Enabled`,
   );
-  return winKillRunning(c);
+  if (!/ENABLED=False/.test(r.stdout) && winTaskExists(c)) {
+    console.warn(`⚠ could not disable the scheduled task via PowerShell (status=${r.status}): ${(r.stderr || r.stdout || "no output").slice(0, 300)} — trying schtasks.`);
+    const s = spawnSync("schtasks", ["/change", "/tn", name, "/disable"], { encoding: "utf8" });
+    if (s.status !== 0) console.warn(`⚠ schtasks /disable failed too (status=${s.status}): ${((s.stderr ?? "") || (s.stdout ?? "")).trim().slice(0, 300)}`);
+  }
+  const survived = winKillRunning(c);
+  if (survived.length > 0) return survived;
+  // ★**되살아났는지 한 번 더 본다** — 위에서 센 것은 «죽이려던 것» 뿐이라, 트리거가 새로 띄운 감독자는 안 셌다(그래서 «✅ stopped» 를 찍고
+  //  npm ci 로 갔다). 잠깐 기다린 뒤 이 인스턴스의 감독자·데몬이 **새로** 떠 있으면 정지 실패다 — 업데이트는 설치 전에 멈춘다.
+  spawnSync("powershell", ["-NoProfile", "-Command", "Start-Sleep -Milliseconds 2500"], { stdio: "ignore" });
+  const again = winScan(c);
+  const revived = [...new Set([...again.targets, ...again.portDaemons])];
+  if (revived.length > 0) console.error(`🔴 the daemon came back right after stopping (PID ${revived.join(", ")}) — something relaunched it (scheduled task still enabled?).`);
+  return revived;
 };
 
 /** @param {Ctx} c */

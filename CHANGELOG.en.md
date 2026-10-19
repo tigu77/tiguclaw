@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-10-20
+
 ### Added
 
 - **When you reply to a message, the assistant knows exactly which message it is.** If the original was long and its middle was shortened, the assistant can read the full message again (dashboard and Telegram).
@@ -26,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **On Windows, the service did not start automatically when VBScript was turned off.**
 - **On Windows, running `install` again while the daemon was running started a second supervisor that used the same data.**
 - **The Windows install script closed its window on an error, so the cause could not be read.**
-- **An update could report «complete» while the previous build kept running.** On Windows, the service could also restart in the middle of an update and make the install and rollback fail.
+- **On Windows, the service could restart in the middle of an update and make the install and rollback fail.**
 - **With OpenAI models, `/stop` and timeouts were treated as a successful empty reply, and context usage looked inflated on turns that used tools.**
 - **Codex replies sometimes ended with drafting notes.**
 - **Command descriptions were cut off in the dashboard's 📁 project menu and `/` autocomplete.**
@@ -1057,7 +1059,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...HEAD
+[0.74.0]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...v0.74.0
 [0.73.1]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...v0.73.1
 [0.73.0]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...v0.72.0

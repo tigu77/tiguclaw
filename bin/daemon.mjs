@@ -1947,6 +1947,20 @@ const runSupervise = (c) => {
   };
 
   /**
+   * 업데이트가 데몬을 멈춰 둔 중이면(`activeUpdateLock`) 아무것도 안 띄우고 끝낸다 — 끝냈으면 true.
+   * ★부르는 자리가 둘이다: **맨 앞**(파이프·CIM 질의 전 — 질의가 몇 초 걸리는 동안 살아 있으면 업데이트의 «정지 직후 되살아남»
+   *  재스캔에 감독자로 세어져 업데이트가 설치 전에 그만둔다, 10-20 레드팀) · **기동마다**(`spawnOnce` — 이미 돌던 감독자의 재기동, 아스트라 10-20).
+   */
+  const yieldToUpdate = () => {
+    const lock = activeUpdateLock(c);
+    if (lock === null) return false;
+    log(`supervisor: update in progress (pid ${lock.pid}) — not starting the daemon; the update starts it when done.`);
+    process.exit(0);
+    return true;
+  };
+  if (yieldToUpdate()) return;
+
+  /**
    * 데몬 기동 환경 — **기동마다 다시 계산**한다(윈도우). 감독자 자신의 환경을 그대로 물려주면 감독자가 뜬 순간의 값이
    * 굳어, 홈 `.env` 를 고친 뒤 `/restart` 해도 옛 값으로 떴다. 붙잡은 값 중 무엇을 썼는지는 키 이름만 남긴다(원격 진단).
    * @returns {NodeJS.ProcessEnv}
@@ -1970,12 +1984,7 @@ const runSupervise = (c) => {
   //  OS 가 놓으므로, 업데이트 뒤 재가동이나 다음 1분 트리거의 감독자가 정상으로 뜬다. ★기다리지 않고 끝내는 이유: 남아 있으면 업데이트의
   //  «정지 직후 되살아남» 판정에 감독자로 세어져 업데이트가 설치 전에 그만둔다.
   const spawnOnce = () => {
-    const lock = activeUpdateLock(c);
-    if (lock !== null) {
-      log(`supervisor: update in progress (pid ${lock.pid}) — not starting the daemon; the update starts it when done.`);
-      process.exit(0);
-      return;
-    }
+    if (yieldToUpdate()) return;
     const startedAt = Date.now();
     child = spawn(exe, rest, {
       cwd: c.repoRoot,
@@ -2191,12 +2200,22 @@ const isRegistered = (c) => {
 export const UPDATE_LOCK_MAX_AGE_MS = 60 * 60 * 1000;
 /** @param {Ctx} c */
 export const updateLockPath = (c) => path.join(c.homeAbs, ".update-in-progress");
-/** @param {Ctx} c @param {number} [now] @returns {{ pid: number } | null} 유효한 표식(없거나 낡았으면 null). */
-export const activeUpdateLock = (c, now = Date.now()) => {
+/**
+ * @param {Ctx} c @param {number} [now] @param {number} [bootedAt] 이번 부팅 시각(검사용 주입)
+ * @returns {{ pid: number } | null} 유효한 표식(없거나 낡았으면 null).
+ * ★**이번 부팅 전에 쓴 표식은 무효** — 업데이트 도중 재부팅하면 표식이 남고, 부팅 직후엔 pid 번호가 처음부터 다시 쓰여 다른 프로세스
+ *  (권한이 다르면 EPERM)가 그 번호를 가질 수 있다. 그러면 한 시간 동안 데몬이 안 떴다(10-20 재검토 N1).
+ */
+export const activeUpdateLock = (c, now = Date.now(), bootedAt = now - os.uptime() * 1000) => {
   try {
     const o = JSON.parse(readFileSync(updateLockPath(c), "utf8"));
-    if (typeof o?.pid !== "number" || typeof o?.ts !== "number" || now - o.ts > UPDATE_LOCK_MAX_AGE_MS) return null;
-    process.kill(o.pid, 0); // 살아 있나(신호는 안 보낸다) — 죽었으면 던진다
+    if (typeof o?.pid !== "number" || typeof o?.ts !== "number" || now - o.ts > UPDATE_LOCK_MAX_AGE_MS || o.ts < bootedAt) return null;
+    try {
+      process.kill(o.pid, 0); // 살아 있나(신호는 안 보낸다) — 죽었으면 ESRCH 를 던진다
+    } catch (e) {
+      // ★EPERM = **살아 있는데** 신호 권한이 없다(관리자 터미널의 update 를 제한 권한 감독자가 볼 때 — 10-20 레드팀). 죽음으로 보면 표식이 무시된다.
+      if (/** @type {NodeJS.ErrnoException} */ (e).code !== "EPERM") return null;
+    }
     return { pid: o.pid };
   } catch {
     return null;

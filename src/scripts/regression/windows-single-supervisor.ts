@@ -23,7 +23,7 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const d = (await import(new URL("../../../bin/daemon.mjs", import.meta.url).href)) as {
       winSupervisorIsDuplicate: (i: { lines: string; home: string; selfPid: number }) => string | null;
-      activeUpdateLock: (c: { homeAbs: string }, now?: number) => { pid: number } | null;
+      activeUpdateLock: (c: { homeAbs: string }, now?: number, bootedAt?: number) => { pid: number } | null;
       UPDATE_LOCK_MAX_AGE_MS: number;
     };
     // «업데이트 중» 표식 판정 — 살아 있는 pid·1시간 안일 때만 유효(업데이트가 죽어 남은 표식이 데몬을 영구히 막지 않게).
@@ -31,9 +31,15 @@ export const check: RegressionCheck = {
     const writeLock = (o: unknown): void => writeFileSync(path.join(lockHome, ".update-in-progress"), JSON.stringify(o));
     const lc = { homeAbs: lockHome };
     const noLock = d.activeUpdateLock(lc);
-    writeLock({ pid: process.pid, ts: Date.now() }); const freshLock = d.activeUpdateLock(lc);
+    const lockTs = Date.now() - 1_000; // 1초 전에 쓴 것 — 기본 «이번 부팅 시각» 계산이 실제로 판정에 쓰이게(같은 ms 면 경계가 안 갈린다)
+    writeLock({ pid: process.pid, ts: lockTs }); const freshLock = d.activeUpdateLock(lc);
+    // 이번 부팅 **전에** 쓴 표식(업데이트 도중 재부팅) — 그 pid 가 살아 있어도(재사용) 무효.
+    const beforeBootLock = d.activeUpdateLock(lc, lockTs + 1_000, lockTs + 500);
     const staleLock = d.activeUpdateLock(lc, Date.now() + d.UPDATE_LOCK_MAX_AGE_MS + 1);
     writeLock({ pid: 2 ** 22 + 12345, ts: Date.now() }); const deadLock = d.activeUpdateLock(lc);
+    // ★살아 있는데 신호 권한이 없는 pid(EPERM — 1번은 맥·리눅스의 일반 사용자에게 그렇다) 도 살아 있음이다(관리자 터미널 update ↔ 제한 권한
+    //  감독자, 10-20 레드팀). 윈도우엔 pid 1 이 없어(ESRCH) 이 고정물을 못 만든다 — 거기선 건너뛴다.
+    writeLock({ pid: 1, ts: Date.now() }); const eNoPermLock = process.platform === "win32" ? { pid: 1 } : d.activeUpdateLock(lc);
     writeFileSync(path.join(lockHome, ".update-in-progress"), "{broken"); const brokenLock = d.activeUpdateLock(lc);
     rmSync(lockHome, { recursive: true, force: true });
     const lines = (rows: Array<[number, number, string]>): string => rows.map(([p, t, c]) => `${p},${t},${c}`).join("\r\n");
@@ -52,20 +58,20 @@ export const check: RegressionCheck = {
     const firstSpawnCall = body.lastIndexOf("spawnOnce();");
     // 동작으로도 — 실제 runSupervise 본문을 OS 경계만 바꿔 돌린다: 먼저 뜬 감독자가 있으면 데몬을 **안** 띄운다 · 없으면 띄운다 · 질의가 멈춰도 띄운다.
     let connHandler: ((s: unknown) => void) | undefined;
-    const runSup = (queryOut: string, selfPid: number, lockErr?: string, updateLock: { pid: number } | null = null): { spawned: number; logs: string[]; exited: boolean } => {
-      let spawned = 0;
+    const runSup = (queryOut: string, selfPid: number, lockErr?: string, updateLock: { pid: number } | null = null): { spawned: number; logs: string[]; exited: boolean; queried: number; listened: number } => {
+      let spawned = 0, queried = 0, listened = 0;
       let exited = false;
       const logs: string[] = [];
       const fakeProcess = { platform: "win32", pid: selfPid, env: {}, on: () => {}, exit: () => { exited = true; }, stdout: { write: (l: string) => void logs.push(l) } };
       // 가짜 잠금 — lockErr 이면 그 오류로 실패, 아니면 바로 잡힌다(실제 파이프의 배타성은 샌드박스 실측: 2026-10-18).
-      const fakeNet = { createServer: (handler: (s: unknown) => void) => { connHandler = handler; let onErr: (e: { code: string }) => void = () => {}; return { on: (_ev: string, fn: (e: { code: string }) => void) => { onErr = fn; }, listen: (_n: string, cb: () => void) => (lockErr === undefined ? cb() : onErr({ code: lockErr })) }; } };
+      const fakeNet = { createServer: (handler: (s: unknown) => void) => { connHandler = handler; let onErr: (e: { code: string }) => void = () => {}; return { on: (_ev: string, fn: (e: { code: string }) => void) => { onErr = fn; }, listen: (_n: string, cb: () => void) => { listened += 1; return lockErr === undefined ? cb() : onErr({ code: lockErr }); } }; } };
       const supSrc = src.slice(src.indexOf("const runSupervise = (c) => {"), src.indexOf("\n};\n", src.indexOf("const runSupervise = (c) => {")) + 3);
       const run = new Function("process", "spawn", "mkdirSync", "appendFileSync", "path", "execStrings", "winLaunchEnv", "WIN_SERVICE_ENV_KEYS", "Date", "setTimeout",
         "spawnSync", "winSupervisorQueryArgs", "winSupervisorIsDuplicate", "statSync", "writeFileSync", "net", "winSupervisorPipeName", "activeUpdateLock", supSrc + "; return runSupervise;")(
         fakeProcess, () => { spawned += 1; return { pid: 1, kill: () => {}, on: () => {} }; }, () => {}, () => {}, path, () => ["node", "x"], () => ({}), [], Date, () => {},
-        () => ({ stdout: queryOut }), () => [], d.winSupervisorIsDuplicate, () => { throw new Error("ENOENT"); }, () => {}, fakeNet, () => "pipe", () => updateLock);
+        () => { queried += 1; return { stdout: queryOut }; }, () => [], d.winSupervisorIsDuplicate, () => { throw new Error("ENOENT"); }, () => {}, fakeNet, () => "pipe", () => updateLock);
       run({ label: "tiguclaw", runtime: "built", repoRoot: "C:\\r", homeRaw: HOME, homeAbs: HOME, logsDir: "C:\\logs" });
-      return { spawned, logs, exited };
+      return { spawned, logs, exited, queried, listened };
     };
     const dup = runSup([`100,1000,${sup(HOME)}`, `200,2000,${sup(HOME)}`].join("\r\n"), 200);
     const alone = runSup(`200,2000,${sup(HOME)}`, 200);
@@ -112,11 +118,14 @@ export const check: RegressionCheck = {
       assert("다른 홈(다른 인스턴스)의 감독자는 세지 않는다", otherHome === null, String(otherHome)),
       assert("동시에 떴으면 PID 작은 쪽이 남는다 — 둘 다 물러나지 않는다", tie === "150" && tieWinner === null, JSON.stringify({ tie, tieWinner })),
       assert("질의가 비면(실패) 판단하지 않고 종전처럼 뜬다", emptyQuery === null, String(emptyQuery)),
-      assert("«업데이트 중» 표식은 살아 있는 pid·1시간 안일 때만 유효 — 없음·낡음·죽은 pid·깨진 파일은 무효",
-        noLock === null && freshLock?.pid === process.pid && staleLock === null && deadLock === null && brokenLock === null,
-        JSON.stringify({ noLock, freshLock, staleLock, deadLock, brokenLock })),
+      assert("«업데이트 중» 표식은 살아 있는 pid·1시간 안·이번 부팅 뒤일 때만 유효 — 없음·낡음·죽은 pid·깨진 파일·부팅 전은 무효",
+        noLock === null && freshLock?.pid === process.pid && staleLock === null && deadLock === null && brokenLock === null && eNoPermLock?.pid === 1 && beforeBootLock === null,
+        JSON.stringify({ noLock, freshLock, staleLock, deadLock, brokenLock, eNoPermLock, beforeBootLock })),
       assert("★업데이트 중 표식이 살아 있으면 데몬을 안 띄우고 끝난다(그 사실과 업데이트 pid 를 남긴다)",
         duringUpdate.spawned === 0 && duringUpdate.exited && duringUpdate.logs.some((l) => l.includes("update in progress (pid 4242)")), JSON.stringify(duringUpdate)),
+      // ★그것도 **파이프·CIM 질의보다 먼저** — 질의(시한 15초)가 도는 몇 초 동안 살아 있으면 업데이트의 «정지 직후 되살아남» 재스캔에 세어진다.
+      assert("★업데이트 중이면 파이프를 잡거나 감독자 질의를 돌리기 전에 끝난다 · «supervisor started» 도 안 찍는다",
+        duringUpdate.queried === 0 && duringUpdate.listened === 0 && !duringUpdate.logs.some((l) => l.includes("supervisor started")), JSON.stringify(duringUpdate)),
       assert("★이미 돈 감독자의 재기동(크래시 대기 뒤·즉시)도 업데이트 표식이 생겼으면 안 띄우고 끝난다 · 표식이 없으면 종전대로 다시 띄운다",
         respawn.throttledLock.spawned === 1 && respawn.throttledLock.exited && respawn.throttledLock.logs.some((l) => l.includes("update in progress (pid 777)")) &&
           respawn.immediateLock.spawned === 1 && respawn.immediateLock.exited &&

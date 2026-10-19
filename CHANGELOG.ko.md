@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-10-20
+
 ### Added
 
 - **원격 MCP 서버(Streamable HTTP)를 연결할 수 있습니다.** 주소와 토큰 헤더로 등록하고, 토큰은 `${변수}` 로 적어 홈 `.env` 에 둘 수 있습니다. Claude·Codex·OpenAI 어느 모델이 답하든 같은 서버를 씁니다.
@@ -26,7 +28,7 @@
 - **Windows 에서 VBScript 가 꺼져 있으면 서비스가 자동으로 시작되지 않던 문제.**
 - **Windows 에서 데몬이 실행 중일 때 `install` 을 다시 하면 감독자가 두 개 실행되어 같은 데이터를 함께 쓰던 문제.**
 - **Windows 설치 스크립트가 오류에서 창을 바로 닫아 원인을 볼 수 없던 문제.**
-- **업데이트가 «완료» 라고 알렸는데 이전 빌드가 계속 실행되던 문제.** Windows 에서는 업데이트 도중 서비스가 다시 시작되어 설치·되돌리기가 실패하던 문제도 함께 고쳤습니다.
+- **Windows 에서 업데이트 도중 서비스가 다시 시작되어 설치·되돌리기가 실패하던 문제.**
 - **OpenAI 모델에서 `/stop`·시간 초과가 빈 답의 성공으로 처리되고, 도구를 쓴 턴의 컨텍스트 사용량이 부풀려 보이던 문제.**
 - **Codex 답 끝에 작성용 메모가 섞여 나가던 문제.**
 - **대시보드의 📁 프로젝트 메뉴와 `/` 자동완성에서 커맨드 설명이 잘리던 문제.**
@@ -2607,7 +2609,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...HEAD
+[0.74.0]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...v0.74.0
 [0.73.1]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...v0.73.1
 [0.73.0]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/tigu77/tiguclaw/compare/v0.71.0...v0.72.0

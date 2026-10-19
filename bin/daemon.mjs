@@ -2367,6 +2367,20 @@ const runUpdate = (c) => {
   const wasRunning = isDaemonRunning(c);
 
   /**
+   * 멈춰 둔 데몬을 다시 띄운다 — **그 사이 다시 떠 있으면 재시작**(2026-10-19 윈도우돌쇠 실측). 설치 도중 감독자가 되살아나 데몬이 빌드 전에
+   *  떴는데 `start` 가 «이미 실행 중 — 할 일 없음» 이라 옛 빌드가 «완료» 뒤에도 돌았다. 지금 떠 있는 데몬은 정의상 이번 설치·빌드 전에 뜬 것이다 —
+   *  누가 되살렸는지와 무관하게 다시 띄워야 지금 디스크의 판이 올라온다(성공·롤백 둘 다 같다).
+   */
+  const resumeDaemon = () => {
+    if (isDaemonRunning(c)) {
+      console.warn("   ⚠ The daemon came back while the update was running (before the new build) — restarting it so the current build loads.");
+      table?.restart?.(c);
+    } else {
+      table?.start?.(c);
+    }
+  };
+
+  /**
    * 데몬을 멈춘 **뒤**의 실패 — 이전 판으로 되돌리고, 실제로 된 만큼을 마커에 적은 뒤 다시 띄운다.
    * ★마커를 재가동 **전**에 쓴다 — 다시 뜬 데몬이 부팅 때 읽어 통지한다.
    * ★되돌리기를 못 해도 데몬은 다시 띄운다 — 멈춘 채 두면 사용자에겐 «비서가 죽었다» 다(Windows 는 예약작업이
@@ -2396,7 +2410,7 @@ const runUpdate = (c) => {
       outcome = "rolled-back";
     }
     writeFailedMarker(stage, detail, outcome);
-    if (startIt) table?.start?.(c);
+    if (startIt) resumeDaemon();
   };
 
   // ── 단계 5: (돌고 있으면) 데몬 정지 — npm ci 전에 네이티브 모듈 락 해제(EPERM 방지) ──
@@ -2509,8 +2523,12 @@ const runUpdate = (c) => {
   }
 
   // ── 단계 8: 재가동 ──────────────────────────────────────────────────────────
+  // ★멈춰 둔 사이 **다시 떠 있으면 재시작한다** (2026-10-19 윈도우돌쇠 실측). 5에서 멈췄는데 설치(npm ci) 도중 감독자가 되살아나
+  //  데몬이 4번 죽은 뒤 **빌드 전에** 떴고, `start` 는 «이미 실행 중 — 할 일 없음» 이라 옛 빌드가 «업데이트 완료» 뒤에도 돌았다(시작 로그는
+  //  git 커밋을 찍어 새 판처럼 보였다). 지금 떠 있는 데몬은 정의상 이번 빌드 전에 뜬 것이다 — 새 빌드를 올리려면 다시 띄워야 한다.
+  //  누가 되살렸는지와 무관하게 닫히는 자리가 여기다(원인은 따로 — 로그로 남긴다).
   if (wasRunning) {
-    table?.start?.(c); // 5에서 stop 했으니 start(restart 아님).
+    resumeDaemon(); // 5에서 멈췄으니 start — 그 사이 다시 떴으면 restart(위 주석).
   } else if (!isRegistered(c)) {
     console.log("   The daemon is not registered — run 'tiguclaw install' to start it.");
   } else {

@@ -107,13 +107,15 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     const source = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     const body = source.slice(source.indexOf("const runUpdate = (c) => {"), source.indexOf("\n/**\n * @param {Ctx} c\n * @param {string} cmd", source.indexOf("const runUpdate = (c) => {")));
     type Scenario = "success" | "npm-fail" | "dirty" | "lock-only" | "rollback-dirty" | "corrupt-env" | "pull-fail";
-    const simulate = (scenario: Scenario, opts: { notify?: boolean; handoff?: string; resetFails?: boolean; stopFails?: boolean } = {}) => {
+    const simulate = (scenario: Scenario, opts: { notify?: boolean; handoff?: string; resetFails?: boolean; stopFails?: boolean; revivedDuringCi?: boolean; platform?: "win32" | "darwin" } = {}) => {
       const h = fs.mkdtempSync(path.join(home, "case-")); fs.writeFileSync(path.join(h, "dist.js"), "ok");
       const context = { ...c, homeAbs: h, logsDir: path.join(h, "logs"), distEntry: path.join(h, "dist.js"),
         ...(scenario === "corrupt-env" ? { winEnvError: "win-service-env.json is unreadable (fixture)" } : {}) };
       const marker = path.join(h, ".update-failed");
       const calls: string[] = []; let rev = 0, status = 0, ci = 0; let lockDirty = scenario === "lock-only";
-      const processFake = { platform: "win32", execPath: process.execPath, exitCode: 0, stdout: { write: () => {} },
+      // 데몬이 떠 있나 — 멈추면 내려가고, `revivedDuringCi` 면 설치 도중 무언가가 다시 띄운다(2026-10-19 윈도우돌쇠 실측).
+      let running = true;
+      const processFake = { platform: opts.platform ?? "win32", execPath: process.execPath, exitCode: 0, stdout: { write: () => {} },
         env: { HTTP_BRIDGE_TOKEN: "opaque-fixture-secret", ...(opts.notify ? { TIGUCLAW_UPDATE_NOTIFY_CHANNEL: "fixture" } : {}),
           ...(opts.handoff ? { TIGUCLAW_UPDATE_PREV_SHA: opts.handoff } : {}) } };
       const spawnSync = (cmd: string, args: string[]) => {
@@ -128,6 +130,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
           if (scenario === "dirty" || (scenario === "rollback-dirty" && status > 1)) stdout = " M src/edited.ts\n";
         }
         if (cmd === "npm" && args[0] === "ci") {
+          if (opts.revivedDuringCi === true) running = true;
           ci++; if (scenario !== "success" && scenario !== "lock-only" && ci === 1) { code = 1; stderr = "fixture npm EACCES opaque-fixture-secret"; }
         }
         return { status: code, stdout, stderr };
@@ -138,8 +141,8 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       // 마커가 재가동 **전에** 있었나 — 다시 뜬 데몬이 부팅 때 읽어 통지한다.
       const startMark = (what: string) => () => calls.push(`${what}:${fs.existsSync(marker) ? "marker" : "no-marker"}`);
       const invoke = new Function(...names, body + "; return runUpdate;")(...[
-        processFake, fakeConsole, path, fs.existsSync, fs.mkdirSync, (p: string, flags: string) => { const fd = fs.openSync(p, flags); fds.push(fd); return fd; }, fs.writeSync, fs.writeFileSync, spawnSync, () => true, () => true,
-        { win32: { stop: () => { calls.push("STOP"); return opts.stopFails === true ? false : true; }, reenable: () => calls.push("REENABLE"), start: startMark("START"), restart: startMark("RESTART") } }, () => {}, () => calls.push("SAVE_ENV"), (text: string) => d.redactUpdateLog(text, processFake.env),
+        processFake, fakeConsole, path, fs.existsSync, fs.mkdirSync, (p: string, flags: string) => { const fd = fs.openSync(p, flags); fds.push(fd); return fd; }, fs.writeSync, fs.writeFileSync, spawnSync, () => running, () => true,
+        ((t: unknown) => ({ win32: t, darwin: t }))({ stop: () => { calls.push("STOP"); if (opts.stopFails !== true) running = false; return opts.stopFails === true ? false : true; }, reenable: () => calls.push("REENABLE"), start: startMark("START"), restart: startMark("RESTART") }), () => {}, () => calls.push("SAVE_ENV"), (text: string) => d.redactUpdateLog(text, processFake.env),
       ]);
       try { invoke(context); } finally { for (const fd of fds) fs.closeSync(fd); }
       const log = fs.readdirSync(path.join(h, "logs")).find((x) => x.startsWith("update-")); assert(log);
@@ -169,6 +172,16 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const r = simulate("success", { notify: true }); assert.equal(r.exitCode, 0); assert(r.calls.includes("npm run build:prod")); assert(has(r.calls, /^START/));
       assert(r.calls.indexOf("git pull --ff-only") < r.calls.indexOf("STOP"));
       assert(fs.existsSync(path.join(r.home, ".update-complete")));
+    });
+    test("★멈춰 둔 사이 데몬이 다시 떴으면(설치 도중 되살아남) 빌드 뒤 **재시작**한다 — start 는 «이미 실행 중» 이라 옛 빌드가 남는다(윈도우돌쇠 10-19 실측)", () => {
+      const r = simulate("success", { revivedDuringCi: true });
+      assert.equal(r.exitCode, 0, r.messages.join(" | ")); assert(has(r.calls, /^RESTART/), r.calls.join(" | ")); assert(!has(r.calls, /^START/), r.calls.join(" | "));
+      assert(r.calls.findIndex((x) => /^RESTART/.test(x)) > r.calls.indexOf("npm run build:prod"), r.calls.join(" | "));
+      assert(r.messages.some((m) => m.includes("came back while the update was running")), r.messages.join(" | "));
+      const plain = simulate("success"); assert(has(plain.calls, /^START/) && !has(plain.calls, /^RESTART/), plain.calls.join(" | "));
+      // 맥도 같은 공통 경로다 — `launchctl bootstrap` 이 «이미 적재됨» 이면 재시작하지 않으므로 같은 구멍이 있었다.
+      const mac = simulate("success", { revivedDuringCi: true, platform: "darwin" }); assert(has(mac.calls, /^RESTART/) && !has(mac.calls, /^START/), mac.calls.join(" | "));
+      return "되살아났으면 빌드 뒤 RESTART(윈도우·맥) · 아니면 START";
     });
     test("★lock 파일만 바뀌었으면(우리 npm 이 다시 씀) 되돌리고 업데이트를 계속한다 — 거절하면 영영 업데이트가 안 된다", () => {
       const r = simulate("lock-only"); assert.equal(r.exitCode, 0, r.messages.join(" | "));

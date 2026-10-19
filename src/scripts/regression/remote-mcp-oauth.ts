@@ -259,6 +259,20 @@ export const check: RegressionCheck = {
       out.push(assert("⑫ refresh 없는 공급자 — 옛 토큰의 늦은 401 은 무시 · 지금 토큰의 401 은 «로그인 필요»(갱신할 길이 없다)",
         n1 !== n2 && statusOldLate === "authorized" && statusCurrent === "login-needed", JSON.stringify({ statusOldLate, statusCurrent })));
 
+      // ⑤b 로그인 **준비 중**(인가 서버 탐색을 기다리는 동안 — 기록도 시도도 아직 없다) 삭제 → 늦게 돌아온 준비가 아무것도 남기지 않는다(아스트라 10-19).
+      //  대기점은 가짜 서버가 탐색 응답을 붙잡는 것(고정 sleep 아님).
+      await oauth.forgetMcpOAuth(file, "oauthsrv");
+      as.holdDiscovery = true;
+      const preparing = oauth.startMcpLogin(key, redirectUrl).then((r) => r.status, (e: unknown) => `rejected:${String((e as Error)?.message ?? e).slice(0, 60)}`);
+      for (let i = 0; i < 200 && as.heldDiscovery.length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+      const heldAtDelete = as.heldDiscovery.length;
+      await oauth.forgetMcpOAuth(file, "oauthsrv");
+      fake.releaseDiscovery();
+      const prepResult = await preparing;
+      out.push(assert("★⑤b 로그인 준비 중 삭제 — 늦게 돌아온 준비는 거절되고 인증 기록·시도가 남지 않는다",
+        heldAtDelete >= 1 && prepResult.startsWith("rejected") && (await oauth.mcpOAuthStatus(key)) === "none",
+        JSON.stringify({ heldAtDelete, prepResult, status: await oauth.mcpOAuthStatus(key) })));
+
       // ⑤ 제거 · 늦은 완료 — 로그인이 **진행 중**이어야 하므로 기록부터 비운다(앞 단계가 로그인을 끝내 둔다).
       await oauth.forgetMcpOAuth(file, "oauthsrv");
       const s4 = await oauth.startMcpLogin(key, redirectUrl);

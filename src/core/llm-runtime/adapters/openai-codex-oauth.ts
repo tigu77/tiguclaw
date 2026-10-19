@@ -133,7 +133,7 @@ import { resolveReasoningEffort,
   catalogReasoningFloor,
   catalogSupportsToolSearch,
 } from "../model-catalog.js";
-import { foldCodexTools, namespaceMatches, toolSearchStats, withRestoredToolSearch } from "./_codex-tool-folding.js";
+import { foldCodexTools, namespaceMatches, toolSearchStats, withoutToolSearch, withRestoredToolSearch } from "./_codex-tool-folding.js";
 import {
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -902,6 +902,8 @@ export const runOpenAiCodex = async (
   const externalToolNames = new Set((input.externalTools ?? []).map((t) => t.name));
   /** 외부 MCP 서버가 제공하는 도구 이름 — 이들은 **언제나 replay 불가**로 본다. */
   const externalMcpToolNames = new Set<string>();
+  /** 그중 **외부 MCP 서버**(mcp.json·.mcp.json)의 도구만 — 도구 접기가 서버별 묶음으로 접는다(플러그인은 Claude 처럼 펼친다). */
+  const externalServerToolNames = new Set<string>();
   const externalFunctionTools = (input.externalTools ?? []).map((t) => ({
     type: "function" as const,
     // MCP/외부 앱의 optional 계약을 보존한다. 검증은 실행 경계의 원래 스키마가 맡는다.
@@ -1069,7 +1071,10 @@ export const runOpenAiCodex = async (
         const extClaim = claimToolNames(toolBridgeMap, extToolsRaw, extBridge, "external-mcp");
         // ★**외부 MCP 가 가져간 이름을 적어둔다** (2026-09-14). replay 판정이 «이름이
         //  read_ 로 시작하나» 로 안전을 추정하면 안 되는 유일한 자리라, 출처를 남긴다.
-        for (const n of extClaim.claimed) externalMcpToolNames.add(n);
+        for (const n of extClaim.claimed) {
+          externalMcpToolNames.add(n);
+          externalServerToolNames.add(n);
+        }
         mcpTools.push(...keepClaimed(extToolsRaw, extClaim.claimed));
       }
     }
@@ -1150,14 +1155,23 @@ export const runOpenAiCodex = async (
     }>,
   );
   // ★도구 접기(2026-10-17, 계약 `docs/decisions/2026-10-17-tool-folding-contract.md`) — 드문 도구(`onDemand`)를 소속 서버별 묶음으로 접고
-  //  기본 `tool_search` 로 펼친다. **기본 꺼짐**(`CODEX_TOOL_SEARCH=1` 일 때만) — 채택 시험과 OpenAI 단계 전엔 켜지 않는다(원칙 #2).
-  //  켜도 모델 카탈로그가 `supports_search_tool` 을 말한 모델에서만(부재 = 모름 = 지금처럼 전부 펼침).
-  const toolFolding = foldCodexTools(
-    functionTools.map((tool, i) => {
+  //  기본 `tool_search` 로 펼친다. **기본 켜짐**(2026-10-18 정태님 «적용하자» — 채택 시험 3쌍·세 인스턴스 실측 뒤). 끄려면 `CODEX_TOOL_SEARCH=0`.
+  //  모델 카탈로그가 `supports_search_tool` 을 말한 모델에서만(부재 = 모름 = 지금처럼 전부 펼침).
+  //  ★외부 MCP 서버의 도구는 표식이 없어도 **서버별 묶음으로 접는다** — Claude 가 외부 서버를 늘 접는 것과 같다(`tool-load-policy`).
+  //   묶음 설명은 도구 **이름만**(빈 힌트) — 서버가 커질수록 설명이 정의만큼 커지면 접는 의미가 없다. 플러그인 도구는 Claude 처럼 펼친다.
+  //  ★`read_past_tool_result` 도 Claude 와 같이 접는다(2026-10-19 정태님 «굳이 다를 건 없지» — 하루 전 Codex 만 펼쳤던 예외를 걷음).
+  const foldEntries = functionTools.map((tool, i) => {
       const hint = ((mcpTools[i] as { _meta?: Record<string, unknown> } | undefined)?._meta ?? {})["anthropic/searchHint"];
-      return { tool, server: toolBridgeMap.get(tool.name)?.name ?? "", hint: typeof hint === "string" ? hint : null };
-    }),
-    !toolsNone && process.env.CODEX_TOOL_SEARCH === "1" && catalogSupportsToolSearch("codex", model) === true,
+      return {
+        tool,
+        server: toolBridgeMap.get(tool.name)?.name ?? "",
+        hint: typeof hint === "string" ? hint : externalServerToolNames.has(tool.name) ? "" : null,
+      };
+    });
+  // `let` — 접힌 요청이 400 으로 거절되면 그 턴은 접기를 끄고 다시 보낸다(아래 «접기 안전망»).
+  let toolFolding = foldCodexTools(
+    foldEntries,
+    !toolsNone && process.env.CODEX_TOOL_SEARCH !== "0" && catalogSupportsToolSearch("codex", model) === true,
   );
 
   // V7.6 (parity P1) — codex backend native web_search tool. claude 어댑터는
@@ -1175,12 +1189,15 @@ export const runOpenAiCodex = async (
   // externalTools 는 toolsNone/webSearchEnabled 게이팅 *밖*에서 concat — 게이트웨이가
   // toolPolicy:none 으로 tiguclaw 도구를 꺼도 앱 함수 스키마는 그대로 노출된다(스파이크 §1.1
   // 확정, architect 결정 불요 — 순수 배열 concat).
-  const responsesTools = [
+  const buildResponsesTools = () => [
     ...(webSearchEnabled ? [...toolFolding.tools, { type: "web_search" as const, user_location: { type: "approximate" as const, timezone: localTimeZone() } }] : toolFolding.tools),
     ...externalFunctionTools,
     // 접힌 도구가 있을 때만 — 없이 실으면 400(`tools.tool_search requires at least one deferred tool`).
     ...(toolFolding.searchTool ? [{ type: "tool_search" as const }] : []),
   ];
+  let responsesTools = buildResponsesTools();
+  /** 접기 안전망(400 → 접기 끄고 재전송)을 이 턴에 이미 썼나 — 턴당 한 번. */
+  let foldFallbackUsed = false;
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -1585,8 +1602,11 @@ export const runOpenAiCodex = async (
       const searchToolOn = webSearchEnabled && !finalFlushRequested;
       // 이력 구간의 접힌 도구 호출을 이번 요청에 맞춘다(첫 호출 앞에 현재 정의로 검색 항목 재구성 · 이번엔 없는 묶음이면 `namespace` 떼기) —
       //  배열을 바꾸지 않고 **보낼 사본**에만(`turnStart`·구성 경계 같은 위치값이 그대로 유효하다).
+      //  ★도구를 싣지 않는 요청(마무리)·접기를 끈 요청은 **이 턴 구간까지** 접기 흔적을 뺀다(`withoutToolSearch`).
       const foldedHistory = (): ResponseInputItem[] =>
-        withRestoredToolSearch(inputArray, turnStart, toolFolding.searchTool && !finalFlushRequested ? toolFolding.namespaces : null) as ResponseInputItem[];
+        (finalFlushRequested || !toolFolding.searchTool
+          ? withoutToolSearch(inputArray)
+          : withRestoredToolSearch(inputArray, turnStart, toolFolding.namespaces)) as ResponseInputItem[];
       const requestInput = (): ResponseInputItem[] =>
         searchToolOn ? foldedHistory() : foldedHistory().filter((it) => it.type !== "web_search_call");
       const body: Record<string, unknown> = {
@@ -1902,6 +1922,21 @@ export const runOpenAiCodex = async (
               continue;
             }
             throw fe;
+          }
+          // ★접기 안전망 (적대 검토 10-19) — 접힌 요청이 400 이면(공급자가 묶음·검색 항목 모양을 거절) 이 턴은 접기를 끄고 본문을 다시 만들어
+          //  **같은 재시도 루프로** 다시 보낸다(재전송의 5xx·네트워크 오류도 재시도가 흡수한다 · 크기 측정도 다시). 안 그러면 기본 켜짐인 접기
+          //  하나 때문에 매 턴 다른 어댑터로 넘어간다. 마무리 요청(`tools: []`)은 이미 흔적이 없어 다시 보내도 같은 본문이라 제외.
+          if (!res.ok && res.status === 400 && toolFolding.searchTool && !finalFlushRequested && !foldFallbackUsed) {
+            foldFallbackUsed = true; // 턴당 한 번 — 조건이 어떻게 바뀌어도 이 갈래가 요청 루프를 붙잡지 않게
+            const detail = await res.text().catch(() => "");
+            console.warn(`[codex-tool-search] 접힌 요청 거절(400) — 이 턴은 접기를 끄고 다시 보냄: ${detail.slice(0, 200)} threadKey=${input.threadKey}`);
+            toolFolding = foldCodexTools(foldEntries, false);
+            responsesTools = buildResponsesTools();
+            body.tools = responsesTools;
+            body.input = requestInput();
+            bodyJson = JSON.stringify(body);
+            measureRequest();
+            continue;
           }
           if (
             !res.ok &&

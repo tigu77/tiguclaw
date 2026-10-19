@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **After setup, the dashboard opens on the chat view, and subscription sign-in opens your browser.**
+- **Codex folds away rarely used tools and the tools of MCP servers you added, and looks them up when it needs them.** Each request sends less input. To turn it off, add `CODEX_TOOL_SEARCH=0` to the home `.env`.
 
 ### Fixed
 

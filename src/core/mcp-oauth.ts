@@ -99,7 +99,13 @@ const writeRecord = async (k: McpOAuthKey, r: StoredRecord): Promise<void> => {
  *  (지운 서버의 인증이 되살아나지 않게). 메모리 값이다 — 재시작 뒤엔 진행 중인 것이 없으니 충분하다.
  */
 const generations = new Map<string, number>();
-const genOf = (k: McpOAuthKey): number => generations.get(keyHash(k)) ?? 0;
+/**
+ * (설정 파일, 서버 이름) 단위 세대 — 삭제는 **디스크 기록이 있든 없든** 이것을 올린다. ★첫 로그인 준비가 `auth()` 를 기다리는 동안엔 기록도 시도도
+ *  아직 없어서, 삭제가 무효화할 대상이 없었고 늦게 돌아온 로그인이 지운 서버의 인증을 되살렸다(아스트라 10-19 재현). URL 별 격리는 위 세대가 그대로 진다.
+ */
+const nameGenerations = new Map<string, number>();
+const nameKey = (file: string, name: string): string => `${path.resolve(file)}\u0000${name}`;
+const genOf = (k: McpOAuthKey): number => (generations.get(keyHash(k)) ?? 0) + (nameGenerations.get(nameKey(k.file, k.name)) ?? 0);
 
 interface Attempt {
   key: McpOAuthKey;
@@ -260,6 +266,8 @@ export const startMcpLogin = async (
   if (result !== "REDIRECT" || attempt.authorizationUrl === undefined) {
     throw new Error("mcp-oauth: the server did not start an authorization flow");
   }
+  // 준비하는 사이에 서버가 지워졌으면 아무것도 남기지 않는다(기록·시도 게시 전 — 아스트라 10-19).
+  if (attempt.gen !== genOf(k)) throw new Error("mcp-oauth: the server was removed while the sign-in was being prepared");
   if (reRegister) attempt.client = work.client;
   else await writeRecord(k, rec); // 동적 등록한 클라이언트·탐색 결과
   attempts.set(attempt.state, attempt);
@@ -434,6 +442,8 @@ export const mcpAccessToken = async (k: McpOAuthKey, fetchFn?: typeof fetch): Pr
 /** 서버 제거·로그아웃 — 그 파일·이름의 모든 레코드(URL 무관)를 로컬에서 지우고 세대를 올린다. ★공급자 쪽 토큰 폐기(revocation)는 하지 않는다. */
 export const forgetMcpOAuth = async (file: string, name: string): Promise<number> => {
   const abs = path.resolve(file);
+  // 기록이 없어도 — 진행 중인 로그인 준비까지 무효화한다(위 `nameGenerations` 주석).
+  nameGenerations.set(nameKey(file, name), (nameGenerations.get(nameKey(file, name)) ?? 0) + 1);
   let removed = 0;
   let entries: string[] = [];
   try {
@@ -447,7 +457,7 @@ export const forgetMcpOAuth = async (file: string, name: string): Promise<number
       const r = JSON.parse(await fs.readFile(path.join(storeDir(), f), "utf8")) as StoredRecord;
       if (path.resolve(r.file) !== abs || r.name !== name) continue;
       const k = { file: r.file, name: r.name, url: r.url };
-      generations.set(keyHash(k), genOf(k) + 1);
+      generations.set(keyHash(k), (generations.get(keyHash(k)) ?? 0) + 1);
       for (const m of [forceRefresh, forcedToken, refreshFailedAt]) m.delete(keyHash(k));
       dropAttemptsFor(k);
       await fs.rm(path.join(storeDir(), f), { force: true });

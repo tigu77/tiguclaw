@@ -496,10 +496,10 @@ interface DiscoverResult {
  *  이 경로 커버리지가 0이었고, 삭제 로직을 통째로 되돌려도 초록이었다). 판정만 순수
  *  함수로 꺼내 실행으로 지킨다.
  */
-export const mergeReasoning = (
-  target: Record<string, string>,
+export const mergeReasoning = <V extends string | boolean>(
+  target: Record<string, V>,
   provider: string,
-  incoming: Record<string, string>,
+  incoming: Record<string, V>,
 ): boolean => {
   let changed = false;
   const prefix = `${provider}:`;
@@ -560,10 +560,9 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
       else nextUnranked.delete(provider);
       for (const [m, n] of Object.entries(res.context ?? {})) nextContext[`${provider}:${m}`] = n;
       for (const [m, t] of Object.entries(res.tools ?? {})) nextTools[`${provider}:${m}`] = t;
-      for (const [m, t] of Object.entries(res.toolSearch ?? {})) {
-        if (nextToolSearch[`${provider}:${m}`] !== t) changed = true;
-        nextToolSearch[`${provider}:${m}`] = t;
-      }
+      // 도구 검색 지원도 **같은 교체 규칙** — 성공한 조회에서 필드가 사라진 모델은 «모름» 으로 돌아가야 한다(부재 = 모름 = 펼침).
+      //  병합만 하면 예전 true 가 남아 지원이 철회된 모델에 접힌 요청을 계속 보냈다(아스트라 10-19 재현). 실패 시엔 위 catch 로 직전 값 보존.
+      if (mergeReasoning(nextToolSearch, provider, Object.fromEntries(Object.entries(res.toolSearch ?? {}).map(([m, t]) => [`${provider}:${m}`, t])))) changed = true;
       // ★그 provider 의 키를 **통째로 교체**한다 (적대 검토 B1 곁가지). 병합만 하면 벤더가
       //  어떤 모델의 `default_reasoning_level` 을 없애도 우리 옛 값이 영구히 이긴다 —
       //  신선도 미요구와 겹쳐 되돌릴 방법이 없어진다. 조회가 **성공했을 때만** 교체하므로

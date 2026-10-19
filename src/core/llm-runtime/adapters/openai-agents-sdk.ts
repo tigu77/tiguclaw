@@ -290,36 +290,51 @@ export const extractUsage = (
   const requestUsageEntries = extractRequestUsageEntries(u.requestUsageEntries);
   const requests = typeof u.requests === "number" && Number.isSafeInteger(u.requests) && u.requests > 0 ? u.requests : undefined;
   // ★계약(types.ts): inputTokens·outputTokens·cachedTokens = **마지막 호출 1회**, *Total = 턴 합계 (동등성 감사 7번 · 아스트라 회신 Q5).
-  //  `state.usage` 의 inputTokens 는 run 안 모든 호출의 **합**이라, 그대로 두면 도구를 쓴 턴의 /status 컨텍스트 % 가 호출 수만큼 부풀었다
-  //  (`adapter-contract` 사용량 시나리오: 250 을 마지막 호출로 보고). SDK 가 요청마다 남기는 목록의 **마지막 항목**이 마지막 호출이다.
-  //  목록이 없으면(공급자가 요청별 사용량을 안 줌) 마지막 호출을 알 수 없다 — 종전 값을 그대로 둔다(한 번 호출이면 같은 값이다).
-  const last = requestUsageEntries?.[requestUsageEntries.length - 1];
-  if (last === undefined) {
-    return {
-      ...(requests !== undefined ? { requests } : {}),
-      inputTokens: u.inputTokens,
-      outputTokens: u.outputTokens,
-      ...(cached !== undefined ? { cachedTokens: cached } : {}),
-    };
+  //  `state.usage` 의 inputTokens 는 run 안 모든 호출의 **합**이다.
+  // ★★마지막 호출을 **관측했다고 증명할 수 있을 때만** 그 값을 마지막 호출로 낸다 (2026-10-19 아스트라 인계). 개수로는 «중간 누락» 과
+  //  «마지막 누락» 을 못 가른다 — SDK 가 요청 순서대로 남기는 응답 목록(`rawResponses`)의 **마지막 응답 사용량**으로 판정한다.
+  //  목록이 없으면 «한 번 호출» 이거나 «모든 요청 관측» 일 때만 확정. 그 밖엔 `lastCallUnknown` — 합계·원장은 보존한다.
+  const n = requests ?? requestUsageEntries?.length ?? 1;
+  const raws = (result as { rawResponses?: unknown })?.rawResponses;
+  const lastRaw = Array.isArray(raws) && raws.length > 0 ? (raws[raws.length - 1] as { usage?: unknown } | null)?.usage : undefined;
+  let last: { inputTokens: number; outputTokens: number; cachedTokens?: number } | undefined;
+  if (Array.isArray(raws) && raws.length > 0) {
+    const lu = lastRaw as { inputTokens?: unknown; outputTokens?: unknown; totalTokens?: unknown; inputTokensDetails?: unknown } | undefined;
+    const observed = lu !== undefined && typeof lu.inputTokens === "number" && typeof lu.outputTokens === "number" &&
+      ((typeof lu.totalTokens === "number" && lu.totalTokens > 0) || lu.inputTokens > 0 || lu.outputTokens > 0);
+    if (observed) {
+      const d = Array.isArray(lu.inputTokensDetails) ? lu.inputTokensDetails[0] : lu.inputTokensDetails;
+      const c = (d as Record<string, unknown> | undefined)?.cached_tokens ?? (d as Record<string, unknown> | undefined)?.cachedTokens;
+      last = { inputTokens: lu.inputTokens as number, outputTokens: lu.outputTokens as number, ...(typeof c === "number" ? { cachedTokens: c } : {}) };
+    }
+  } else if (n <= 1) {
+    last = { inputTokens: u.inputTokens, outputTokens: u.outputTokens, ...(cached !== undefined ? { cachedTokens: cached } : {}) };
+  } else if (requestUsageEntries !== undefined && requestUsageEntries.length === n) {
+    const e = requestUsageEntries[requestUsageEntries.length - 1]!;
+    last = { inputTokens: e.inputTokens, outputTokens: e.outputTokens, ...(e.cachedTokens !== undefined ? { cachedTokens: e.cachedTokens } : {}) };
   }
-  const many = requestUsageEntries!.length >= 2;
+  // 모를 때 자리값 — 마지막으로 **관측한** 요청(없으면 합계). 소비처는 `lastCallUnknown` 을 보고 현재 컨텍스트로 안 쓴다.
+  const seen = requestUsageEntries?.[requestUsageEntries.length - 1];
+  const shown = last ?? (seen !== undefined
+    ? { inputTokens: seen.inputTokens, outputTokens: seen.outputTokens, ...(seen.cachedTokens !== undefined ? { cachedTokens: seen.cachedTokens } : {}) }
+    : { inputTokens: u.inputTokens, outputTokens: u.outputTokens });
+  const many = n >= 2;
   return {
     ...(requests !== undefined ? { requests } : {}),
-    inputTokens: last.inputTokens,
-    outputTokens: last.outputTokens,
-    ...(last.cachedTokens !== undefined ? { cachedTokens: last.cachedTokens } : {}),
-    // 합계는 도구 루프가 2회 이상 돈 턴에만(codex·claude 와 같은 규칙) — 요청 목록과 run 합계는 같은 출처다.
+    ...shown,
+    ...(last === undefined ? { lastCallUnknown: true as const } : {}),
+    // 합계는 도구 루프가 2회 이상 돈 턴에만(codex·claude 와 같은 규칙) — run 합계는 관측분의 합이다(못 받은 요청이 있으면 하한).
     ...(many
       ? {
-          iterations: requestUsageEntries!.length,
+          iterations: n,
           inputTokensTotal: u.inputTokens,
           outputTokensTotal: u.outputTokens,
           ...(cached !== undefined ? { cachedTokensTotal: cached } : {}),
         }
       : {}),
-    // 요청 수가 목록보다 많으면 사용량을 못 받은 요청이 있다 — «마지막 관측 요청» 이 실제 마지막 요청이 아닐 수 있다는 표시.
-    ...(requests !== undefined && requests > requestUsageEntries!.length ? { unreportedRequests: requests - requestUsageEntries!.length } : {}),
-    requestUsageEntries,
+    // 요청 수가 목록보다 많으면 사용량을 못 받은 요청이 있다.
+    ...(requests !== undefined && requestUsageEntries !== undefined && requests > requestUsageEntries.length ? { unreportedRequests: requests - requestUsageEntries.length } : {}),
+    ...(requestUsageEntries !== undefined ? { requestUsageEntries } : {}),
   };
 };
 

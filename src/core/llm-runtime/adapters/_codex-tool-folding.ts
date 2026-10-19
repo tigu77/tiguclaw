@@ -18,7 +18,7 @@ export interface ResponsesFunctionTool {
   strict: false;
 }
 
-/** 접기 재료 한 줄 — 도구 정의 · 소속 서버 이름 · `onDemand` 힌트(없으면 접지 않는 도구). */
+/** 접기 재료 한 줄 — 도구 정의 · 소속 서버 이름 · `onDemand` 힌트(null = 접지 않는 도구 · "" = 접되 설명엔 이름만 — 외부 MCP). */
 export interface FoldEntry {
   tool: ResponsesFunctionTool;
   server: string;
@@ -49,20 +49,35 @@ const NAMESPACE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
  * ★묶음 이름이 펼친 도구 이름과 겹치거나 이름 모양이 안 맞으면 그 서버는 접지 않는다(펼친 채 둔다 — 잃는 능력 없음).
  * ★묶음 설명은 **이 요청에 실제로 남은 접힌 도구의 힌트**로 만든다 — 역할 필터 뒤 없는 도구를 약속하지 않는다(계약 E).
  */
+/** 공급자가 쓰는 이름 — 묶음 이름으로 쓰지 않는다(외부 MCP 서버 이름이 이렇게 지어질 수 있다, 적대 검토 10-19). */
+const RESERVED_NAMESPACE = new Set(["web_search", "tool_search", "functions", "python", "browser", "multi_tool_use", "file_search", "computer_use"]);
+
 export const foldCodexTools = (entries: readonly FoldEntry[], enabled: boolean): FoldResult => {
   if (!enabled) return { tools: entries.map((e) => e.tool), namespaces: new Map(), searchTool: false };
   const groups = new Map<string, FoldEntry[]>();
   for (const e of entries) if (e.hint !== null) groups.set(e.server, [...(groups.get(e.server) ?? []), e]);
-  const flatNames = new Set(entries.filter((e) => e.hint === null).map((e) => e.tool.name));
+  // ★펼쳐 둔 **모든** 도구 이름과 겹치는 묶음은 접지 않는다 — 표식 없는 도구만 세면, 이름 모양이 안 맞아 펼친 외부 서버의 도구가
+  //  다른 서버 묶음 이름과 같아도 둘 다 실렸다(적대 검토 10-19). 한 서버를 펼치면 그 도구 이름이 또 겹칠 수 있으니 더 안 바뀔 때까지.
   const folded = new Set<string>();
-  for (const server of groups.keys()) if (NAMESPACE_NAME.test(server) && !flatNames.has(server)) folded.add(server);
+  for (const server of groups.keys()) if (NAMESPACE_NAME.test(server) && !RESERVED_NAMESPACE.has(server.toLowerCase())) folded.add(server);
+  for (let changed = true; changed; ) {
+    changed = false;
+    const flatNames = new Set(entries.filter((e) => e.hint === null || !folded.has(e.server)).map((e) => e.tool.name));
+    for (const server of [...folded]) {
+      if (flatNames.has(server)) {
+        folded.delete(server);
+        changed = true;
+      }
+    }
+  }
   const namespaces = new Map<string, FoldedNamespace>();
   for (const [server, es] of groups) {
     if (!folded.has(server)) continue;
     namespaces.set(server, {
       type: "namespace",
       name: server,
-      description: `${server}: ${es.map((e) => `${e.tool.name} — ${e.hint}`).join(" · ")}`,
+      // 힌트가 빈 도구(외부 MCP)는 이름만 — 설명이 정의만큼 커지지 않게.
+      description: `${server}: ${es.map((e) => (e.hint === "" ? e.tool.name : `${e.tool.name} — ${e.hint}`)).join(" · ")}`,
       tools: es.map((e) => ({ ...e.tool, defer_loading: true as const })),
     });
   }
@@ -102,7 +117,9 @@ export const withRestoredToolSearch = <T extends { type: string }>(
       return;
     }
     const def = namespaces?.get(ns);
-    if (def === undefined) {
+    // 묶음은 있어도 **그 도구가 이번엔 그 묶음에 없으면**(서버가 도구를 뺌·프로젝트가 같은 이름 서버로 덮음) 소속을 뗀다(적대 검토 10-19).
+    const callName = (it as { name?: unknown }).name;
+    if (def === undefined || !def.tools.some((t) => t.name === callName)) {
       const { namespace: _drop, ...rest } = it as T & { namespace?: string };
       out.push(rest as T);
       return;
@@ -115,6 +132,20 @@ export const withRestoredToolSearch = <T extends { type: string }>(
   });
   return out;
 };
+
+/**
+ * **접기 흔적을 전부 뺀 사본** — 도구를 싣지 않는 요청(빈 응답 마무리 `tools: []`)·접기를 끈 재전송에 쓴다. 이 턴 구간까지 검색 항목을 빼고
+ *  호출의 `namespace` 를 뗀다(`namespace` 없는 호출은 받는다 — T3). ★이 턴 구간을 남기면 도구 없는 요청에 검색 항목이 실렸다(적대 검토 10-19 —
+ *  같은 모양의 웹 검색 항목은 서버가 거절했다).
+ */
+export const withoutToolSearch = <T extends { type: string }>(items: readonly T[]): T[] =>
+  items
+    .filter((it) => it.type !== "tool_search_call" && it.type !== "tool_search_output")
+    .map((it) => {
+      if (it.type !== "function_call" || (it as { namespace?: unknown }).namespace === undefined) return it;
+      const { namespace: _drop, ...rest } = it as T & { namespace?: string };
+      return rest as T;
+    });
 
 /**
  * 펼친 도구 호출을 실행해도 되나 — 호출의 `namespace` 가 있으면 **등록 정보의 소속 서버와 같아야** 한다(계약 B).

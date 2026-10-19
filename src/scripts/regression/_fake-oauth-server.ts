@@ -27,6 +27,9 @@ export const startFakeOAuthMcp = async () => {
       refreshMode: "ok" as "ok" | "invalid_grant" | "server_error" | "hang",
       held: [] as ServerResponse[],
       rejected: [] as string[],
+      /** true 면 보호 자원 탐색 응답을 붙잡아 둔다 — 로그인 준비를 «auth() 대기 중» 에 세워 두는 제어 가능한 대기점. `releaseDiscovery()` 로 보낸다. */
+      holdDiscovery: false,
+      heldDiscovery: [] as Array<() => void>,
       /** refresh 토큰을 안 주는 공급자(GitHub OAuth 앱 류) 흉내. */
       noRefresh: false,
       /** refresh 토큰 → 발급받은 클라이언트(RFC 6749 §6 — 다른 클라이언트의 갱신은 거절). */
@@ -53,7 +56,14 @@ export const startFakeOAuthMcp = async () => {
     let origin = "";
     const http = createServer(async (req, res) => {
       const u = new URL(req.url ?? "/", origin);
-      if (u.pathname.startsWith("/.well-known/oauth-protected-resource")) return json(res, 200, { resource: `${origin}/mcp`, authorization_servers: [origin] });
+      if (u.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+        const send = () => json(res, 200, { resource: `${origin}/mcp`, authorization_servers: [origin] });
+        if (as.holdDiscovery) {
+          as.heldDiscovery.push(send);
+          return;
+        }
+        return send();
+      }
       if (u.pathname === "/.well-known/oauth-authorization-server") {
         return json(res, 200, {
           issuer: origin, authorization_endpoint: `${origin}/authorize`, token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
@@ -129,9 +139,14 @@ export const startFakeOAuthMcp = async () => {
     await new Promise<void>((r) => http.listen(0, "127.0.0.1", () => r()));
     origin = `http://127.0.0.1:${(http.address() as { port: number }).port}`;
     const url = `${origin}/mcp`;
+    /** 붙잡아 둔 탐색 응답을 보낸다. */
+    const releaseDiscovery = (): void => {
+      as.holdDiscovery = false;
+      for (const send of as.heldDiscovery.splice(0)) send();
+    };
     /** 쥐고 있던 응답을 끊는다(클라이언트엔 연결 오류). */
     const release = (): void => {
       for (const r of as.held.splice(0)) r.destroy();
     };
-    return { as, origin, url, release, close: (): Promise<void> => (release(), new Promise<void>((r) => http.close(() => r()))) };
+    return { as, origin, url, release, releaseDiscovery, close: (): Promise<void> => (release(), releaseDiscovery(), new Promise<void>((r) => http.close(() => r()))) };
 };

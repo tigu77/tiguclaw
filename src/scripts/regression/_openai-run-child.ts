@@ -98,6 +98,19 @@ const main = async (): Promise<void> => {
       yield { type: "output_text_delta", delta: "도구없이" };
       yield { type: "response_done", response: { id: "r", usage, output: [message("도구없이")] } };
     },
+    // 사용량 — 1번째 턴은 정상(77) · 2번째 턴은 도구 호출(100) 뒤 **마지막 응답의 사용량이 빠진다**(아스트라 인계 10-19).
+    "facade-usage-last-missing": async function* (_req: Req, n: number) {
+      if (n === 1) {
+        yield { type: "response_done", response: { id: "r1", usage: { inputTokens: 77, outputTokens: 7, totalTokens: 84, requests: 1 }, output: [message("첫 턴")] } };
+        return;
+      }
+      if (n === 2) {
+        yield { type: "response_done", response: { id: "r2", usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, requests: 1 }, output: [call("Bash", JSON.stringify({ command: "true", description: "noop" }))] } };
+        return;
+      }
+      yield { type: "output_text_delta", delta: "둘째 턴" };
+      yield { type: "response_done", response: { id: "r3", usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, requests: 1 }, output: [message("둘째 턴")] } };
+    },
     "pre-aborted": async function* () {
       yield { type: "response_done", response: { id: "r", usage, output: [message("안 나와야 한다")] } };
     },
@@ -134,6 +147,24 @@ const main = async (): Promise<void> => {
     },
   });
 
+  if (scenario === "facade-usage-last-missing") {
+    // ★세션 저장·턴 기록까지 — 마지막 호출을 모르면 «현재 컨텍스트» 를 비우고(지난 턴 값을 남기지 않는다) 턴 기록에도 싣지 않는다 · 합계는 남는다.
+    const { getSession } = await import("../../store/sessions.js");
+    const { runRegionA } = await import("../../core/llm-runtime/index.js");
+    const done: Array<Record<string, unknown>> = [];
+    getEventBus().subscribe((ev) => {
+      const pl = ev.payload as { threadKey?: unknown } & Record<string, unknown>;
+      if (ev.type === "llm.turn_done" && pl?.threadKey === threadKey) done.push(pl);
+    });
+    const turn = () => runRegionA({ text: "안녕", threadKey, channel: "cli", cwd: process.env.TIGUCLAW_HOME } as never, { specs: [{ adapter: "openai", model: "gpt-regression", provider: "openai" }] });
+    await turn();
+    const afterFirst = getSession("cli" as never, threadKey)?.lastInputTokens ?? null;
+    await turn();
+    const afterSecond = getSession("cli" as never, threadKey)?.lastInputTokens ?? null;
+    const td = done[1] ?? {};
+    process.stdout.write(JSON.stringify({ afterFirst, afterSecond, td2: { inputTokens: td.inputTokens ?? null, inputTokensTotal: td.inputTokensTotal ?? null, iterations: td.iterations ?? null }, calls }) + "\n");
+    process.exit(0);
+  }
   if (scenario === "pre-aborted") turnAc.abort(new UserCancelledError());
   if (scenario === "external-then-cancel") {
     // 외부 도구가 수집된 바로 그 순간에 사용자가 취소한다 — 정상 종료(stopAtToolNames)와 경합.

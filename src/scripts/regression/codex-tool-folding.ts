@@ -22,8 +22,10 @@ import {
   parseCodexSse,
   type ResponseInputItem,
 } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
-import { foldCodexTools, namespaceMatches, withRestoredToolSearch, type FoldEntry } from "../../core/llm-runtime/adapters/_codex-tool-folding.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { foldCodexTools, namespaceMatches, withoutToolSearch, withRestoredToolSearch, type FoldEntry } from "../../core/llm-runtime/adapters/_codex-tool-folding.js";
+import { assert, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
 import { readSourceSync, stripComments } from "./_wiring.js";
 
 const fn = (name: string): FoldEntry["tool"] => ({ type: "function", name, description: `${name} 설명`, parameters: { type: "object", properties: {} }, strict: false });
@@ -119,13 +121,92 @@ export const check: RegressionCheck = {
     // 배선 — 어댑터가 이 모듈을 그 자리에서 쓴다(기본 꺼짐 · 카탈로그 지원 · tool_search 조건 · 보낼 사본에서 복원 · 실행 검증)
     const a = stripComments(readSourceSync("src/core/llm-runtime/adapters/openai-codex-oauth.ts"));
     const w = {
-      gate: /process\.env\.CODEX_TOOL_SEARCH === "1" && catalogSupportsToolSearch\("codex", model\) === true/.test(a),
+      gate: /process\.env\.CODEX_TOOL_SEARCH !== "0" && catalogSupportsToolSearch\("codex", model\) === true/.test(a),
+      // 외부 MCP 서버 도구는 표식이 없어도 접는다(빈 힌트 = 설명엔 이름만) · read_past_tool_result 는 Codex 에서 펼친다(2026-10-18 결정).
+      externalFolded: /externalServerToolNames\.has\(tool\.name\) \? "" : null/.test(a),
+      // read_past_tool_result 를 따로 펼치는 예외가 없다 — Claude 와 같이 접힌다(2026-10-19 정태님).
+      recallSameAsClaude: !/tool\.name === "read_past_tool_result"/.test(a),
       searchToolOnlyWhenFolded: /\.\.\.\(toolFolding\.searchTool \? \[\{ type: "tool_search" as const \}\] : \[\]\)/.test(a),
-      restoreOnCopy: /withRestoredToolSearch\(inputArray, turnStart, toolFolding\.searchTool && !finalFlushRequested \? toolFolding\.namespaces : null\)/.test(a),
+      // 보낼 사본에서 — 도구 없는 요청(마무리)·접기 꺼짐이면 흔적 전부 빼기, 아니면 이력 복원.
+      restoreOnCopy: /finalFlushRequested \|\| !toolFolding\.searchTool\s*\?\s*withoutToolSearch\(inputArray\)\s*:\s*withRestoredToolSearch\(inputArray, turnStart, toolFolding\.namespaces\)/.test(a),
       execCheck: /!namespaceMatches\(tc\.namespace, bridge\.name\)/.test(a),
       fallbackKeepsNs: /\.\.\.\(tc\.namespace !== undefined \? \{ namespace: tc\.namespace \} : \{\}\)/.test(a),
     };
-    out.push(assert("배선 — 기본 꺼짐(CODEX_TOOL_SEARCH=1)·카탈로그 지원 모델만 · 접힌 것 있을 때만 tool_search · 보낼 사본에서 복원 · 실행 전 namespace 검증 · 재구성 호출도 namespace 보존",
+    // 외부 서버 묶음 — 설명엔 **이름만**(서버가 커질수록 설명이 정의만큼 커지면 접는 의미가 없다) · 정의는 전부 접힘.
+    const ext = foldCodexTools([
+      { tool: fn("read_wiki_structure"), server: "deepwiki", hint: "" },
+      { tool: fn("ask_wiki_question"), server: "deepwiki", hint: "" },
+      { tool: fn("Bash"), server: "file-ops", hint: null },
+    ], true);
+    const dw = ext.namespaces.get("deepwiki");
+    out.push(assert("외부 MCP 서버는 서버별 묶음으로 접힌다 — 설명엔 도구 이름만 · 정의는 접힘 · 표식 없는 우리 도구는 펼침",
+      dw?.description === "deepwiki: read_wiki_structure · ask_wiki_question" && dw.tools.every((t) => t.defer_loading === true) &&
+        ext.tools.some((t) => t.type === "function" && t.name === "Bash") && ext.searchTool,
+      { desc: dw?.description, flat: ext.tools.filter((t) => t.type === "function").map((t) => (t as { name: string }).name) }));
+    // ── 적대 검토(10-19) — 기본 켜짐이라 모든 Codex 턴에 닿는다 ─────────────────────────────────────────────
+    // 이름: 펼쳐 둔 **모든** 도구 이름·공급자 예약어와 겹치는 묶음은 접지 않는다(이름 모양 위반으로 펼친 외부 서버의 도구 `github` vs 서버 `github`).
+    const clash = foldCodexTools([
+      { tool: fn("github"), server: "my docs", hint: "" },
+      { tool: fn("gh_search"), server: "github", hint: "" },
+      { tool: fn("ws_tool"), server: "web_search", hint: "" },
+    ], true);
+    const clashKinds = clash.tools.map((t) => `${t.type}:${(t as { name: string }).name}`);
+    out.push(assert("이름 — 펼친 외부 도구 이름과 같은 서버·공급자 예약어(web_search) 서버는 접지 않는다(같은 이름이 둘 실리지 않게)",
+      !clash.namespaces.has("github") && !clash.namespaces.has("web_search") && new Set(clashKinds.map((k) => k.split(":")[1])).size === clashKinds.length,
+      clashKinds));
+    // 복원: 묶음은 있어도 그 도구가 이번엔 없으면 소속을 뗀다.
+    const nsNow = foldCodexTools([{ tool: fn("new_tool"), server: "deepwiki", hint: "" }], true).namespaces;
+    const restoredGone = withRestoredToolSearch([{ type: "function_call", name: "old_tool", namespace: "deepwiki" } as { type: string }], 1, nsNow) as Array<{ type: string; namespace?: string }>;
+    out.push(assert("복원 — 묶음에 그 도구가 이번엔 없으면 namespace 를 떼고 검색 항목을 만들지 않는다",
+      restoredGone.length === 1 && restoredGone[0]?.namespace === undefined, restoredGone));
+    const stripped = withoutToolSearch([
+      { type: "tool_search_call" }, { type: "tool_search_output" }, { type: "function_call", name: "x", namespace: "commands" } as { type: string },
+    ]) as Array<{ type: string; namespace?: string }>;
+    out.push(assert("도구 없는 요청용 사본 — 검색 항목을 빼고 namespace 를 뗀다(이 턴 구간 포함)",
+      stripped.length === 1 && stripped[0]?.namespace === undefined, stripped));
+    // 실행 — 실제 runOpenAiCodex(가짜 네트워크).
+    const child = path.join(path.dirname(fileURLToPath(import.meta.url)), "_codex-fold-child.ts");
+    const runChild = async (mode: string): Promise<{ text: string | null; err: string | null; shape: Array<{ tools: number; folded: boolean; traces: number }>; sizes?: number[] }> => {
+      const r = await spawnWithin(60_000, `codex-fold(${mode})`, ["--import", "tsx", child, mode], { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+      const line = r.out.trim().split("\n").filter((l) => l.startsWith("{")).pop();
+      return line === undefined ? { text: null, err: r.err.slice(-200), shape: [] } : JSON.parse(line);
+    };
+    const empty = await runChild("empty");
+    const flushReqs = empty.shape.filter((x) => x.tools === 0);
+    out.push(assert("★빈 응답 마무리 요청(tools: []) — 이 턴의 검색 항목·namespace 를 싣지 않는다(서버가 도구 없는 요청의 검색 항목을 거절)",
+      empty.shape[0]?.folded === true && flushReqs.length >= 1 && flushReqs.every((x) => x.traces === 0), empty));
+    const rej = await runChild("reject400");
+    out.push(assert("★접기 안전망 — 접힌 요청이 400 이면 이 턴은 접기를 끄고 한 번 다시 보내 답을 받는다(다른 어댑터로 넘기지 않는다)",
+      rej.err === null && rej.text === "끝" && rej.shape.length === 2 && rej.shape[0]?.folded === true && rej.shape[1]?.folded === false && rej.shape[1]?.traces === 0, rej));
+    const later = await runChild("reject400-later");
+    const afterReject = later.shape.slice(2); // 1=접힌 첫 요청 · 2=접힌 채 400 · 그 뒤 전부
+    out.push(assert("★접기 안전망 — 둘째 요청이 400 이어도 그 뒤 요청은 전부 펼친 채·흔적 없이(같은 턴의 다음 iteration 까지)",
+      later.err === null && later.text === "끝" && later.shape[1]?.folded === true && afterReject.length >= 2 && afterReject.every((x) => !x.folded && x.traces === 0), later));
+    const then503 = await runChild("reject400-then-503");
+    out.push(assert("접기 안전망의 재전송도 재시도 루프 안 — 재전송이 503 이면 재시도가 흡수해 답을 받는다",
+      then503.err === null && then503.text === "끝" && then503.shape.length === 3, then503));
+    const plain = await runChild("plain400");
+    out.push(assert("접히지 않은 요청의 400 은 다시 보내지 않는다(안전망은 접힌 요청에만)",
+      plain.err !== null && plain.shape.length === 1, plain));
+    // ★펼친 재전송은 접힌 본문보다 **크지 않다** — 그래서 입력 상한(iteration 0, 본문 글자 수)을 다시 볼 필요가 없다(아스트라 10-19 Q2 를 성질로 닫음).
+    //  접힌 묶음은 정의 전체를 복사해 `defer_loading`·감싸개·검색 도구를 **더하고**, 펼칠 때 입력은 검색 흔적을 **빼기만** 한다(`withoutToolSearch`).
+    //  접기가 정의를 덜 싣게 바뀌는 날 이 단언이 빨개진다 — 그때 펼친 재전송에 상한 검사를 붙여라.
+    out.push(assert("★접기 안전망 — 펼친 재전송 본문 ≤ 접힌 본문(그래서 상한을 통과한 접힌 요청의 펼친 재전송은 상한을 넘을 수 없다)",
+      rej.sizes !== undefined && rej.sizes.length === 2 && rej.sizes[1]! <= rej.sizes[0]!, rej.sizes));
+    // 연쇄 충돌 — 한 서버를 펼치면 그 도구 이름이 다른 묶음과 또 겹친다(반복이 한 번이면 둘이 실린다).
+    const chain = foldCodexTools([
+      { tool: fn("alpha"), server: "x y", hint: "" },
+      { tool: fn("beta"), server: "alpha", hint: "" },
+      { tool: fn("gamma"), server: "beta", hint: "" },
+      { tool: fn("delta"), server: "Web_Search", hint: "" },
+    ], true);
+    const chainNames = chain.tools.map((t) => (t as { name: string }).name);
+    out.push(assert("연쇄 충돌·대소문자 예약어 — 펼친 이름과 겹치는 묶음이 사슬로 이어져도 같은 이름이 둘 실리지 않는다 · Web_Search 도 예약어",
+      new Set(chainNames).size === chainNames.length && !chain.namespaces.has("beta") && !chain.namespaces.has("Web_Search"), chainNames));
+    const extRun = await runChild("external") as Awaited<ReturnType<typeof runChild>> & { external?: { folded: boolean; flat: boolean } };
+    out.push(assert("★외부 MCP 서버(실제 HTTP, mcp.json) — 그 도구는 표식이 없어도 서버 이름 묶음으로 접혀 실린다(펼친 채로는 안 실린다)",
+      extRun.external?.folded === true && extRun.external.flat === false && extRun.text === "끝", extRun.external ?? extRun));
+    out.push(assert("배선 — 기본 켜짐(CODEX_TOOL_SEARCH=0 이면 끔)·카탈로그 지원 모델만 · 외부 서버 접기 · read_past_tool_result 는 Claude 와 같이 접힘 · 접힌 것 있을 때만 tool_search · 보낼 사본에서 복원 · 실행 전 namespace 검증 · 재구성 호출도 namespace 보존",
       Object.values(w).every(Boolean), w));
     return out;
   },

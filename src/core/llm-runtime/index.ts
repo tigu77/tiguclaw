@@ -829,12 +829,25 @@ process.on("exit", () => {
   if (rollupTurns > 0) flushPrefixCacheRollup(Date.now());
 });
 
+/**
+ * 세션에 저장할 «현재 컨텍스트» 값 — usage 미캡처면 undefined(기존값 보존) · 마지막 호출을 모르면 null(비움) · 아니면 마지막 호출 값.
+ * ★두 저장 자리가 같은 규칙을 쓰게 한 곳에 둔다.
+ */
+const currentUsage = (output: RegionASdkOutput): { input: number | null | undefined; output: number | null | undefined } =>
+  output.usage === undefined
+    ? { input: undefined, output: undefined }
+    : output.usage.lastCallUnknown === true
+      ? { input: null, output: null }
+      : { input: output.usage.inputTokens, output: output.usage.outputTokens };
+
 const warnIfPrefixCacheCold = (
   spec: ModelSpec,
   input: RegionASdkInput,
   output: RegionASdkOutput,
 ): void => {
   // 턴-내 재사용이 섞이지 않도록 **호출 단위** 값으로 본다(Total 은 iteration 합계).
+  // 마지막 호출을 모르면 판정하지 않는다(그 값은 마지막 호출이 아니다 — `lastCallUnknown`).
+  if (output.usage?.lastCallUnknown === true) return;
   const inputTokens = output.usage?.inputTokens;
   const cached = output.usage?.cachedTokens;
   if (!isPrefixCacheCold({ inputTokens, cachedTokens: cached })) {
@@ -925,13 +938,14 @@ export const publishTurnDone = (
         ? { requestUsageEntries: output.usage.requestUsageEntries }
         : {}),
       ...(output.timing !== undefined ? { timing: output.timing } : {}),
-      ...(output.usage?.inputTokens !== undefined
+      // 마지막 호출 값 — 관측했다고 증명할 수 없으면(`lastCallUnknown`) 싣지 않는다(«거짓값 금지 — 못 얻으면 생략», 2026-10-19 아스트라 인계).
+      ...(output.usage?.inputTokens !== undefined && output.usage.lastCallUnknown !== true
         ? { inputTokens: output.usage.inputTokens }
         : {}),
-      ...(output.usage?.outputTokens !== undefined
+      ...(output.usage?.outputTokens !== undefined && output.usage.lastCallUnknown !== true
         ? { outputTokens: output.usage.outputTokens }
         : {}),
-      ...(output.usage?.cachedTokens !== undefined
+      ...(output.usage?.cachedTokens !== undefined && output.usage.lastCallUnknown !== true
         ? { cachedTokens: output.usage.cachedTokens }
         : {}),
       ...(output.usage?.iterations !== undefined
@@ -1477,8 +1491,9 @@ const persistOutput = (
         model: output.model ?? null,
         systemPromptHash: output.systemPromptHash ?? null,
         // /status 개편 — usage 미캡처 시 undefined → store NULL-clobber 가드로 기존값 보존.
-        lastInputTokens: output.usage?.inputTokens,
-        lastOutputTokens: output.usage?.outputTokens,
+        // ★마지막 호출을 모르면 null 로 **비운다** — 보존하면 지난 턴의 숫자가 이번 턴의 현재 컨텍스트처럼 남는다(2026-10-19 아스트라 인계).
+        lastInputTokens: currentUsage(output).input,
+        lastOutputTokens: currentUsage(output).output,
       });
     } catch (e) {
       console.error("llm-runtime: saveSession failed:", e);
@@ -1511,9 +1526,9 @@ const persistOutput = (
         model: output.model ?? null,
         systemPromptHash: output.systemPromptHash ?? null,
         preserveSessionId: true,
-        // /status 개편 — codex(preserve) 경로도 usage 전달. 미캡처 시 undefined → 보존.
-        lastInputTokens: output.usage?.inputTokens,
-        lastOutputTokens: output.usage?.outputTokens,
+        // /status 개편 — codex(preserve) 경로도 usage 전달. 미캡처 시 undefined → 보존 · 마지막 호출을 모르면 null(위와 같다).
+        lastInputTokens: currentUsage(output).input,
+        lastOutputTokens: currentUsage(output).output,
       });
     } catch (e) {
       console.error("llm-runtime: saveSession failed:", e);

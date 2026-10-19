@@ -424,6 +424,12 @@ export interface RegionASdkOutput {
     cachedTokensTotal?: number;
     /** 요청 경계가 확인된 원본 관측분. 누적값을 요청 한 건으로 변환하지 않는다. */
     requestUsageEntries?: RequestUsageEntry[];
+    /**
+     * **마지막 호출의 사용량을 관측했다고 증명할 수 없다** (2026-10-19, 아스트라 인계). 그러면 위 `inputTokens`·`outputTokens`·`cachedTokens` 는
+     * 마지막 호출 값이 아니다(마지막으로 **관측한** 요청이거나 합계) — «현재 컨텍스트» 로 쓰지 마라. 소비처(세션 저장·턴 기록·캐시 경고)는 이 표시를 본다.
+     * 합계(`*Total`)와 요청별 원장은 그대로 유효하다(못 받은 요청이 있으면 `unreportedRequests` 만큼 하한이다).
+     */
+    lastCallUnknown?: true;
   };
   /**
    * 신규 (additive) — 세션 모델 override(opts.specs 단일 spec)가 런타임에 거부되어

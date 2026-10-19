@@ -2037,6 +2037,13 @@ const runSupervise = (c) => {
         return;
       }
     }
+    // ★업데이트가 데몬을 멈춰 둔 중이면 띄우지 않는다(위 `activeUpdateLock` — 예약작업을 못 꺼서 트리거가 우리를 띄운 경우다).
+    const lock = activeUpdateLock(c);
+    if (lock !== null) {
+      log(`supervisor: update in progress (pid ${lock.pid}) — not starting the daemon; the update starts it when done.`);
+      process.exit(0);
+      return;
+    }
     log(`supervisor started — label=${c.label}`);
     spawnOnce();
   };
@@ -2169,6 +2176,29 @@ const isRegistered = (c) => {
 // 사용자 확정 순서(회사 인스턴스 EPERM 실사고 대응): 돌고 있는 데몬이 있으면 먼저 stop →
 //   npm ci → build → start. 안 그러면 Windows 에서 실행 중 데몬이 better_sqlite3.node 를
 //   잠가 npm ci 가 EPERM 으로 또 실패한다. runSelfUpdate(src/core/self-update.ts) 정신 + stop-first.
+/**
+ * **«업데이트 중» 표식** (2026-10-19 윈도우돌쇠 실측) — 업데이트가 데몬을 멈춘 동안 **감독자가 데몬을 띄우지 않게** 하는 자리.
+ *
+ * ★왜 예약작업 끄기에 기대지 않나: 데몬이 띄운 업데이트 CLI 는 제한 권한이라 예약작업을 못 끈다(`schtasks /disable` → «Access is denied»,
+ *  PowerShell 도 실패 — 실측). 그래서 정지 뒤에도 1분 반복 트리거가 감독자를 되살렸고, 되살아난 데몬이 네이티브 모듈을 잡아 npm ci 가 EPERM
+ *  이거나 빌드 전 옛 판이 남았다. 권한·등록 방식과 무관하게 닫히는 곳은 **감독자 자신**이다 — 뜰 때 이 표식을 보면 아무것도 안 띄우고 끝낸다.
+ * 표식 = `{pid, ts}`. 그 pid 가 살아 있고 1시간이 안 됐을 때만 유효하다(업데이트가 죽어 표식이 남아도 영구히 막지 않는다).
+ */
+export const UPDATE_LOCK_MAX_AGE_MS = 60 * 60 * 1000;
+/** @param {Ctx} c */
+export const updateLockPath = (c) => path.join(c.homeAbs, ".update-in-progress");
+/** @param {Ctx} c @param {number} [now] @returns {{ pid: number } | null} 유효한 표식(없거나 낡았으면 null). */
+export const activeUpdateLock = (c, now = Date.now()) => {
+  try {
+    const o = JSON.parse(readFileSync(updateLockPath(c), "utf8"));
+    if (typeof o?.pid !== "number" || typeof o?.ts !== "number" || now - o.ts > UPDATE_LOCK_MAX_AGE_MS) return null;
+    process.kill(o.pid, 0); // 살아 있나(신호는 안 보낸다) — 죽었으면 던진다
+    return { pid: o.pid };
+  } catch {
+    return null;
+  }
+};
+
 /** @param {Ctx} c */
 const runUpdate = (c) => {
   const isWin = process.platform === "win32";
@@ -2331,6 +2361,7 @@ const runUpdate = (c) => {
       }
     }
     writeFailedMarker(stage, detail, outcome);
+    rmSync(updateLockPath(c), { force: true });
     if (delegated && opts.restart !== false && isDaemonRunning(c)) table?.restart?.(c);
     process.exitCode = 1;
   };
@@ -2390,6 +2421,7 @@ const runUpdate = (c) => {
    *  누가 되살렸는지와 무관하게 다시 띄워야 지금 디스크의 판이 올라온다(성공·롤백 둘 다 같다).
    */
   const resumeDaemon = () => {
+    rmSync(updateLockPath(c), { force: true }); // 표식을 지워야 감독자가 데몬을 띄운다
     if (isDaemonRunning(c)) {
       console.warn("   ⚠ The daemon came back while the update was running (before the new build) — restarting it so the current build loads.");
       table?.restart?.(c);
@@ -2432,6 +2464,13 @@ const runUpdate = (c) => {
   };
 
   // ── 단계 5: (돌고 있으면) 데몬 정지 — npm ci 전에 네이티브 모듈 락 해제(EPERM 방지) ──
+  // «업데이트 중» 표식 — 멈춘 사이 무엇이 감독자를 띄워도 데몬은 안 뜬다(`activeUpdateLock`). 재가동 직전·중단·종료 때 지운다.
+  try {
+    writeFileSync(updateLockPath(c), JSON.stringify({ pid: process.pid, ts: Date.now() }));
+    process.on("exit", () => rmSync(updateLockPath(c), { force: true }));
+  } catch (e) {
+    console.warn(`   ⚠ could not write the update-in-progress marker: ${e instanceof Error ? e.message : String(e)}`);
+  }
   if (wasRunning) {
     console.log("   Stopping the daemon for npm ci (brief downtime).");
     // ★멈추지 못했으면 **설치 전에** 그만둔다 (2026-10-08 외부 검토 F2). 종전엔 반환을 안 봐서, Windows 에서 데몬이 살아 있는

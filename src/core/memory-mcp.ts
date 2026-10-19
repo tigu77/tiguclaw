@@ -133,13 +133,35 @@ const searchConversationsTool = tool(
     "「언제 ~라고 했지?」·「그때 뭐라고 답했더라?」·「전에 이 얘기 한 적 있나?」에 쓰는 " +
     "도구. 부분일치라 조사·어미가 붙어도 찾습니다. 반환 = 시각·세션·발화자·일치 주변 조각 " +
     "+ 전체 일치 수(목록엔 상한이 있으니 잘렸는지 알 수 있습니다). " +
+    "`id`(메시지 번호)와 `threadKey` 를 주면 검색 대신 **그 메시지 전문**을 돌려줍니다(길면 `offset` 으로 이어 읽기) — 답글 인용이 줄었을 때 그 안내대로 씁니다. " +
     "★대화 기록을 찾을 땐 파일 검색이나 DB 접근을 직접 하지 말고 이 도구를 쓰세요.",
   {
-    query: z.string().min(1),
+    query: z.string().min(1).optional(),
     limit: z.number().int().min(1).max(50).optional(),
     threadKey: z.string().optional(),
+    id: z.number().int().min(1).optional().describe("메시지 번호(답글 인용에 적힌 #번호). 주면 query 없이 그 메시지 전문을 읽는다(threadKey 필수)."),
+    offset: z.number().int().min(0).optional().describe("id 와 함께 — 이 글자 위치부터 이어 읽는다(앞 응답의 nextOffset)."),
   },
   async (args) => {
+    // ★한 메시지 전문 읽기 (2026-10-19) — 답글 인용은 길면 가운데를 줄인다. 잘려서 무엇에 대한 말인지 모를 때 비서가 찾아서 이해하게.
+    //  새 도구 대신 여기 붙였다 — «지난 대화에서 그 말» 을 읽는 같은 질문이다(도구 둘이면 비서가 어느 쪽인지 고민한다).
+    if (args.id !== undefined) {
+      if (args.threadKey === undefined) return okJson({ ok: false, error: "threadKey_required", detail: "id 로 읽을 땐 threadKey 가 필요합니다." });
+      const { chatMessageById } = await import("../store/chat-log.js");
+      const m = chatMessageById(args.threadKey, args.id);
+      // 다른 대화의 행이면 없는 것으로 — 전역 번호 하나로 대화 범위를 넘지 않는다.
+      if (m === undefined) return okJson({ ok: false, error: "not_found", detail: "그 대화에 그 번호의 메시지가 없습니다." });
+      const cap = 20_000;
+      const from = Math.min(args.offset ?? 0, m.text.length);
+      const part = m.text.slice(from, from + cap);
+      const next = from + part.length;
+      return okJson({
+        ok: true,
+        message: { id: m.id, at: new Date(m.ts).toISOString(), threadKey: m.threadKey, role: m.role, length: m.text.length, offset: from, text: part,
+          ...(next < m.text.length ? { nextOffset: next } : {}) },
+      });
+    }
+    if (args.query === undefined) return okJson({ ok: false, error: "query_required", detail: "query 또는 id 를 주세요." });
     const r = await searchConversations(args.query, {
       limit: args.limit ?? 20,
       ...(args.threadKey !== undefined ? { threadKey: args.threadKey } : {}),

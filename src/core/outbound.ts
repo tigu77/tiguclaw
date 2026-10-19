@@ -17,6 +17,7 @@ import type { EventBus } from "./eventbus.js";
 import type { IncomingMessage } from "../channels/types.js";
 import { getEventBus } from "./eventbus.js";
 import { recordOutboundMessage } from "../store/outbound-messages.js";
+import { channelRefsField } from "./event-persist.js";
 import { notifySessionThreadKey } from "../store/sessions.js";
 import { checkWidgetAttachments } from "./widget-attachment.js";
 import {
@@ -105,6 +106,8 @@ const publishOut = (
   notice: boolean,
   copy = false,
   attachments?: readonly unknown[],
+  /** 실제로 보낸 채널 메시지 id — 적재가 이 행에 묶는다(사본은 적재 안 하므로 안 싣는다). */
+  sentRef?: { address: string; messageIds: readonly (string | number)[] },
 ): void => {
   try {
     bus.publish({
@@ -122,6 +125,7 @@ const publishOut = (
         ...(copy ? { copyOfRecorded: true } : {}),
         // 관측 전용 — 물리 발송 경로엔 안 간다(위 주석).
         ...(attachments !== undefined && attachments.length > 0 ? { attachments } : {}),
+        ...(copy ? {} : channelRefsField(channel, sentRef)),
       },
     });
   } catch {
@@ -307,6 +311,7 @@ export const deliverOutbound = async (
       input.notice === true,
       input.copyOfRecorded === true,
       verdict.kept,
+      resolved !== null && sentIds.length > 0 ? { address: resolved, messageIds: sentIds } : undefined,
     );
   }
   return {

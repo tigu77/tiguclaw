@@ -65,7 +65,7 @@ export const check: RegressionCheck = {
             if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
             // 스케줄 이력 정책(2026-09-26) — 이 검사의 행은 keepRuns 가 없어 아무것도 안 한다.
             if (name.endsWith("/store/sessions.js")) return { canonicalSessionChannel: (_tk: string, ch: string) => ch };
-            if (name.endsWith("/thread-reset.js")) return { applyScheduleHistory: () => null };
+            if (name.endsWith("/thread-reset.js")) return { applyRunHistory: () => null };
             // 스케줄 목적지로 묶는 선택지·파일 통로(2026-10-01) — 이 검사는 중단 통지만 본다. 통로는 «없음».
             if (name.endsWith("/core/outbound.js")) return { optionsPresenterFor: () => undefined, attachmentSenderFor: () => undefined };
             if (name === "./dispatcher.js") return { dispatch: async (value: any) => { dispatches.push(value); } };

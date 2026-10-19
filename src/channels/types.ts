@@ -72,6 +72,21 @@ export type TurnOrigin =
   | "fork-carry"
   | "unknown";
 
+/**
+ * 답글 대상 메시지 — `IncomingMessage.replyToRef`. `id` = **대화 기록 행 id**(`chat_log.id`) — 채널 메시지 id 가 아니다
+ *  (텔레그램 message_id 는 채널 플러그인이 `chatIdForChannelMessage` 로 바꿔서 싣는다). 못 바꾸면 싣지 않는다(인용만).
+ */
+export interface ReplyRef {
+  id: number;
+  role?: "user" | "assistant";
+}
+
+/** 채널이 실제로 보낸·받은 메시지 id(여러 청크면 전부) — 대화 기록 행에 묶어 답글 원문을 정확히 짚는 재료. */
+export interface ChannelMessageRef {
+  address: string;
+  messageIds: readonly (string | number)[];
+}
+
 export interface IncomingMessage {
   /** 턴 출처 — 진단용(위 `TurnOrigin`, `fork-carry` 만 끼워넣기 차단에 쓰인다). 미지정은 라우터가 기본값을 정한다. */
   turnOrigin?: TurnOrigin;
@@ -146,6 +161,13 @@ export interface IncomingMessage {
    * (cli·http-bridge). additive — 회귀 0.
    */
   replyToText?: string;
+  /**
+   * 답글 대상 메시지가 **어느 행인지**(2026-10-19) — 인용이 길어 가운데를 줄였을 때 비서가 그 전문을 `search_conversations(id)` 로
+   * 정확히 다시 읽는 재료. 채널이 대화 기록 행 id 로 바꿀 수 있을 때만 싣는다(시각으로 «가까운 메시지» 를 고르지 않는다).
+   */
+  replyToRef?: ReplyRef;
+  /** 이 인입 메시지의 채널 메시지 id(텔레그램 message_id 등) — 대화 기록 행에 묶여, 나중에 이 메시지에 단 답글이 원문을 짚는다. */
+  channelMessageRef?: ChannelMessageRef;
   /** 신규 additive — 미지정/빈 배열 = 현행 text-only 경로 (회귀 0). */
   attachments?: Attachment[];
   /**
@@ -166,7 +188,8 @@ export interface IncomingMessage {
    */
   correlationId?: string;
   receivedAt: number;
-  reply: (text: string, opts?: ReplyOptions) => Promise<void>;
+  /** 반환(선택) = 실제로 보낸 채널 메시지 id — 핸들러가 송신 이벤트에 실어 대화 기록 행에 묶는다(없는 채널은 void). */
+  reply: (text: string, opts?: ReplyOptions) => Promise<void | ChannelMessageRef>;
   /** 아웃바운드 첨부 전송 — 채널이 지원하면 구현(telegram), 미지원이면 undefined.
    *  멱등은 호출자(send_file 도구)가 per-turn dedup 으로 보장. 채널은 1회 전송만 담당.
    *  ★`unavailable: true` = **이 턴에선 원래 불가**(재시도 무의미) — 예: 매니저 완료·점검 재주입 턴. 도구는

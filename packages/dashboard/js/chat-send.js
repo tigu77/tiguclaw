@@ -162,13 +162,13 @@
         // 응답도 따라가게 한다(stickBottom 재활성). 요구: "메시지 보내면 자동으로 끝까지 스크롤".
         stickBottom = true;
         scrollChatToNewest();
-        // 답글 인용 — 특정 메시지에 답글 중이면 그 원문을 replyToText 로 실어 전송 후 칩 비움.
-        const replyToText = replyingTo ? replyingTo.text : undefined;
+        // 답글 인용 — 특정 메시지에 답글 중이면 그 원문·좌표를 실어 전송 후 칩 비움.
+        const reply = replyingTo ? { ...replyingTo } : undefined;
         clearReply();
         // 공용 전송 — "작업 중…" 표시 + 긴 턴 가짜 timeout 방지(답은 SSE). 비차단: 매니저
         // 발사 등을 기다리며 입력을 막지 않는다(전송 버튼 상시 활성 — 이어서 말 걸 수 있게).
         repaintComposer(); // 입력창을 비웠다 — 턴이 돌기 시작하면 이 버튼이 정지가 된다.
-        const sent = await sendChatMessage(text, atts, replyToText);
+        const sent = await sendChatMessage(text, atts, reply);
         // ★**못 보냈으면 첨부를 되돌린다** (2026-09-15 아스트라 지적). 큐를 전송 전에 비우는
         //  건 «전송 중에도 새 첨부를 받으려고» 다(다음 메시지로). 그런데 서버가 거절하면
         //  붙인 파일이 **그냥 사라졌다** — 사용자는 다시 끌어다 놔야 하는 줄도 모른다.

@@ -104,14 +104,15 @@ interface ChatLogRow {
  * boundary: 내부 try/catch 로 best-effort — DB write 실패(디스크 가득 등)가 호출자(턴/
  * 메시지 처리)를 절대 안 깨게 한다(1차 안전망, 데몬 생존 우선). 실패는 console.error 만.
  */
-export const recordChatMessage = (row: ChatLogEntry): void => {
+/** 적재한 행의 id(못 남겼으면 undefined) — 채널 메시지 → 행 매핑(`bindChannelMessages`)의 재료. */
+export const recordChatMessage = (row: ChatLogEntry): number | undefined => {
   const hasAtt = row.attachments !== undefined && row.attachments.length > 0;
   const hasKind = typeof row.kind === "string" && row.kind !== "";
   // 빈 text·첨부無 = 무의미 로그 스킵. 단 **대화 가시 이벤트(kind)는 통과** — 선택지처럼
   // 본문이 payload 에 있고 text 는 빈 것이 정상인 종류가 있다(이미지-only 메시지와 동형).
-  if (row.text === "" && !hasAtt && !hasKind) return;
+  if (row.text === "" && !hasAtt && !hasKind) return undefined;
   try {
-    getDb()
+    const r = getDb()
       .prepare(
         `INSERT INTO chat_log (ts, thread_key, channel, role, text, attachments, notice, model, kind, data, reasoning, spend, turn)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -131,9 +132,74 @@ export const recordChatMessage = (row: ChatLogEntry): void => {
         row.spend !== undefined ? JSON.stringify(row.spend) : null,
         row.turn !== undefined ? JSON.stringify(row.turn) : null,
       );
+    return Number(r.lastInsertRowid);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[chat-log] recordChatMessage failed (best-effort): ${msg}`);
+    return undefined;
+  }
+};
+
+/** 채널 메시지 → 대화 기록 행 매핑 보관 상한(행). 답글은 대개 최근 메시지에 단다 — 넘으면 오래된 것부터(편의 색인이지 보존 레코드가 아니다). */
+export const CHAT_MESSAGE_REF_MAX_ROWS = 20_000;
+
+/**
+ * 채널이 준 메시지 id(여러 청크면 전부)를 그 대화 기록 행에 묶는다 — 어느 청크에 답글을 달아도 같은 원문을 가리킨다.
+ *  실패는 삼킨다(배달·적재는 이미 끝났다 — 이건 답글 원문 조회의 재료일 뿐이다).
+ */
+export const bindChannelMessages = (channel: string, address: string, messageIds: readonly (string | number)[], chatId: number, ts: number): void => {
+  const ch = channel.trim();
+  const addr = address.trim();
+  if (ch === "" || addr === "" || messageIds.length === 0 || !Number.isInteger(chatId)) return;
+  try {
+    const handle = getDb();
+    handle.transaction(() => {
+      const ins = handle.prepare(
+        `INSERT INTO chat_message_refs (channel, channel_address, message_id, chat_id, ts) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(channel, channel_address, message_id) DO UPDATE SET chat_id = excluded.chat_id, ts = excluded.ts`,
+      );
+      for (const id of messageIds) {
+        const mid = String(id).trim();
+        if (mid !== "") ins.run(ch, addr, mid, chatId, ts);
+      }
+      handle.prepare(
+        `DELETE FROM chat_message_refs WHERE rowid NOT IN (SELECT rowid FROM chat_message_refs ORDER BY ts DESC, rowid DESC LIMIT ?)`,
+      ).run(CHAT_MESSAGE_REF_MAX_ROWS);
+    })();
+  } catch (err) {
+    console.error(`[chat-log] bindChannelMessages failed (best-effort): ${err instanceof Error ? err.message : String(err)}`);
+  }
+};
+
+/**
+ * 채널 메시지 → 대화 기록 행 id(매핑이 없으면 undefined — 옛 메시지·매핑 이전·egress 사본).
+ * ★던지지 않는다(적대 검토 10-19 P2) — 텔레그램 핸들러가 라우팅보다 **앞에서** 부른다. 여기서 던지면 답장 메시지 자체가 polling 오류 한 줄로
+ *  조용히 유실된다. 실패는 로그로 남기고 «매핑 없음» 과 같게(인용만 간다) — 형제 `findSessionForOutboundMessage` 와 같은 규칙.
+ */
+export const chatIdForChannelMessage = (channel: string, address: string, messageId: string | number): number | undefined => {
+  try {
+    const r = getDb()
+      .prepare(`SELECT chat_id FROM chat_message_refs WHERE channel = ? AND channel_address = ? AND message_id = ?`)
+      .get(channel.trim(), address.trim(), String(messageId).trim()) as { chat_id: number } | undefined;
+    return r?.chat_id;
+  } catch (e) {
+    console.warn(`[chat-log] 채널 메시지 → 대화 기록 조회 실패 — 답글은 인용만 갑니다: ${e instanceof Error ? e.message : String(e)} (${channel}:${address}:${messageId})`);
+    return undefined;
+  }
+};
+
+/**
+ * 답글 대상 행 id — **그 턴의 대화에서 실제로 읽히는 행일 때만**(2026-10-19 적대 검토 P2). 답장 라우팅이 고른 세션과 원문 행의 대화가 다르면
+ *  (내 메시지에 답장 · 답장 매핑만 밀려남 · `tg:` 대화의 통지) 인용 안내가 가리키는 좌표가 not_found 가 된다 — 그러면 싣지 않는다(인용만).
+ *  던지지 않는다(위와 같은 이유).
+ */
+export const replyTargetInThread = (threadKey: string, id: number | undefined): number | undefined => {
+  if (id === undefined) return undefined;
+  try {
+    return chatMessageById(threadKey, id) !== undefined ? id : undefined;
+  } catch (e) {
+    console.warn(`[chat-log] 답글 대상 확인 실패 — 인용만 갑니다: ${e instanceof Error ? e.message : String(e)} (thread=${threadKey} id=${id})`);
+    return undefined;
   }
 };
 
@@ -549,6 +615,44 @@ export const listChatPeriods = (
     firstTs: r.first_ts,
     lastTs: r.last_ts,
   }));
+};
+
+/** 그 대화의 화면 범위(가지면 조상 구간 포함) — 검색과 같은 규칙. */
+const screenScope = (threadKey: string): { sql: string; params: unknown[] } => {
+  const segs = chatScreenSegments(threadKey);
+  const params: unknown[] = [];
+  for (const g of segs) params.push(g.key, ...(g.maxId === null ? [] : [g.maxId]));
+  return { sql: segs.map((g) => (g.maxId === null ? `thread_key = ?` : `(thread_key = ? AND id <= ?)`)).join(" OR "), params };
+};
+
+/**
+ * **대화 기록 행 하나를 id 로** — 답글 대상 원문을 통째로 다시 읽는 자리(2026-10-19). 그 대화의 화면 범위에 속할 때만 돌려준다 —
+ *  전역 id 하나로 다른 대화를 읽지 않게. ★시각으로 «가까운 메시지» 를 고르지 않는다(가까운 다른 말을 원문으로 돌려줄 수 있다).
+ */
+export const chatMessageById = (
+  threadKey: string,
+  id: number,
+): { id: number; ts: number; threadKey: string; role: ChatRole; text: string } | undefined => {
+  if (!Number.isInteger(id)) return undefined;
+  const scope = screenScope(threadKey);
+  const row = getDb()
+    .prepare(`SELECT id, ts, thread_key, role, text FROM chat_log WHERE id = ? AND (${scope.sql})`)
+    .get(id, ...scope.params) as { id: number; ts: number; thread_key: string; role: string; text: string } | undefined;
+  if (row === undefined) return undefined;
+  return { id: row.id, ts: row.ts, threadKey: row.thread_key, role: row.role === "assistant" ? "assistant" : "user", text: row.text };
+};
+
+/**
+ * 말풍선 시각(대화 기록과 **같은** 이벤트 시각) → 행 id — **정확히 같은 시각·같은 발화자가 한 건일 때만**. 아직 이력에서 id 를
+ *  못 받은 실시간 말풍선용이다. 둘 이상이거나 없으면 undefined(추측하지 않는다 — 인용만 간다).
+ */
+export const chatIdAtExactTs = (threadKey: string, ts: number, role?: ChatRole): number | undefined => {
+  if (!Number.isFinite(ts)) return undefined;
+  const scope = screenScope(threadKey);
+  const rows = getDb()
+    .prepare(`SELECT id FROM chat_log WHERE ts = ? AND (${scope.sql})${role !== undefined ? " AND role = ?" : ""} LIMIT 2`)
+    .all(ts, ...scope.params, ...(role !== undefined ? [role] : [])) as Array<{ id: number }>;
+  return rows.length === 1 ? rows[0]!.id : undefined;
 };
 
 export const searchChatLog = (

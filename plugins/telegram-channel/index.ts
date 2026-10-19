@@ -6,6 +6,7 @@ import type {
   Attachment,
   AttachmentKind,
   Channel,
+  ChannelMessageRef,
   IncomingMessage,
   MessageHandler,
   ReplyOptions,
@@ -19,6 +20,7 @@ import { resolveSessionId } from "../../src/core/threadkey.js";
 import { resolveReplyRouting } from "./reply-routing.js";
 import { getMostRecentTelegramChatId, getThreadName } from "../../src/store/sessions.js";
 import { recordOutboundMessage } from "../../src/store/outbound-messages.js";
+import { chatIdForChannelMessage, replyTargetInThread } from "../../src/store/chat-log.js";
 import { egressSourcePrefix } from "../../src/core/egress-targets.js";
 import { deliverDocument, sendDocumentTo } from "./send-document.js";
 import { ownerCandidateRoutes, recordBlockedSender } from "./owner-candidates.js";
@@ -398,7 +400,7 @@ export const replyAndRecord = async (
     repliedSession?: string | null;
     replyToMessageId?: number;
   },
-): Promise<void> => {
+): Promise<ChannelMessageRef> => {
   // ★라벨 합성을 **이 안**에 둔다 (2026-09-04). 호출부에서 `prefix + out` 로 만들면
   //  «계산해놓고 안 붙이는» 변이가 조용히 통과한다(실측: 그 변이로 2,810건이 전부 초록).
   //  여기 있으면 스텁 send 로 **붙는 것 자체를 잰다**.
@@ -412,13 +414,15 @@ export const replyAndRecord = async (
     const now = Date.now();
     for (const id of ids) recordOutboundMessage("telegram", chatId, id, sessionId, now);
   };
-  bind(
-    await sendFormatted(send, prefix + out, {
+  // 보낸 id 를 돌려준다 — 핸들러가 송신 이벤트에 실어 대화 기록 행에 묶는다(답글 원문을 정확히 짚는 재료, 2026-10-19).
+  //  늦게 간 청크(onLateIds)는 이벤트 뒤라 행에 못 묶는다 — 그 청크에 단 답글은 인용만 간다.
+  const sentIds = await sendFormatted(send, prefix + out, {
       chatKey: chatId,
       onLateIds: bind,
       ...(opts?.replyToMessageId !== undefined ? { replyToMessageId: opts.replyToMessageId } : {}),
-    }),
-  );
+    });
+  bind(sentIds);
+  return { address: chatId, messageIds: sentIds };
 };
 
 // ─── 축1 선택지(inline keyboard) callback_data 맵 ─────────────────────────
@@ -912,6 +916,12 @@ export default class TelegramChannel implements Channel {
         ""
       ).trim();
       const replyToText = repliedRaw.length === 0 ? undefined : repliedRaw;
+      // 답글 대상(2026-10-19) — 원글 message_id 를 **대화 기록 행 id** 로 바꿔 싣는다(대화 기록을 쓸 때 묶어 둔 매핑).
+      //  매핑이 없으면(옛 메시지·늦게 간 청크·egress 사본) 싣지 않는다 — 인용만 간다. 시각으로 «가까운 메시지» 를 고르지 않는다.
+      //  ★좌표는 아래 라우팅이 세션을 정한 **뒤**, 그 세션에서 실제로 읽히는 행일 때만 싣는다(replyTargetInThread).
+      const repliedMsg = ctx.message.reply_to_message;
+      const repliedChatId =
+        replyToText !== undefined && repliedMsg !== undefined ? chatIdForChannelMessage("telegram", String(ctx.chat.id), repliedMsg.message_id) : undefined;
       // 채널/세션 분리(ADR 2026-07-15) — 텔레그램은 세션 셀렉터 없음 → 기본 세션(DEFAULT).
       // chatId 는 세션 정체성이 아니라 **배달 좌표**(channelAddress)로만 운반한다. resolveSessionId
       // 로 sessionId 를 구해 threadKey 에 세팅(직렬 큐/`/stop` 정합)하고, session 을 실어 route 가
@@ -937,6 +947,11 @@ export default class TelegramChannel implements Channel {
         boundSession,
         "text",
       );
+      const targetId = replyTargetInThread(sessionId, repliedChatId);
+      const replyToRef =
+        targetId !== undefined
+          ? { id: targetId, role: repliedMsg?.from?.is_bot === true ? ("assistant" as const) : ("user" as const) }
+          : undefined;
       // ★답장으로 세션이 갈렸으면 **답에 그 세션을 적는다** (2026-09-04 정태님 신고:
       //  "답글로 보냈을 때 응답에 세션 이름이 안 붙더라"). 합성은 `replyAndRecord` 안에
       //  있고 판정은 core 의 `egressSourcePrefix` 하나다 — 기본 세션이면 "" 라서 평소
@@ -955,9 +970,12 @@ export default class TelegramChannel implements Channel {
         },
         text,
         ...(replyToText !== undefined ? { replyToText } : {}),
+        ...(replyToRef !== undefined ? { replyToRef } : {}),
+        // 이 메시지의 텔레그램 id — 대화 기록 행에 묶여, 나중에 이 메시지에 단 답글이 원문을 짚는다.
+        channelMessageRef: { address: chatId, messageIds: [ctx.message.message_id] },
         receivedAt: ctx.message.date * 1000,
-        reply: async (out: string, opts?: ReplyOptions): Promise<void> => {
-          await replyAndRecord(
+        reply: async (out: string, opts?: ReplyOptions): Promise<ChannelMessageRef> => {
+          return replyAndRecord(
             (chunk, extra) => ctx.reply(chunk, extra),
             sessionId,
             chatId,
@@ -1027,8 +1045,8 @@ export default class TelegramChannel implements Channel {
         //  함수**(`resolveReplyRouting`)를 부른다.
         const buildReply =
           (sessionId: string, chatId: string, routedSession: string | null) =>
-          async (out: string, opts?: ReplyOptions): Promise<void> => {
-            await replyAndRecord(
+          async (out: string, opts?: ReplyOptions): Promise<ChannelMessageRef> => {
+            return replyAndRecord(
               (chunk, extra) => ctx.reply(chunk, extra),
               sessionId,
               chatId,
@@ -1095,6 +1113,7 @@ export default class TelegramChannel implements Channel {
             },
             text,
             attachments,
+            channelMessageRef: { address: chatId, messageIds: [ctx.message.message_id] },
             receivedAt: receivedAtSeconds * 1000,
             reply: buildReply(sessionId, chatId, routedSession),
             // 아웃바운드 첨부 — message:text 핸들러와 동일 (parity). 토큰 노출 0.
@@ -1174,9 +1193,8 @@ export default class TelegramChannel implements Channel {
         text: value,
         receivedAt: Date.now(),
         // 답글 송신 — 공통 흐름(이 경로는 답글 대상 미부착).
-        reply: async (out: string, _opts?: ReplyOptions): Promise<void> => {
-          await replyAndRecord((chunk, extra) => ctx.reply(chunk, extra), sessionId, chatId, out);
-        },
+        reply: async (out: string, _opts?: ReplyOptions): Promise<ChannelMessageRef> =>
+          replyAndRecord((chunk, extra) => ctx.reply(chunk, extra), sessionId, chatId, out),
         // 아웃바운드 첨부·후속 선택지 — 같은 chat 컨텍스트라 message:text 와 동일하게 지원.
         sendAttachment: (filePath, opts) => sendDocumentTo(ctx.api, chat.id, filePath, { ...opts, recordSession: sessionId }),
         presentOptions: buildPresentOptions(ctx, entry?.session ?? null),

@@ -12,7 +12,33 @@ import { getAssistantName } from "../../src/core/identity.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { isCancelledTurnResult, isSteeredTurnResult } from "../../src/core/worker-jobs.js";
-import { getRecentChatLog } from "../../src/store/chat-log.js";
+import { chatIdAtExactTs, getRecentChatLog, replyTargetInThread } from "../../src/store/chat-log.js";
+import type { ReplyRef } from "../../src/channels/types.js";
+
+/**
+ * 대시보드 답글 대상 → 대화 기록 행 id (2026-10-19). `{id}` 는 그대로(이력 말풍선의 `data-id`), `{ts, role}` 은 **정확히 같은 시각·발화자
+ *  한 건**일 때만 id 로 바꾼다(실시간 말풍선 — 대화 기록 시각과 같은 이벤트 시각). 그 밖은 undefined — 인용만 간다(가까운 다른 말을 고르지 않는다).
+ *  id 가 그 대화 범위인지는 읽을 때(`chatMessageById`) 다시 본다.
+ */
+export const resolveReplyToRef = (replyToText: string, raw: unknown, threadKey: string): ReplyRef | undefined => {
+  if (replyToText === "" || raw === null || typeof raw !== "object") return undefined;
+  const r = raw as { id?: unknown; ts?: unknown; role?: unknown };
+  const role = r.role === "user" ? ("user" as const) : r.role === "assistant" ? ("assistant" as const) : undefined;
+  const withRole = (id: number): ReplyRef => ({ id, ...(role !== undefined ? { role } : {}) });
+  // ★그 대화에서 실제로 읽히는 행일 때만 — 남의 대화 번호를 인용 머리에 찍지 않는다 · 조회 실패가 전송을 막지 않는다(인용만, 적대 검토 10-19).
+  if (typeof r.id === "number" && Number.isInteger(r.id) && r.id > 0) {
+    const id = replyTargetInThread(threadKey, r.id);
+    return id === undefined ? undefined : withRole(id);
+  }
+  if (typeof r.ts === "number" && Number.isFinite(r.ts)) {
+    let id: number | undefined;
+    try { id = chatIdAtExactTs(threadKey, r.ts, role); } catch (e) {
+      console.warn(`[http-bridge] 답글 대상 시각 조회 실패 — 인용만 갑니다: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return id === undefined ? undefined : withRole(id);
+  }
+  return undefined;
+};
 import { ingestAttachments, publishOutboundAttachment } from "./attachments.js";
 import { historyActivities } from "./history-activities.js";
 import { BODY_LIMIT_ATTACHMENTS, readJsonBody, bodyErrorStatus } from "./http-body.js";
@@ -97,6 +123,9 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
   //  여기 상한은 요청 본문 크기 방어일 뿐이다.
   const replyToText =
     typeof body.replyToText === "string" ? body.replyToText.trim().slice(0, 50_000) : "";
+  // 답글 대상(2026-10-19) — 대화 기록 행 id. 이력 말풍선은 id 를 준다. 아직 id 를 못 받은 실시간 말풍선은 시각(대화 기록과 **같은**
+  //  이벤트 시각)을 주고, 여기서 **정확히 같은 시각·발화자가 한 건일 때만** id 로 바꾼다(추측하지 않는다). 모양이 다르면 버린다(인용만).
+  const replyToRef = resolveReplyToRef(replyToText, body.replyToRef, threadKey);
   // 큐-취소 correlationId(ADR 2026-07-15) — 클라(대시보드)가 전송 순간 만든 상관 id.
   // 실제 사용자 인바운드(POST /messages)만 실린다 — 이 값을 큐 항목 식별 키로 전달해
   // 대기 중(미시작) 항목을 나중에 POST /cancel-queued 로 지목 취소 가능. 미부여 = 익명
@@ -148,6 +177,7 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
     text,
     receivedAt: Date.now(),
     ...(replyToText !== "" ? { replyToText } : {}),
+    ...(replyToRef !== undefined ? { replyToRef } : {}),
     ...(correlationId !== "" ? { correlationId } : {}),
     ...(egressChannels.length > 0 ? { egressChannels } : {}),
     // ★`noEgress: true` 면 이 답을 다른 채널로 복사하지 않는다 — 프로그램이 띄우는 턴

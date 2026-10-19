@@ -17,7 +17,7 @@ import { assert, assertIsolated, loadPluginModule, type Assertion, type Regressi
 import { getContextBoundary, getSession, initStore, saveSession } from "../../store/sessions.js";
 import { appendTranscript, indexCodexTurn, loadThreadHistory } from "../../store/memory.js";
 import { getThreadSummary, upsertThreadSummary } from "../../store/thread-summaries.js";
-import { applyScheduleHistory, keepRunsBoundary, resetThreadContext, scheduleRunStarts } from "../../store/thread-reset.js";
+import { applyRunHistory, keepRunsBoundary, resetThreadContext, scheduleRunStarts } from "../../store/thread-reset.js";
 import { KEEP_RUNS_MAX, addSchedule, deleteSchedule, getSchedule, recordScheduleRun, scheduleRunTimes, updateSchedule } from "../../store/schedules.js";
 
 export const check: RegressionCheck = {
@@ -54,17 +54,17 @@ export const check: RegressionCheck = {
     // ② 직전 2회
     const tkN = "scheduler:regr-keep2";
     const startsN = seed(tkN);
-    const appliedN = applyScheduleHistory(ch, tkN, PROMPT, 2, ts + 5000);
+    const appliedN = applyRunHistory(ch, tkN, PROMPT, 2, ts + 5000);
     const histN = texts(tkN);
     // ③ 매번 새로
     const tk0 = "scheduler:regr-fresh";
     seed(tk0);
     const now0 = ts + 5000;
-    const applied0 = applyScheduleHistory(ch, tk0, PROMPT, 0, now0);
+    const applied0 = applyRunHistory(ch, tk0, PROMPT, 0, now0);
     // ④ 기본
     const tkC = "scheduler:regr-continue";
     seed(tkC);
-    const appliedC = applyScheduleHistory(ch, tkC, PROMPT, null);
+    const appliedC = applyRunHistory(ch, tkC, PROMPT, null);
 
     const hashN = getSession(ch, tkN)?.systemPromptHash ?? null;
     // keep_runs 저장 왕복 — 조용히 null 로 떨어지면 정책이 «계속» 으로 돌아가고 비용이 원상 복귀한다.
@@ -83,7 +83,7 @@ export const check: RegressionCheck = {
     const runner = readFileSync(new URL("../../../plugins/scheduler/src/runner.ts", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, "");
     // ★정책 적용·실행은 **스레드 줄 안에서** 한다(2026-10-14 적대 검토 P3) — 줄 → applyHistory() → deps.runClaude 순서.
     //  동작(줄 앞 턴이 이어가기를 되살려도 끊겨 있나)은 `external-turn-serializes` ⑤ 가 실제 실행기로 잰다.
-    const applyAt = runner.indexOf("applyScheduleHistory(");
+    const applyAt = runner.indexOf("applyRunHistory(");
     const queueAt = runner.indexOf("enqueueThreadTurn(", applyAt < 0 ? 0 : applyAt);
     const callApplyAt = runner.indexOf("applyHistory();", queueAt < 0 ? 0 : queueAt);
     const runAt = callApplyAt < 0 ? -1 : runner.indexOf("deps.runClaude({", callApplyAt);
@@ -95,14 +95,14 @@ export const check: RegressionCheck = {
     resetThreadContext(ch, tkB, ts + 100); // 세 발화 **뒤** 로 잘라 둠
     const cutAt = getContextBoundary(ch, tkB);
     upsertThreadSummary({ threadKey: tkB, summary: "잘린 뒤의 요약", compactedThrough: 1 });
-    const appliedB = applyScheduleHistory(ch, tkB, PROMPT, 2, ts + 5000);
+    const appliedB = applyRunHistory(ch, tkB, PROMPT, 2, ts + 5000);
     // ⑦ 새 실행 없이 두 번 — 두 번째는 경계가 그대로라 아무것도 안 한다(요약·이어가기 보존).
     const tkT = "scheduler:regr-twice";
     seed(tkT);
-    const firstT = applyScheduleHistory(ch, tkT, PROMPT, 2, ts + 5000);
+    const firstT = applyRunHistory(ch, tkT, PROMPT, 2, ts + 5000);
     upsertThreadSummary({ threadKey: tkT, summary: "첫 적용 뒤 요약", compactedThrough: 1 });
     saveSession({ channel: ch, threadKey: tkT, claudeSessionId: `${tkT}:sid2`, model: null, systemPromptHash: "hash2" });
-    const secondT = applyScheduleHistory(ch, tkT, PROMPT, 2, ts + 6000);
+    const secondT = applyRunHistory(ch, tkT, PROMPT, 2, ts + 6000);
     // ⑧ 발화 시각 조회는 필요한 N 개에서 멈춘다.
     const limited = scheduleRunStarts(ch, tkT, PROMPT, 2);
     const all = scheduleRunStarts(ch, tkT, PROMPT);
@@ -114,25 +114,25 @@ export const check: RegressionCheck = {
     const startsP = seed(tkP);
     for (const st of startsP) recordScheduleRun(schP.id, st - 5); // 발화 시작은 대화 행보다 앞선다
     const NEW_PROMPT = "완전히 새로 쓴 프롬프트 — 앞 40자가 옛 것과 전혀 다르다";
-    const appliedP = applyScheduleHistory(ch, tkP, NEW_PROMPT, 2, ts + 5000, schP.id);
+    const appliedP = applyRunHistory(ch, tkP, NEW_PROMPT, 2, ts + 5000, (limit) => scheduleRunTimes(schP.id, limit));
     const histP = texts(tkP);
     // 반대 방향(종전 결함의 재현): 기록 없이 프롬프트 일치만이면 새 프롬프트로는 발화를 못 찾아 안 자른다.
     const tkPOld = "scheduler:regr-prompt-change-old";
     seed(tkPOld);
-    const appliedPOld = applyScheduleHistory(ch, tkPOld, NEW_PROMPT, 2, ts + 5000);
+    const appliedPOld = applyRunHistory(ch, tkPOld, NEW_PROMPT, 2, ts + 5000);
     // ⑩ 기록 기준이어도 경계는 앞으로만 — `/clear` 로 잘라 둔 것을 되살리지 않는다.
     const schQ = addSchedule({ label: "regr-log-clear", cronExpr: "0 8 * * *", prompt: PROMPT, destChannel: "cli", keepRuns: 2 });
     const tkQ = `scheduler:${schQ.id}`;
     for (const st of seed(tkQ)) recordScheduleRun(schQ.id, st - 5);
     resetThreadContext(ch, tkQ, ts + 100);
     const cutQ = getContextBoundary(ch, tkQ);
-    const appliedQ = applyScheduleHistory(ch, tkQ, NEW_PROMPT, 2, ts + 5000, schQ.id);
+    const appliedQ = applyRunHistory(ch, tkQ, NEW_PROMPT, 2, ts + 5000, (limit) => scheduleRunTimes(schQ.id, limit));
     // ⑪ 기록이 N개보다 모자라면(배포 직후 기존 스케줄) 종전 방식으로 대신한다.
     const schR = addSchedule({ label: "regr-log-short", cronExpr: "0 8 * * *", prompt: PROMPT, destChannel: "cli", keepRuns: 2 });
     const tkR = `scheduler:${schR.id}`;
     const startsR = seed(tkR);
     recordScheduleRun(schR.id, startsR[2]! - 5);
-    const appliedR = applyScheduleHistory(ch, tkR, PROMPT, 2, ts + 5000, schR.id);
+    const appliedR = applyRunHistory(ch, tkR, PROMPT, 2, ts + 5000, (limit) => scheduleRunTimes(schR.id, limit));
     // ⑫ 기록은 스케줄마다 최근 KEEP_RUNS_MAX 개 · 스케줄을 지우면 같이 지운다.
     const schS = addSchedule({ label: "regr-log-bound", cronExpr: "0 8 * * *", prompt: PROMPT, destChannel: "cli" });
     for (let i = 1; i <= KEEP_RUNS_MAX + 5; i++) recordScheduleRun(schS.id, i);
@@ -216,8 +216,8 @@ export const check: RegressionCheck = {
         JSON.stringify({ appliedC, boundary: getContextBoundary(ch, tkC), hist: texts(tkC).length }),
       ),
       assert(
-        "⑥ 스케줄 실행기가 **발화 직전**(runClaude 앞)에 정책을 적용하고 keepRuns 를 **그때 새로 읽으며**, 발화 기록을 볼 스케줄 id 를 넘긴다",
-        applyAt > 0 && runAt > applyAt && /\(getSchedule\(schedule\.id\) \?\? schedule\)\.keepRuns,\s*Date\.now\(\),\s*schedule\.id,?\s*\)/.test(runner.slice(applyAt, runAt)),
+        "⑥ 스케줄 실행기가 **발화 직전**(runClaude 앞)에 정책을 적용하고 keepRuns 를 **그때 새로 읽으며**, 그 스케줄의 발화 기록 조회를 넘긴다",
+        applyAt > 0 && runAt > applyAt && /\(getSchedule\(schedule\.id\) \?\? schedule\)\.keepRuns,\s*Date\.now\(\),\s*\(limit\) => scheduleRunTimes\(schedule\.id, limit\),?\s*\)/.test(runner.slice(applyAt, runAt)),
         `적용=${applyAt} 줄=${queueAt} 줄안적용=${callApplyAt} 발화=${runAt}`,
       ),
       assert(

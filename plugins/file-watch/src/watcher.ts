@@ -26,6 +26,7 @@ import path from "node:path";
 import { type FSWatcher, watch } from "chokidar";
 import type { EventBus } from "../../../src/core/eventbus.js";
 import type { WatchRow } from "../../../src/store/watches.js";
+import type { TriggerRun } from "../../../src/core/llm-runtime/types.js";
 import { dispatch } from "./dispatcher.js";
 
 export interface WatcherDeps {
@@ -37,7 +38,13 @@ export interface WatcherDeps {
     cwd: string;
     /** 재시작 중단 통지용. 정상 결과의 자동 push를 추가하지 않는다. */
     interruptDest: { channel: string; target: string | null };
-  }) => Promise<{ text: string }>;
+    /** 이 턴이 이 감시의 발화임 — 대화 컨텍스트가 «파일 감시 실행 · 변경만으로 누가 바꿨는지 모른다» 를 말한다(`TriggerRun`). */
+    triggerRun: TriggerRun;
+  }) => Promise<{
+    text: string;
+    /** 줄에서 기다리는 사이 감시가 지워지거나 꺼져 **실행하지 않았다**(모델 호출 0) — 기록·배달하지 않는다(스케줄 `SKIPPED_IN_QUEUE` 와 같은 판단). */
+    skipped?: "deleted" | "disabled";
+  }>;
   /** recordFiring 주입 — spike 에서 mock 가능. */
   recordFiring: (
     id: number,
@@ -257,6 +264,16 @@ const fireWatch = async (
     eventPath = merged.path;
   }
   inFlightWatches.add(row.id);
+  // ★한 실행을 로그만으로 따라갈 수 있게(회사 PC 10-19 — 원격 불가라 로그가 1차 진단면): 시작(원인·경로 수) → 이력 정책(파사드) →
+  //  끝(결과 길이·배달처·소요) 또는 실패. 경로는 첫 하나와 개수만(합친 발화는 수십 개일 수 있다).
+  const paths = eventPath.split("\n");
+  const tag = `[file-watch:${row.id}] '${row.label}'`;
+  const startedAt = Date.now();
+  const secs = (): string => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+  console.log(
+    `${tag} 발화 — ${event} · 경로 ${paths.length}개(${paths[0] ?? ""}${paths.length > 1 ? " 외" : ""})` +
+      `${followUp ? " · 실행 중 쌓인 변경 이어 처리" : held !== undefined && held.size > 0 ? " · 보류분 합침" : ""} → ${row.destChannel}:${row.destTarget ?? "-"}`,
+  );
   try {
   try {
     const text = substitutePrompt(row.prompt, { path: eventPath, event });
@@ -266,7 +283,13 @@ const fireWatch = async (
       channel: "file-watch",
       cwd: deps.cwd,
       interruptDest: { channel: row.destChannel, target: row.destTarget },
+      triggerRun: { kind: "watch", id: row.id, event, path: eventPath },
     });
+    // 실행하지 않았다 — 지운·끈 감시의 일을 기록하거나 보내지 않는다(«ok» 로 적으면 끈 감시가 돈 것처럼 보인다).
+    if (result.skipped !== undefined) {
+      console.log(`${tag} 줄에서 기다리는 사이 ${result.skipped === "deleted" ? "지워짐" : "꺼짐"} — 실행 안 함 · ${secs()}`);
+      return;
+    }
     // 결과를 목적지로 — 빈 결과면 보낼 것이 없다. 배달 실패는 생성 실패와 갈라 적는다(스케줄러와 같은 모양).
     if (result.text.trim() !== "") {
       try {
@@ -282,6 +305,7 @@ const fireWatch = async (
         console.error(
           `[file-watch:${row.id}] '${row.label}' → ${row.destChannel}:${row.destTarget} DISPATCH FAILED (내용 생성됨·전달 실패): ${reason}`,
         );
+        console.error(`${tag} 끝 — 결과 ${result.text.length}자 생성 · 배달 실패 · ${secs()}`);
         deps.recordFiring(row.id, { ok: false, path: eventPath, event, error: `dispatch: ${reason}` });
         bus.publish({
           type: "file-watch.error",
@@ -291,6 +315,11 @@ const fireWatch = async (
         return;
       }
     }
+    console.log(
+      result.text.trim() === ""
+        ? `${tag} 끝 — 빈 결과(보내지 않음) · ${secs()}`
+        : `${tag} 끝 — 결과 ${result.text.length}자 → ${row.destChannel}:${row.destTarget ?? "-"} 배달 · ${secs()}`,
+    );
     deps.recordFiring(row.id, { ok: true, path: eventPath, event });
     bus.publish({
       type: "file-watch.fired",
@@ -309,6 +338,8 @@ const fireWatch = async (
       return;
     }
     const reason = e instanceof Error ? e.message : String(e);
+    // 종전엔 실행 실패가 기록(DB)·이벤트에만 남고 데몬 로그엔 한 줄도 없었다.
+    console.error(`${tag} 실패 — ${reason.slice(0, 300)} · ${secs()}`);
     deps.recordFiring(row.id, {
       ok: false,
       path: eventPath,

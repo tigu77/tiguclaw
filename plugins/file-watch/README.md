@@ -61,7 +61,7 @@ add_watch({
 
 이 패턴이 의심되면 safety-check 스킬이 `add_watch` 호출 전 사용자 명시 승인을 요청합니다.
 
-## MCP 도구 3종
+## MCP 도구 4종
 
 비서가 자연어 요청을 받으면 내부적으로 호출합니다.
 
@@ -69,22 +69,30 @@ add_watch({
 add_watch({
   label: "docs-watch",
   path: "./docs",                     // 절대/상대 (절대로 정규화)
-  pattern: ".md",                     // optional — 매치 안 되는 경로는 ignore
+  pattern: ".md",                     // optional — 경로 부분 문자열(glob 아님). 안 맞는 파일은 ignore
   recursive: true,                    // optional, default true
   debounce_ms: 500,                   // optional, default 500
   event_filter: "all",                // optional — "all" | "add" | "change" | "unlink" | "add,change"
   prompt: "{path} 가 {event} 됐어. 요약 부탁.",
   dest_channel: "cli",
-  dest_target: null                   // optional
+  dest_target: null,                  // optional
+  keep_runs: 0                        // optional — 이력 정책: 생략·null = 이어감(기본) · 0 = 매번 새로 · N = 직전 N회만
 })
 → { ok: true, id: 3, path: "/abs/path/to/docs" }
 
 list_watches({ only_enabled: true })
 → { ok: true, items: [...] }          // 각 row 의 last_path/last_event/last_status 포함
 
+update_watch({ id: 3, keep_runs: 0 })  // 지금은 이력 정책만 바꾼다 — 다음 실행부터
+→ { ok: true, id: 3, keep_runs: 0 }
+
 delete_watch({ id: 3 })
 → { ok: true, deleted: true }
 ```
+
+감시 실행은 등록한 대화가 아니라 **감시 전용 세션**(`file-watch:<id>`)에서 돈다. 그 세션은 이 감시의 이전 실행을 이어 보므로,
+각 실행에 필요한 정보가 현재 파일에 모두 있고 이전 실행과 비교할 필요가 없다면 `keep_runs: 0` 을 권장한다 — 이어가면 앞선 실행의 판단을
+다음 실행이 사실처럼 이어받는다.
 
 부재 path 는 `add_watch` 시점에 `{ ok:false, error:"path_not_found" }` 반환.
 

@@ -10,12 +10,13 @@
  */
 import type { EventBus } from "../../../src/core/eventbus.js";
 import type { WorkerNotifyDest } from "../../../src/core/worker-jobs.js";
+import type { TriggerRun } from "../../../src/core/llm-runtime/types.js";
 import type { ScheduleRow } from "../../../src/store/schedules.js";
-import { getSchedule, recordScheduleRun } from "../../../src/store/schedules.js";
+import { getSchedule, recordScheduleRun, scheduleRunTimes } from "../../../src/store/schedules.js";
 import { loadSchedulerRetryEnabled } from "../../../src/core/settings.js";
 import { dispatch } from "./dispatcher.js";
 import { canonicalSessionChannel } from "../../../src/store/sessions.js";
-import { applyScheduleHistory } from "../../../src/store/thread-reset.js";
+import { applyRunHistory } from "../../../src/store/thread-reset.js";
 import { enqueueThreadTurn } from "../../../src/core/worker-jobs.js";
 import { isUserCancelled } from "../../../src/core/steering.js";
 
@@ -43,7 +44,7 @@ export interface RunnerDeps {
     channel: string;
     cwd: string;
     notifyDest?: WorkerNotifyDest;
-    scheduleRun?: number;
+    triggerRun?: TriggerRun;
   }) => Promise<{ text: string }>;
   /** recordFiring 주입 — spike 에서 mock 가능. */
   recordFiring: (id: number, result: { ok: boolean; error?: string }) => void;
@@ -271,7 +272,7 @@ export const runScheduleFiring = async (
     const applyHistory = (): void => {
       const tk = `scheduler:${schedule.id}`;
       try {
-        const applied = applyScheduleHistory(
+        const applied = applyRunHistory(
           canonicalSessionChannel(tk, "scheduler"),
           tk,
           schedule.prompt,
@@ -279,7 +280,7 @@ export const runScheduleFiring = async (
           //  재시작 전까지 안 보였다(설정=데이터는 매번 새로 읽는다).
           (getSchedule(schedule.id) ?? schedule).keepRuns,
           Date.now(),
-          schedule.id,
+          (limit) => scheduleRunTimes(schedule.id, limit),
         );
         if (applied !== null) {
           console.log(
@@ -313,7 +314,7 @@ export const runScheduleFiring = async (
           channel: "scheduler",
           cwd: deps.cwd,
           // 이 턴이 스케줄 발화 **그 자체**임을 싣는다 — 같은 세션의 완료 턴·선택지 답과 가르는 유일한 자리다.
-          scheduleRun: schedule.id,
+          triggerRun: { kind: "schedule", id: schedule.id },
           // 매니저 통지 dest 주입 — 이 발화가 띄운 매니저가 스케줄의 실제 목적지(예 telegram/
           // chatId)로 완료/실패를 통지하게 한다. channel="scheduler" 는 reacquireReply 가
           // 모르는 채널이라(폴백 시 통지 미도달) generic dest 를 데이터로 흘려보낸다.

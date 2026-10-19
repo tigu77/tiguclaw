@@ -28,12 +28,12 @@ export const check: RegressionCheck = {
     const id = 990001;
     const row = { id, label: "회귀-지금실행", enabled: true, triggerType: "cron", cronExpr: "10 8 * * *", timezone: "Asia/Seoul", prompt: "회귀-지금실행 지시", destChannel: "telegram", destTarget: "fixture-dest" };
     let hooks: Hooks = {};
-    const inputs: Array<{ text?: string; threadKey?: string; channel?: string; scheduleRun?: number }> = [];
+    const inputs: Array<{ text?: string; threadKey?: string; channel?: string; triggerRun?: { kind: string; id: number } }> = [];
     let finish: (() => void) | undefined;
     const records: unknown[] = [];
     const cache = new Map<string, unknown>();
     const bus = { subscribe: () => () => {}, publish: () => {} };
-    const model = (input: { text?: string; threadKey?: string; channel?: string; scheduleRun?: number; abortSignal: AbortSignal }) => {
+    const model = (input: { text?: string; threadKey?: string; channel?: string; triggerRun?: { kind: string; id: number }; abortSignal: AbortSignal }) => {
       inputs.push(input);
       return new Promise((resolve) => { finish = () => resolve({ text: "회귀 결과" }); });
     };
@@ -58,7 +58,7 @@ export const check: RegressionCheck = {
         if (name.endsWith("/settings.js")) return { loadSchedulerRetryEnabled: () => false };
         if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
         if (name.endsWith("/store/sessions.js")) return { canonicalSessionChannel: (_tk: string, ch: string) => ch };
-        if (name.endsWith("/thread-reset.js")) return { applyScheduleHistory: () => null };
+        if (name.endsWith("/thread-reset.js")) return { applyRunHistory: () => null };
         if (name.endsWith("/core/outbound.js")) return { optionsPresenterFor: () => undefined, attachmentSenderFor: () => undefined };
         if (name === "./dispatcher.js") return { dispatch: async () => {} };
         // ★MCP 가 받는 훅을 가로챈다 — run_schedule 핸들러가 부르는 바로 그것.
@@ -93,7 +93,7 @@ export const check: RegressionCheck = {
         assert("실행기가 뜨기 전엔 훅이 없다(«지금 실행» 이 거짓 성공하지 않는다)", before === "(훅 없음)", before),
         assert("★지금 실행이 그 스케줄 지시문으로 scheduler:<id> 실행을 연다(cron 과 같은 길)", first === "started" && ran?.text === row.prompt && ran?.threadKey === `scheduler:${id}` && ran?.channel === "scheduler", { first, ran: ran && { text: ran.text, threadKey: ran.threadKey, channel: ran.channel } }),
         // ★발화 턴임을 입력에 싣는다 — 대화 컨텍스트의 «정기 스케줄 실행» 표식이 이 값으로만 붙는다(같은 세션의 완료 턴과 가른다).
-        assert("★발화 턴은 scheduleRun=<id> 를 싣는다", ran?.scheduleRun === id, { scheduleRun: ran?.scheduleRun }),
+        assert("★발화 턴은 triggerRun={schedule,<id>} 를 싣는다", ran?.triggerRun?.kind === "schedule" && ran.triggerRun.id === id, { triggerRun: ran?.triggerRun }),
         assert("★실행 중에 다시 부르면 겹쳐 돌리지 않는다(busy)", second === "busy" && runsAfterSecond === 1, { second, runs: runsAfterSecond }),
         assert("끝난 뒤엔 다시 실행할 수 있고, 실행마다 발화 기록이 남는다", third === "started" && inputs.length === 2 && records.length === 2, { third, runs: inputs.length, records: records.length }),
       );

@@ -63,8 +63,8 @@ export const check: RegressionCheck = {
       assert(
         // 답글은 `text`(렌더된 글) 그대로여야 한다 — 인용에 기호가 붙으면 읽기 나쁘다.
         "답글 인용은 렌더된 글을 쓴다(복사와 다른 쓰임)",
-        reply.includes("startReply(ctx.text, ctx.label)"),
-        reply.includes("startReply(ctx.text, ctx.label)") ? "확인" : "★인용이 원문으로 바뀌었다",
+        /startReply\(ctx\.text, ctx\.label[,)]/.test(reply),
+        /startReply\(ctx\.text, ctx\.label[,)]/.test(reply) ? "확인" : "★인용이 원문으로 바뀌었다",
       ),
     ];
   },

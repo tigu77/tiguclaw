@@ -633,6 +633,21 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_watches_enabled ON watches(enabled);
   `);
 
+  // ─── watches.keep_runs + watch_runs (2026-10-19) — 감시 이력 정책 ───────────────
+  //  스케줄 `keep_runs`·`schedule_runs` 와 같은 뜻·같은 판정(`applyRunHistory`·`trigger-runs.ts`). NULL = 계속(기본 — 기존 감시 동작 불변).
+  //  회사 PC 10-19: 감시 스레드가 자기 옛 답(«5발 유지»)을 이력으로 이어받아 사용자 정정 뒤에도 같은 답을 냈다(추정 기제).
+  {
+    const watchCols = handle.prepare(`PRAGMA table_info(watches)`).all() as Array<{ name: string }>;
+    if (!watchCols.some((c) => c.name === "keep_runs")) handle.exec(`ALTER TABLE watches ADD COLUMN keep_runs INTEGER`);
+  }
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS watch_runs (
+      watch_id INTEGER NOT NULL,
+      ts       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_watch_runs_wid_ts ON watch_runs(watch_id, ts);
+  `);
+
   // ─── 백그라운드 매니저 잡 영속 (메타만 — 재시작 정직 통지용, 2026-06-19) ─────────
   // 런타임 진실 소스는 core/worker-jobs.ts 의 in-memory Map(핫패스 무변경). 이 테이블은
   // *재시작 생존*만 담당 — 부팅 시 status='running' 잔류 = 그 잡을 돌던 프로세스가 죽었음
@@ -798,6 +813,19 @@ export const initStore = (): void => {
       PRIMARY KEY (channel, channel_address, message_id)
     );
     CREATE INDEX IF NOT EXISTS idx_outbound_msg_ts ON outbound_message_session (ts);
+
+    -- ─── 채널 메시지 → 대화 기록 행 (2026-10-19) ─────────────────────────────
+    -- 답글 대상 원문을 **정확히** 짚는 재료(텔레그램 reply_to_message.message_id → chat_log.id). 위 표는 «어느 세션»,
+    -- 이 표는 «어느 행» 이다 — 반환값이 다르므로 섞지 않는다. 대화 기록을 쓰는 자리(event-persist)가 행 id 를 받아 남긴다.
+    CREATE TABLE IF NOT EXISTS chat_message_refs (
+      channel         TEXT NOT NULL,
+      channel_address TEXT NOT NULL,
+      message_id      TEXT NOT NULL,
+      chat_id         INTEGER NOT NULL,
+      ts              INTEGER NOT NULL,
+      PRIMARY KEY (channel, channel_address, message_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_message_refs_ts ON chat_message_refs (ts);
   `);
 
   // ─── 스킬 사용 텔레메트리 (self-growth Phase 1.5, 2026-06-24) ────────────────

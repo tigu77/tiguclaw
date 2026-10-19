@@ -18,7 +18,7 @@
  * (무한대기 0). 부품 1개(작은 async 큐)로 최소 표면 유지(단순성 게이트 §Q6).
  */
 import type { Attachment, IncomingMessage } from "../channels/types.js";
-import { withReplyQuote } from "./reply-quote.js";
+import { replyQuoteRefOf, withReplyQuote, type ReplyQuoteRef } from "./reply-quote.js";
 import { translate } from "./i18n.js";
 
 /** 채널이 만드는 중립 steering 의도(채널·LLM 무관). telegram·대시보드·cli·http 동형. */
@@ -48,6 +48,8 @@ export interface SteeringInput {
    * `raw` 에 **자기** 원문을 다시 붙이려고 따로 든다(재주입은 그 턴을 연 다른 메시지의 원문을 쓰면 안 된다).
    */
   replyToText?: string;
+  /** 그 답글 대상의 좌표(2026-10-19) — 재주입 때도 **자기** 좌표를 붙인다(`replyToText` 와 같은 이유). */
+  replyToRef?: ReplyQuoteRef;
   /**
    * **누가 넣었나** (2026-08-19, ADR background-subagents 위험 목록).
    *
@@ -269,13 +271,16 @@ export const STEERING_NOTE_PREFIX =
  * 채널 IncomingMessage → 중립 SteeringInput(ADR §3). 텍스트(framing 래핑)·첨부·도착시각만 실어 채널 무관화.
  * ★답글 원문도 싣는다(2026-10-06) — 응답 중에 보낸 답글이 무엇에 대한 말인지 비서가 알아야 한다(종전엔 빠졌다).
  */
-export const toSteeringInput = (msg: IncomingMessage): SteeringInput => ({
-  text: `${STEERING_NOTE_PREFIX}\n${withReplyQuote(msg.text, msg.replyToText)}`,
+export const toSteeringInput = (msg: IncomingMessage): SteeringInput => {
+  const ref = replyQuoteRefOf(msg);
+  return {
+  text: `${STEERING_NOTE_PREFIX}\n${withReplyQuote(msg.text, msg.replyToText, ref)}`,
   raw: msg.text, // 사용자 원문 — 재주입·표시는 반드시 이걸 쓴다(framing 노출 사고 방지).
-  ...(msg.replyToText !== undefined && msg.replyToText.trim() !== "" ? { replyToText: msg.replyToText } : {}),
+  ...(msg.replyToText !== undefined && msg.replyToText.trim() !== "" ? { replyToText: msg.replyToText, ...(ref !== undefined ? { replyToRef: ref } : {}) } : {}),
   ...(msg.attachments !== undefined ? { attachments: msg.attachments } : {}),
   ts: Date.now(),
-});
+  };
+};
 
 /**
  * 미소비 끼워넣기를 새 턴으로 재주입할 본문 — 원문(raw)으로, 메시지마다 **자기** 답글 원문을 붙인다(2026-10-06).
@@ -286,7 +291,7 @@ export const reinjectTextFor = (leftover: readonly SteeringInput[]): string =>
   leftover
     // 본문이 비어도 답글이면 남긴다 — 첨부만 담은 답글의 인용이 재주입에서 사라지지 않게(재검토 P1, 새 턴 경로와 같게).
     .filter((s) => (typeof s.raw === "string" && s.raw.trim() !== "") || (s.replyToText ?? "").trim() !== "")
-    .map((s) => withReplyQuote(s.raw ?? "", s.replyToText))
+    .map((s) => withReplyQuote(s.raw ?? "", s.replyToText, s.replyToRef))
     .join("\n\n");
 
 /**
@@ -304,7 +309,7 @@ export const buildReinjectMessage = <M extends IncomingMessage>(
   const text = reinjectTextFor(leftover);
   const atts = leftover.flatMap((s) => s.attachments ?? []);
   if (text === "" && atts.length === 0) return null;
-  const { replyToText: _thisTurnsQuote, ...turnMsg } = msg;
+  const { replyToText: _thisTurnsQuote, replyToRef: _thisTurnsRef, ...turnMsg } = msg;
   return {
     ...turnMsg,
     text,

@@ -333,9 +333,9 @@ const defaultRunClaude: RunnerDeps["runClaude"] = async (input) => {
     { ac, channel: input.channel, target: null, notifyDest: input.notifyDest },
     () =>
       runClaude({
-        // ★실행기가 채운 입력을 **통째로** 넘긴다 (2026-10-02 재검토) — 필드를 골라 넘기던 때 새로 더한 `scheduleRun` 이
+        // ★실행기가 채운 입력을 **통째로** 넘긴다 (2026-10-02 재검토) — 필드를 골라 넘기던 때 새로 더한 발화 표식(지금 `triggerRun`)이
         //  여기서 떨어져, 실제 발화엔 «정기 스케줄 실행» 표식이 한 번도 안 붙었다(회귀는 이 파사드를 모의로 갈아 못 봤다).
-        //  notifyDest(매니저 통지 좌표)·scheduleRun(발화 턴 표식) 모두 실행기가 채우는 값이다.
+        //  notifyDest(매니저 통지 좌표)·triggerRun(발화 턴 표식) 모두 실행기가 채우는 값이다.
         ...input,
         abortSignal: ac.signal,
         // ★선택지·파일도 스케줄의 목적지로 (2026-10-01) — 이 발화는 핸들러를 우회해 채널이 주는 통로가 없어, 선택지 도구가

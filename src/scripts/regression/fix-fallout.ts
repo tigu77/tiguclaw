@@ -137,6 +137,8 @@ export const check: RegressionCheck = {
       "register_command", "register_endpoint", "remove_mcp_server", "login_mcp_server",
       "run_in_background", "send_file", "spawn_agent", "steer_worker",
       "update_memory", "update_schedule", "update_self",
+      // 감시 이력 정책 변경 — 상태를 바꾼다(2026-10-19).
+      "update_watch",
       // 세션 이름 변경 — 되돌릴 수 있지만 상태를 바꾼다(읽기전용 폴백 대상 아님).
       "rename_session",
       // 세션 보관 — 되돌릴 수 있지만(restore) 목록에서 치우고 **대화방 바인딩을 푼다**.

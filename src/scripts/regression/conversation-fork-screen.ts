@@ -32,7 +32,7 @@ export const check: RegressionCheck = {
       mem.appendTranscript({ claudeSessionId: `codex-${k}`, role: "user", content: "q" });
       mem.indexCodexTurn({ channel: CH, threadKey: k, claudeSessionId: `codex-${k}` });
     };
-    const chat = (k: string, ts: number, role: "user" | "assistant", text: string): void => recordChatMessage({ ts, threadKey: k, channel: CH, role, text });
+    const chat = (k: string, ts: number, role: "user" | "assistant", text: string): void => { recordChatMessage({ ts, threadKey: k, channel: CH, role, text }); };
 
     const P = `dashboard:${randomUUID()}`;
     seed(P, "부모 대화");

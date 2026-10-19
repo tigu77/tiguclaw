@@ -131,7 +131,7 @@ import {
 } from "./core/restart.js";
 import { initFileLogging, logFatal } from "./core/logging.js";
 import { acquireHomeLock } from "./store/home-lock.js";
-import { startEventPersistence } from "./core/event-persist.js";
+import { channelRefsField, startEventPersistence } from "./core/event-persist.js";
 import {
   enqueueThreadTurn,
   registerWorkerHandler,
@@ -152,7 +152,7 @@ import {
   type SelfUpdateResult,
 } from "./core/self-update.js";
 import { deliverOutbound } from "./core/outbound.js";
-import { withReplyQuote } from "./core/reply-quote.js";
+import { replyQuoteRefOf, withReplyQuote } from "./core/reply-quote.js";
 import {
   closeWhenStopped,
   stopReplyIdleWithJobs,
@@ -683,6 +683,7 @@ const publishInboundEcho = (
     text: string;
     attachments?: IncomingMessage["attachments"];
     correlationId?: string;
+    channelMessageRef?: IncomingMessage["channelMessageRef"];
   },
   /** `ephemeral: true` = 발행은 하되 **적재는 안 한다**(event-persist 가 판정). */
   opts?: { ephemeral?: boolean },
@@ -722,6 +723,8 @@ const publishInboundEcho = (
       channel: msg.channel,
       threadKey: msg.threadKey,
       text: msg.text.slice(0, EVENT_TEXT_MAX),
+      // 채널 메시지 id(텔레그램 등) — 적재가 이 행에 묶어, 나중에 이 메시지에 단 답글이 원문을 정확히 짚는다(2026-10-19).
+      ...channelRefsField(msg.channel, msg.channelMessageRef),
       // 휘발성 표식 — 발행은 그대로(버블 승격·진행 표시 살아있음), 적재만 안 한다.
       ...(opts?.ephemeral === true ? { ephemeral: true } : {}),
       ...(inAttachments.length > 0 ? { attachments: inAttachments } : {}),
@@ -1164,7 +1167,7 @@ const handler: MessageHandler = async (msg) => {
   // reply_to 원문을 실으면(telegram) "어느 메시지에 이어가는지"를 LLM 에 명시 —
   // 지시어("이거 이어서") 의 대상 모호성 해소. 미설정 채널(cli·http-bridge)은 무영향.
   // 슬래시 확장·훅 처리 후라 덮어쓰임 0. input.text 에 들어가 user turn 으로 persist.
-  effectiveText = withReplyQuote(effectiveText, msg.replyToText);
+  effectiveText = withReplyQuote(effectiveText, msg.replyToText, replyQuoteRefOf(msg));
   // 턴 AbortController — idle(1층, region 어댑터 createIdleTimer)·외부 cancel 경로용.
   // signal 을 route→runRegionA→어댑터로 운반(어댑터가 자기 1층 idle AC 와 OR 결합).
   //
@@ -1313,7 +1316,8 @@ const handler: MessageHandler = async (msg) => {
       replyText = sanitized;
     }
     // 인입 채널 응답 — **항상**(현행 그대로, 바이트 동일). egress fan-out 은 이 뒤에 opt-in 추가.
-    await msg.reply(
+    // 반환 = 실제로 보낸 채널 메시지 id(있는 채널만) — 아래 송신 이벤트에 실어 대화 기록 행에 묶는다(답글 원문 정확 조회, 2026-10-19).
+    const sentRef = await msg.reply(
       replyText,
       out.replyToTrigger === true ? { replyToTrigger: true } : undefined,
     );
@@ -1326,6 +1330,7 @@ const handler: MessageHandler = async (msg) => {
         channel: msg.channel,
         threadKey: msg.threadKey,
         text: out.text.slice(0, EVENT_TEXT_MAX),
+        ...channelRefsField(msg.channel, sentRef),
         // 실제 응답 모델(2026-07-27) — chat_log 로 영속돼 새로고침 후에도 답변에 모델이 붙는다.
         //  종전엔 활동 이벤트에만 있어, 활동이 다른 스레드(스케줄 등)에 속한 답변은 표시가 없었다.
         ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),

@@ -462,6 +462,9 @@
             setChatBody(card.replyMsg, payload.text, true);     // 평문 델타 → 마크다운 전체본 1회.
             card.replyMsg.classList.remove("streaming");        // 타이핑 커서 off.
             if (turnId) card.group.dataset.turn = turnId;
+            // ★완료 답의 **저장 좌표**를 말풍선에 붙인다(2026-10-19 아스트라) — 이 이벤트 시각이 곧 대화 기록 행 시각이다. 없으면 새로고침
+            //  전엔 이 답에 단 답글이 원문 좌표 없이 인용만 갔다. 턴 시작·Date.now() 를 쓰면 안 된다(저장된 답과 다른 좌표가 된다).
+            if (ev.ts != null) card.replyBubble.dataset.ts = String(ev.ts);
             card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
             completeTurnGroup(thread);                          // 스텝 카드 "n단계 완료"로 접기.
             localChatCount += 1;

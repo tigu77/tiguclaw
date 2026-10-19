@@ -53,6 +53,10 @@ export const check: RegressionCheck = {
     const tgStmt = /const replyToText = [^;]*;/.exec(tg.slice(tg.indexOf("const repliedRaw")))?.[0] ?? "";
     const brStmt = /const replyToText =[\s\S]*?;/.exec(bridge)?.[0] ?? "";
     const brCaps = [...brStmt.matchAll(/slice\(0,\s*([\d_]+)\)/g)].map((m) => Number(m[1]!.replace(/_/g, "")));
+    // ★대시보드 **클라이언트**도 채널이다(2026-10-19 정태님 질문으로 발견) — 인용 칩이 앞 1,500자만 남겨 보내 긴 답의 끝이 안 갔다.
+    //  10-06 에 «채널은 자르지 않는다» 로 모으면서 텔레그램·브리지만 봤고 이 줄은 남아 있었다.
+    const dash = readFileSync(new URL("../../../packages/dashboard/js/reply.js", import.meta.url), "utf8");
+    const dashStmt = /replyingTo = \{\s*text: [^,}]*/.exec(dash)?.[0] ?? "";
     return [
       assert(
         "★응답 중에 보낸 답글도 원문이 비서에게 간다(끼워넣기 본문에 인용) · 표시용 원문(raw)은 사용자 글 그대로",
@@ -85,10 +89,10 @@ export const check: RegressionCheck = {
       ),
       assert(
         "새 턴은 같은 인용 함수를, 재주입은 조립 함수를 쓴다 · 채널은 인용 원문을 상한 아래로 자르지 않는다(배선)",
-        /effectiveText = withReplyQuote\(effectiveText, msg\.replyToText\)/.test(idx) &&
+        /effectiveText = withReplyQuote\(effectiveText, msg\.replyToText, replyQuoteRefOf\(msg\)\)/.test(idx) &&
           (/const again = reinjectUnlessStopped\(t\.signal, t\.msg, leftover\)/.test(life) && /signal: turnAc\.signal,/.test(idx) && /reinject: \(m\) => serializedHandler\(m\)/.test(idx)) &&
-          tgStmt !== "" && !/slice/.test(tgStmt) && brStmt !== "" && brCaps.every((n) => n >= 4096),
-        `텔레그램=${tgStmt.slice(0, 60)} · 대시보드 상한=${JSON.stringify(brCaps)}`,
+          tgStmt !== "" && !/slice/.test(tgStmt) && brStmt !== "" && brCaps.every((n) => n >= 4096) && dashStmt !== "" && !/slice|substr/.test(dashStmt),
+        `텔레그램=${tgStmt.slice(0, 60)} · 대시보드 상한=${JSON.stringify(brCaps)} · 대시보드 칩=${dashStmt.slice(0, 60)}`,
       ),
     ];
   },

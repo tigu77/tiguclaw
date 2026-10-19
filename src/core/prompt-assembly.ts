@@ -10,6 +10,7 @@
  */
 import { linkedProjectsContextLines } from "./session-projects.js";
 import type { Attachment } from "../channels/types.js";
+import type { TriggerRun } from "./llm-runtime/types.js";
 import { agentPathHint } from "./identity.js";
 import { extractTelegramChatId } from "./threadkey.js";
 import { listMemoriesForIndex } from "../store/memory.js";
@@ -279,6 +280,20 @@ export const formatModelProfiles = (
   return lines.join("\n");
 };
 
+/**
+ * 트리거 실행 한 줄 — 무엇이 이 턴을 열었나. ★`watch` 는 **사실만** 적는다(금지문 아님): 원인 · 모르는 것 · 맥락 범위.
+ *  «하지 마라» 로 쓰면 «새 파일이 오면 요약» 같은 정상 감시까지 머뭇거린다. «지시문은 그 감시의 지시다» 는 일부러 안 적는다 —
+ *  그 문구가 스케줄에선 헌법 ④ 면제와 짝이라, 감시에 붙이면 승인 없이 면제가 넓어진다.
+ */
+export const triggerRunLine = (t: TriggerRun): string => {
+  if (t.kind === "schedule") return `- 이 턴은 등록된 **정기 스케줄(#${t.id})의 실행**이다 — 지시문은 그 스케줄의 지시다.`;
+  const where = t.path.includes("\n") ? `\n${t.path.split("\n").map((p) => `  - ${p}`).join("\n")}` : ` \`${t.path}\``;
+  return (
+    `- 이 턴은 등록된 **파일 감시(#${t.id})의 실행**이다 — 파일 변경(\`${t.event}\`)을 감지해 시작됐다:${where}\n` +
+    "  변경 사실만으로는 누가·왜 바꿨는지(사용자의 제출·승인인지)는 알 수 없다. 감시를 등록한 대화의 이력은 여기 없다 — 이 세션의 앞선 기록은 이 감시의 이전 실행이다."
+  );
+};
+
 // ─── 현재 대화 컨텍스트 (채널/dest_target) prompt prepend ────────────────
 // 비서가 "지금 이 대화로 보내줘"(스케줄·알림 dest 등) 류 작업을 정확히 하려면
 // 자기가 어느 채널·어느 대상과 대화 중인지 알아야 한다. 어댑터 input 의
@@ -291,12 +306,12 @@ export const formatConversationContext = ({
   channel,
   threadKey,
   channelAddress,
-  scheduleRun,
+  triggerRun,
 }: {
   channel: string;
   threadKey: string;
   channelAddress?: string;
-  scheduleRun?: number;
+  triggerRun?: TriggerRun;
 }): string => {
   // ★자기 세션 정체성 (2026-07-29 사용자 질문 "메인비서가 현재 세션을 알고 있나?" → 몰랐다).
   //  종전 블록엔 **배달 좌표**(dest_channel/dest_target)만 있고 "나는 어느 대화인가"가
@@ -310,7 +325,7 @@ export const formatConversationContext = ({
   //  ★세션 id(`scheduler:<id>`)로 가르지 않는다 — 그 세션엔 **발화가 아닌 턴**도 돈다(스케줄이 띄운 매니저의 완료 턴 ·
   //  선택지 답). 거기 붙이면 «지시문» 이 매니저 결과·외부 글이 되고, ④ 면제가 그 글에 적힌 경로까지 넓어진다(적대 검토
   //  2026-10-02 — #18·#21 이 매일 그 턴을 돈다). 발화임을 아는 쪽(스케줄 실행기)이 입력에 직접 싣는다.
-  if (scheduleRun !== undefined) lines.push(`- 이 턴은 등록된 **정기 스케줄(#${scheduleRun})의 실행**이다 — 지시문은 그 스케줄의 지시다.`);
+  if (triggerRun !== undefined) lines.push(triggerRunLine(triggerRun));
   // 채널/세션 분리(ADR 2026-07-15 §D3): dest_target 은 세션 id 파싱이 아니라 **캡처된
   // 배달 좌표**(channelAddress)를 우선 쓴다 — 세션 id 가 채널 무관(dashboard:*)이 되면
   // threadKey 파싱으로 chatId 를 못 얻기 때문. 미지정이면 telegram threadKey "tg:<chatId>"

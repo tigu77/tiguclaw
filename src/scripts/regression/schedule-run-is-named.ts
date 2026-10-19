@@ -21,8 +21,8 @@ export const check: RegressionCheck = {
   name: "schedule-run-is-named",
   guards: "정기 스케줄 실행인데 모델이 그걸 몰라 실행마다 다시 묻던 것 + 같은 세션의 발화 아닌 턴(매니저 완료·선택지 답)에 그 표식이 붙어 면제가 넓어지는 것",
   run: async (): Promise<Assertion[]> => {
-    const firing = formatConversationContext({ channel: "scheduler", threadKey: "scheduler:19", scheduleRun: 19 });
-    // 같은 세션에서 도는 발화 아닌 턴 — 매니저 완료 턴·선택지 답은 scheduleRun 을 안 싣는다.
+    const firing = formatConversationContext({ channel: "scheduler", threadKey: "scheduler:19", triggerRun: { kind: "schedule", id: 19 } });
+    // 같은 세션에서 도는 발화 아닌 턴 — 매니저 완료 턴·선택지 답은 triggerRun 을 안 싣는다.
     const sameThread = formatConversationContext({ channel: "scheduler", threadKey: "scheduler:19" });
     const chat = formatConversationContext({ channel: "telegram", threadKey: "tg:12345" });
     // ★어댑터 셋이 입력을 **통째로** 넘기는가 — 필드를 골라 넘기면 새 필드가 한 어댑터에서 조용히 빠진다.
@@ -31,7 +31,7 @@ export const check: RegressionCheck = {
       return { f, whole: /formatConversationContext\(input\)/.test(src) };
     });
     return [
-      assert("★발화 턴(scheduleRun)이면 «등록된 정기 스케줄(#id)의 실행» 을 말한다", firing.includes("정기 스케줄(#19)의 실행"), firing),
+      assert("★발화 턴(triggerRun schedule)이면 «등록된 정기 스케줄(#id)의 실행» 을 말한다", firing.includes("정기 스케줄(#19)의 실행") && firing.includes("지시문은 그 스케줄의 지시다"), firing),
       assert("★같은 scheduler:<id> 세션이라도 발화가 아닌 턴엔 붙이지 않는다(완료 턴·선택지 답)", !sameThread.includes("정기 스케줄"), sameThread),
       assert("일반 대화엔 붙이지 않는다", !chat.includes("정기 스케줄"), chat),
       assert("세 어댑터가 대화 컨텍스트에 턴 입력을 통째로 넘긴다", adapters.every((a) => a.whole), adapters),

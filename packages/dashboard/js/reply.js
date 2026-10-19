@@ -3,15 +3,22 @@
       // 입력창 위 인용 칩. 전송 시 그 원문을 replyToText 로 POST → 브리지가 IncomingMessage.replyToText
       // 로 실어 route 직전 인용 주입(telegram reply_to 와 동형·LLM-agnostic, 신규 백엔드 0).
       const chatReplyEl = document.getElementById("chat-reply");
-      let replyingTo = null; // { text, label }
+      let replyingTo = null; // { text, label, ref? }
       const clearReply = () => {
         replyingTo = null;
         if (chatReplyEl) { chatReplyEl.hidden = true; chatReplyEl.textContent = ""; }
       };
-      const startReply = (text, label) => {
+      // ref = 답글 대상(2026-10-19) — 이력 말풍선은 대화 기록 행 id(`data-id`), 아직 id 가 없는 실시간 말풍선은 정확한 시각(`data-ts`,
+      //  대화 기록과 같은 이벤트 시각 — 브리지가 같은 시각·발화자가 한 건일 때만 id 로 바꾼다). 둘 다 없으면 비운다 — 인용만 간다.
+      const startReply = (text, label, ref) => {
         const t = String(text || "").trim();
         if (t === "" || !chatReplyEl) return;
-        replyingTo = { text: t.slice(0, 1500), label: label || i18n("common.message") };
+        // ★원문을 **자르지 않는다** — 길이는 코어 한 곳(`reply-quote.ts` — 앞·끝을 남긴다)이 정한다. 여기서 앞 1,500자만 남기면 긴 답의
+        //  **끝**(결론·질문)이 비서에게 안 갔다(10-06 에 코어로 모았는데 이 줄이 남아 있었다). 칩은 CSS 가 한 줄로 줄여 보여 준다.
+        replyingTo = {
+          text: t, label: label || i18n("common.message"),
+          ...(ref ? { ref } : {}),
+        };
         chatReplyEl.textContent = "";
         const lb = document.createElement("span"); lb.className = "cr-label"; lb.textContent = "↩ " + replyingTo.label;
         const tx = document.createElement("span"); tx.className = "cr-text"; tx.textContent = replyingTo.text.replace(/\s+/g, " ");
@@ -100,9 +107,18 @@
           el: host,
           // 완료 턴 표식 id — 저장이 확인된 비서 답(라이브·복원 같은 값, 턴 묶음이면 묶음에). 없으면 «여기까지로 갈라내기» 가 안 뜬다.
           turn: (() => { const t = msg.closest ? msg.closest("[data-turn]") : null; return t ? t.dataset.turn : ""; })(),
+          // 답글 대상 — 이력 말풍선의 행 id 우선, 없으면 정확한 시각·보낸 쪽(`data-type`).
+          replyRef: (() => {
+            const ds = host && host.dataset ? host.dataset : {};
+            const role = ds.type === "channel.message.in" ? "user" : ds.type === "channel.message.out" ? "assistant" : undefined;
+            const id = ds.id ? Number(ds.id) : NaN;
+            if (Number.isInteger(id) && id > 0) return { id, ...(role ? { role } : {}) };
+            const ts = tsAttr ? Number(tsAttr) : NaN;
+            return Number.isFinite(ts) ? { ts, ...(role ? { role } : {}) } : null;
+          })(),
         };
       };
-      registerBuiltinHandler("message.reply", (ctx) => { startReply(ctx.text, ctx.label); });
+      registerBuiltinHandler("message.reply", (ctx) => { startReply(ctx.text, ctx.label, ctx.replyRef); });
       registerBuiltinHandler("message.copy", async (ctx) => {
         if (!navigator.clipboard) return;
         // 마크다운 원문 우선 — 없으면(사용자 메시지 등 평문) 렌더된 글 그대로.
@@ -198,7 +214,8 @@
         }
       };
 
-      const sendChatMessage = async (text, attachments, replyToText) => {
+      // reply = { text, ref? } — 답글 원문과 대상(없으면 답글 아님).
+      const sendChatMessage = async (text, attachments, reply) => {
         // ★★**보낼 방을 여기서 고정한다** (2026-09-20, 회사돌쇠 검토 ②). `await` 뒤에
         //  `activeThreadKey` 를 다시 읽으면, 보내는 사이 탭을 옮겼을 때 **다른 방의 기록**을
         //  조회해 «도착 안 했다» 로 읽는다(실측 재현: A 에 보냈는데 `threadKey=room-B` 를 조회).
@@ -229,7 +246,8 @@
               threadKey: sentTo,
               correlationId,
               ...(attachments && attachments.length ? { attachments } : {}),
-              ...(replyToText ? { replyToText } : {}),
+              ...(reply && reply.text ? { replyToText: reply.text } : {}),
+              ...(reply && reply.text && reply.ref ? { replyToRef: reply.ref } : {}),
               // egress fan-out(ADR 2026-07-16 §D4 Phase B2) — 컴포저 체크박스가 "이 답도 함께
               // 보낼" 추가 채널을 골랐을 때만 배열로 실음(인입 응답은 백엔드가 항상 유지). 빈
               // 배열/미체크 = 미전송(회귀 0). getEgressChannels 는 egress-selector.js 가 정의.

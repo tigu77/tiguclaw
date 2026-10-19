@@ -1,4 +1,5 @@
 import { getDb } from "./sessions.js";
+import { WATCH_RUN_LOG, deleteTriggerRuns, recordTriggerRun, triggerRunTimes } from "./trigger-runs.js";
 
 export interface WatchRow {
   id: number;
@@ -19,6 +20,8 @@ export interface WatchRow {
   lastEvent: string | null;
   lastStatus: "ok" | "error" | null;
   lastError: string | null;
+  /** 이력 정책 — null = 이전 실행 대화를 계속 이어감(기본), 0 = 매번 새로, N = 직전 N회만. 스케줄 `keep_runs` 와 같은 뜻·같은 판정(`applyRunHistory`). */
+  keepRuns: number | null;
 }
 
 interface DbWatchRow {
@@ -40,12 +43,13 @@ interface DbWatchRow {
   last_event: string | null;
   last_status: string | null;
   last_error: string | null;
+  keep_runs: number | null;
 }
 
 const SELECT_COLS = `id, label, path, pattern, recursive, debounce_ms,
        event_filter, prompt, dest_channel, dest_target, enabled,
        created_at, updated_at,
-       last_fired_at, last_path, last_event, last_status, last_error`;
+       last_fired_at, last_path, last_event, last_status, last_error, keep_runs`;
 
 const toRow = (r: DbWatchRow): WatchRow => ({
   id: r.id,
@@ -67,6 +71,7 @@ const toRow = (r: DbWatchRow): WatchRow => ({
   lastStatus:
     r.last_status === "ok" || r.last_status === "error" ? r.last_status : null,
   lastError: r.last_error,
+  keepRuns: typeof r.keep_runs === "number" && r.keep_runs >= 0 ? r.keep_runs : null,
 });
 
 export const addWatch = (input: {
@@ -79,6 +84,7 @@ export const addWatch = (input: {
   prompt: string;
   destChannel: string;
   destTarget?: string | null;
+  keepRuns?: number | null;
 }): WatchRow => {
   const handle = getDb();
   const now = Date.now();
@@ -93,8 +99,8 @@ export const addWatch = (input: {
        (label, path, pattern, recursive, debounce_ms, event_filter,
         prompt, dest_channel, dest_target,
         enabled, created_at, updated_at,
-        last_fired_at, last_path, last_event, last_status, last_error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
+        last_fired_at, last_path, last_event, last_status, last_error, keep_runs)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`,
     )
     .run(
       input.label,
@@ -108,6 +114,7 @@ export const addWatch = (input: {
       destTarget,
       now,
       now,
+      input.keepRuns ?? null,
     );
   const id = Number(result.lastInsertRowid);
   const created = getWatch(id);
@@ -159,6 +166,7 @@ export const updateWatch = (
     destChannel: string;
     destTarget: string | null;
     enabled: boolean;
+    keepRuns: number | null;
   }>,
 ): WatchRow | undefined => {
   const existing = getWatch(id);
@@ -206,6 +214,10 @@ export const updateWatch = (
     sets.push("enabled = ?");
     vals.push(patch.enabled ? 1 : 0);
   }
+  if (patch.keepRuns !== undefined) {
+    sets.push("keep_runs = ?");
+    vals.push(patch.keepRuns);
+  }
   if (sets.length === 0) return existing;
 
   sets.push("updated_at = ?");
@@ -251,5 +263,12 @@ export const recordFiring = (
 export const deleteWatch = (id: number): boolean => {
   const handle = getDb();
   const result = handle.prepare(`DELETE FROM watches WHERE id = ?`).run(id);
+  deleteTriggerRuns(WATCH_RUN_LOG, id); // 그 감시의 발화 기록도 같이 간다
   return result.changes > 0;
 };
+
+/** 발화 기록 한 줄 — 판정·바운드는 `trigger-runs.ts` 한 곳(스케줄과 같은 규칙). `ts` = 발화 시작 시각(스레드 줄 안). */
+export const recordWatchRun = (watchId: number, ts: number): void => recordTriggerRun(WATCH_RUN_LOG, watchId, ts);
+
+/** 발화 시각 최신순(최대 `limit` 개). */
+export const watchRunTimes = (watchId: number, limit: number): number[] => triggerRunTimes(WATCH_RUN_LOG, watchId, limit);

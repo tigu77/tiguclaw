@@ -10,7 +10,6 @@ import { clearSessionContext, getContextBoundary, getDb, setContextBoundary } fr
 import { clearThreadSummary } from "./thread-summaries.js";
 import { memberClause, threadScope } from "./thread-members.js";
 import { stripAssembledPrefix } from "./memory.js";
-import { scheduleRunTimes } from "./schedules.js";
 
 /** 맥락을 `boundaryTs` 이전에서 끊는다. 반환 = 끊을 이어가기 세션이 있었나(`/clear` 안내 문구용). */
 export const resetThreadContext = (
@@ -50,10 +49,11 @@ export const runStartsFor = (
   threadKey: string,
   prompt: string,
   keepRuns: number,
-  scheduleId?: number,
+  /** 그 트리거의 발화 기록(최신순, `limit` 개까지) — 스케줄·감시가 각자 자기 표를 넘긴다(`trigger-runs.ts`). 없으면 프롬프트 일치만. */
+  loggedRuns?: (limit: number) => number[],
 ): { starts: number[]; source: "log" | "prompt" } => {
-  if (scheduleId !== undefined) {
-    const logged = scheduleRunTimes(scheduleId, keepRuns);
+  if (loggedRuns !== undefined) {
+    const logged = loggedRuns(keepRuns);
     if (logged.length >= keepRuns) return { starts: logged, source: "log" };
   }
   return { starts: scheduleRunStarts(channel, threadKey, prompt, keepRuns), source: "prompt" };
@@ -98,18 +98,18 @@ export const scheduleRunStarts = (
  * 스케줄 발화 직전에 이력 정책을 적용한다. `keepRuns` null = 계속(아무것도 안 함).
  * 반환 = 적용한 경계와 남긴 발화 수(로그·검사용). 자를 것이 없거나 경계가 그대로면 null.
  */
-export const applyScheduleHistory = (
+export const applyRunHistory = (
   channel: ChannelName,
   threadKey: string,
   prompt: string,
   keepRuns: number | null,
   now: number = Date.now(),
-  /** 발화 기록을 볼 스케줄 — 없으면 프롬프트 머리 일치만(종전). */
-  scheduleId?: number,
+  /** 그 트리거의 발화 기록 — 없으면 프롬프트 머리 일치만(종전). */
+  loggedRuns?: (limit: number) => number[],
 ): { boundary: number; kept: number; source: "log" | "prompt" | "fresh" } | null => {
   if (keepRuns === null) return null;
   // 0(매번 새로)은 발화 시각을 안 본다 — 출처를 «기록» 이라 적으면 로그가 거짓이 된다(적대 검토 2026-09-28).
-  const { starts, source } = keepRuns > 0 ? runStartsFor(channel, threadKey, prompt, keepRuns, scheduleId) : { starts: [], source: "fresh" as const };
+  const { starts, source } = keepRuns > 0 ? runStartsFor(channel, threadKey, prompt, keepRuns, loggedRuns) : { starts: [], source: "fresh" as const };
   const boundary = keepRunsBoundary(starts, keepRuns, now);
   if (boundary === null) return null;
   // ★경계는 **앞으로만** 간다(전체 검토 2026-09-28). 종전엔 무조건 덮어써, `/clear`·«매번 새로» 로 잘라 둔 이력보다

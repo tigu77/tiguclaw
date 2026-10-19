@@ -12,7 +12,7 @@
 import type { EventBus } from "./eventbus.js";
 import { insertEvent, pruneEvents } from "../store/events.js";
 import { pruneInternalThreads } from "../store/sessions.js";
-import { recordChatMessage } from "../store/chat-log.js";
+import { bindChannelMessages, recordChatMessage } from "../store/chat-log.js";
 import { isChatVisibleEvent } from "./chat-visible-events.js";
 import { redactSecrets } from "./outbound-sanitize.js";
 import type { ChatAttachmentMeta, ChatLogEntry } from "../store/chat-log.js";
@@ -259,6 +259,18 @@ const startStreamTracePersistence = (bus: EventBus): void => {
  * 이미 best-effort boundary(내부 try/catch)지만, 구독 콜백에서도 이중 try/catch 로 감싼다
  * (subscriber throw → plugin.error 재귀 위험 차단, 위 generic sink 와 동일 정책).
  */
+/**
+ * 송·수신 이벤트에 싣는 **채널 메시지 id** 필드 — 발행하는 곳(핸들러·`deliverOutbound`)과 적재하는 곳(아래)이 같은 모양을 쓰게 한 곳에 둔다
+ *  (2026-10-19). 적재가 행 id 를 받아 «(채널, 주소, message_id) → 행» 을 묶는다 — 답글 원문을 정확히 짚는 재료.
+ */
+export const channelRefsField = (
+  channel: string,
+  ref: { address: string; messageIds: readonly (string | number)[] } | void | undefined,
+): { channelRefs?: { channel: string; address: string; messageIds: (string | number)[] } } =>
+  ref !== undefined && ref !== null && typeof ref === "object" && typeof ref.address === "string" && Array.isArray(ref.messageIds) && ref.messageIds.length > 0
+    ? { channelRefs: { channel, address: ref.address, messageIds: [...ref.messageIds] } }
+    : {};
+
 const startChatLogPersistence = (bus: EventBus): void => {
   bus.subscribe((event) => {
     // ★대화 가시 이벤트(선택지·통지 등)도 여기서 대화 기록에 남긴다 (2026-08-01).
@@ -322,7 +334,7 @@ const startChatLogPersistence = (bus: EventBus): void => {
       //  사본 `tg:<id>`). 대화는 한 번 일어난 일이다 — 배달이 는다고 대화가 늘지 않는다.
       //  `ephemeral` 과 같은 자리에서 같은 방식으로 판정한다(적재를 막는 곳은 여기 하나).
       if (payload.copyOfRecorded === true) return;
-      recordChatMessage({
+      const chatId = recordChatMessage({
         ts: event.ts, // ★event.ts 그대로 — 클라이언트 dedup 키.
         threadKey,
         channel,
@@ -348,6 +360,11 @@ const startChatLogPersistence = (bus: EventBus): void => {
           ? { turn: payload.turn as NonNullable<ChatLogEntry["turn"]> }
           : {}),
       });
+      // 채널 메시지 id → 이 행(답글 원문 정확 조회, 2026-10-19). 사본·휘발은 위에서 이미 빠졌다 — 사본에 단 답글은 인용만 간다.
+      const refs = payload.channelRefs as { channel?: unknown; address?: unknown; messageIds?: unknown } | undefined;
+      if (chatId !== undefined && refs !== undefined && typeof refs.channel === "string" && typeof refs.address === "string" && Array.isArray(refs.messageIds)) {
+        bindChannelMessages(refs.channel, refs.address, refs.messageIds as (string | number)[], chatId, event.ts);
+      }
     } catch (e) {
       console.error(
         "event-persist: chat_log 적재 실패:",

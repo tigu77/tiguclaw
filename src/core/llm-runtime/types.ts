@@ -67,6 +67,11 @@ export const claudeSpeedSettings = (
 ): { settings?: { fastMode: true } } =>
   speed === "fast" ? { settings: { fastMode: true } } : {};
 
+/** 이 턴을 연 트리거 실행 — `RegionASdkInput.triggerRun`. `path` 는 감지한 경로(여럿이면 줄바꿈으로, 실행기가 개수를 바운드한다). */
+export type TriggerRun =
+  | { kind: "schedule"; id: number }
+  | { kind: "watch"; id: number; event: string; path: string };
+
 export interface RegionASdkInput {
   text: string;
   threadKey: string;
@@ -286,12 +291,16 @@ export interface RegionASdkInput {
    */
   notifyDest?: WorkerNotifyDest;
   /**
-   * 이 턴이 **정기 스케줄 #id 의 발화 그 자체**다 (2026-10-02). 채우는 주체는 스케줄 실행기 하나.
-   * 대화 컨텍스트가 «이 턴은 정기 스케줄의 실행 — 지시문은 그 스케줄의 지시다» 를 말하는 근거다(헌법 «홈 밖·위험
-   * 경로» ④). ★같은 `scheduler:<id>` 세션의 다른 턴(매니저 완료 턴·선택지 답)은 채우지 않는다 — 그 턴의 지시문은
-   * 스케줄 지시가 아니다. 자식 턴(매니저·서브에이전트)에도 전파하지 않는다.
+   * 이 턴이 **등록된 트리거의 발화 그 자체**다 — 채우는 주체는 그 트리거의 실행기 하나(스케줄러·파일 감시). 대화 컨텍스트가
+   * «이 턴은 무엇의 실행인가» 를 말하는 유일한 근거다(`formatConversationContext`).
+   * ★같은 세션의 다른 턴(매니저 완료 턴·선택지 답)은 채우지 않는다 — 그 턴의 지시문은 트리거 지시가 아니다. 자식 턴(매니저·
+   *  서브에이전트)에도 전파하지 않는다.
+   * ★종류마다 뜻이 다르다: `schedule` 은 헌법 «홈 밖·위험 경로» ④ 면제의 근거다(2026-10-02). `watch` 는 **사실만** 말한다 —
+   *  파일 변경이 이 실행의 원인이고, 변경만으로 누가·왜 바꿨는지는 모른다(2026-10-19 회사 PC: 작업자 기록을 «사용자 재제출» 로
+   *  읽고 결정을 뒤집어 보고). ④ 면제는 감시에 넓히지 않는다(헌법이 정기 스케줄만 말한다).
+   * 종전 `scheduleRun?: number` 를 합쳤다 — 두 표시가 따로 있으면 같은 판단이 두 갈래고 둘 다 붙는 상태가 생긴다.
    */
-  scheduleRun?: number;
+  triggerRun?: TriggerRun;
   /**
    * 신규(additive, 2026-07-16) — **진행 중 턴에 끼워넣을 사용자 steering 소스**(채널·LLM 무관).
    * ADR `docs/decisions/2026-07-16-midturn-steering.md` §4. 핸들러가 turn 별 SteeringChannel

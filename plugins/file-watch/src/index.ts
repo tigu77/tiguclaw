@@ -28,9 +28,13 @@ import {
   getWatch,
   listWatches,
   recordFiring as defaultRecordFiring,
+  recordWatchRun,
   updateWatch,
+  watchRunTimes,
   type WatchRow,
 } from "../../../src/store/watches.js";
+import { applyRunHistory } from "../../../src/store/thread-reset.js";
+import { canonicalSessionChannel } from "../../../src/store/sessions.js";
 import { registerWatcher, unregisterWatcher, type WatcherDeps } from "./watcher.js";
 import { setFileWatchLifecycleHooks, createFileWatchMcpServer } from "./mcp.js";
 
@@ -173,6 +177,38 @@ class FileWatchPlugin {
   }
 }
 
+/**
+ * 이력 정책 — **스레드 줄 안에서 발화 직전에** 적용한다(스케줄 실행기와 같은 이유: 줄 앞 턴이 이어가기를 되살리면 «매번 새로» 가
+ * 사라진다). 정책은 발화 때 새로 읽는다(설정=데이터). 못 적용해도 발화는 한다(이력이 길 뿐 결과는 나간다).
+ * 반환 = 로그 한 줄에 실을 설명 — 로그만 보고 «이 실행이 무엇을 보고 판단했나» 를 가를 수 있게.
+ * ★한계(«직전 N회»): 발화 기록이 N개 쌓이기 전엔 프롬프트 머리 일치로 대신하는데, 감시 지시는 `{path}` 를 치환해 저장되므로 머리에
+ *  `{path}` 가 있으면 이전 실행을 못 찾는다 → 덜 자른다(기억을 과하게 버리지 않는 쪽이지만 N회 제한을 정확히 지킨 것은 아니다).
+ *  기록이 N개 쌓이면 저절로 정확해진다. «매번 새로»(0)는 발화 시각을 안 봐서 이 한계와 무관하다.
+ */
+const applyWatchHistory = (row: WatchRow, threadKey: string): string => {
+  const watchId = row.id;
+  if (row.keepRuns === null) return "이어감(keep_runs 없음 — 이전 실행 대화를 그대로 봄)";
+  try {
+    const applied = applyRunHistory(
+      canonicalSessionChannel(threadKey, "file-watch"),
+      threadKey,
+      row.prompt,
+      row.keepRuns,
+      Date.now(),
+      (limit) => watchRunTimes(watchId, limit),
+    );
+    // ★`null` 의 원인은 둘이다 — 발화 기록이 N회에 못 미침 · 계산한 경계가 이미 있는 경계보다 앞(예: «매번 새로» 였다가 «직전 N회» 로
+    //  바꾼 직후 — 경계는 앞으로만 간다). 어느 쪽인지 여기선 모르니 **단정하지 않는다**(아스트라 10-19 보완 1).
+    if (applied === null) return `직전 ${row.keepRuns}회 — 이력 경계 변경 없음(기록 부족 또는 기존 경계 유지)`;
+    const at = new Date(applied.boundary).toISOString();
+    return applied.source === "fresh"
+      ? `매번 새로 — ${at} 이전을 끊음`
+      : `직전 ${applied.kept}회만 남기고 ${at} 이전을 끊음(발화 시각 출처: ${applied.source === "log" ? "발화 기록" : "프롬프트 일치 — 기록이 아직 모자람"})`;
+  } catch (e) {
+    return `적용 실패 — 이어서 발화: ${e instanceof Error ? e.message : String(e)}`;
+  }
+};
+
 // 데몬 정상 부팅 시 runClaude default — 영역 A 직접 호출.
 const defaultRunClaude: WatcherDeps["runClaude"] = async (input) => {
   // 스케줄러와 **같은 이유·같은 처방** — 이 경로도 핸들러를 우회하므로 진행 중 등록이
@@ -182,14 +218,30 @@ const defaultRunClaude: WatcherDeps["runClaude"] = async (input) => {
   return runExternalTurn(
     input.threadKey,
     { ac, channel: input.channel, target: null, notifyDest: input.interruptDest },
-    () =>
-      runClaude({
-        text: input.text,
-        threadKey: input.threadKey,
-        channel: input.channel,
-        cwd: input.cwd,
-        abortSignal: ac.signal,
-      }),
+    async () => {
+      // ★입력을 **통째로** 넘긴다 — 필드를 골라 넘기면 실행기가 새로 싣는 값이 여기서 조용히 떨어진다(스케줄러 파사드가
+      //  2026-10-02 에 그렇게 발화 표식을 잃었다). `interruptDest` 만 이 파사드의 몫(중단 통지)이라 뺀다.
+      const { interruptDest: _interrupt, ...turn } = input;
+      const watchId = turn.triggerRun.id;
+      // ★줄에서 기다리는 사이 감시가 지워지거나 꺼질 수 있다 — **줄 안에서 최신 행을 다시 읽고** 그렇다면 돌리지 않는다(적대 검토 10-19 P2,
+      //  실측 재현: 지운 감시가 모델을 돌리고 배달까지 했다). 스케줄 실행기가 10-14 에 고친 것과 같은 판단(`runner.ts` SKIPPED_IN_QUEUE).
+      const latest = getWatch(watchId);
+      if (latest === undefined) return { text: "", skipped: "deleted" as const };
+      if (!latest.enabled) return { text: "", skipped: "disabled" as const };
+      // 발화 시작 = 줄에 선 시각이 아니라 **실제로 도는 시각**(«직전 N회» 경계가 이 실행을 통째로 품게).
+      const startedAt = Date.now();
+      console.log(`[file-watch:${watchId}] 이력 정책: ${applyWatchHistory(latest, turn.threadKey)}`);
+      const out = await runClaude({ ...turn, abortSignal: ac.signal });
+      // ★대화가 남은 발화만 적는다(스케줄 실행기와 같은 규칙) — 기록 실패가 결과·배달을 막지 않는다(다음은 프롬프트 일치로).
+      if (out.text.trim() !== "") {
+        try {
+          recordWatchRun(watchId, startedAt);
+        } catch (e) {
+          console.warn(`[file-watch:${watchId}] 발화 기록 실패 — 이력 정책은 프롬프트 일치로 대신합니다: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      return out;
+    },
   );
 };
 

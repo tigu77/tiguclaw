@@ -29,6 +29,11 @@
         /** 지금 그려 둔 배치 — 같으면 다시 그리지 않는다. */
         let paintedSig = null;
         const sigOf = () => JSON.stringify([layout, dataRoutes]);
+        /**
+         * 위젯 하나의 «무엇을 보여 주나» — 종류 + 설정. 값은 이 표시와 함께 둔다(아스트라 10-21: 같은 id 의 설정을 A→B 로 바꾼 뒤
+         *  늦게 온 A 응답이 B 를 덮고 A 로 다시 마운트했다 — 세대는 열기·닫기만 갈라 설정 변경을 못 봤다).
+         */
+        const wSig = (w) => JSON.stringify([w.type, w.config || {}]);
         const isOpen = () => document.body.classList.contains("wg-open");
         const live = (g) => g === gen && isOpen();
         const stopTimers = () => {
@@ -52,7 +57,9 @@
             void widgetHost.mount(box, { widget: w.type, data: null });
             return;
           }
-          const state = values.get(w.id);
+          // 지금 설정으로 받은 값만 쓴다 — 바뀌기 전 설정의 값은 «받아오는 중» 으로 본다.
+          const kept = values.get(w.id);
+          const state = kept !== undefined && kept.sig === wSig(w) ? kept : undefined;
           if (state === undefined || state.error) {
             box.classList.add("wg-note");
             box.textContent = i18n(state === undefined ? "wg.loading" : "wg.failed");
@@ -90,7 +97,10 @@
             next = { error: true };
           }
           if (!live(g)) return; // 닫혔거나 다시 열렸다 — 옛 응답
-          values.set(w.id, next);
+          // 요청을 보낸 뒤 그 위젯의 종류·설정이 바뀌었으면(또는 빠졌으면) 옛 설정의 응답이다 — 버린다.
+          const cur = (layout || []).find((x) => x.id === w.id);
+          if (cur === undefined || wSig(cur) !== wSig(w)) return;
+          values.set(w.id, { ...next, sig: wSig(w) });
           const item = itemOf(w.id);
           if (item) paint(item, w);
         };
@@ -132,6 +142,8 @@
           let routes;
           try {
             const r = await fetch("/api/home-widgets", { cache: "no-store" });
+            // ★실패 응답(HTTP 500 의 `{error}`)을 «빈 목록» 으로 읽지 않는다 — 위젯이 전부 사라져 보였다(아스트라 10-21). 지금 그림을 둔다.
+            if (!r.ok) return;
             const j = await r.json();
             next = Array.isArray(j.widgets) ? j.widgets : [];
             routes = Array.isArray(j.dataRoutes) ? j.dataRoutes : [];

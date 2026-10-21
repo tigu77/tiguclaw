@@ -332,6 +332,69 @@ export const check: RegressionCheck = {
       if (saved === null) writeFileSync(settings, "{}\n", "utf8");
       else writeFileSync(settings, saved, "utf8");
     }
+
+    // ── ⑦ 설정이 바뀐 뒤의 옛 응답 · 실패한 목록 조회(아스트라 10-21 전체 검토 — 그 재현 그대로) ─────────────────
+    {
+      const c7 = makeClock();
+      let place = "A";
+      let failList = false;
+      let releaseA: (() => void) | null = null;
+      let releaseD: (() => void) | null = null;
+      const d7 = bootDashboard({
+        clock: c7, i18n: i18nForContext,
+        ids: ["widget-panel", "wg-list", "wg-toggle", "wg-close", "wg-backdrop", "sidebar", "toast"],
+        fetch: async (url: string) => {
+          if (url === "/api/home-widgets") {
+            return failList ? jsonResponse({ error: "temporary failure" }, 500)
+              : jsonResponse({ widgets: [{ id: "w1", type: "weather/forecast", config: { place } }], dataRoutes: ["weather/forecast"] });
+          }
+          if (url.startsWith("/api/plugin-data/")) {
+            const p = new URL(url, "http://x").searchParams.get("place");
+            if (p === "A") await new Promise<void>((r) => { releaseA = r; });
+            if (p === "D") await new Promise<void>((r) => { releaseD = r; });
+            return jsonResponse({ data: { place: p } });
+          }
+          if (url.startsWith("/api/update-availability")) return jsonResponse({ state: "up-to-date" });
+          return jsonResponse({}, 404);
+        },
+        stubs: "let evCount = 0; let localChatCount = 0; const setChatPanel = () => {}; let __mounts = [];" +
+          "const widgetHost = { mount: async (el, att) => { __mounts.push(att.data); return true; } };",
+      });
+      d7.run("widgetPanel.open()");
+      await c7.advance(100); // A 요청이 붙잡혔다
+      place = "B";
+      await c7.advance(30_100); // 배치 갱신 → B 로 다시 그림·B 응답
+      const afterB = JSON.stringify(d7.run("__mounts"));
+      const release = releaseA as (() => void) | null;
+      if (release !== null) release();
+      await c7.advance(100); // 옛 A 응답 도착
+      const afterOld = JSON.parse(JSON.stringify(d7.run("__mounts"))) as Array<{ place?: string }>; // 그 시점의 복사본
+      const items = (): number => d7.document.getElementById("wg-list")?.querySelectorAll(".wg-item").length ?? -1;
+      failList = true;
+      await c7.advance(30_100); // 목록 조회가 HTTP 500
+      const afterFail = items();
+      failList = false;
+      place = "C";
+      await c7.advance(30_100); // 다시 정상 — 바뀐 설정은 반영된다
+      const afterRecover = JSON.parse(JSON.stringify(d7.run("__mounts"))) as Array<{ place?: string }>;
+      // 바뀌기 전 설정(C)의 **캐시된 값**도 새 설정(D)의 값으로 쓰지 않는다 — D 가 오기 전엔 «받아오는 중»
+      place = "D";
+      await c7.advance(30_100);
+      const whileD = JSON.parse(JSON.stringify(d7.run("__mounts"))) as Array<{ place?: string }>;
+      const relD = releaseD as (() => void) | null;
+      if (relD !== null) relD();
+      await c7.advance(100);
+      const afterD = JSON.parse(JSON.stringify(d7.run("__mounts"))) as Array<{ place?: string }>;
+      out.push(
+        assert(
+          "★설정을 A→B 로 바꾼 뒤 늦게 온 A 응답은 **버린다**(마지막 마운트가 계속 B) · 목록 조회 HTTP 500 은 «빈 목록» 이 아니다(위젯 1개 그대로) · 다시 정상이면 바뀐 설정(C)이 반영된다 · 설정이 D 로 바뀌면 D 가 올 때까지 **옛 C 값으로 다시 마운트하지 않는다**",
+          afterB.includes('"B"') && afterOld[afterOld.length - 1]?.place === "B" && !afterOld.some((m) => m?.place === "A") &&
+            afterFail === 1 && afterRecover[afterRecover.length - 1]?.place === "C" &&
+            whileD.length === afterRecover.length && afterD[afterD.length - 1]?.place === "D",
+          JSON.stringify({ afterB, afterOld, afterFail, afterRecover, whileD, afterD }),
+        ),
+      );
+    }
     return out;
   },
 };

@@ -510,6 +510,8 @@ export const makeDomContext = (extra: Record<string, unknown> = {}) => {
     matchMedia: (q: string) => ({ matches: /max-width:\s*900px/.test(q) ? win.innerWidth <= 900 : false, addEventListener() {}, removeEventListener() {} }),
     confirm: () => true,
     document,
+    // 창에 직접 내는 이벤트(`window.dispatchEvent(new CustomEvent(…))`) — 대상 단계 하나뿐이다(창엔 조상이 없다).
+    dispatchEvent: (ev: any): boolean => { ev.target = win; win._fire(ev, "target"); return !ev.defaultPrevented; },
   });
   const ctx: Record<string, unknown> = {
     document,
@@ -520,6 +522,7 @@ export const makeDomContext = (extra: Record<string, unknown> = {}) => {
     Node: MNode,
     MutationObserver: class { constructor(cb: (r: any[]) => void) { return new MiniMutationObserver(document, cb); } },
     CSS: { escape: (s: string) => String(s).replace(/["\\]/g, "\\$&") },
+    CustomEvent: class { type: string; detail: unknown; _stopped = false; defaultPrevented = false; constructor(type: string, init?: { detail?: unknown }) { this.type = type; this.detail = init?.detail; } stopPropagation() { this._stopped = true; } preventDefault() { this.defaultPrevented = true; } },
     queueMicrotask,
     Promise,
     JSON,

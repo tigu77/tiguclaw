@@ -333,6 +333,14 @@
     <!-- ★util.js 가 먼저다 — constants.js 의 라벨 맵이 로드 시점에 `t()` 를 부른다.
          (util.js 는 constants 의 식별자를 하나도 안 쓴다 — 그래서 순서를 바꿔도 안전하다.) -->
     <script src="/js/util.js"></script>
+    <!-- 실시간 계약의 화면 쪽(2026-08-28, 증분 5a·5b) — 스냅샷·이벤트·재연결을 한 규칙으로.
+         ★**소비자보다 먼저 실려야 한다.** 처음엔 위젯 호스트 옆(317번째)에 뒀는데,
+         background-drawer(310)가 먼저 돌아 `window.resourceStore` 를 못 잡았다 —
+         typeof 가드가 있어서 **조용히 폴백**으로 떨어졌고, 게이트는 서 있는데
+         아무것도 안 가르는 상태였다(라이브 실측으로 잡았다: 좌표가 null).
+         "게이트는 있다가 아니라 도는가" 의 정확한 사례.
+         ★2026-10-21 — 셸·타이머도 리소스를 낸다(view-shells 는 드로어보다 앞이다) → 의존 없는 이 파일을 **맨 앞(util 다음)**으로. -->
+    <script src="/js/resource-store.js"></script>
     <script src="/js/constants.js"></script>
     <script src="/js/side-panels.js"></script>
     <script src="/js/update-chip.js"></script>
@@ -351,13 +359,6 @@
     <script src="/js/widget-panel.js"></script>
     <script src="/js/chat-core.js"></script>
     <script src="/js/step-detail.js"></script>
-    <!-- 실시간 계약의 화면 쪽(2026-08-28, 증분 5a·5b) — 스냅샷·이벤트·재연결을 한 규칙으로.
-         ★**소비자보다 먼저 실려야 한다.** 처음엔 위젯 호스트 옆(317번째)에 뒀는데,
-         background-drawer(310)가 먼저 돌아 `window.resourceStore` 를 못 잡았다 —
-         typeof 가드가 있어서 **조용히 폴백**으로 떨어졌고, 게이트는 서 있는데
-         아무것도 안 가르는 상태였다(라이브 실측으로 잡았다: 좌표가 null).
-         "게이트는 있다가 아니라 도는가" 의 정확한 사례. -->
-    <script src="/js/resource-store.js"></script>
     <script src="/js/background-drawer.js"></script>
     <script src="/js/bg-timers.js"></script>
     <script src="/js/virtualization.js"></script>

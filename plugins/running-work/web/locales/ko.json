@@ -1,8 +1,17 @@
 {
-  "idle": "지금 돌고 있는 작업이 없습니다.",
+  "idle": "지금 돌고 있는 백그라운드 작업이 없습니다.",
   "unnamed": "(이름 없음)",
   "since": "{n}분째",
-  "widget.live": "돌고 있는 작업",
+  "widget.live": "백그라운드 작업",
   "icon.worker": "🎖️",
-  "icon.agent": "🤖"
+  "icon.agent": "🤖",
+  "group.timers": "⏱ 타이머",
+  "group.jobs": "⚙️ 매니저 / 에이전트",
+  "group.shells": "🖥️ 셸 / 프로세스",
+  "timer.in": "{n}분 뒤",
+  "timer.now": "곧",
+  "menu.openPanel": "백그라운드 패널 열기",
+  "menu.collapseAll": "모두 접기",
+  "menu.expandAll": "모두 펼치기",
+  "session.unknown": "대화 미상"
 }

@@ -43,6 +43,24 @@ export const check: RegressionCheck = {
       return { text, ms: Date.now() - t0 };
     };
     const KEEP = "setTimeout(()=>{},30000)";
+    // ★준비 상태로 잰다(2026-10-21 아스트라 후속) — 부하가 걸리면 자식이 1초 넘게 늦게 떠, «출력 없음» 시계·«취소 전에 출력이 나왔다» 가정이
+    //  시간만으로는 성립하지 않았다(실측: 전체 회귀와 겹칠 때만 1009ms·1010ms·취소 후 조회 빈 값). 자식이 **표식 파일**을 남기고 검사는
+    //  그걸 본 뒤에 재기 시작·취소한다 — 시한을 늘리지 않는다. 경로는 앞으로 빗금(윈도우도 받는다), 홑따옴표 안에 넣는다.
+    const { mkdtempSync, existsSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const markDir = mkdtempSync(join(tmpdir(), "tiguclaw-regression-bashwait-"));
+    let markSeq = 0;
+    const mark = (): string => join(markDir, "m" + String(++markSeq)).replace(/\\/g, "/");
+    const touch = (m: string): string => `require('fs').writeFileSync('${m}','1')`;
+    const waitMark = async (m: string, ms = 15_000): Promise<number> => {
+      const t0 = Date.now();
+      while (!existsSync(m)) {
+        if (Date.now() - t0 > ms) return -1;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return Date.now() - t0;
+    };
 
     try {
       // ① 끝남 — 0.6초 뒤 끝나는 셸을 10초 기다리면 끝나자마자.
@@ -85,17 +103,23 @@ export const check: RegressionCheck = {
       out.push(assert("★N초째 새 출력이 없으면 깨우고 마지막 출력(이미 읽은 것)을 붙인다 · 끊지 않는다", /깨운 이유: 1초째 새 출력 없음/.test(rc.text) && rc.text.includes("(y/N)") && rc.ms >= 900 && rc.ms < 3000 && cRunning, { ms: rc.ms, cRunning }));
 
       // ③-2 진전이 있으면 멈춤이 아니다 — stdout 으로 0.3초마다 찍다 끝나는 셸(2.4초).
-      const g = await launch("let i=0;const t=setInterval(()=>{console.log('tick'+(i++));if(i>=8)clearInterval(t)},300)");
+      const gm = mark();
+      const g = await launch(`${touch(gm)};let i=0;const t=setInterval(()=>{console.log('tick'+(i++));if(i>=8)clearInterval(t)},300)`);
+      await waitMark(gm);
       const rg = await timed({ bash_id: g, wait_seconds: 10, idle_seconds: 1 });
-      out.push(assert("★출력이 계속 늘면 «출력 없음» 으로 깨우지 않는다(stdout)", /깨운 이유: 끝남/.test(rg.text) && rg.ms >= 2000, { ms: rg.ms }));
+      out.push(assert("★출력이 계속 늘면 «출력 없음» 으로 깨우지 않는다(stdout)", /깨운 이유: 끝남/.test(rg.text) && rg.ms >= 2000, { ms: rg.ms, reason: /깨운 이유: [^\n]*/.exec(rg.text)?.[0] }));
       // ③-3 stderr 로만 찍어도 진전이다.
-      const ge = await launch("let i=0;const t=setInterval(()=>{console.error('e'+(i++));if(i>=8)clearInterval(t)},300)");
+      const gem = mark();
+      const ge = await launch(`${touch(gem)};let i=0;const t=setInterval(()=>{console.error('e'+(i++));if(i>=8)clearInterval(t)},300)`);
+      await waitMark(gem);
       const rge = await timed({ bash_id: ge, wait_seconds: 10, idle_seconds: 1 });
-      out.push(assert("stderr 로만 나오는 출력도 진전으로 센다", /깨운 이유: 끝남/.test(rge.text) && rge.ms >= 2000, { ms: rge.ms }));
+      out.push(assert("stderr 로만 나오는 출력도 진전으로 센다", /깨운 이유: 끝남/.test(rge.text) && rge.ms >= 2000, { ms: rge.ms, reason: /깨운 이유: [^\n]*/.exec(rge.text)?.[0] }));
       // ③-4 한동안 찍다 조용해지면 그 뒤부터 다시 잰다 — 진전 뒤 침묵도 잡는다.
-      const h = await launch(`let i=0;const t=setInterval(()=>{console.log('h'+(i++));if(i>=4)clearInterval(t)},250);${KEEP}`);
+      const hm = mark();
+      const h = await launch(`${touch(hm)};let i=0;const t=setInterval(()=>{console.log('h'+(i++));if(i>=4)clearInterval(t)},250);${KEEP}`);
+      await waitMark(hm);
       const rh = await timed({ bash_id: h, wait_seconds: 10, idle_seconds: 1 });
-      out.push(assert("진전이 멈춘 뒤 N초가 지나면 깨운다(진전 시계가 계속 갱신된다)", /깨운 이유: 1초째 새 출력 없음/.test(rh.text) && rh.ms >= 1700 && rh.ms < 4000, { ms: rh.ms }));
+      out.push(assert("진전이 멈춘 뒤 N초가 지나면 깨운다(진전 시계가 계속 갱신된다)", /깨운 이유: 1초째 새 출력 없음/.test(rh.text) && rh.ms >= 1700 && rh.ms < 4000, { ms: rh.ms, reason: /깨운 이유: [^\n]*/.exec(rh.text)?.[0] }));
 
       // F2 — 1MB 버퍼 상한 뒤에도 출력이 이어지면 멈춤이 아니고, 상한 뒤에 온 글자도 찾는다.
       const big = await launch("process.stdout.write('x'.repeat(1100000));let i=0;const t=setInterval(()=>{process.stdout.write('tick ');if(++i===6){console.log('BUILD DONE')}},200)");
@@ -172,35 +196,46 @@ export const check: RegressionCheck = {
       out.push(assert("남의 대화 메시지·합성 알림·슬래시 명령·전달 안 된 steer 로는 깨우지 않는다", /깨운 이유: 1초 대기 상한/.test(ro.text) && /깨운 이유: 1초 대기 상한/.test(rwo.text), { ro: ro.text.slice(0, 40), rwo: rwo.text.slice(0, 40) }));
 
       // F3 — 이 호출이 취소되면(MCP 요청 취소) 바로 놓고, 출력은 소비하지 않는다 — 다음 BashOutput 이 그대로 받는다.
-      const f = await launch(`setTimeout(()=>console.log('FINAL RESULT'),400);${KEEP}`);
+      const fm = mark();
+      const f = await launch(`setTimeout(()=>{console.log('FINAL RESULT');${touch(fm)}},400);${KEEP}`);
       const callAc = new AbortController();
       const pf = timed({ bash_id: f, wait_seconds: 10 }, { signal: callAc.signal });
-      setTimeout(() => callAc.abort(), 900);
+      const fPrinted = await waitMark(fm); // 기다리는 동안 출력이 **나온 뒤에** 취소한다 — 그래야 «소비하지 않는다» 를 잰다
+      await new Promise((r) => setTimeout(r, 150)); // 파이프로 받을 틈
+      callAc.abort();
       const rf = await pf;
-      const after = await call("BashOutput", { bash_id: f });
-      out.push(assert("★호출이 취소되면 바로 놓고 출력을 소비하지 않는다(다음 호출이 FINAL RESULT 를 받는다)", /깨운 이유: 대기 중단/.test(rf.text) && rf.ms < 2000 && !rf.text.includes("FINAL RESULT") && after.includes("FINAL RESULT"), { ms: rf.ms }));
+      // 뒤 조회는 잠깐 기다려 찾는다 — 늦게 온 것(파이프)과 사라진 것을 가른다. 사라졌으면 3초를 기다려도 없다.
+      const after = await call("BashOutput", { bash_id: f, wait_seconds: 3, until: "FINAL RESULT" });
+      const fDiag = { ms: rf.ms, printedBeforeAbortMs: fPrinted, reason: /깨운 이유: [^\n]*/.exec(rf.text)?.[0], abortedHadOutput: rf.text.includes("FINAL RESULT"), laterGot: after.includes("FINAL RESULT"), laterReason: /깨운 이유: [^\n]*/.exec(after)?.[0] };
+      out.push(assert("★호출이 취소되면 바로 놓고 출력을 소비하지 않는다(다음 호출이 FINAL RESULT 를 받는다)", fPrinted >= 0 && /깨운 이유: 대기 중단/.test(rf.text) && rf.ms < 3000 && !fDiag.abortedHadOutput && fDiag.laterGot, fDiag));
 
       // ★/stop 의 실제 순서 — «새 메시지» 에코를 먼저 내고 같은 흐름에서 곧바로 중단한다. 중단이 이겨야 하고 출력은 남아야 한다(2R N1).
       const ac2 = new AbortController();
       const t2 = toolsOf("regr:bash-wait-stop", ac2.signal);
-      const f2 = await launch(`setTimeout(()=>console.log('FINAL TWO'),300);${KEEP}`, t2);
+      const f2m = mark();
+      const f2 = await launch(`setTimeout(()=>{console.log('FINAL TWO');${touch(f2m)}},300);${KEEP}`, t2);
       const pf2 = timed({ bash_id: f2, wait_seconds: 10 }, {}, t2);
-      setTimeout(() => {
-        getEventBus().publish({ type: "channel.message.in", ts: Date.now(), payload: { channel: "http-bridge", threadKey: "regr:bash-wait-stop", text: "멈춰" } });
-        ac2.abort();
-      }, 800);
+      const f2Printed = await waitMark(f2m);
+      await new Promise((r) => setTimeout(r, 150));
+      getEventBus().publish({ type: "channel.message.in", ts: Date.now(), payload: { channel: "http-bridge", threadKey: "regr:bash-wait-stop", text: "멈춰" } });
+      ac2.abort();
       const rf2 = await pf2;
-      const after2 = await call("BashOutput", { bash_id: f2 }, {}, t2);
-      out.push(assert("★/stop 순서(에코 → 중단)에서도 중단이 이기고 출력을 남긴다", /깨운 이유: 대기 중단/.test(rf2.text) && !rf2.text.includes("FINAL TWO") && after2.includes("FINAL TWO"), { head: rf2.text.slice(0, 60) }));
+      // 턴 신호가 이미 취소됐으므로 같은 도구로는 기다릴 수 없다 — 새 도구(같은 셸 레지스트리)로 잠깐 기다려 찾는다.
+      const after2 = await call("BashOutput", { bash_id: f2, wait_seconds: 3, until: "FINAL TWO" }, {}, toolsOf("regr:bash-wait-stop-after"));
+      const f2Diag = { printedBeforeAbortMs: f2Printed, reason: /깨운 이유: [^\n]*/.exec(rf2.text)?.[0], abortedHadOutput: rf2.text.includes("FINAL TWO"), laterGot: after2.includes("FINAL TWO") };
+      out.push(assert("★/stop 순서(에코 → 중단)에서도 중단이 이기고 출력을 남긴다", f2Printed >= 0 && /깨운 이유: 대기 중단/.test(rf2.text) && !f2Diag.abortedHadOutput && f2Diag.laterGot, f2Diag));
 
       // 이미 취소된 호출 + 조건이 이미 충족(안 읽은 READY) — 취소가 이기고 출력은 남는다(외부 검토 2026-10-02).
-      const rdy = await launch(`console.log('READY');${KEEP}`);
-      await new Promise((r) => setTimeout(r, 500));
+      const rdym = mark();
+      const rdy = await launch(`console.log('READY');${touch(rdym)};${KEEP}`);
+      const rdyPrinted = await waitMark(rdym); // «조건이 이미 충족» 이 성립한 뒤에 부른다
+      await new Promise((r) => setTimeout(r, 150));
       const preAc = new AbortController();
       preAc.abort();
       const rpre = await timed({ bash_id: rdy, wait_seconds: 2, until: "READY" }, { signal: preAc.signal });
-      const afterPre = await call("BashOutput", { bash_id: rdy });
-      out.push(assert("이미 취소된 호출은 조건이 충족돼 있어도 출력을 소비하지 않는다", /깨운 이유: 대기 중단/.test(rpre.text) && afterPre.includes("READY"), { head: rpre.text.slice(0, 50) }));
+      const afterPre = await call("BashOutput", { bash_id: rdy, wait_seconds: 3, until: "READY" });
+      const preDiag = { printedMs: rdyPrinted, reason: /깨운 이유: [^\n]*/.exec(rpre.text)?.[0], abortedHadOutput: rpre.text.includes("READY"), laterGot: afterPre.includes("READY") };
+      out.push(assert("이미 취소된 호출은 조건이 충족돼 있어도 출력을 소비하지 않는다", rdyPrinted >= 0 && /깨운 이유: 대기 중단/.test(rpre.text) && !preDiag.abortedHadOutput && preDiag.laterGot, preDiag));
 
       // /stop(턴 신호)도 같다.
       const pstop = timed({ bash_id: d, wait_seconds: 30 });
@@ -209,6 +244,7 @@ export const check: RegressionCheck = {
       out.push(assert("기다리는 중 /stop(턴 취소)이면 바로 놓는다", /깨운 이유: 대기 중단/.test(rstop.text) && rstop.ms < 2000, { ms: rstop.ms }));
     } finally {
       await killAllBgShells();
+      rmSync(markDir, { recursive: true, force: true });
     }
 
     // 배선(소스) — Claude 어댑터도 턴 중단 신호를 셸 도구에 넘긴다(codex·openai 와 같은 신호, 적대 검토 F3).

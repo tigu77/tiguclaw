@@ -7,6 +7,10 @@
       const bgTimersList = document.getElementById("bg-timers-list");
       let bgTimers = [];
       let bgTimersGen = 0;
+      /** «그 카드로» 가 강조 중인 타이머 — 다시 그려도 남게(위 줄 그리기가 읽는다). */
+      const bgTimerFlash = { id: "", until: 0 };
+      // ★목록을 리소스로도 낸다(2026-10-21 «백그라운드 작업» 위젯 — 패널의 축약판). 범위와 무관한 전체 — 거르는 건 받는 쪽이다.
+      const timersRes = window.resourceStore.owned("bg-timers");
 
       const timerLeftText = (runAt) => {
         const ms = runAt - Date.now();
@@ -29,6 +33,9 @@
         for (const x of mine) {
           const row = document.createElement("div");
           row.className = "bg-timer" + (x.enabled ? "" : " off");
+          row.dataset.timerId = String(x.id);
+          // «그 카드로» 강조는 **상태**다 — 패널을 열면 타이머를 다시 받아 목록을 통째로 다시 그려, 줄에 붙인 강조가 0.45초 만에 사라졌다(적대 검토 10-21, 셸과 같은 부류).
+          if (String(x.id) === bgTimerFlash.id && bgTimerFlash.until > Date.now()) row.classList.add("bg-flash");
           const when = document.createElement("span");
           when.className = "bg-timer-when";
           // 꺼진 타이머 둘 — 실행기가 실패로 꺼 둔 것(«실패», 사유는 툴팁)과 사용자가 끈 것(«꺼짐»).
@@ -60,6 +67,7 @@
           .then((d) => {
             if (gen !== bgTimersGen || !d || !Array.isArray(d.timers)) return;
             bgTimers = d.timers;
+            timersRes.set(bgTimers);
             renderBgTimers();
           })
           .catch(() => { /* 미도달 — 다음 계기에 다시 */ });
@@ -74,6 +82,7 @@
             // ★멈추기 전에 떠난 목록 조회가 늦게 오면 멈춘 타이머를 화면에 되살린다(아스트라 10-20 P2) — 세대를 올려 그 응답을 버리고, 지금 목록을 다시 받는다.
             bgTimersGen += 1;
             bgTimers = bgTimers.filter((x) => x.id !== id);
+            timersRes.set(bgTimers);
             renderBgTimers();
             loadBgTimers();
           })
@@ -90,6 +99,22 @@
         bgTimersSoon = setTimeout(() => { bgTimersSoon = null; loadBgTimers(); }, 400);
       };
       window.renderBgTimers = renderBgTimers;
+
+      // 위젯의 «보여 줘»(`ctx.reveal({ kind: "timer", id })`) — 패널의 공통 판정(`revealBgCard`)을 탄다.
+      //  ★타이머엔 펼칠 상세·완료 필터·접는 묶음이 없다 — 그 단계는 없다(아스트라 10-21: 공통화하려고 타이머 칸을 넓히지 않는다).
+      window.addEventListener("tigu:reveal", (ev) => {
+        const d = ev.detail || {};
+        if (d.kind !== "timer" || (typeof d.id !== "string" && typeof d.id !== "number")) return;
+        const x = bgTimers.find((t) => String(t.id) === String(d.id));
+        bgTimerFlash.id = String(d.id);
+        bgTimerFlash.until = Date.now() + 900;
+        setTimeout(renderBgTimers, 950); // 강조를 걷는 다시 그리기
+        revealBgCard({
+          find: () => (bgTimersList ? bgTimersList.querySelector('.bg-timer[data-timer-id="' + CSS.escape(String(d.id)) + '"]') : null),
+          inScope: x ? x.originThreadKey === activeThreadKey : true,
+          rerender: renderBgTimers,
+        });
+      });
 
       setInterval(() => {
         if (bgTimers.length === 0 || document.visibilityState !== "visible") return;

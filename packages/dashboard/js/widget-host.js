@@ -32,6 +32,8 @@
         const catalogs = new Map();
         /** 지금 붙어 있는 것 — 노드 → { id, dispose[] }. */
         const live = new Map();
+        /** 위젯 칸 → 그 인스턴스의 메뉴 provider(`ctx.menu`). 칸을 치울 때 함께 버린다. */
+        const menus = new Map();
         /**
          * **아직 문서에 안 들어간 것** — 노드 → 첨부.
          *
@@ -84,6 +86,7 @@
           for (const el of hit) {
             const entry = live.get(el);
             live.delete(el);
+            menus.delete(el); // 치운 칸의 메뉴는 다시 안 불린다(다시 붙으면 마운트가 새로 건다)
             for (const fn of entry.dispose) {
               try { fn(); } catch { /* 한 위젯의 정리 실패가 나머지를 막지 않는다 */ }
             }
@@ -268,6 +271,32 @@
                 return off;
               },
             }),
+            /**
+             * **그 항목을 그 화면에서 보여 달라** (2026-10-21, docs/decisions/2026-10-21-running-work-widget-design.md §⑥).
+             * ★위젯이 코어 화면 함수(`focusBgJob` 같은)를 직접 부르면 **그 이름이 플러그인 계약이 된다** — 이름 있는 의도로만 연다.
+             * ★표를 두지 않는다: 이벤트로 내고, 그 `kind` 를 아는 화면이 받는다(패널: job·shell·timer). 모르는 kind 는 아무도 안 받는다
+             *  — 위젯이 코어보다 새 버전일 수 있다(`resource` 와 같은 규칙).
+             */
+            reveal: (target) => {
+              if (!target || typeof target.kind !== "string") return;
+              try {
+                window.dispatchEvent(new CustomEvent("tigu:reveal", { detail: { kind: target.kind, id: target.id } }));
+              } catch { /* 받는 쪽 예외가 위젯을 죽이지 않는다 */ }
+            },
+            /**
+             * **우클릭 메뉴에 자기 항목** — `provider()` 가 `[{ label, run }]` 를 돌려준다(메뉴를 여는 때에 불린다 — 그때의 상태를 읽는다).
+             * ★인스턴스 것이다(아스트라 10-21): 전역 등록소(`registerMenuItems`)엔 해제가 없어 마운트마다 넣으면 쌓인다. 이 위젯 칸의
+             *  항목에만 걸고, 칸을 치울 때(`sweep`) 함께 버린다. 공통 «이 위젯 끄기» 는 호스트 쪽(위젯 패널)이 한 번만 넣는다.
+             */
+            menu: (provider) => {
+              if (typeof provider === "function" && live.has(el)) menus.set(el, provider); // 치운 뒤 늦게 부른 옛 ctx 는 안 건다
+            },
+            /**
+             * 대화(탭) 이름 — 패널 잡 카드와 **같은 함수**(`sessionNameFor`: 서버가 준 이름 → 열린 탭 이름). 모르면 빈 문자열
+             *  (위젯이 «미상» 으로 그린다 — 이름을 지어내지 않는다). 이름이 바뀌면 다음 그리기에 반영된다.
+             * ★따로 규칙을 만들지 않는다 — 처음엔 탭 규칙을 새로 짜서 패널과 이름이 갈렸고, 탭 번호를 저장소에 새로 매겼다(적대 검토 10-21).
+             */
+            sessionName: (threadKey) => sessionNameFor(threadKey),
             t: (key, params) => {
               const own = catalogs.get(owner);
               const raw = own && typeof own[key] === "string" ? own[key] : undefined;
@@ -301,10 +330,26 @@
             return true;
           },
           mount,
+          /**
+           * 그 칸 위젯의 메뉴 항목 — `[{ label, run }]`. 없거나 provider 가 던지면 빈 목록(공통 항목은 호스트가 따로 넣는다).
+           * @param {HTMLElement} el 위젯 칸(마운트한 그 노드)
+           */
+          menuFor: (el) => {
+            const fn = menus.get(el);
+            if (typeof fn !== "function") return [];
+            try {
+              const got = fn();
+              return Array.isArray(got) ? got.filter((x) => x && typeof x.label === "string" && typeof x.run === "function") : [];
+            } catch (e) {
+              console.warn("[widget] menu provider 예외:", e);
+              return [];
+            }
+          },
           /** 검사·진단용. */
           state: () => ({
             builders: [...builders.keys()],
             live: live.size,
+            menus: menus.size,
             pending: pending.size,
             observing: observer !== null,
           }),

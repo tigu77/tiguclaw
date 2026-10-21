@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **New schedules are handled in the conversation that created them, too,** just like file watches. Existing schedules stay as they are; say "move the schedule to this conversation" to move one.
 - **A schedule missed while the daemon was off now runs once, late, after it starts.** Only the last run within 24 hours is made up; older ones are skipped.
 - **The home screen's widget area moved into the widget panel.** Widgets you placed show up there in the same order. The background button is now in the header on every screen, not only in chat.
+- **The «Background work» widget is now a compact view of the background panel.** It groups timers, managers/agents and shells by conversation, and clicking an item jumps to its card in the background panel. Each widget has its own right-click menu, where you can turn off just that widget.
 
 ### Fixed
 

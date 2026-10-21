@@ -298,6 +298,52 @@
           if (moved) { handle.focus(); void saveOrder(); }
         });
 
+        // ── 우클릭 메뉴 (2026-10-21, docs/decisions/2026-10-21-running-work-widget-design.md §⑤) ─────────────────────
+        // ★위젯마다 — 그 위젯 칸의 항목(`ctx.menu`, 인스턴스 것) + 공통 «이 위젯 끄기». 등록은 **여기서 한 번**(전역 등록소엔 해제가 없다 —
+        //  마운트마다 넣으면 쌓인다, 아스트라 10-21). 그 칸의 provider 는 메뉴를 여는 때에 `widgetHost.menuFor(칸)` 으로 부른다.
+        // ★끄기는 **그 항목 하나**(id) — 종류 단위로 끄면 같은 종류 둘이 함께 사라진다(아스트라 10-21). 다시 켜는 길은 플러그인 화면이다.
+        const turnOff = async (id) => {
+          const g = gen;
+          let ok = false;
+          try {
+            const r = await fetch("/api/home-widgets", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id }),
+            });
+            ok = r.ok;
+          } catch { /* 아래에서 알린다 */ }
+          try { showToast(i18n(ok ? "wg.offDone" : "wg.offFailed"), ok ? "good" : "bad"); } catch { /* noop */ }
+          if (ok && live(g)) await loadLayout(g);
+        };
+        registerBuiltinHandler("widget.item", (ctx, args) => {
+          const it = Array.isArray(ctx._items) ? ctx._items[args.i] : undefined;
+          if (it) { try { it.run(); } catch (e) { console.warn("[widget] menu 항목 예외:", e); } }
+        });
+        registerBuiltinHandler("widget.off", (ctx) => turnOff(ctx.targetId));
+        registerMenuItems("widget", (ctx) => {
+          const own = ctx._box ? widgetHost.menuFor(ctx._box) : [];
+          ctx._items = own; // 실행 때 같은 목록을 본다(메뉴를 연 뒤 위젯 상태가 바뀌어도 누른 그 항목)
+          const items = own.map((it, i) => ({ id: "w" + i, label: it.label, action: { kind: "builtin", handler: "widget.item", args: { i } } }));
+          items.push({ id: "off", label: i18n("wg.menu.off"), icon: "🚫", group: "widget", action: { kind: "builtin", handler: "widget.off" } });
+          return items;
+        });
+        /** 메뉴를 열 위젯 — 손잡이(끌기)는 뺀다. 위젯 밖(빈 칸)이면 없음 = 브라우저 기본 메뉴. */
+        const menuCtxOf = (ev) => {
+          const t = ev.target && typeof ev.target.closest === "function" ? ev.target : null;
+          if (!t || t.closest(".wg-handle")) return null;
+          const item = t.closest(".wg-item");
+          if (!item || !item.dataset.id) return null;
+          return { targetId: item.dataset.id, _box: item.querySelector(".wg-body") };
+        };
+        list.addEventListener("contextmenu", (ev) => {
+          const c = menuCtxOf(ev);
+          if (!c) return;
+          ev.preventDefault();
+          openMenu("widget", c, { pos: { x: ev.clientX, y: ev.clientY } });
+        });
+        attachLongPress(list, "widget", menuCtxOf);
+
         sidePanels.register("wg", { el: panel, cls: "wg-open", close: () => close(true) });
         const toggle = document.getElementById("wg-toggle");
         if (toggle) toggle.addEventListener("click", () => (isOpen() ? close() : open()));

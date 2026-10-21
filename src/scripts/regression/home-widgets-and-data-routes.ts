@@ -256,11 +256,12 @@ export const check: RegressionCheck = {
       (bridge.match(/export const handleHomeWidgetToggle[\s\S]*?\n};/) ?? [""])[0];
     out.push(
       assert(
-        "★★토글은 `type`·`enabled` 만 받는다 — 순서·크기·config 는 여전히 `configure_home` 도구만 쓴다(배치의 진실이 두 곳이 되면 화면과 비서가 갈린다)",
+        "★★토글은 `type`·`enabled`(종류 단위) 또는 `id`(그 항목 하나 빼기 — 위젯 우클릭, 10-21) 만 받는다 — 순서·크기·config 는 여전히 `configure_home` 도구만 쓴다(배치의 진실이 두 곳이 되면 화면과 비서가 갈린다)",
         toggle !== "" &&
           /body\.type/.test(toggle) &&
           /body\.enabled/.test(toggle) &&
-          !/body\.(size|config|widgets|id)\b/.test(toggle),
+          /removeHomeWidget\(body\.id\)/.test(toggle) &&
+          !/body\.(size|config|widgets|order)\b/.test(toggle),
         toggle === "" ? "핸들러 없음" : `${toggle.length}자 · 읽는 필드=${(toggle.match(/body\.\w+/g) ?? []).join(",")}`,
       ),
     );

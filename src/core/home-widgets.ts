@@ -575,6 +575,30 @@ export const setHomeWidgetEnabled = (
 };
 
 /**
+ * **항목 하나**를 뺀다 — 위젯 패널 우클릭 «이 위젯 끄기»(2026-10-21, docs/decisions/2026-10-21-running-work-widget-design.md §⑥-b).
+ *  종류 단위 끄기(`setHomeWidgetEnabled`)는 같은 종류를 **전부** 지운다 — 날씨 둘 중 하나에서 누르면 둘 다 사라졌다(아스트라 10-21).
+ *  다시 켜기는 종류 단위 그대로다(플러그인 화면 스위치).
+ * ★그 종류를 `seeded` 에 적는다 — 껐다는 건 «물어봤다» 다. 안 적혀 있던 기본 위젯이면 다음 부팅의 자동 편입이 되살린다
+ *  (`seedDefaultHomeWidgets` 의 «이미 놓인 것도 물어본 것» 과 같은 구멍).
+ */
+export const removeHomeWidget = (id: string): { ok: boolean; reason?: string } => {
+  let found = false;
+  mutateHome((home) => {
+    const cur = Array.isArray(home.widgets) ? (home.widgets as Record<string, unknown>[]) : [];
+    const hit = cur.find((w) => w !== null && typeof w === "object" && w.id === id);
+    if (hit === undefined) return false;
+    found = true;
+    const next = cur.filter((w) => w !== hit);
+    if (next.length === 0) delete home.widgets;
+    else home.widgets = next;
+    const type = typeof hit.type === "string" ? hit.type : "";
+    const seeded = Array.isArray(home.seeded) ? (home.seeded as unknown[]) : [];
+    if (type !== "" && !seeded.includes(type)) home.seeded = [...seeded, type];
+  });
+  return found ? { ok: true } : { ok: false, reason: translate("srv.widgets.noSuchItem") };
+};
+
+/**
  * **순서만** 바꾼다 — 위젯 패널의 끌어서 놓기가 쓴다 (2026-10-20, [설계](../../docs/decisions/2026-10-20-widget-panel-design.md) §2.2).
  *
  * `ids` = 화면에 보이는(정규화된) 위젯의 새 순서. **지금 보이는 집합과 정확히 같을 때만**(순열) 쓴다 — 그새 비서가 넣거나 뺐으면

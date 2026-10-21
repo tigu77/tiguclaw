@@ -961,7 +961,7 @@
       .act-shell-chip-sdk { padding:0 5px; border-radius:6px; background:rgb(var(--warn-rgb) / .16); color:var(--warn); font-size:0.5625rem; }
       .act-shell-chip-kill { border:none; background:none; color:inherit; cursor:pointer; padding:0; font-size:0.625rem; line-height:1; }
       .act-shell-chip-kill:disabled { opacity:.5; cursor:default; }
-      .bg-job.bg-flash, .agent-card.bg-flash { outline:2px solid var(--accent-2); outline-offset:2px; border-radius:12px; }
+      .bg-job.bg-flash, .agent-card.bg-flash, .bg-timer.bg-flash { outline:2px solid var(--accent-2); outline-offset:2px; border-radius:12px; }
       /* 리치 diff(Edit/Write, 2026-07-09) — 스텝/이력 줄 아래로 접이식 초록·빨강 diff.
          부모 flex 행이 wrap 하도록 해 diff 블록(width:100%)이 다음 줄로 내려간다. */
       .act-line.act-step, .hist-tool { flex-wrap:wrap; }

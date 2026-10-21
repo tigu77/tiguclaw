@@ -1248,7 +1248,7 @@
   "wg.word": "Widgets",
   "wg.loading": "Loading…",
   "wg.failed": "Couldn't load this.",
-  "wg.empty": "No widgets yet. Ask the assistant (“put the weather widget here”) or turn one on from the Plugins screen.",
+  "wg.empty": "No widgets yet. Turn one on from the Plugins screen, or ask the assistant to add one.",
   "wg.handle": "Drag to reorder (↑↓)",
   "wg.reorderConflict": "The widget list changed in the meantime — reloaded the latest.",
   "wg.reorderFailed": "Couldn't save the widget order.",
@@ -1299,5 +1299,10 @@
   "srv.compact.summaryCharsManual": "summary of {n} characters (manual)",
   "srv.compact.cooldown": "cooldown",
   "srv.schedule.originGone": "The conversation that created this schedule ({origin}) no longer exists, so it didn't run.",
-  "srv.watch.originGone": "The conversation that created this watch ({origin}) no longer exists, so it didn't run."
+  "srv.watch.originGone": "The conversation that created this watch ({origin}) no longer exists, so it didn't run.",
+  "srv.widgets.noSuchItem": "That widget is already gone — reload the list.",
+  "wg.menu.off": "Turn off this widget",
+  "wg.offDone": "Widget turned off. You can turn it back on from the Plugins screen.",
+  "wg.offFailed": "Couldn't turn off the widget.",
+  "bg.reveal.notFound": "Couldn't find that item — it may have finished or left the list."
 }

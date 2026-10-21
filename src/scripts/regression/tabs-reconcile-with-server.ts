@@ -103,6 +103,9 @@ const runRefresh = async (
     // 채워야 한다(2026-08-06). 여기 스텁이 없으면 refreshSessionPreviews 가 ReferenceError
     // 로 죽어 **정리 로직이 통째로 안 돈다** — 실제로 이 검사가 그렇게 잡았다.
     sessionDisplayNames: new Map<string, string>(),
+    // 이름 지도의 «바뀜» 신호(2026-10-21 «백그라운드 작업» 위젯) — 같은 이유로 대역이 있어야 정리 로직까지 간다.
+    sessionNamesSig: "",
+    sessionNamesRes: { set: () => {} },
     window: {},
   };
   vm.createContext(ctx);

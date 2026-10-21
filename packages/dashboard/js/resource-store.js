@@ -152,6 +152,8 @@
   };
 
   const resources = new Map();
+  /** `owned` 로 연 이름 → 그 소유자 — 같은 이름을 두 번 열면 **같은 것**(리비전이 둘로 갈리지 않게). */
+  const owners = new Map();
 
   window.resourceStore = {
     decideApply,
@@ -168,6 +170,28 @@
       const r = makeResource(name, fetchSnapshot);
       resources.set(name, r);
       return r;
+    },
+    /**
+     * **화면이 소유한 값**을 내놓는다 — 서버 리비전이 없는 목록(셸·타이머: 패널이 이미 조회·갱신한다)을 다른 소비자(위젯)도 받게
+     * (2026-10-21, docs/decisions/2026-10-21-running-work-widget-design.md §⑥). 좌표는 이 화면 세대 하나(`local`)와 1씩 오르는
+     * 리비전이라 **같은 판정**(`decideApply`)을 그대로 탄다 — 두 번째 배달 규칙을 만들지 않는다.
+     * ★소비자보다 먼저 등록할 필요가 없다: 아직 `set` 전이면 구독자는 `null` 을 받는다(빈 목록으로 읽는다).
+     */
+    owned(name) {
+      const has = owners.get(name);
+      if (has !== undefined) return has;
+      let revision = 0;
+      let latest = null;
+      const r = this.resource(name, () => Promise.resolve({ epoch: "local", revision, data: latest }));
+      const owner = {
+        set(data) {
+          latest = data;
+          revision += 1;
+          r.handle({ epoch: "local", revision }, () => data);
+        },
+      };
+      owners.set(name, owner);
+      return owner;
     },
     /** 진단용 — 지금 서 있는 리소스들. */
     state: () =>

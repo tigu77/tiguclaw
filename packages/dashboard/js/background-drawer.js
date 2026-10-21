@@ -577,21 +577,58 @@
       /** @param {boolean} [keepRemembered] 자리가 모자라 닫는 것(side-panels) — «열려 있었다» 기억은 그대로(레드팀 10-20: 부팅 때 저장값이 0 으로 지워졌다). */
       const closeBg = (keepRemembered) => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); if (keepRemembered !== true) rememberBgOpen(false); };
       sidePanels.register("bg", { el: bgPanel, cls: "bg-open", close: () => closeBg(true) });
-      // 프로젝트 상세의 compact 카드 클릭 → bg 패널 열고 그 잡으로 스크롤·펼침(자세히는 여기서).
-      //   best-effort: 잡이 현재 bg 스코프 필터에 안 걸려 미렌더면 패널만 열림(스코프는 존중).
-      window.focusBgJob = (jobId) => {
+      /**
+       * **그 카드로 간다** — 패널 열기 → 카드를 가린 축만 풀기 → 펼치기 → 가운데로 → 잠깐 강조 (2026-10-21,
+       *  docs/decisions/2026-10-21-running-work-widget-design.md §④). 잡·셸·타이머가 **이 판정 하나**를 탄다(묶음마다 만들면 같은 판단이 셋).
+       *  ★가린 축은 **사용자가 그 항목을 눌렀으니** 푼다 — 다른 대화 것이면 범위를 «전체 대화» 로, 끝난 것이면 그 묶음 필터를 «완료» 로,
+       *   묶음이 접혀 있으면 편다. 바뀐 것은 토글·필터 버튼에 그대로 보인다(몰래 바꾸지 않는다). 채팅 탭은 안 바꾼다.
+       *  ★못 찾으면 패널만 열고 한 줄 알린다 — 조용히 실패하지 않는다(목록 상한 밖·이미 사라짐).
+       * @param {{ find: () => (HTMLElement|null|undefined), inScope?: boolean, showFilter?: () => void, groupHead?: string, open?: (el: HTMLElement) => void, rerender?: () => void }} t
+       */
+      const revealBgCard = (t) => {
         openBg();
+        if (t.inScope === false && bgSessionScope === "session") setBgSessionScope("all");
+        if (typeof t.showFilter === "function") t.showFilter();
+        if (t.groupHead) expandBgGroup(t.groupHead);
+        if (typeof t.rerender === "function") t.rerender(); // 렌더에서 거르는 묶음(셸·타이머)은 바뀐 범위·필터로 지금 다시 그린다
         requestAnimationFrame(() => {
-          const entry = jobCards.get(jobId);
-          if (!entry || !entry.el) return;
+          const el = t.find();
+          if (!el) {
+            try { showToast(i18n("bg.reveal.notFound"), "warn"); } catch { /* noop */ }
+            return;
+          }
           // ★이 카드로 가겠다는 **명시 이동**이다 — 따라가기를 먼저 끈다 (2026-10-12 릴리스 재검토, 0.69.1 부터 있던 것).
           //  안 끄면 펼침이 일으킨 카드 크기 변화에 핀이 맨 아래(최신)로 되돌려 목표 카드가 화면 밖에 남았다(헤드리스: 3/3).
           //  «↓ 최신» 이 보이고, 누르면 다시 따라간다.
           bgStick = false; updateBgJump();
-          if (!entry.el.classList.contains("open")) setJobOpen(jobId, entry, true);
-          if (entry.el.scrollIntoView) entry.el.scrollIntoView({ block: "center" });
+          if (typeof t.open === "function") t.open(el);
+          const target = t.find() || el; // 펼치기가 다시 그렸으면(셸) 새 노드
+          if (target.scrollIntoView) target.scrollIntoView({ block: "center" });
+          target.classList.add("bg-flash");
+          setTimeout(() => target.classList.remove("bg-flash"), 900);
         });
       };
+      // 잡 — 프로젝트 상세의 compact 카드·위젯이 부른다(종전 이름 `focusBgJob` 그대로, jobId 하나).
+      window.focusBgJob = (jobId) => {
+        const entry = jobCards.get(jobId);
+        revealBgCard({
+          find: () => (entry && entry.el && entry.el.isConnected ? entry.el : null),
+          inScope: entry ? isBgInScope(entry.threadKey, entry.ownerTk) : true,
+          showFilter: () => {
+            if (!entry) return;
+            const ended = entry.status !== "running"; // 필터가 가르는 기준 그대로(app.css `.filter-running .bg-job:not(.running)`)
+            if ((bgFilter === "done") !== ended) setBgFilter(ended ? "done" : "running");
+          },
+          groupHead: "bg-jobs-head",
+          open: () => { if (!entry.el.classList.contains("open")) setJobOpen(jobId, entry, true); },
+        });
+      };
+      // 위젯 `ctx.reveal({ kind, id })` 가 낸 «보여 줘» — 각 묶음이 자기 kind 만 듣는다(표를 두지 않는다, 모르는 kind 는 아무도 안 받는다).
+      window.addEventListener("tigu:reveal", (e) => {
+        const d = e.detail || {};
+        if (d.kind === "job" && typeof d.id === "string") window.focusBgJob(d.id);
+        else if (d.kind === "panel") openBg(); // 패널만 연다(위젯 메뉴 «백그라운드 패널 열기»)
+      });
       const bgToggleBtn = document.getElementById("bg-toggle");
       if (bgToggleBtn) bgToggleBtn.addEventListener("click", () => {
         document.body.classList.contains("bg-open") ? closeBg() : openBg();
@@ -668,6 +705,9 @@
       // 접고, chevron 회전·localStorage 영속. 세션 스코프(위)는 두 그룹 공유, 상태필터는 각 본문 안.
       // 모듈 뷰 collapse 패턴의 드로어판(별도 클래스). 헤더는 role=button — Enter/Space 도 토글.
       const BG_CAT_KEY = "bg-cat-collapse:";
+      /** 묶음 id → 펴기(«그 카드로» 가 접힌 묶음을 편다 — 기억도 «펼침» 으로, 사용자가 그 안의 것을 눌렀다). */
+      const bgGroupExpanders = new Map();
+      const expandBgGroup = (headId) => { const fn = bgGroupExpanders.get(headId); if (fn) fn(); };
       const wireBgGroup = (headId) => {
         const head = document.getElementById(headId);
         if (!head) return;
@@ -687,6 +727,11 @@
         head.addEventListener("click", toggle);
         head.addEventListener("keydown", (e) => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+        });
+        bgGroupExpanders.set(headId, () => {
+          if (!head.classList.contains("collapsed")) return;
+          apply(false);
+          try { localStorage.setItem(key, "0"); } catch {}
         });
       };
       wireBgGroup("bg-jobs-head");
@@ -1449,7 +1494,10 @@
        * ★상한 50 — 잡은 계속 생기고 목록은 "지금 뭐 도는가" 를 보는 것이라 오래된 것을
        *  무한히 들 이유가 없다([[project_hotpath_bound_preserve_record]] — 핫 워킹셋만 바운드).
        *  ★기록이 아니다: 원본은 서버 잡 레지스트리와 `chat_log` 가 갖는다.
+       *  ★**진행 중은 상한 밖이다** (2026-10-21 아스트라). 종전엔 상태와 무관하게 최근 50개만 남겨, 끝난 이벤트가 쌓이면 **오래 도는
+       *   잡이 목록에서 밀렸다** — 위젯이 «돌고 있는 것을 다 보인다» 를 못 지켰다. 끝난 것만 50개로 자른다(셸 `capShellRegistry` 와 같은 규칙).
        */
+      const JOB_ENDED_KEEP = 50;
       const applyJobEvent = (prev, p) => {
         const list = Array.isArray(prev) ? prev : [];
         if (!p || !p.jobId) return list;
@@ -1463,7 +1511,8 @@
           startedAt: p.startedAt,
           ownerThreadKey: p.ownerThreadKey,
         });
-        return next.slice(0, 50);
+        let ended = 0;
+        return next.filter((j) => !TERMINAL_JOB_STATUS.has(j.status) || (ended += 1) <= JOB_ENDED_KEEP);
       };
 
       const workRes =

@@ -1,5 +1,6 @@
 [
   "util.js",
+  "resource-store.js",
   "constants.js",
   "side-panels.js",
   "update-chip.js",
@@ -15,7 +16,6 @@
   "widget-panel.js",
   "chat-core.js",
   "step-detail.js",
-  "resource-store.js",
   "background-drawer.js",
   "bg-timers.js",
   "virtualization.js",

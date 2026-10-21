@@ -1248,7 +1248,7 @@
   "wg.word": "위젯",
   "wg.loading": "받아오는 중…",
   "wg.failed": "값을 받지 못했습니다.",
-  "wg.empty": "아직 놓은 위젯이 없습니다. 비서에게 «날씨 위젯 놓아 줘» 처럼 말하거나, 플러그인 화면에서 켜세요.",
+  "wg.empty": "아직 놓은 위젯이 없습니다. 플러그인 화면에서 위젯을 켜거나, 비서에게 위젯을 놓아 달라고 하세요.",
   "wg.handle": "끌어서 순서 바꾸기 (↑↓)",
   "wg.reorderConflict": "위젯 목록이 그새 바뀌어 최신으로 다시 불러왔습니다.",
   "wg.reorderFailed": "위젯 순서를 저장하지 못했습니다.",
@@ -1299,5 +1299,10 @@
   "srv.compact.summaryCharsManual": "요약 {n}자(수동)",
   "srv.compact.cooldown": "쿨다운",
   "srv.schedule.originGone": "스케줄을 만든 대화({origin})가 없어 실행하지 않았습니다.",
-  "srv.watch.originGone": "감시를 만든 대화({origin})가 없어 실행하지 않았습니다."
+  "srv.watch.originGone": "감시를 만든 대화({origin})가 없어 실행하지 않았습니다.",
+  "srv.widgets.noSuchItem": "그 위젯이 이미 없습니다 — 목록을 다시 불러오세요.",
+  "wg.menu.off": "이 위젯 끄기",
+  "wg.offDone": "위젯을 껐습니다. 플러그인 화면에서 다시 켤 수 있습니다.",
+  "wg.offFailed": "위젯을 끄지 못했습니다.",
+  "bg.reveal.notFound": "그 작업을 찾지 못했습니다 — 이미 끝났거나 목록에서 빠졌습니다."
 }

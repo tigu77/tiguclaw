@@ -26,6 +26,9 @@
         return map[tk];
       };
       const deriveTabFallbackName = (tk) => i18n("tab.fallbackName", { n: sessionNumberFor(tk) });
+      /** 대화 이름 지도의 «바뀜» 신호 — 값은 이름 지도 자체가 아니라 그 서명이다(받는 쪽은 `ctx.sessionName` 으로 읽는다). */
+      const sessionNamesRes = window.resourceStore.owned("session-names");
+      let sessionNamesSig = "";
 
       // 저장 플로우(§4-1): 낙관적 반영 → best-effort POST → 성공 시 서버 정규화값 재동기화,
       // 실패 시 로컬(낙관적) 이름을 그대로 두고 경고만(다음 refreshSessionPreviews 폴이 재조정).
@@ -633,6 +636,12 @@
           // 이름이 새로 생겼을 수 있으니 잡 카드 배지를 한 번 훑는다(끝난 잡은 이벤트가
           // 더 안 와서 스스로 갱신되지 않는다). 드로어가 없으면 no-op.
           if (typeof window.refreshBgSessionBadges === "function") window.refreshBgSessionBadges();
+          // 이름 지도를 리소스로도 낸다 — «백그라운드 작업» 위젯이 이름이 오면 다시 그린다(부팅 직후 «대화 미상» 에 최대 1분 머물던 것,
+          //  재검토 10-21). 같은 값이면 안 낸다(이 조회는 주기적으로 돈다).
+          {
+            const names = JSON.stringify([...sessionDisplayNames]);
+            if (names !== sessionNamesSig) { sessionNamesSig = names; sessionNamesRes.set(names); }
+          }
           // (1) 이미 열린 탭 — 프리뷰·채널 메타 갱신 + 이름 우선순위(§4-2): 서버 커스텀(s.name) >
           // 로컬 파생 라벨. 서버 커스텀이 사라지면(다른 클라가 지움 등) 로컬도 파생 폴백으로 복귀.
           for (const s of sessions) {

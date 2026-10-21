@@ -239,6 +239,8 @@
       const buildShellCard = (entry, now) => {
         const card = document.createElement("div");
         card.className = "agent-card shell-card " + entry.status;
+        // «그 카드로» 의 강조는 **항목의 상태**다 — 셸 목록은 출력이 올 때마다 통째로 다시 그려 노드에 붙인 강조가 곧바로 사라졌다(헤드리스 10-21).
+        if (typeof entry.flashUntil === "number" && entry.flashUntil > Date.now()) card.classList.add("bg-flash");
         card.dataset.shellId = entry.shellId;
         const top = document.createElement("div"); top.className = "agent-card-top";
         const kind = document.createElement("span"); kind.className = "agent-card-kind";
@@ -390,6 +392,24 @@
           empty.style.display = shown === 0 ? "" : "none";
           empty.textContent = shellsFilter === "running" ? i18n("bg.shells.empty") : i18n("shell.empty.done");
         }
+        publishShells();
+      };
+      // ★셸 목록을 리소스로도 낸다(2026-10-21 «백그라운드 작업» 위젯 — 패널의 축약판). 범위·필터와 **무관한 전체**(보이는 것만 —
+      //  디바운스 안 끝난 단명 셸은 패널에도 없다) — 거르는 건 받는 쪽이다. 같은 값이면 안 낸다(렌더는 잦다).
+      const shellsRes = window.resourceStore.owned("bg-shells");
+      let shellsSig = "";
+      const publishShells = () => {
+        const list = [...shellRegistry.values()]
+          .filter((e) => e.visible)
+          .map((e) => ({
+            shellId: e.shellId, command: e.command, status: e.status, startedAt: e.startedAt,
+            // 소속 = 카드와 같은 규칙(서버 환원값 → 잡 좌표면 원 세션으로 환원 → 모르면 «미상»). 잡 좌표를 그대로 대화로 쓰지 않는다(적대 검토 10-21).
+            ownerThreadKey: e.ownerTk || (typeof shellOwnerSession === "function" ? shellOwnerSession(e.threadKey) : ""),
+          }));
+        const sig = JSON.stringify(list);
+        if (sig === shellsSig) return;
+        shellsSig = sig;
+        shellsRes.set(list);
       };
       let shellsRenderQueued = false;
       // 드로어가 닫혀 있어도 배지 카운트가 최신이어야 하므로(jobCards 동형) currentView 게이트 없이
@@ -454,6 +474,31 @@
           try { sec.scrollIntoView({ block: "nearest" }); } catch {}
         }
       };
+
+      // 위젯의 «보여 줘»(`ctx.reveal({ kind: "shell", id })`) — 패널의 공통 판정(`revealBgCard`, background-drawer.js)을 탄다.
+      window.addEventListener("tigu:reveal", (ev) => {
+        const d = ev.detail || {};
+        if (d.kind !== "shell" || typeof d.id !== "string") return;
+        const e = shellRegistry.get(d.id);
+        revealBgCard({
+          find: () => document.querySelector('#bg-shells-list .shell-card[data-shell-id="' + CSS.escape(d.id) + '"]'),
+          inScope: e ? isShellInScope(e.threadKey, e.ownerTk) : true,
+          showFilter: () => {
+            if (!e) return;
+            const ended = e.status !== "running"; // 렌더가 거르는 기준 그대로
+            if ((shellsFilter === "done") !== ended) setShellsFilter(ended ? "done" : "running");
+          },
+          groupHead: "bg-shells-head",
+          rerender: renderShellsView,
+          open: () => {
+            if (!e) return;
+            e.flashUntil = Date.now() + 900;
+            setTimeout(scheduleShellsRender, 950); // 강조를 걷는 다시 그리기
+            if (!e.expanded) e.expanded = true;
+            renderShellsView();
+          },
+        });
+      });
 
       // 경과시간 라이브 틱(1s) — running 카드만(background-drawer.js tickElapsed 동형, 별도 셋).
       // 드로어가 닫혀 있어도 카운트/카드가 최신이어야 하므로 currentView 게이트 없음(jobCards 동형).

@@ -1,8 +1,17 @@
 {
-  "idle": "Nothing running right now.",
+  "idle": "No background work running right now.",
   "unnamed": "(unnamed)",
   "since": "{n}m",
-  "widget.live": "Running work",
+  "widget.live": "Background work",
   "icon.worker": "🎖️",
-  "icon.agent": "🤖"
+  "icon.agent": "🤖",
+  "group.timers": "⏱ Timers",
+  "group.jobs": "⚙️ Managers / agents",
+  "group.shells": "🖥️ Shells / processes",
+  "timer.in": "in {n}m",
+  "timer.now": "soon",
+  "menu.openPanel": "Open the background panel",
+  "menu.collapseAll": "Collapse all",
+  "menu.expandAll": "Expand all",
+  "session.unknown": "Unknown conversation"
 }

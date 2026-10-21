@@ -283,13 +283,19 @@ export const handleHomeWidgetOrder = async (ctx: RouteCtx): Promise<void> => {
 export const handleHomeWidgetToggle = async (ctx: RouteCtx): Promise<void> => {
   const { req, res } = ctx;
   const { readJsonBody } = await import("./http-body.js");
-  const { setHomeWidgetEnabled } = await import("../../src/core/home-widgets.js");
+  const { setHomeWidgetEnabled, removeHomeWidget } = await import("../../src/core/home-widgets.js");
   const { listAvailableHomeWidgets } = await import("../../src/core/plugins/manager.js");
   let body: Record<string, unknown>;
   try {
     body = await readJsonBody(req);
   } catch (e) {
     writeJson(res, bodyErrorStatus(e), { ok: false, error: translate("srv.body.notJson") });
+    return;
+  }
+  // ★`{ id }` = 그 항목 하나만 끈다(위젯 패널 우클릭, 2026-10-21). `{ type, enabled }` = 종류 단위(플러그인 화면) — 계약 그대로.
+  if (typeof body.id === "string" && body.id !== "") {
+    const r = removeHomeWidget(body.id);
+    writeJson(res, r.ok ? 200 : 404, r);
     return;
   }
   const type = typeof body.type === "string" ? body.type : "";

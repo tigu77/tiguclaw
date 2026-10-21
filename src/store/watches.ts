@@ -22,6 +22,11 @@ export interface WatchRow {
   lastError: string | null;
   /** 이력 정책 — null = 이전 실행 대화를 계속 이어감(기본), 0 = 매번 새로, N = 직전 N회만. 스케줄 `keep_runs` 와 같은 뜻·같은 판정(`applyRunHistory`). */
   keepRuns: number | null;
+  /**
+   * **이 감시가 처리되는 대화** — 감시를 만든 사람의 대화 키(2026-10-20 정태님: 새 감시는 만든 대화에서). null = 전용 세션(`file-watch:<id>`) —
+   *  만든 대화가 없던 감시(스케줄이 만든 것 등)와 이 칸이 생기기 전의 감시. ★서버가 그 턴의 대화로 적는다 — 모델이 넘긴 값을 받지 않는다.
+   */
+  originThreadKey: string | null;
 }
 
 interface DbWatchRow {
@@ -44,12 +49,13 @@ interface DbWatchRow {
   last_status: string | null;
   last_error: string | null;
   keep_runs: number | null;
+  origin_thread_key: string | null;
 }
 
 const SELECT_COLS = `id, label, path, pattern, recursive, debounce_ms,
        event_filter, prompt, dest_channel, dest_target, enabled,
        created_at, updated_at,
-       last_fired_at, last_path, last_event, last_status, last_error, keep_runs`;
+       last_fired_at, last_path, last_event, last_status, last_error, keep_runs, origin_thread_key`;
 
 const toRow = (r: DbWatchRow): WatchRow => ({
   id: r.id,
@@ -72,6 +78,7 @@ const toRow = (r: DbWatchRow): WatchRow => ({
     r.last_status === "ok" || r.last_status === "error" ? r.last_status : null,
   lastError: r.last_error,
   keepRuns: typeof r.keep_runs === "number" && r.keep_runs >= 0 ? r.keep_runs : null,
+  originThreadKey: typeof r.origin_thread_key === "string" && r.origin_thread_key !== "" ? r.origin_thread_key : null,
 });
 
 export const addWatch = (input: {
@@ -85,6 +92,7 @@ export const addWatch = (input: {
   destChannel: string;
   destTarget?: string | null;
   keepRuns?: number | null;
+  originThreadKey?: string | null;
 }): WatchRow => {
   const handle = getDb();
   const now = Date.now();
@@ -99,8 +107,8 @@ export const addWatch = (input: {
        (label, path, pattern, recursive, debounce_ms, event_filter,
         prompt, dest_channel, dest_target,
         enabled, created_at, updated_at,
-        last_fired_at, last_path, last_event, last_status, last_error, keep_runs)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`,
+        last_fired_at, last_path, last_event, last_status, last_error, keep_runs, origin_thread_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
     )
     .run(
       input.label,
@@ -115,6 +123,7 @@ export const addWatch = (input: {
       now,
       now,
       input.keepRuns ?? null,
+      input.originThreadKey ?? null,
     );
   const id = Number(result.lastInsertRowid);
   const created = getWatch(id);
@@ -167,6 +176,7 @@ export const updateWatch = (
     destTarget: string | null;
     enabled: boolean;
     keepRuns: number | null;
+    originThreadKey: string | null;
   }>,
 ): WatchRow | undefined => {
   const existing = getWatch(id);
@@ -217,6 +227,10 @@ export const updateWatch = (
   if (patch.keepRuns !== undefined) {
     sets.push("keep_runs = ?");
     vals.push(patch.keepRuns);
+  }
+  if (patch.originThreadKey !== undefined) {
+    sets.push("origin_thread_key = ?");
+    vals.push(patch.originThreadKey);
   }
   if (sets.length === 0) return existing;
 

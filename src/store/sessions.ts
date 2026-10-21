@@ -585,7 +585,7 @@ export const initStore = (): void => {
   if (!hasTriggerType) {
     handle.exec(
       `ALTER TABLE schedules ADD COLUMN trigger_type TEXT NOT NULL
-         DEFAULT 'cron' CHECK(trigger_type IN ('cron','reboot'))`,
+         DEFAULT 'cron' CHECK(trigger_type IN ('cron','reboot','once'))`,
     );
   }
 
@@ -606,6 +606,38 @@ export const initStore = (): void => {
   //  매일 도는 스케줄이 이력을 계속 이어 첫 요청이 18만→29만 토큰으로 불던 것.
   if (!schedCols.some((c) => c.name === "keep_runs")) {
     handle.exec(`ALTER TABLE schedules ADD COLUMN keep_runs INTEGER`);
+  }
+  // ─── schedules.run_at · origin_thread_key (2026-10-20) — 한 번 타이머(`once`)·만든 대화에서 처리. NULL = 종전(기존 스케줄 전부 — 자동 전환 없음).
+  if (!schedCols.some((c) => c.name === "run_at")) handle.exec(`ALTER TABLE schedules ADD COLUMN run_at INTEGER`);
+  if (!schedCols.some((c) => c.name === "origin_thread_key")) handle.exec(`ALTER TABLE schedules ADD COLUMN origin_thread_key TEXT`);
+  // ─── scheduler_alive (2026-10-20) — 스케줄러가 «살아 있던 마지막 시각». 놓친 실행 보충이 **데몬이 꺼져 있던 구간**만 보게(적대 검토 #5·#6:
+  //  마지막 기록 이후로 재면 `/stop` 한 실행·꺼 뒀다 켠 스케줄까지 재시작마다 다시 돌았다). 한 줄짜리 표.
+  handle.exec(`CREATE TABLE IF NOT EXISTS scheduler_alive (id INTEGER PRIMARY KEY CHECK (id = 1), ts INTEGER NOT NULL)`);
+  // ★옛 제약이 `once` 를 막는다 — SQLite 는 CHECK 를 고칠 수 없어 **표를 다시 만든다**(한 번, 트랜잭션 안). 행·id 그대로 옮기고
+  //  AUTOINCREMENT 순번도 옮긴다: 순번이 내려가면 지운 스케줄의 id 가 다시 쓰여 새 스케줄이 옛 전용 세션(`scheduler:<id>`)의 이력을 물려받는다.
+  const schedSql = (handle.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='schedules'`).get() as { sql: string } | undefined)?.sql ?? "";
+  if (schedSql.includes("IN ('cron','reboot')")) {
+    const cols = "id, label, cron_expr, timezone, prompt, dest_channel, dest_target, enabled, created_at, updated_at, last_fired_at, last_status, last_error, trigger_type, keep_runs, run_at, origin_thread_key";
+    handle.transaction(() => {
+      const seq = (handle.prepare(`SELECT seq FROM sqlite_sequence WHERE name='schedules'`).get() as { seq: number } | undefined)?.seq;
+      handle.exec(`
+        CREATE TABLE schedules_v2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL, cron_expr TEXT NOT NULL, timezone TEXT NOT NULL DEFAULT 'Asia/Seoul',
+          prompt TEXT NOT NULL, dest_channel TEXT NOT NULL, dest_target TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_fired_at INTEGER, last_status TEXT, last_error TEXT,
+          trigger_type TEXT NOT NULL DEFAULT 'cron' CHECK(trigger_type IN ('cron','reboot','once')),
+          keep_runs INTEGER, run_at INTEGER, origin_thread_key TEXT
+        );
+        INSERT INTO schedules_v2 (${cols}) SELECT ${cols} FROM schedules;
+        DROP TABLE schedules;
+        ALTER TABLE schedules_v2 RENAME TO schedules;
+        CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+      `);
+      if (seq !== undefined) {
+        handle.prepare(`UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name='schedules'`).run(seq);
+        handle.prepare(`INSERT INTO sqlite_sequence (name, seq) SELECT 'schedules', ? WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name='schedules')`).run(seq);
+      }
+    })();
   }
 
   // ─── file-watch trigger v1: watches (contract §3) ───────────────────────
@@ -639,6 +671,8 @@ export const initStore = (): void => {
   {
     const watchCols = handle.prepare(`PRAGMA table_info(watches)`).all() as Array<{ name: string }>;
     if (!watchCols.some((c) => c.name === "keep_runs")) handle.exec(`ALTER TABLE watches ADD COLUMN keep_runs INTEGER`);
+    // ─── watches.origin_thread_key (2026-10-20) — 감시를 만든 대화에서 처리. NULL = 전용 세션(기존 감시 전부 — 자동 전환 없음).
+    if (!watchCols.some((c) => c.name === "origin_thread_key")) handle.exec(`ALTER TABLE watches ADD COLUMN origin_thread_key TEXT`);
   }
   handle.exec(`
     CREATE TABLE IF NOT EXISTS watch_runs (
@@ -1441,6 +1475,12 @@ export const canonicalSessionChannel = (
  * 세션. deliverOutbound({observeThreadKey}) 에 실어 통지가 발원 세션(또는 기본)에 뜨게 한다.
  * ★스케줄이 띄운 매니저(job.threadKey="scheduler:<id>")를 물리 tg: 키에 남기던 비대칭 해소.
  */
+/**
+ * 이 키가 **사람의 대화**(대시보드 세션 · 기본 세션 = 텔레그램 대화)인가 — 트리거를 «만든 대화로» 되돌릴 수 있는 자리 (2026-10-20).
+ * 내부 파생 스레드(scheduler:/file-watch:/worker:/endpoint: …·서브)는 사람이 없는 자리라 아니다. `notifySessionThreadKey` 와 같은 분류.
+ */
+export const isHumanSessionKey = (threadKey: string): boolean => notifySessionThreadKey(threadKey) === threadKey && threadKey !== "";
+
 export const notifySessionThreadKey = (threadKey: string): string => {
   for (const p of INTERNAL_THREAD_PREFIXES) {
     if (threadKey.startsWith(p)) return DEFAULT_SESSION_ID;
@@ -1641,6 +1681,18 @@ export const getThreadName = (threadKey: string): string | null => {
     .get(threadKey) as { name?: string | null } | undefined;
   const n = row?.name;
   return typeof n === "string" && n.trim() !== "" ? n : null;
+};
+
+/**
+ * 이 대화가 **살아 있나** — 행이 있고 보관(탭 «제거» = 보관)되지 않았다. 트리거를 «만든 대화» 로 되돌릴 때 쓴다(2026-10-20 레드팀 P-3:
+ *  행 존재만 보면 보관한 탭에서도 감시가 계속 돌고, 매니저가 숨은 탭 소유가 됐다). 기본 세션은 늘 산다(텔레그램 대화).
+ */
+export const isConversationLive = (threadKey: string): boolean => {
+  if (threadKey === DEFAULT_SESSION_ID) return true;
+  const row = requireDb("isConversationLive")
+    .prepare(`SELECT COUNT(*) AS n FROM threads WHERE channel_thread_id = ? AND archived_at IS NULL`)
+    .get(threadKey) as { n: number };
+  return row.n > 0;
 };
 
 export const setThreadArchived = (threadKey: string, at: number | null): number => {

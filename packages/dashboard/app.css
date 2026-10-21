@@ -568,14 +568,9 @@
       .plugin-restart-bar button { border:0; border-radius:8px; padding:6px 12px; font:inherit; font-size:0.8125rem; cursor:pointer; background:var(--accent); color:var(--on-accent); }
       .plugin-setting-envvalue { color:var(--text); font-size:.75rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:220px; }
       .plugin-setting-envname { color:var(--text-mute); font-size:.6875rem; }
-      /* 홈 위젯 (2026-08-28, 위젯 플랫폼 §J) — ★격자는 여기가 푼다.
-         서버가 주는 건 순서와 size 등급뿐이라 breakpoint 별 레이아웃을 저장할 게 없다.
-         `auto-fill` 이라 창을 줄이면 알아서 접힌다(모바일 규칙을 따로 안 쓴다). */
-      .home-widget-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; }
-      .home-widget { min-width:0; }
-      .home-widget[data-size="wide"] { grid-column:span 2; }
-      .home-widget-body { min-width:0; }
-      .home-widget-note { padding:14px; border:1px dashed var(--border); border-radius:16px;
+      /* 위젯 상자(2026-08-28 홈 → 2026-10-20 위젯 패널). 패널은 세로 한 열이라 격자·size 등급을 여기서 풀 게 없다. */
+      .wg-body { min-width:0; }
+      .wg-note { padding:14px; border:1px dashed var(--border); border-radius:16px;
         background:var(--card); color:var(--text-mute); font-size:0.75rem; }
       .overview-layout { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr); gap:12px; align-items:start; }
       .status-list { display:grid; gap:8px; }
@@ -990,6 +985,21 @@
       .act-diff-stat .dadd { color:var(--diff-add-fg); font-weight:700; }
       .act-diff-stat .ddel { color:var(--diff-del-fg); font-weight:700; }
       .act-diff-body { display:none; }
+      /* «지금 파일에서 보기»(2026-10-21, file-view.js) — 창 안의 조각은 펼친 채 · 아래는 지금 파일(고정폭, 문법 색 없음). 좁으면 전체 화면. */
+      .act-diff-open-body .act-diff-body { display:block; }
+      .fv-back { position:fixed; inset:0; z-index:400; background:rgb(var(--shadow-rgb) / .5); display:flex; align-items:center; justify-content:center; padding:24px; }
+      .fv-box { width:min(1200px, 100%); height:min(90vh, 100%); display:flex; flex-direction:column; background:var(--bg); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+      .fv-head { flex:none; display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); }
+      .fv-title { flex:1; min-width:0; font-family:var(--font-mono); font-size:0.75rem; color:var(--text-mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .fv-jump, .fv-close { flex:none; padding:3px 8px; border:1px solid var(--border); border-radius:7px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:0.75rem; }
+      .fv-jump:hover, .fv-close:hover { color:var(--text); background:var(--card-hover); }
+      .fv-frag { flex:none; max-height:30%; overflow:auto; padding:6px 10px; border-bottom:1px solid var(--border); }
+      .fv-note { flex:none; padding:6px 12px; font-size:0.6875rem; color:var(--text-mute); border-bottom:1px solid var(--border); }
+      .fv-file { flex:1; min-height:0; overflow:auto; display:flex; align-items:flex-start; font-family:var(--font-mono); font-size:0.75rem; line-height:1.5; }
+      .fv-gutter { flex:none; margin:0; padding:8px 8px 8px 12px; text-align:right; color:var(--text-dim); user-select:none; border-right:1px solid var(--border); position:sticky; left:0; z-index:1; background:var(--bg); }
+      .fv-code { flex:1; min-width:0; margin:0; padding:8px 12px; white-space:pre; color:var(--text); }
+      .fv-hit { background:rgb(var(--accent-rgb) / .22); color:inherit; display:inline; }
+      @media (max-width: 900px) { .fv-back { padding:0; } .fv-box { width:100%; height:100%; border-radius:0; border:none; } .fv-frag { max-height:35%; } }
       .act-step.expanded .act-diff-body, .hist-tool.expanded .act-diff-body, .hist-step.expanded .act-diff-body, .bg-step.expanded .act-diff-body { display:block; }
       /* ExitPlanMode 계획 카드 — 항상 표시(.expanded 무관). 계획(마크다운)을 사용자가 바로 보게. */
       .act-plan { flex-basis:100%; width:100%; margin:5px 0 3px; border:1px solid rgb(var(--accent-rgb) / .38); border-radius:10px; background:rgb(var(--accent-rgb) / .06); overflow:hidden; }
@@ -1042,8 +1052,9 @@
       .sd-close:hover { background:var(--card-hover); color:var(--text); }
       /* Step2 (2026-06-30) — 백그라운드 작업 드로어. 옛 스텝 상세 사이드바의 슬라이드 패턴 차용.
          PC=우측 고정폭 드로어(웹앱식, 백드롭 없음·채팅 계속 보임), 모바일=넓게 슬라이드인+백드롭. */
-      #bg-toggle { position:relative; border:1px solid var(--border); border-radius:11px; padding:7px 11px; background:rgb(var(--fg-rgb) / .035); color:var(--text-mute); cursor:pointer; font-size:0.6875rem; font-weight:800; display:flex; align-items:center; gap:7px; white-space:nowrap; }
-      #bg-toggle:hover { color:var(--text); background:var(--card-hover); }
+      #bg-toggle, #wg-toggle { position:relative; border:1px solid var(--border); border-radius:11px; padding:7px 11px; background:rgb(var(--fg-rgb) / .035); color:var(--text-mute); cursor:pointer; font-size:0.6875rem; font-weight:800; display:flex; align-items:center; gap:7px; white-space:nowrap; }
+      #bg-toggle:hover, #wg-toggle:hover { color:var(--text); background:var(--card-hover); }
+      body.wg-open #wg-toggle, body.bg-open #bg-toggle { color:var(--text); border-color:var(--border-strong); }
 
       /* ── 대화 검색 (2026-08-23) — 버튼 → **드로어**. ─────────────────────────────
          ★인라인 패널이었다가 옮겼다: 채팅 위에 붙으니 열릴 때마다 대화가 아래로 밀려
@@ -1126,7 +1137,7 @@
          접고, 배지는 잡이 0이면 `display:none` 이다). 그래서 그 둘만 두면 모바일에서
          **빈 상자**가 된다(2026-09-07 정태님 신고: "우상단 백그라운드 버튼에 이름이
          없어졌지"). 폭이 고정이라 옆 칸을 안 민다 — 정지 버튼에서 배운 것과 같다. */
-      #bg-toggle .bg-icon { font-size:0.8125rem; line-height:1; }
+      #bg-toggle .bg-icon, #wg-toggle .wg-icon { font-size:0.8125rem; line-height:1; }
       #bg-toggle .bg-badge { min-width:17px; height:17px; padding:0 5px; border-radius:9px; background:var(--accent-2); color:var(--on-accent); font-size:0.625rem; font-weight:900; display:none; align-items:center; justify-content:center; line-height:1; }
       #bg-toggle .bg-badge.show { display:inline-flex; }
       /* ── 오버레이 패널은 **자기 안에서** 스크롤이 끝난다 (2026-09-05 정태님 신고) ──────
@@ -1159,14 +1170,49 @@
       @media (min-width:901px) {
         header, main { transition:margin-right .2s ease; }
         body.bg-open header, body.bg-open main { margin-right:var(--bg-panel-w, 380px); }
-        body.bg-resizing header, body.bg-resizing main { transition:none; }
+        /* ★위젯 패널(2026-10-20) — 순서 고정 `본문 | 백그라운드 | 위젯`. 위젯이 창 오른쪽 끝, 백그라운드는 그 폭만큼 안쪽.
+           둘 다 열리면 밀어내는 폭 = 합. 공간이 모자라면 side-panels.js 가 하나를 닫는다(여기는 배치만). */
+        body.wg-open header, body.wg-open main { margin-right:var(--wg-panel-w, 340px); }
+        body.bg-open.wg-open header, body.bg-open.wg-open main { margin-right:calc(var(--bg-panel-w, 380px) + var(--wg-panel-w, 340px)); }
+        body.wg-open #bg-panel { right:var(--wg-panel-w, 340px); transition:transform .2s ease, right .2s ease; }
+        body.panel-resizing header, body.panel-resizing main, body.panel-resizing #bg-panel { transition:none; }
       }
       /* 드로어 폭 드래그 조절(왼쪽 가장자리) — 폭은 JS 가 inline style + localStorage 로 관리. */
       #bg-resize { position:absolute; left:0; top:0; bottom:0; width:8px; cursor:ew-resize; z-index:3; }
       #bg-resize::before { content:""; position:absolute; left:2px; top:50%; transform:translateY(-50%); width:3px; height:36px; border-radius:2px; background:var(--border-strong); opacity:0; transition:opacity .12s; }
       #bg-resize:hover::before, #bg-resize.dragging::before { opacity:1; background:var(--accent-2); }
-      body.bg-resizing { cursor:ew-resize; user-select:none; }
+      body.panel-resizing { cursor:ew-resize; user-select:none; }
       @media (max-width:900px) { #bg-resize { display:none; } }
+      /* ── 위젯 패널(2026-10-20, docs/decisions/2026-10-20-widget-panel-design.md) — bg 패널과 같은 몸짓·같은 손잡이 ── */
+      #wg-backdrop { position:fixed; inset:0; background:rgb(var(--shadow-rgb) / .5); z-index:18; display:none; }
+      #widget-panel {
+        position:fixed; top:0; right:0; bottom:0; width:340px; max-width:88vw;
+        display:flex; flex-direction:column; background:var(--panel);
+        border-left:1px solid var(--border-strong); box-shadow:-14px 0 36px rgb(var(--shadow-rgb) / .4);
+        transform:translateX(100%); transition:transform .2s ease; z-index:19;
+        pointer-events:none; visibility:hidden;
+      }
+      body.wg-open #widget-panel { transform:translateX(0); pointer-events:auto; visibility:visible; }
+      @media (max-width:900px) { body.wg-open #wg-backdrop { display:block; } }
+      #wg-resize { position:absolute; left:0; top:0; bottom:0; width:8px; cursor:ew-resize; z-index:3; }
+      #wg-resize::before { content:""; position:absolute; left:2px; top:50%; transform:translateY(-50%); width:3px; height:36px; border-radius:2px; background:var(--border-strong); opacity:0; transition:opacity .12s; }
+      #wg-resize:hover::before, #wg-resize.dragging::before { opacity:1; background:var(--accent-2); }
+      @media (max-width:900px) { #wg-resize { display:none; } }
+      .wg-list { display:flex; flex-direction:column; gap:10px; padding:12px; min-height:0; }
+      .wg-item { position:relative; min-width:0; display:flex; flex-direction:column; border-radius:16px; }
+      .wg-body { container-type:inline-size; }
+      .wg-item.dragging { opacity:.55; }
+      .wg-item.drop-before { box-shadow:0 -3px 0 var(--accent-2); }
+      .wg-item.drop-after { box-shadow:0 3px 0 var(--accent-2); }
+      /* 손잡이 — 이것을 잡았을 때만 끌린다(폰에서 스크롤이 끌기로 오인되지 않게). */
+      /* ★위젯 위쪽 자기 줄에 둔다 — 위젯 안에 겹쳐 두면 위젯의 오른쪽 위 내용(날씨 기온)을 가린다(헤드리스 화면 확인). */
+      .wg-handle { align-self:center; width:44px; height:14px; margin-bottom:2px; display:flex; align-items:center; justify-content:center;
+        border:0; border-radius:7px; background:transparent; color:var(--text-mute);
+        font-size:0.625rem; letter-spacing:1px; line-height:1; cursor:grab; touch-action:none; opacity:.45; }
+      .wg-handle:hover { background:rgb(var(--fg-rgb) / .06); }
+      .wg-item:hover .wg-handle, .wg-handle:focus-visible, .wg-item.dragging .wg-handle { opacity:1; }
+      .wg-handle:active { cursor:grabbing; }
+      .wg-empty { padding:16px; color:var(--text-mute); font-size:0.75rem; line-height:1.5; }
       .bg-head { display:flex; align-items:center; gap:8px; padding:14px; border-bottom:1px solid var(--border); }
       .bg-head h3 { flex:1; margin:0; }
       /* 진행 중 필터 탭 — running 잡만 모아 보는 뷰(기본) ↔ 전체. status 클래스 기반 CSS 필터라
@@ -1197,6 +1243,18 @@
          바짝 붙음). 작업이 많으면 flex-shrink:1+min-height:0 으로 #bg-list(flex:1,overflow-y:auto)
          가 내부 스크롤 → 셸은 항상 보임. 클래스 선택자(0,1,0)라 collapse 규칙(0,3,0)이 이긴다
          — ID(#bg-jobs-body,1,0,0,0)면 display:flex 가 collapse 의 display:none 을 눌러버림. */
+      /* 한 번 타이머(2026-10-20, bg-timers.js) — 작업 그룹 위 짧은 목록. 없으면 [hidden](전역 규칙)으로 숨는다. 한 줄 = 남은 시간 · 이름 · 멈추기. */
+      .bg-timers { flex:none; padding:8px 12px 2px; }
+      .bg-timers-head { font-size:0.6875rem; font-weight:900; letter-spacing:.03em; text-transform:uppercase; color:var(--text-mute); padding-bottom:4px; }
+      .bg-timer { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid var(--border); border-radius:9px; margin-bottom:4px; font-size:0.75rem; min-width:0; }
+      .bg-timer.off { opacity:.6; }
+      .bg-timer.failed { opacity:1; border-color:rgb(var(--danger-rgb) / .5); }
+      .bg-timer.failed .bg-timer-when { color:var(--danger-fg); }
+      .bg-timer-when { flex:none; font-weight:800; color:var(--accent); white-space:nowrap; }
+      .bg-timer-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+      .bg-timer-stop { flex:none; padding:3px 8px; border:1px solid var(--border); border-radius:7px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:0.6875rem; font-weight:800; }
+      .bg-timer-stop:hover { color:var(--text); background:var(--card-hover); }
+      .bg-timer-stop:disabled { opacity:.5; cursor:default; }
       .bg-jobs-body { flex:0 1 auto; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
       .bg-group-body .bg-filter { flex:none; }
       /* 세션 스코프(2026-07-16) — 기본은 활성 세션(activeThreadKey)이 띄운 잡만. 카드의 .bg-in-scope
@@ -1942,18 +2000,19 @@
            그래서 접는 자리를 **정말 좁은 구간**으로 내린다. 여기서 «안 넘친다» 를 확인한
            320px 를 문턱으로 삼되, 그보다 좁은 기기(폴더블 접힘·과확대)에서는 여전히
            접어 가로 스크롤을 막는다 — 뜻은 `aria-label`·`title` 이 지킨다. */
-        @media (max-width: 359px) {
-          header #bg-toggle .bg-word { display:none; }
-          header #chat-search-btn .cs-word { display:none; }
-          header #chat-search-btn .cs-icon { margin-right:0; }
-        }
+        /* ★★문턱을 숫자로 두지 않는다 (2026-10-20) — 위 359px 는 **업데이트 칩이 숨은 상태**에서 잰 값이라, 칩이 뜨면 430px 이하 폰에서
+           헤더가 넘쳐 화면이 밀렸다(정태님 신고). 이제 `header-fit.js` 가 **실제로 넘치는지**(`scrollWidth`)를 재서 필요한 단계만 단다:
+           ①낱말 ②업데이트 칩을 기호로 ③«?». 넓으면 낱말은 그대로 보인다. 뜻은 `aria-label`·`title`·숨은 글자가 지킨다.
+           ★`overflow:hidden` — 다 접어도 모자란 극단에서 헤더가 페이지 폭을 넓히지 않게(홈에서 화면 전체가 443px 로 밀린 것). */
+        /* (접기 규칙은 이 블록 밖 — 데스크톱에서도 넘칠 때만 접는다. 아래 «헤더 자리 맞추기» 절) */
         /* ★낱말을 접어도 **아이콘은 남는다** — 배지는 잡이 0이면 안 뜨므로, 아이콘이
            없으면 이 버튼이 빈 상자가 된다. 접는 것은 «모양» 이지 «존재» 가 아니다. */
         header #bg-toggle .bg-icon { display:inline-block; font-size:0.875rem; }
         header .brand { font-size:0.9375rem; }
         header .brand .brand-icon { width:28px; height:28px; }
         /* 백그라운드 버튼(mobile-nav.js 가 헤더로 이동) — 컴팩트. */
-        header #bg-toggle { font-size:0.65625rem; padding:5px 8px; gap:5px; flex:none; white-space:nowrap; }
+        header #bg-toggle, header #wg-toggle { font-size:0.65625rem; padding:5px 8px; gap:5px; flex:none; white-space:nowrap; }
+        header #wg-toggle .wg-icon { display:inline-block; font-size:0.875rem; }
         /* ★검색 버튼도 **같이** 헤더로 온다 (2026-09-09) — 종전엔 백그라운드만 옮겨서,
            바로 옆에 나란히 있던 검색이 #stream-bar 와 함께 스크롤로 사라졌다(긴 대화에선
            맨 위까지 올라가야 나오니 사실상 없는 기능이었다).
@@ -2007,8 +2066,6 @@
         .summary-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
         .quick-grid, .provider-layout, .overview-layout { grid-template-columns:minmax(0,1fr); }
         /* ★한 칸짜리 격자에서 `span 2` 는 넘친다 — 등급을 화면이 다시 해석하는 자리다. */
-        .home-widget-grid { grid-template-columns:minmax(0,1fr); }
-        .home-widget[data-size="wide"] { grid-column:auto; }
         .provider-grid { grid-template-columns:minmax(0,1fr); }
         .summary-card { padding:11px; } .summary-value { font-size:1.1875rem; }
         .detail-head { padding:15px; align-items:flex-start; flex-wrap:wrap; row-gap:9px; } .detail-name { font-size:1.1875rem; }
@@ -2154,3 +2211,15 @@
       .ep-kind-ep { background:rgb(var(--accent-rgb) / .16); color:var(--accent); }
       .ep-kind-gw { background:rgb(var(--accent-2-rgb) / .16); color:var(--accent-2); }
 
+      /* ── 헤더 자리 맞추기 (header-fit.js) — **화면 폭이 아니라 «실제로 넘칠 때»** 단다 (2026-10-20) ──
+         ★데스크톱에도 건다 — 위젯·백그라운드 버튼이 전역 헤더로 오면서 901~960px 에 패널을 열면 헤더 오른쪽 끝이 패널 밑에 깔렸다(레드팀 P2).
+         ★마지막 단계는 브랜드 낱말 — 🧩 버튼이 더해진 뒤 320~340px + 업데이트 칩에선 앞 셋을 다 접어도 넘쳐 칩이 잘렸다(레드팀 P1).
+          로고 아이콘은 남는다(정체성은 아이콘이 진다). `overflow:hidden` — 그래도 모자란 극단에서 페이지 폭을 넓히지 않게. */
+      header { overflow:hidden; }
+      header.fit-words #bg-toggle .bg-word, header.fit-words #chat-search-btn .cs-word, header.fit-words #wg-toggle .wg-word { display:none; }
+      header.fit-words #chat-search-btn .cs-icon { margin-right:0; }
+      header.fit-chip #update-chip { font-size:0; padding:0 9px; }
+      header.fit-chip #update-chip::before { content:"↑"; font-size:0.875rem; font-weight:800; }
+      header.fit-chip #update-chip.blocked::before { content:"!"; }
+      header.fit-notes #update-notes, header.fit-notes .repo-star { display:none; }
+      header.fit-brand .brand > span, header.fit-brand .sub { display:none; }

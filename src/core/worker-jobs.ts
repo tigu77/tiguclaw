@@ -1135,7 +1135,12 @@ const deliverCheckin = async (
   }
   // ③ 메인 핸들러조차 없다(부팅 전·재주입 실패) → raw 안전망. 여기까지 오면 판단할 상대가
   //    **실제로** 없다는 뜻이라, 자동 종료 판정의 입력이 된다.
-  await notifyJobOwner(reportJob, body);
+  // ★배달 실패는 여기서 흡수한다 — 던지면 바깥(점검 주기)의 자동 종료 판정을 통째로 건너뛴다(10-20: 래퍼가 «못 보냄» 을 던지게 되면서).
+  try {
+    await notifyJobOwner(reportJob, body);
+  } catch (e) {
+    console.error(`worker-jobs: 점검 raw 통지 실패 (job='${reportJob.label}' ${reportJob.jobId}): ${e instanceof Error ? e.message : String(e)}`);
+  }
   return false;
 };
 
@@ -2510,7 +2515,7 @@ const reacquireReply = (
   // (대시보드 이중 버블 0). 물리 발송(telegram send 등)은 두 경우 모두 동일하게 수행된다.
   const observe = opts?.observe;
   return async (text: string): Promise<void> => {
-    await deliverOutbound({
+    const r = await deliverOutbound({
       channel: dest.channel,
       target: dest.target ?? null,
       text,
@@ -2526,6 +2531,11 @@ const reacquireReply = (
         ? { originThreadKey: opts.originThreadKey }
         : {}),
     });
+    // ★«못 보냄» 을 성공으로 넘기지 않는다 (2026-10-20 회사돌쇠). 미등록 채널은 던지지 않고 `delivered:false` 를 **돌려주는데**
+    //  (outbound.ts), 이 래퍼가 그 값을 버려 완료 보고의 `trackedReply` 가 «보냄» 으로 표시했고 → raw 안전망이 꺼졌다
+    //  (감시가 띄운 매니저의 완료 보고 236자가 `file-watch` 채널로 가 미배달 — 기록엔 전달 성공). 안전망도 같은 래퍼라 그 실패도 몰랐다.
+    //  채널 throw 와 **같은 계약**(실패 = 던짐)으로 올린다 — 부르는 다섯 곳은 전부 던짐을 실패로 받는다(점검 경로는 아래에서 흡수).
+    if (r.delivered === false) throw new Error(`배달 실패 — ${r.reason}`);
   };
 };
 
@@ -2756,6 +2766,11 @@ const subscribeWorkerToolSlowNotify = (): void => {
  * 없으면(부팅 전) undefined — 호출자가 «못 보냈다» 로 다룬다.
  */
 export const mainMessageHandler = (): MessageHandler | undefined => mainHandler;
+
+/** 회귀 전용 — 메인 핸들러를 바꾸고 **되돌린다**(등록 함수는 구독까지 걸어 되돌릴 수 없다). 부팅 창(핸들러 없음)도 이걸로 만든다. */
+export const __setMainHandlerForTest = (handler: MessageHandler | undefined): void => {
+  mainHandler = handler;
+};
 
 export const registerWorkerHandler = (handler: MessageHandler): void => {
   mainHandler = handler;

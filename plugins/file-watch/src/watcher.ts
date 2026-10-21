@@ -36,14 +36,27 @@ export interface WatcherDeps {
     threadKey: string;
     channel: string;
     cwd: string;
-    /** 재시작 중단 통지용. 정상 결과의 자동 push를 추가하지 않는다. */
-    interruptDest: { channel: string; target: string | null };
+    /**
+     * 이 턴의 **사람 도달 좌표**(감시의 배달 목적지) — 스케줄 실행기와 같은 필드(`RegionAInput.notifyDest`).
+     * 쓰는 곳: 이 턴이 띄운 매니저·서브의 완료 보고 · 쿨다운 알림 · 재시작 중단 통지. 감시 결과 자체는 여기로 자동 push 하지 않는다(아래 dispatch 가 보낸다).
+     * ★2026-10-20 회사돌쇠: 종전엔 `interruptDest` 라는 다른 이름으로 들고 있다가 파사드가 **빼고** 넘겨, 감시가 띄운 매니저의 완료 보고가
+     *  내부 채널 `file-watch` 로 가 미배달됐다(스케줄은 10-xx 부터 이 필드를 실었다 — 같은 판단이 두 플러그인에서 갈렸다).
+     */
+    notifyDest: { channel: string; target: string | null };
     /** 이 턴이 이 감시의 발화임 — 대화 컨텍스트가 «파일 감시 실행 · 변경만으로 누가 바꿨는지 모른다» 를 말한다(`TriggerRun`). */
     triggerRun: TriggerRun;
+    /** 감시를 만든 대화(2026-10-20) — 있으면 파사드가 **그 대화의 줄**에 턴을 넣고, 답은 그 턴이 직접 목적지로 보낸다. null = 전용 세션. */
+    originThreadKey: string | null;
   }) => Promise<{
     text: string;
-    /** 줄에서 기다리는 사이 감시가 지워지거나 꺼져 **실행하지 않았다**(모델 호출 0) — 기록·배달하지 않는다(스케줄 `SKIPPED_IN_QUEUE` 와 같은 판단). */
-    skipped?: "deleted" | "disabled";
+    /**
+     * 실행하지 않았다(모델 호출 0) — 기록·배달하지 않는다. `deleted`·`disabled` = 줄에서 기다리는 사이 감시가 지워지거나 꺼짐(스케줄
+     *  `SKIPPED_IN_QUEUE` 와 같은 판단) · `moved` = 그새 처리 자리가 바뀜 · `origin-gone` = 만든 대화가 사라짐(★전용 세션으로 몰래 돌리지 않는다 — 오류로 남긴다) ·
+     *  `not-run` = 차례가 오기 전에 핸들러가 끝냈다(데몬 종료 중 — 실행도 실패도 아니다).
+     */
+    skipped?: "deleted" | "disabled" | "moved" | "origin-gone" | "not-run";
+    /** 만든 대화 안에서 돌았다 — 답은 그 턴이 이미 목적지로 보냈다(여기서 또 보내면 두 번). `failed` = 그 턴이 실패 안내로 끝남. */
+    inOrigin?: { replied: number; failed?: string; dest?: { channel: string; target: string | null } };
   }>;
   /** recordFiring 주입 — spike 에서 mock 가능. */
   recordFiring: (
@@ -54,6 +67,11 @@ export interface WatcherDeps {
   cwd: string;
   /** dispatcher 주입 — 회귀에서 mock 가능(scheduler runner 와 같은 자리). 미지정 = 실제 배달. */
   dispatch?: typeof dispatch;
+  /**
+   * 발화 때 **최신 행**을 읽는다(2026-10-20 레드팀 P-1). 감시기는 등록 때 행을 붙잡고 있어, `update_watch`(처리 자리 옮기기)가 재시작 전까지
+   *  안 먹었다 — 옮긴 감시가 옛 대화로 가 «moved» 로 매번 조용히 건너뛰었다. 미지정(회귀 일부) = 붙잡은 행 그대로.
+   */
+  latestRow?: (id: number) => WatchRow | undefined;
 }
 
 /** event_filter 문자열 → Set 정규화. 'all' 또는 빈 값은 모두 통과.
@@ -243,6 +261,15 @@ const fireWatch = async (
   /** 대기분으로 이어 발화한 것인가 — 이어 발화는 **한 번까지**다(아래 finally). */
   followUp = false,
 ): Promise<void> => {
+  // 최신 행으로 판단한다 — 처리 자리·프롬프트·목적지는 바뀔 수 있다(경로·패턴은 감시를 다시 걸어야 바뀐다).
+  if (deps.latestRow !== undefined) {
+    const latest = deps.latestRow(row.id);
+    if (latest === undefined || !latest.enabled) {
+      console.log(`[file-watch:${row.id}] '${row.label}' 발화 직전 ${latest === undefined ? "지워짐" : "꺼짐"} — 실행 안 함`);
+      return;
+    }
+    row = latest;
+  }
   if (inFlightWatches.has(row.id)) {
     const pending = pendingWatches.get(row.id) ?? { row, bus, deps, items: new Map() };
     pending.row = row;
@@ -272,7 +299,8 @@ const fireWatch = async (
   const secs = (): string => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
   console.log(
     `${tag} 발화 — ${event} · 경로 ${paths.length}개(${paths[0] ?? ""}${paths.length > 1 ? " 외" : ""})` +
-      `${followUp ? " · 실행 중 쌓인 변경 이어 처리" : held !== undefined && held.size > 0 ? " · 보류분 합침" : ""} → ${row.destChannel}:${row.destTarget ?? "-"}`,
+      `${followUp ? " · 실행 중 쌓인 변경 이어 처리" : held !== undefined && held.size > 0 ? " · 보류분 합침" : ""} → ${row.destChannel}:${row.destTarget ?? "-"}` +
+      ` · 처리 ${row.originThreadKey ?? `전용 세션 file-watch:${row.id}`}`,
   );
   try {
   try {
@@ -282,12 +310,38 @@ const fireWatch = async (
       threadKey: `file-watch:${row.id}`,
       channel: "file-watch",
       cwd: deps.cwd,
-      interruptDest: { channel: row.destChannel, target: row.destTarget },
+      notifyDest: { channel: row.destChannel, target: row.destTarget },
       triggerRun: { kind: "watch", id: row.id, event, path: eventPath },
+      originThreadKey: row.originThreadKey,
     });
     // 실행하지 않았다 — 지운·끈 감시의 일을 기록하거나 보내지 않는다(«ok» 로 적으면 끈 감시가 돈 것처럼 보인다).
+    if (result.skipped === "origin-gone") {
+      // ★실패다 — 만든 대화가 없어 처리할 자리가 없다. 전용 세션으로 돌리지 않는다(설계: 몰래 폴백 금지). 자가 진단이 last_status 로 본다.
+      const error = `감시를 만든 대화(${row.originThreadKey ?? "-"})가 없어 실행하지 않았습니다`;
+      console.error(`${tag} ${error} · ${secs()}`);
+      deps.recordFiring(row.id, { ok: false, path: eventPath, event, error });
+      bus.publish({ type: "file-watch.error", ts: Date.now(), payload: { watchId: row.id, phase: "origin", path: eventPath, event, destChannel: row.destChannel, error } });
+      return;
+    }
     if (result.skipped !== undefined) {
-      console.log(`${tag} 줄에서 기다리는 사이 ${result.skipped === "deleted" ? "지워짐" : "꺼짐"} — 실행 안 함 · ${secs()}`);
+      const why = result.skipped === "deleted" ? "줄에서 기다리는 사이 지워짐" : result.skipped === "disabled" ? "줄에서 기다리는 사이 꺼짐"
+        : result.skipped === "not-run" ? "차례가 오기 전에 끝남(데몬 종료 중)" : "줄에서 기다리는 사이 처리 자리가 바뀜";
+      console.log(`${tag} ${why} — 실행 안 함 · ${secs()}`);
+      return;
+    }
+    if (result.inOrigin !== undefined) {
+      // 만든 대화 안에서 돌았다 — 답은 그 턴이 목적지로 이미 보냈다(관측도 그 대화에). 여기서는 기록만.
+      const { replied, failed } = result.inOrigin;
+      // 그 실행이 **실제로 쓴** 목적지(차례에서 확정) — 발화 때 행은 그새 바뀌었을 수 있다(아스트라 재검토 10-20).
+      const used = result.inOrigin.dest ?? { channel: row.destChannel, target: row.destTarget };
+      if (failed !== undefined) {
+        console.error(`${tag} 끝 — 만든 대화(${row.originThreadKey})에서 실패: ${failed.slice(0, 200)} · ${secs()}`);
+        deps.recordFiring(row.id, { ok: false, path: eventPath, event, error: failed.slice(0, 500) });
+        return;
+      }
+      console.log(`${tag} 끝 — 만든 대화(${row.originThreadKey})에서 처리 · 답 ${replied}자 → ${used.channel}:${used.target ?? "-"} · ${secs()}`);
+      deps.recordFiring(row.id, { ok: true, path: eventPath, event });
+      bus.publish({ type: "file-watch.fired", ts: Date.now(), payload: { watchId: row.id, path: eventPath, event, ok: true } });
       return;
     }
     // 결과를 목적지로 — 빈 결과면 보낼 것이 없다. 배달 실패는 생성 실패와 갈라 적는다(스케줄러와 같은 모양).

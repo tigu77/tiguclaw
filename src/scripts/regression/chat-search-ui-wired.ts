@@ -65,6 +65,7 @@ export const check: RegressionCheck = {
     const bridge = readSourceSync("plugins/http-bridge");
     const consts = (await read("js/constants.js")) ?? "";
     const bg = (await read("js/background-drawer.js")) ?? "";
+    const sidePanels = (await read("js/side-panels.js")) ?? "";
     const md = (await read("js/markdown.js")) ?? "";
     const act = (await read("js/activity.js")) ?? "";
     const hist = (await read("js/history-render.js")) ?? "";
@@ -238,11 +239,13 @@ export const check: RegressionCheck = {
         // ★두 드로어가 같은 자리에 같은 몸짓으로 뜨는데 폭 한계가 다르면 번갈아 열 때
         //  들쭉날쭉하다. 값을 각자 적으면 한쪽만 늙는다(사용자 확정: 같게).
         "★검색·백그라운드 드로어가 같은 폭 한계를 쓴다(clampDrawerWidth 공유)",
+        // ★백그라운드(·위젯) 패널은 폭 손잡이를 `side-panels.js attachPanelResize` 하나로 쓴다(2026-10-20) — 그 함수가 clampDrawerWidth 를 부른다.
         consts.includes("const clampDrawerWidth") &&
           js.includes("clampDrawerWidth") &&
-          bg.includes("clampDrawerWidth") &&
-          !/Math\.min\(760/.test(bg),
-        `consts=${consts.includes("const clampDrawerWidth")} search=${js.includes("clampDrawerWidth")} bg=${bg.includes("clampDrawerWidth")}`,
+          /attachPanelResize\(\{ panel: bgPanel/.test(bg) &&
+          /const attachPanelResize[\s\S]{0,400}?clampDrawerWidth\(/.test(sidePanels) &&
+          !/Math\.min\(760/.test(bg + sidePanels),
+        `consts=${consts.includes("const clampDrawerWidth")} search=${js.includes("clampDrawerWidth")} bg=${/attachPanelResize\(\{ panel: bgPanel/.test(bg)} side=${/const attachPanelResize[\s\S]{0,400}?clampDrawerWidth\(/.test(sidePanels)}`,
       ),
       assert(
         // 폭 조절은 **저장돼야** 의미가 있다 — 열 때마다 되돌아가면 매번 다시 끌어야 한다.

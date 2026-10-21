@@ -34,14 +34,15 @@ export const check: RegressionCheck = {
     out.push(assert("전제 — 홈 갱신 요청은 여러 파일이 같은 모양으로 보낸다(이 검사가 그 모양을 그대로 부른다)", sites >= 5, `호출 자리 ${sites}곳`));
 
     // ── ① 홈 갱신 ────────────────────────────────────────────────────────
+    // ★2026-10-20: 홈의 위젯 영역은 없어졌다(위젯 패널로) — 위젯 마운트·조회의 수명은 `widget-panel-lifecycle` 이 본다.
+    //  여기 남는 성질: 이벤트마다 오는 «다시 그려라» 를 합치고, 그래도 숫자는 최신이며, 홈이 위젯을 그리지 않는다.
     const clock = makeClock();
-    let layout = { widgets: [{ id: "w1", type: "weather/forecast", size: "small" }], dataRoutes: ["weather/forecast"] };
     let dataCalls = 0;
     const dash = bootDashboard({
       clock,
       i18n: i18nForContext,
       fetch: async (url: string) => {
-        if (url.startsWith("/api/home-widgets")) return jsonResponse(layout);
+        if (url.startsWith("/api/home-widgets")) return jsonResponse({ widgets: [{ id: "w1", type: "weather/forecast", size: "small" }], dataRoutes: ["weather/forecast"] });
         if (url.startsWith("/api/plugin-data/")) {
           dataCalls += 1;
           return jsonResponse({ data: { t: dataCalls } });
@@ -55,13 +56,8 @@ export const check: RegressionCheck = {
     });
     const root = dash.document.getElementById("detail-panel");
     dash.run("showOverview()");
-    await clock.advance(1_000); // 배치 도착 → 위젯 첫 마운트·첫 값
-    const mounts0 = dash.run("__mounts") as number;
-    const calls0 = dataCalls;
+    await clock.advance(1_000);
     const intervals0 = clock.intervals();
-    const card0 = root?.querySelector(".home-widget");
-
-    // 스트리밍: 1초에 40번 — 실제 호출 모양 그대로.
     const grids = new Set<unknown>();
     for (let i = 0; i < 40; i += 1) {
       if (i === 20) dash.run("evCount = 77");
@@ -69,28 +65,13 @@ export const check: RegressionCheck = {
       await clock.advance(25);
       grids.add(root?.querySelector(".quick-grid"));
     }
-    await clock.advance(500);
-    const mounts1 = dash.run("__mounts") as number;
+    await clock.advance(31_000);
     const values = (root?.querySelectorAll(".quick-value") ?? []).map((e) => e.textContent);
     out.push(
       assert(
-        "★★이벤트 40번에 위젯을 **다시 마운트하지 않는다** — 종전엔 이벤트마다 떼었다 붙였다",
-        mounts0 >= 1 && mounts1 === mounts0,
-        `첫 마운트 ${mounts0} → 이벤트 40번 뒤 ${mounts1}`,
-      ),
-    );
-    out.push(
-      assert(
-        "★위젯 값(`/api/plugin-data`)을 다시 조회하지 않고 poll 타이머도 늘지 않는다",
-        calls0 >= 1 && dataCalls === calls0 && clock.intervals() === intervals0,
-        `조회 ${calls0}→${dataCalls} · 반복 타이머 ${intervals0}→${clock.intervals()}`,
-      ),
-    );
-    out.push(
-      assert(
-        "★위젯 카드 노드가 **같은 노드**로 남는다(떼었다 붙이면 호스트가 회수·재마운트한다)",
-        card0 !== null && card0 !== undefined && root?.querySelector(".home-widget") === card0,
-        `같은 노드=${String(root?.querySelector(".home-widget") === card0)}`,
+        "★★홈은 위젯을 그리지도 조회하지도 않는다(위젯은 패널 몫) — 이벤트 40번·30초가 지나도 마운트 0 · 조회 0 · 반복 타이머 불변",
+        (dash.run("__mounts") as number) === 0 && dataCalls === 0 && clock.intervals() === intervals0 && !root?.querySelector(".home-widget, .wg-item"),
+        `마운트 ${String(dash.run("__mounts"))} · 조회 ${dataCalls} · 반복 타이머 ${intervals0}→${clock.intervals()}`,
       ),
     );
     out.push(
@@ -102,25 +83,9 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
-        "★★그래도 **갱신은 된다** — 숫자(이벤트 수)는 최신 값이다(갱신을 통째로 끄면 위 셋은 초록이다)",
+        "★★그래도 **갱신은 된다** — 숫자(이벤트 수)는 최신 값이다(갱신을 통째로 끄면 위 둘은 초록이다)",
         values.includes("77"),
         `요약 값 ${JSON.stringify(values)}`,
-      ),
-    );
-
-    // 배치가 바뀌면 그때는 다시 붙인다.
-    layout = {
-      widgets: [...layout.widgets, { id: "w2", type: "weather/forecast", size: "wide" }],
-      dataRoutes: layout.dataRoutes,
-    };
-    await clock.advance(30_500); // 배치 poll(30초) → 바뀜 → 갱신 → 위젯 영역 새로
-    const mounts2 = dash.run("__mounts") as number;
-    const cards = root?.querySelectorAll(".home-widget").length ?? 0;
-    out.push(
-      assert(
-        "★배치가 바뀌면 **그때는** 다시 마운트한다(새 위젯이 뜬다)",
-        cards === 2 && mounts2 > mounts1,
-        `카드 ${cards}개 · 마운트 ${mounts1}→${mounts2}`,
       ),
     );
     out.push(assert("그 과정에 던진 것이 없다", clock.errors.length === 0, clock.errors.join(" | ") || "예외 0"));

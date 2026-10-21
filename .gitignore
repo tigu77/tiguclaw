@@ -69,3 +69,6 @@ _workspace/*
 
 # Claude Code 세션별 전달 알림 지문 (읽음/작업 완료 영수증 아님)
 .claude/handoff-state/
+
+# 개발돌쇠가 레포를 cwd 로 쓸 때 만드는 작업 폴더(휴지통 사본 등) — 레포 산출물이 아니다(2026-10-21).
+/workspace/

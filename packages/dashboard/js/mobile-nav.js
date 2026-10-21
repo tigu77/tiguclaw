@@ -201,7 +201,8 @@
       const mnHome = document.querySelector(".chat-head-actions");
       const mnPlaceActions = () => {
         if (!mnHeader || !mnHome) return;
-        const mnLive = mnHeader.querySelector(".live");
+        // ★오른쪽 패널 버튼(백그라운드·위젯)은 원래 헤더에 산다(2026-10-20) — 채팅 버튼(검색)은 그 **앞**에 둔다.
+        const mnLive = mnHeader.querySelector("#bg-toggle") || mnHeader.querySelector(".live");
         // ★목록을 **매번 새로 읽는다** — 옮긴 뒤엔 셀렉터가 안 잡히므로, 양쪽에서 모은다.
         const btns = [
           ...mnHome.querySelectorAll(":scope > button"),

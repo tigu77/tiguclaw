@@ -156,7 +156,7 @@ export const check: RegressionCheck = {
     );
     // ★자리를 낸 쪽 — 이게 없으면 위 두 규칙이 가로 스크롤을 만든다(실측 384 > 375).
     const roomMade =
-      /header #bg-toggle \.bg-word \{\s*display:none/.test(mob) &&
+      /header\.fit-words #bg-toggle \.bg-word[^{]*\{\s*display:none/.test(css) &&
       /header \{[^}]*gap:8px/.test(mob);
     out.push(
       assert(

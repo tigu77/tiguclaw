@@ -75,19 +75,18 @@ export const check: RegressionCheck = {
       return found.join("\n");
     };
     const wide = blockBodies(/@media \(max-width:\s*900px\)/);
-    const narrow = blockBodies(/@media \(max-width:\s*3[0-5]\d px\)|@media \(max-width:\s*3[0-5]\dpx\)/);
-    const foldRe = /(\.bg-word|\.cs-word)[^{}]*\{[^{}]*display:\s*none/;
-    // 900px 블록에서 좁은 블록을 빼야 «넓은 구간» 만 남는다(중첩이라 문자열이 포함된다).
-    const wideOnly = narrow === "" ? wide : wide.split(narrow).join("");
+    // ★2026-10-20: 낱말 접기의 조건은 **폭 문턱이 아니라 «실제로 넘친다»** 다(`header-fit.js` 가 `header.fit-words` 를 단다).
+    //  359px 고정 문턱은 업데이트 칩이 숨은 상태에서 잰 값이라 칩이 뜨면 430px 이하에서 넘쳤다. 그래서 여기서 보는 성질은
+    //  «낱말을 지우는 규칙이 전부 `header.fit-words` 아래에 있다» — 조건 없는 접기가 900px 블록에 다시 들어오면 넓은 화면에서도 글자가 사라진다.
+    // ★2026-10-20: 접기 규칙은 이제 어느 폭 블록에도 안 산다(데스크톱도 넘칠 때만) — 파일 **전체**에서 낱말 숨김 규칙을 모아 조건을 본다.
+    void wide;
+    const foldRules = [...css.matchAll(/([^{}]*)\{[^{}]*\}/g)].filter((m) => /\.bg-word|\.cs-word/.test(m[1]) && /display:\s*none/.test(m[0]));
+    const unconditional = foldRules.filter((m) => !/header\.fit-words/.test(m[1])).map((m) => m[1].trim());
     out.push(
       assert(
-        "★★낱말 접기가 **좁은 구간 안에만** 있다 — 900px 블록에 있으면 폰보다 훨씬 넓은 화면에서도 «백그라운드»·«검색» 글자가 사라진다(375px 실측 하나를 900px 전체에 적용했던 그 회귀)",
-        narrow !== "" && foldRe.test(narrow) && !foldRe.test(wideOnly),
-        JSON.stringify({
-          좁은블록: narrow !== "",
-          좁은블록에접기: foldRe.test(narrow),
-          넓은구간에접기: foldRe.test(wideOnly),
-        }),
+        "★★낱말 접기는 **넘칠 때만**(`header.fit-words`) — 조건 없이 900px 블록에 있으면 폰보다 훨씬 넓은 화면에서도 «백그라운드»·«검색» 글자가 사라진다(375px 실측 하나를 900px 전체에 적용했던 그 회귀)",
+        foldRules.length >= 1 && unconditional.length === 0,
+        JSON.stringify({ 접기규칙: foldRules.length, 조건없음: unconditional }),
       ),
     );
     return out;

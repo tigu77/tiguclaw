@@ -69,8 +69,13 @@ export const claudeSpeedSettings = (
 
 /** 이 턴을 연 트리거 실행 — `RegionASdkInput.triggerRun`. `path` 는 감지한 경로(여럿이면 줄바꿈으로, 실행기가 개수를 바운드한다). */
 export type TriggerRun =
-  | { kind: "schedule"; id: number }
-  | { kind: "watch"; id: number; event: string; path: string };
+  /**
+   * 스케줄·타이머 실행. `once` = 한 번 울리는 타이머(울리면 지워진다) · `lateFrom` = 데몬이 꺼져 있어 **늦게** 실행(원래 시각 ms) ·
+   *  `inOrigin` = 만든 대화 안에서 도는 실행(2026-10-20).
+   */
+  | { kind: "schedule"; id: number; once?: true; lateFrom?: number; inOrigin?: true }
+  /** `inOrigin` = 감시를 **만든 대화 안**에서 도는 실행(2026-10-20) — 그 대화의 앞선 기록이 그대로 있다. 없으면 감시 전용 세션. */
+  | { kind: "watch"; id: number; event: string; path: string; inOrigin?: true };
 
 export interface RegionASdkInput {
   text: string;
@@ -626,6 +631,11 @@ export interface ActivityOutput {
 export interface ActivityDiff {
   /** 대상 파일 경로 (렌더 헤더 편의 — detail 과 중복이나 파싱 불요하게). */
   path?: string;
+  /**
+   * 그 턴의 cwd 로 푼 **절대** 경로(2026-10-21) — `path` 가 상대일 때 화면이 «지금 파일에서 보기»·「↗ 열기」로 그 파일을 찾게.
+   *  못 풀면 생략(지어내지 않는다). 파일 내용은 싣지 않는다 — 누를 때 읽는다.
+   */
+  absPath?: string;
   /** 추가된 줄 수 (총계 — `lines` 컷 전 실제값). */
   added: number;
   /** 삭제된 줄 수 (총계 — `lines` 컷 전 실제값). */

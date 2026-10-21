@@ -326,31 +326,12 @@
       });
 
       // 백그라운드 드로어 폭 드래그 조절(왼쪽 가장자리) + localStorage 영속. PC 전용(모바일=핸들 숨김).
-      (() => {
+      // ★손잡이·계산은 위젯 패널과 **함수 하나**(`side-panels.js attachPanelResize`) — 폭 = 시작 폭 + 이동량(위젯 패널이 오른쪽에 붙어도 안 섞인다).
+      //  `--bg-panel-w` 를 header/main 의 margin-right 와 공유한다(app.css). 키는 종전 그대로(저장된 폭 유지).
+      {
         const handle = document.getElementById("bg-resize");
-        if (!bgPanel || !handle) return;
-        const KEY = "tc:bgPanelWidth";
-        const clamp = clampDrawerWidth; // 폭 한계는 constants.js 한 곳 — 검색 드로어와 공유.
-        // PC 사이드 패널 푸시(CC 웹식) — 패널 폭을 --bg-panel-w 로 공유해 header/main 이 그만큼
-        //   margin-right 로 채팅을 좁힌다(app.css). 드래그 중에도 라이브 추적.
-        const apply = (w) => {
-          const cw = clamp(w);
-          bgPanel.style.width = cw + "px";
-          document.body.style.setProperty("--bg-panel-w", cw + "px");
-        };
-        const saved = parseInt(localStorage.getItem(KEY) || "", 10);
-        if (Number.isFinite(saved)) apply(saved);
-        let dragging = false;
-        window.addEventListener("mousemove", (e) => { if (dragging) apply(window.innerWidth - e.clientX); });
-        window.addEventListener("mouseup", () => {
-          if (!dragging) return;
-          dragging = false; handle.classList.remove("dragging"); document.body.classList.remove("bg-resizing");
-          try { localStorage.setItem(KEY, String(parseInt(bgPanel.style.width, 10))); } catch {}
-        });
-        handle.addEventListener("mousedown", (e) => {
-          e.preventDefault(); dragging = true; handle.classList.add("dragging"); document.body.classList.add("bg-resizing");
-        });
-      })();
+        if (bgPanel && handle) attachPanelResize({ panel: bgPanel, handle, key: "tc:bgPanelWidth", cssVar: "--bg-panel-w", name: "bg" });
+      }
 
       // 도구 실행시간(#3) — phase:"end" 활동이 같은 seq 의 시작 스텝에 durationMs 뱃지를 붙인다.
       // 잡 카드 스텝(.bg-step, worker:/agent: 좌표)과 메인 스트림 라인(.act-line) 양쪽 커버.
@@ -584,6 +565,7 @@
         updateBgJump();
         rememberBgOpen(true);
         if (typeof window.resyncBackground === "function") window.resyncBackground();
+        sidePanels.used("bg"); // 위젯 패널과 자리를 다투면 방금 연 이쪽을 남긴다(side-panels.js)
       };
       // 부팅 복원 — 모바일은 제외한다. 좁은 화면에서 드로어는 전면을 덮어서, 켜둔 채
       // 새로고침하면 채팅이 가려진 채로 시작한다(PC 는 옆으로 밀어 공존한다).
@@ -592,7 +574,9 @@
         const narrow = window.matchMedia("(max-width: 900px)").matches;
         if (wasOpen && !narrow) openBg();
       } catch { /* 조회 실패 = 닫힌 채 시작(기존 동작) */ }
-      const closeBg = () => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); rememberBgOpen(false); };
+      /** @param {boolean} [keepRemembered] 자리가 모자라 닫는 것(side-panels) — «열려 있었다» 기억은 그대로(레드팀 10-20: 부팅 때 저장값이 0 으로 지워졌다). */
+      const closeBg = (keepRemembered) => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); if (keepRemembered !== true) rememberBgOpen(false); };
+      sidePanels.register("bg", { el: bgPanel, cls: "bg-open", close: () => closeBg(true) });
       // 프로젝트 상세의 compact 카드 클릭 → bg 패널 열고 그 잡으로 스크롤·펼침(자세히는 여기서).
       //   best-effort: 잡이 현재 bg 스코프 필터에 안 걸려 미렌더면 패널만 열림(스코프는 존중).
       window.focusBgJob = (jobId) => {
@@ -670,6 +654,7 @@
           b.setAttribute("aria-pressed", on ? "true" : "false");
         }
         refreshBgBadge();
+        if (typeof window.renderBgTimers === "function") window.renderBgTimers(); // 타이머도 같은 토글(bg-timers.js)
         // 셸 그룹도 같은 토글을 따른다(2026-07-28) — 셸은 CSS 숨김이 아니라 렌더에서 거르므로
         // (카운트 정합) 여기서 재렌더를 걸어 준다. 로드 순서 무관하게 typeof 가드.
         if (typeof scheduleShellsRender === "function") scheduleShellsRender();
@@ -712,6 +697,7 @@
       const refreshBgScope = () => {
         for (const e of jobCards.values()) e.el.classList.toggle("bg-in-scope", isBgInScope(e.threadKey, e.ownerTk));
         refreshBgBadge();
+        if (typeof window.renderBgTimers === "function") window.renderBgTimers(); // 세션을 옮기면 그 대화의 타이머로
         // 셸 그룹은 렌더에서 거르므로(카운트 정합) 세션이 바뀌면 재렌더가 필요하다.
         if (typeof scheduleShellsRender === "function") scheduleShellsRender();
         if (typeof refreshShellStrip === "function") refreshShellStrip(); // 상단 "🖥️ N개" 도 갱신.

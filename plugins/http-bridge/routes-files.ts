@@ -224,6 +224,139 @@ export const handleTranscribe = async (ctx: RouteCtx): Promise<void> => {
   return;
 };
 
+/**
+ * 경로 → **등록 프로젝트 루트 하위의 실제 경로**(2026-10-21 「↗ 열기」에서 뽑았다 — «지금 파일에서 보기» 읽기와 **같은 판정**을 쓰게).
+ *  ①심링크 탈출: realpath 로 실제 대상까지 풀고 **다시** 루트 하위인지 본다 ②루트도 실제 경로로 — 양쪽을 같은 기준에 놓는다.
+ */
+export const resolveInProject = (
+  pathIn: string,
+): { real: string; st: import("node:fs").Stats } | { status: number; error: string } => {
+  const abs = nodePath.resolve(pathIn);
+  let real: string;
+  try {
+    real = nodeFs.realpathSync(abs);
+  } catch {
+    return { status: 404, error: "경로가 존재하지 않습니다" };
+  }
+  const roots = listProjects().map((p) => {
+    const r = nodePath.resolve(p.path);
+    try {
+      return nodeFs.realpathSync(r);
+    } catch {
+      return r; // 루트가 사라졌으면 원경로로 비교(어차피 하위도 존재 안 함).
+    }
+  });
+  if (!roots.some((r) => real === r || real.startsWith(r + nodePath.sep))) {
+    return { status: 403, error: "등록된 프로젝트 경로가 아닙니다(허용된 경로만 열 수 있음)" };
+  }
+  try {
+    return { real, st: nodeFs.statSync(real) };
+  } catch {
+    return { status: 404, error: "경로가 존재하지 않습니다" };
+  }
+};
+
+/** «지금 파일에서 보기» 가 읽을 수 있는 크기 — 관측의 시작 줄 계산과 같은 상한(최악 ~9ms). */
+export const FILE_VIEW_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
+ * 비밀 파일인가 — 이름이 `.env`·`.env.*` 이거나 경로 조각에 `.git` 이 있다(2026-10-21 설계 §2.2).
+ *  ★읽기는 내용이 HTTP 로 나간다 — tiguclaw 레포 자신이 프로젝트로 등록돼 있어 `.env`(봇 토큰)가 범위 안이다. 손 목록을 키우지 않는다.
+ */
+export const isSecretPath = (p: string): boolean => {
+  const parts = p.split(/[\\/]+/);
+  const name = parts[parts.length - 1] ?? "";
+  return name === ".env" || name.startsWith(".env.") || parts.includes(".git");
+};
+
+/**
+ * `GET /file-view?path=<절대경로>` — Edit·Write 카드의 «지금 파일에서 보기»(2026-10-21 설계 v2). 지금 디스크의 내용을 **읽기만** 한다.
+ *  판정 = 「↗ 열기」와 같은 함수 + 읽기 규칙(상대 경로 거절 · 비밀 파일은 심링크 **전후** 둘 다 · 일반 파일 · 2MB · NUL 이면 바이너리).
+ *  ★판정은 **열기 전과 연 뒤 두 번** — 연 뒤엔 연 파일과 그 경로의 파일이 같은지까지 본다(검사·읽기 사이 경합). 아무것도 저장하지 않는다.
+ */
+export const handleFileView = async (ctx: RouteCtx): Promise<void> => {
+  const { res, url } = ctx;
+  const pathIn = (url.searchParams.get("path") ?? "").trim();
+  if (pathIn === "" || !nodePath.isAbsolute(pathIn)) {
+    writeJson(res, 400, { error: "절대 경로가 필요합니다" });
+    return;
+  }
+  // 판정 하나 — 연 **뒤에도** 같은 것을 다시 본다(아래).
+  const judge = (): { status: number; error: string } | { real: string; st: import("node:fs").Stats } => {
+    if (isSecretPath(pathIn)) return { status: 403, error: "비밀 파일은 보여 주지 않습니다" };
+    const found = resolveInProject(pathIn);
+    if ("status" in found) return found;
+    if (isSecretPath(found.real)) return { status: 403, error: "비밀 파일은 보여 주지 않습니다" };
+    if (!found.st.isFile()) return { status: 403, error: "일반 파일만 볼 수 있습니다" };
+    if (found.st.size > FILE_VIEW_MAX_BYTES) return { status: 413, error: "파일이 커서(2MB 초과) 보여 줄 수 없습니다" };
+    return found;
+  };
+  // ① 열기 전 — 빨리 거절한다(프로젝트 밖·비밀·특수 파일은 열지도 않는다: FIFO 를 열면 요청이 매달린다).
+  const before = judge();
+  if ("status" in before) {
+    writeJson(res, before.status, { error: before.error });
+    return;
+  }
+  // ② ★**연 다음에 다시 본다**(아스트라 10-21 경합 — 검사 뒤 읽기 전에 파일이 바뀌면 검사가 읽은 내용에 안 닿았다:
+  //  밖을 가리키는 심링크로 교체 → 밖 내용 200 · 5B → 2MB+1 → 200). 계약: **연 파일 = 연 뒤 다시 판정한 그 경로의 파일**
+  //  (장치·파일 번호, bigint — Windows 파일 id 가 커서 number 로는 뭉개진다). 크기·종류는 연 파일에서, 읽기도 상한+1 까지만.
+  //  O_NONBLOCK: 그 사이 FIFO 로 바뀌어도 열기가 매달리지 않게(일반 파일엔 효과 없음 · Windows 엔 없다 — 그쪽은 "r").
+  const flags = typeof nodeFs.constants.O_NONBLOCK === "number" ? nodeFs.constants.O_RDONLY | nodeFs.constants.O_NONBLOCK : "r";
+  let fh: import("node:fs/promises").FileHandle;
+  try {
+    fh = await fs.open(pathIn, flags);
+  } catch {
+    writeJson(res, 404, { error: "파일을 열지 못했습니다" });
+    return;
+  }
+  try {
+    const opened = await fh.stat({ bigint: true });
+    const after = judge();
+    if ("status" in after) {
+      writeJson(res, after.status, { error: after.error });
+      return;
+    }
+    let atPath: import("node:fs").BigIntStats;
+    try {
+      atPath = nodeFs.statSync(after.real, { bigint: true });
+    } catch {
+      writeJson(res, 409, { error: "파일이 바뀌는 중이라 읽지 않았습니다 — 다시 시도하세요" });
+      return;
+    }
+    if (atPath.dev !== opened.dev || atPath.ino !== opened.ino) {
+      writeJson(res, 409, { error: "파일이 바뀌는 중이라 읽지 않았습니다 — 다시 시도하세요" });
+      return;
+    }
+    if (!opened.isFile()) {
+      writeJson(res, 403, { error: "일반 파일만 볼 수 있습니다" });
+      return;
+    }
+    // 상한+1 바이트까지만 읽는다 — 연 뒤에 커져도 무제한으로 읽지 않는다(크기는 열기 전 판정이 이미 봤고, 그 뒤 커진 것은 여기서 걸린다).
+    const buf = Buffer.alloc(FILE_VIEW_MAX_BYTES + 1);
+    let n = 0;
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, n, buf.length - n, n);
+      if (bytesRead === 0) break;
+      n += bytesRead;
+      if (n >= buf.length) break;
+    }
+    if (n > FILE_VIEW_MAX_BYTES) {
+      writeJson(res, 413, { error: "파일이 커서(2MB 초과) 보여 줄 수 없습니다" });
+      return;
+    }
+    const data = buf.subarray(0, n);
+    if (data.includes(0)) {
+      writeJson(res, 415, { error: "바이너리 파일이라 보여 줄 수 없습니다" });
+      return;
+    }
+    writeJson(res, 200, { content: data.toString("utf8") });
+  } catch {
+    writeJson(res, 404, { error: "파일을 읽지 못했습니다" });
+  } finally {
+    await fh.close().catch(() => {});
+  }
+};
+
 export const handleOpenPath = async (ctx: RouteCtx): Promise<void> => {
   const { req, res } = ctx;
   let obody: Record<string, unknown>;
@@ -248,38 +381,12 @@ export const handleOpenPath = async (ctx: RouteCtx): Promise<void> => {
   //   ②**실행** — macOS `open` 은 `.app`·실행권한 파일을 **실행**한다. 우리는 소스를
   //     *보려는* 것이지 실행하려는 게 아니므로 실행권한이 있으면 거부한다. 디렉터리는
   //     종전대로 허용(폴더 열기가 원래 용도).
-  const abs = nodePath.resolve(pathIn);
-  let real: string;
-  try {
-    real = nodeFs.realpathSync(abs);
-  } catch {
-    writeJson(res, 404, { error: "경로가 존재하지 않습니다" });
+  const found = resolveInProject(pathIn);
+  if ("status" in found) {
+    writeJson(res, found.status, { error: found.error });
     return;
   }
-  const roots = listProjects().map((p) => {
-    const r = nodePath.resolve(p.path);
-    try {
-      return nodeFs.realpathSync(r); // 루트도 실제 경로로 — 양쪽을 같은 기준에 놓는다.
-    } catch {
-      return r; // 루트가 사라졌으면 원경로로 비교(어차피 하위도 존재 안 함).
-    }
-  });
-  const inRoot = roots.some(
-    (r) => real === r || real.startsWith(r + nodePath.sep),
-  );
-  if (!inRoot) {
-    writeJson(res, 403, {
-      error: "등록된 프로젝트 경로가 아닙니다(허용된 경로만 열 수 있음)",
-    });
-    return;
-  }
-  let st: import("node:fs").Stats;
-  try {
-    st = nodeFs.statSync(real);
-  } catch {
-    writeJson(res, 404, { error: "경로가 존재하지 않습니다" });
-    return;
-  }
+  const { real, st } = found;
   if (st.isFile() && (st.mode & 0o111) !== 0) {
     writeJson(res, 403, {
       error: "실행 권한이 있는 파일은 열지 않습니다(실행 위험) — 편집기에서 직접 여세요",

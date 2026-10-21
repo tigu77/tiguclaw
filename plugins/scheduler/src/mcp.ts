@@ -28,10 +28,12 @@ import {
   addSchedule,
   deleteSchedule,
   getSchedule,
+  isTimer,
   listSchedules,
   updateSchedule,
   type ScheduleRow,
 } from "../../../src/store/schedules.js";
+import type { PluginHost } from "../../../src/core/plugins/host.js";
 
 const okJson = (
   obj: unknown,
@@ -73,13 +75,26 @@ const validateCronExpr = (
   }
 };
 
-const addScheduleTool = tool(
+/** 타이머 최소 — **지금부터 1분 이상**(2026-10-20 정태님 «최소 1분 이상이어야지»). 더 짧은 기다림은 작업 안에서 한다. */
+export const TIMER_MIN_MS = 60 * 1000;
+/** 타이머 최대 — 1년. 그보다 먼 일은 cron 스케줄이다. */
+const TIMER_MAX_MS = 365 * 24 * 60 * 60 * 1000;
+/** 이 턴의 사람 대화(서버 판정 — 호스트 턴 좌표). 감시와 같은 기준. */
+type TurnSession = () => string | null;
+
+const addScheduleTool = (turnSession: TurnSession) => tool(
   "add_schedule",
-  "새 schedule 등록. trigger_type 'cron' (default — cron 표현식 5/6 필드 또는 @daily/@hourly 매크로) 또는 'reboot' (데몬 부팅 때마다 발화, cron_expr 무시). timezone (IANA, 기본 Asia/Seoul), prompt (영역 A 가상 사용자 prompt — ★스케줄러가 이 turn 의 *답* 을 dest_channel 로 자동 전달한다. 그러니 사용자가 '이런 알림 보내줘 <문구>' 처럼 고정 문구 통지를 요청하면 prompt 를 정확히 이 틀로 써라: `다음 문구로만 짧게 정확히 답하라: '<문구>'`. 이러면 turn 이 그 문구만 답하고 스케줄러가 전달한다. '<채널>로 보내라' 같은 *능동 발송* 지시로 쓰지 마라 — 그러면 비서가 외부발송 확인 게이트에 걸려 확인 질문을 하거나 매니저로 우회하고, '전송 완료' 같은 완료 보고까지 함께 전달돼 알림이 지저분해진다), dest_channel (telegram/cli/http-bridge 등), dest_target (채널별 — telegram chatId 등).",
+  "새 schedule·타이머 등록. trigger_type 'cron' (default — cron 표현식 5/6 필드 또는 @daily/@hourly 매크로) · 'reboot' (데몬 부팅 때마다 발화, cron_expr 무시) · " +
+    "**'once' = 한 번 울리는 타이머**(«10분 뒤 확인해 줘», «3시에 알려 줘») — `in_minutes`(1 이상) 또는 `run_at`(ISO 시각, 지금부터 1분 이상 뒤). 울리면 지워진다. " +
+    "간격 반복 종류는 없다 — «5분마다 확인하다 끝나면 알려 줘» 는 once 타이머를 걸고, 울린 턴에서 아직이면 다음 once 를 다시 건다. 끝없이 도는 반복은 cron. " +
+    "★스케줄·타이머는 **이 대화에서 처리된다**(울리면 이 대화에 차례가 들어와 맥락을 알고 판단한다). 사람의 대화가 아닌 자리에서 등록하면 전용 세션에서 돈다. " +
+    "timezone (IANA, 기본 Asia/Seoul), prompt (영역 A 가상 사용자 prompt — ★스케줄러가 이 turn 의 *답* 을 dest_channel 로 자동 전달한다. timezone (IANA, 기본 Asia/Seoul), prompt (영역 A 가상 사용자 prompt — ★스케줄러가 이 turn 의 *답* 을 dest_channel 로 자동 전달한다. 그러니 사용자가 '이런 알림 보내줘 <문구>' 처럼 고정 문구 통지를 요청하면 prompt 를 정확히 이 틀로 써라: `다음 문구로만 짧게 정확히 답하라: '<문구>'`. 이러면 turn 이 그 문구만 답하고 스케줄러가 전달한다. '<채널>로 보내라' 같은 *능동 발송* 지시로 쓰지 마라 — 그러면 비서가 외부발송 확인 게이트에 걸려 확인 질문을 하거나 매니저로 우회하고, '전송 완료' 같은 완료 보고까지 함께 전달돼 알림이 지저분해진다), dest_channel (telegram/cli/http-bridge 등), dest_target (채널별 — telegram chatId 등).",
   {
     label: z.string().min(1).max(120),
-    trigger_type: z.enum(["cron", "reboot"]).optional(),
+    trigger_type: z.enum(["cron", "reboot", "once"]).optional(),
     cron_expr: z.string().max(120).optional(),
+    in_minutes: z.number().int().min(1).max(TIMER_MAX_MS / 60000).optional().describe("once 전용 — 지금부터 몇 분 뒤(1 이상)."),
+    run_at: z.string().max(64).optional().describe("once 전용 — 울릴 시각(ISO 8601, 시간대 포함 권장). 지금부터 1분 이상 뒤."),
     timezone: z.string().min(1).max(64).optional(),
     prompt: z.string().min(1).max(4096),
     dest_channel: z.string().min(1).max(64),
@@ -119,8 +134,26 @@ const addScheduleTool = tool(
 
     let nextRunIso: string | null;
     let cronExpr: string;
+    let runAt: number | null = null;
+    const origin = turnSession();
+    if (origin !== null && args.keep_runs !== undefined && args.keep_runs !== null) {
+      return okJson({ ok: false, error: "keep_runs_with_origin", detail: "이 스케줄은 이 대화에서 처리됩니다 — 대화를 스케줄이 잘라 낼 수 없어 keep_runs 를 줄 수 없습니다(생략하세요)." });
+    }
 
-    if (triggerType === "reboot") {
+    if (triggerType === "once") {
+      // 한 번 타이머 — 시각을 정하고 cron 은 비운다. 최소 1분·최대 1년.
+      const now = Date.now();
+      if (args.in_minutes !== undefined) runAt = now + args.in_minutes * 60000;
+      else if (args.run_at !== undefined) {
+        const t = Date.parse(args.run_at);
+        if (!Number.isFinite(t)) return okJson({ ok: false, error: "invalid_run_at", detail: `run_at 을 시각으로 읽지 못했습니다: ${args.run_at}` });
+        runAt = t;
+      } else return okJson({ ok: false, error: "missing_when", detail: "once 는 in_minutes 또는 run_at 이 필요합니다." });
+      if (runAt - now < TIMER_MIN_MS) return okJson({ ok: false, error: "too_soon", detail: "타이머는 지금부터 1분 이상 뒤여야 합니다." });
+      if (runAt - now > TIMER_MAX_MS) return okJson({ ok: false, error: "too_far", detail: "1년보다 먼 일은 cron 스케줄로 만드세요." });
+      cronExpr = "";
+      nextRunIso = new Date(runAt).toISOString();
+    } else if (triggerType === "reboot") {
       // reboot 트리거는 cron 표현식 의미 0 — 빈 문자열로 박고 dryrun 건너뜀.
       // 사용자가 cron_expr 전달했더라도 무시.
       cronExpr = "";
@@ -156,8 +189,11 @@ const addScheduleTool = tool(
       destTarget: args.dest_target ?? null,
       triggerType,
       keepRuns: args.keep_runs ?? null,
+      runAt,
+      originThreadKey: origin,
     });
-    // plugin lifecycle 에 추가 알림 — cron/reboot 분기는 plugin index.ts 에서.
+    console.log(`[scheduler:${row.id}] '${row.label}' 등록 — ${triggerType}${runAt !== null ? ` ${new Date(runAt).toISOString()}` : ""} · 처리: ${origin ?? `전용 세션 scheduler:${row.id}`} · 결과 → ${row.destChannel}:${row.destTarget ?? "-"}`);
+    // plugin lifecycle 에 추가 알림 — cron/reboot/once 분기는 plugin index.ts 에서.
     try {
       lifecycle.onScheduleAdded?.(row);
     } catch (e) {
@@ -168,13 +204,14 @@ const addScheduleTool = tool(
       id: row.id,
       trigger_type: triggerType,
       next_run: nextRunIso,
+      runs_in: origin !== null ? "this_conversation" : "own_session",
     });
   },
 );
 
 const listSchedulesTool = tool(
   "list_schedules",
-  "등록된 schedule 전체 목록. only_enabled=true 면 활성만. 각 row 에 trigger_type ('cron'|'reboot') + next_run (ISO 또는 null) 포함. reboot row 는 next_run=null (다음 daemon.boot 까지 대기 의미).",
+  "등록된 schedule·타이머 전체 목록. only_enabled=true 면 활성만. 각 row 에 trigger_type ('cron'|'reboot'|'once') + next_run (ISO 또는 null) + kind ('schedule'|'timer') + runs_in 포함. reboot row 는 next_run=null (다음 daemon.boot 까지 대기 의미). once 타이머는 울리면 목록에서 사라진다.",
   {
     only_enabled: z.boolean().optional(),
   },
@@ -186,6 +223,7 @@ const listSchedulesTool = tool(
         const v = validateCronExpr(r.cronExpr, r.timezone);
         if (v.ok) nextRun = v.nextRun;
       }
+      if (r.triggerType === "once" && r.runAt !== null) nextRun = new Date(r.runAt).toISOString();
       return {
         id: r.id,
         label: r.label,
@@ -201,17 +239,20 @@ const listSchedulesTool = tool(
         last_error: r.lastError,
         keep_runs: r.keepRuns,
         next_run: nextRun,
+        kind: isTimer(r) ? "timer" : "schedule",
+        runs_in: r.originThreadKey ?? `own_session scheduler:${r.id}`,
       };
     });
     return okJson({ ok: true, items });
   },
 );
 
-const updateScheduleTool = tool(
+const updateScheduleTool = (turnSession: TurnSession) => tool(
   "update_schedule",
-  "기존 schedule 수정 (부분 패치 — 준 필드만 바뀜). id 로 대상 지정. 바꿀 수 있는 것: label, trigger_type ('cron'|'reboot'), cron_expr, timezone, prompt, dest_channel, dest_target, enabled (true=활성/false=비활성 — enable/disable 토글을 이 도구로 한다. delete 대신 잠깐 끄고 싶을 때 enabled=false), keep_runs (이력 정책, null 로 되돌리면 계속 이어감). cron_expr 이 바뀌거나 trigger_type 이 'cron' 인데 기존 cron_expr 이 비어있으면 유효성 검사 후 next_run 을 재계산해 응답. trigger_type='reboot' 로 전환하면 cron_expr 은 무시·초기화(다음 daemon.boot 발화). trigger_type='cron' 으로 전환하는데 저장된 cron_expr 이 없으면 cron_expr 을 반드시 함께 줘야 함. prompt 를 바꿀 때는 add_schedule 과 동일한 고정문구 규칙(`다음 문구로만 짧게 정확히 답하라: '<문구>'`)을 따른다. 존재하지 않는 id 면 ok:false, error:'not_found'.",
+  "기존 schedule 수정 (부분 패치 — 준 필드만 바뀜). id 로 대상 지정. move_here=true: 이 스케줄을 **이 대화에서 처리**하도록 옮긴다(«스케줄을 이 대화로 옮겨 줘» — 기준은 이 수정을 부른 대화. 옮기면 keep_runs 는 지워진다). once 타이머의 시각·종류는 바꾸지 않는다(지우고 새로 건다). 바꿀 수 있는 것: label, trigger_type ('cron'|'reboot'), cron_expr, timezone, prompt, dest_channel, dest_target, enabled (true=활성/false=비활성 — enable/disable 토글을 이 도구로 한다. delete 대신 잠깐 끄고 싶을 때 enabled=false), keep_runs (이력 정책, null 로 되돌리면 계속 이어감). cron_expr 이 바뀌거나 trigger_type 이 'cron' 인데 기존 cron_expr 이 비어있으면 유효성 검사 후 next_run 을 재계산해 응답. trigger_type='reboot' 로 전환하면 cron_expr 은 무시·초기화(다음 daemon.boot 발화). trigger_type='cron' 으로 전환하는데 저장된 cron_expr 이 없으면 cron_expr 을 반드시 함께 줘야 함. prompt 를 바꿀 때는 add_schedule 과 동일한 고정문구 규칙(`다음 문구로만 짧게 정확히 답하라: '<문구>'`)을 따른다. 존재하지 않는 id 면 ok:false, error:'not_found'.",
   {
     id: z.number().int().min(1),
+    move_here: z.boolean().optional(),
     label: z.string().min(1).max(120).optional(),
     trigger_type: z.enum(["cron", "reboot"]).optional(),
     cron_expr: z.string().max(120).optional(),
@@ -239,6 +280,22 @@ const updateScheduleTool = tool(
       });
     }
 
+    // once 타이머는 시각·종류를 안 바꾼다 — 바꿀 일이면 지우고 새로 건다(울리면 지워지는 물건이라 고칠 일이 드물다).
+    if (existing.triggerType === "once" && (args.trigger_type !== undefined || args.cron_expr !== undefined)) {
+      return okJson({ ok: false, error: "timer_fixed", detail: "타이머의 시각·종류는 바꿀 수 없습니다 — delete_schedule 뒤 add_schedule 로 다시 거세요." });
+    }
+    if (existing.triggerType === "once" && args.enabled === true && (existing.runAt ?? 0) <= Date.now()) {
+      return okJson({ ok: false, error: "timer_past", detail: "시각이 이미 지난 타이머는 켤 수 없습니다 — delete_schedule 뒤 add_schedule 로 새로 거세요." });
+    }
+    let origin = existing.originThreadKey;
+    if (args.move_here === true) {
+      const here = turnSession();
+      if (here === null) return okJson({ ok: false, error: "no_conversation", detail: "이 턴은 사람의 대화가 아니라 옮길 대화가 없습니다." });
+      origin = here;
+    }
+    if (origin !== null && args.keep_runs !== undefined && args.keep_runs !== null) {
+      return okJson({ ok: false, error: "keep_runs_with_origin", detail: "대화에서 처리되는 스케줄엔 keep_runs 를 줄 수 없습니다." });
+    }
     // 유효한 최종 상태 기준으로 cron 검증 — 패치 후 실제 저장될 값을 미리 합성.
     const effectiveTrigger = args.trigger_type ?? existing.triggerType;
     const effectiveTz = args.timezone ?? existing.timezone;
@@ -252,9 +309,12 @@ const updateScheduleTool = tool(
     if (args.enabled !== undefined) patch.enabled = args.enabled;
     if (args.keep_runs !== undefined) patch.keepRuns = args.keep_runs;
     if (args.trigger_type !== undefined) patch.triggerType = args.trigger_type;
+    if (args.move_here === true) { patch.originThreadKey = origin; patch.keepRuns = null; }
 
     let nextRunIso: string | null;
-    if (effectiveTrigger === "reboot") {
+    if (effectiveTrigger === "once") {
+      nextRunIso = existing.runAt !== null ? new Date(existing.runAt).toISOString() : null;
+    } else if (effectiveTrigger === "reboot") {
       // reboot 전환 시 cron_expr 은 의미 0 — 초기화 (add_schedule 와 동형).
       // 사용자가 cron_expr 을 함께 줬더라도 무시.
       if (args.trigger_type === "reboot") {
@@ -332,6 +392,16 @@ const runScheduleTool = tool(
   async (args) => {
     const row = getSchedule(args.id);
     if (row === undefined) return okJson({ ok: false, error: "not_found" });
+    // ★꺼진 스케줄은 실행기가 줄에서 «꺼짐» 으로 조용히 건너뛴다 — «시작했다» 고 답하면 거짓이다(재검토 10-20 R2: 실패로 꺼 둔 타이머를 «다시 돌려 줘» 하면 그랬다).
+    if (!row.enabled) {
+      return okJson({
+        ok: false,
+        error: "disabled",
+        note: row.triggerType === "once"
+          ? "꺼진 타이머입니다(실패했거나 사용자가 껐다) — 다시 하려면 delete_schedule 뒤 add_schedule 로 새로 거세요."
+          : "꺼진 스케줄입니다 — update_schedule 로 켠 뒤 다시 부르세요.",
+      });
+    }
     let outcome: "started" | "busy" | "unavailable" = "unavailable";
     try {
       outcome = lifecycle.onScheduleRunNow?.(row) ?? "unavailable";
@@ -361,13 +431,16 @@ const runScheduleTool = tool(
  *  조용히 사라졌다(claude — SDK 가 그 실패를 삼키고 로그만 남긴다).
  *  도구 정의는 상태 없는 서술자라 매 턴 새로 만들어도 싸다(핸들러가 store 를 부른다).
  */
-export const createSchedulerMcpServer = (): McpSdkServerConfigWithInstance =>
-  createSdkMcpServer({
+export const createSchedulerMcpServer = (host?: PluginHost): McpSdkServerConfigWithInstance => {
+  // ★호스트의 턴 좌표로 «만든 대화» 를 적는다(감시와 같은 기준 — 모델 인자 아님).
+  const turnSession: TurnSession = () => host?.turnSession() ?? null;
+  return createSdkMcpServer({
     name: "scheduler",
     version: "0.1.0",
     // 드물게 쓰는 «지금 실행» 은 접는다(이름은 목록에 남고 쓸 때 스키마를 연다 — tool-load-policy).
     tools: onDemand(
-      [addScheduleTool, listSchedulesTool, updateScheduleTool, deleteScheduleTool, runScheduleTool],
+      [addScheduleTool(turnSession), listSchedulesTool, updateScheduleTool(turnSession), deleteScheduleTool, runScheduleTool],
       ["run_schedule"],
     ),
   });
+};

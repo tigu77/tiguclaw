@@ -45,8 +45,8 @@ Where it diverges from similar tools.
 - **Connect any MCP server, on the fly.** Ask it to add an MCP server and it wires up those external tools — globally or scoped to a single project — without touching the core. That covers servers that run on your machine and remote servers you reach by URL; for servers that need a browser sign-in (OAuth), sign in through the link the assistant gives you.
 - **Model tiers you actually control.** Name model profiles — `default`, `high`, `mid`, `low` — as cross-provider pools with automatic fallback. The main turn runs one tier while sub-agents and managers run another; edit them just by asking, or list them with `/models`.
 - **Watch the work happen.** Sub-agents and long-running managers run as tracked jobs you follow in the dashboard — status, steps, results.
-- **Arrange your home with widgets.** Keep cards on the dashboard home and see them at a glance —
-  and **place them by talking**: *"put what's running at the top of my home."* There's no grid to drag.
+- **A widget panel.** Keep cards in a panel on the right that opens from any screen; on desktop it sits next to the background panel.
+  **Place them by talking** — *"put what's running at the top of the widget panel"* — or drag a handle to reorder.
   Widgets come from plugins, so you install only the ones you want.
 - **It can see the screen and use it.** The assistant looks at that machine's screen, then clicks, types, presses shortcuts, drags and scrolls — on macOS and Windows, with nothing to install. ★**These actions cannot be undone.** The feature **ships enabled**: on macOS it can do nothing until you grant Screen Recording and Accessibility, which the system asks for separately. **Windows does not ask** — turn `computer-use` off in settings if you don't want it. It stays out of the way while you are typing or moving the mouse.
 - **Extend it by asking.** New slash commands, HTTP endpoints, scheduled jobs, reusable skills — it adds them as *data* under your home, never by patching the core (so updates stay clean). Slash commands can be grouped in subfolders that open as groups in the menu, and you can ask the assistant to "put the deploy commands in one group".
@@ -91,7 +91,7 @@ Talk to it like a capable teammate — from Telegram, the CLI, or HTTP. A few ex
 
 - **Core** — one LLM runtime (adapter pool: claude / codex / openai — OpenAI-compatible connections such as google or a local server go through the openai adapter) + router + SQLite store (sessions, memory, transcripts).
 - **Channels** — Telegram / CLI / HTTP adapters render one abstract intent per channel.
-- **Plugins** — extend without touching the core. Beyond tools, triggers and channels, a plugin can add **screen and settings** too: draw its own card in a reply or on your home screen, add its own rows to the settings page, and bring its own translations. To see what's installed, open **Dashboard → Plugins** (listing names here would go stale every time one is added).
+- **Plugins** — extend without touching the core. Beyond tools, triggers and channels, a plugin can add **screen and settings** too: draw its own card in a reply or in the widget panel, add its own rows to the settings page, and bring its own translations. To see what's installed, open **Dashboard → Plugins** (listing names here would go stale every time one is added).
 - **Capabilities are data** — agents, skills, memory, and hooks under `<home>/` extend the assistant endlessly (a microkernel + plugin ecosystem).
 
 ---

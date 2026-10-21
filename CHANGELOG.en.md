@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A widget panel.** Open it from the 🧩 button in the header, on any screen. On desktop it can sit next to the background panel, and you drag the handle above a widget to reorder.
+- **One-shot timers.** Ask "check the build in 10 minutes" and the assistant sets a timer at least a minute ahead. It fires once and then deletes itself, so it never piles up in your schedule list.
+- **Edit and Write cards can show the current file.** Press ⤢ to open the file as it is on disk now, below the changed snippet; when the snippet matches exactly one place, those lines are highlighted. Only files inside registered projects open, and `.env` and `.git` never do.
+
+### Changed
+
+- **New file watches are handled in the conversation that created them.** The assistant judges with that conversation's earlier messages (including corrections), and jobs a watch starts can be stopped from that conversation. Existing watches stay as they are; say "move the watch to this conversation" to move one.
+- **New schedules are handled in the conversation that created them, too,** just like file watches. Existing schedules stay as they are; say "move the schedule to this conversation" to move one.
+- **A schedule missed while the daemon was off now runs once, late, after it starts.** Only the last run within 24 hours is made up; older ones are skipped.
+- **The home screen's widget area moved into the widget panel.** Widgets you placed show up there in the same order. The background button is now in the header on every screen, not only in chat.
+
+### Fixed
+
+- **Registering a schedule that runs at startup (`reboot`) showed a false "schedule failed" alert even though nothing was wrong.**
+- **Completion reports from background jobs started by a file watch got lost instead of reaching the watch's destination.** A report that failed to send was also recorded as sent; it now tries a fallback notice and records a failure if that fails too.
+- **On the mobile dashboard, the header overflowed and pushed the page sideways when the update button appeared.**
+
 ## [0.74.0] - 2026-10-20
 
 ### Added

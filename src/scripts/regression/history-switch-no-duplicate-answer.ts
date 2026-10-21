@@ -20,12 +20,14 @@
  * 등급: **동작**.
  */
 import vm from "node:vm";
+import { stepSuggestionStream } from "../../core/llm-runtime/adapters/_delta-stream.js";
+import { extractInlineSuggestion } from "../../core/next-message-suggestion.js";
 import { readFile } from "node:fs/promises";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-type Act = { ts: number; threadKey: string; kind?: string; seq: number; text?: string };
-type Entry = { ts: number; role: string; threadKey: string; text: string; kind?: string; notice?: boolean; attachments?: unknown[] };
-type Unit = { kind: string; act?: { text?: string }; entry?: Entry; acts?: Act[] };
+type Act = { ts: number; threadKey: string; kind?: string; seq: number; text?: string; model?: string; reasoning?: string; spend?: unknown; turnId?: string };
+type Entry = { ts: number; role: string; threadKey: string; text: string; kind?: string; notice?: boolean; attachments?: unknown[]; model?: string; reasoning?: string; spend?: unknown; turnId?: string };
+type Unit = { kind: string; act?: Act; entry?: Entry; acts?: Act[]; reasoning?: string };
 
 const TK = "dashboard:regr-dup";
 const ANSWER = "정리했습니다 — 회귀 답";
@@ -125,7 +127,151 @@ export const check: RegressionCheck = {
     ];
     const r6 = shown([...entries, ...nonAnswerRows], runningEndsText, true, "중간 말");
 
+    // F4: 마지막 텍스트와 완료 답이 같은 밀리초. 탭 전환/새로고침 둘 다 잰다.
+    const tiedEntries = [entries[0]!, { ...entries[1]!, ts: 130 }];
+    const tiedActive = shown(tiedEntries, doneTurn, true);
+    const tiedInactive = shown(tiedEntries, doneTurn, false);
+    const group = (e: Entry[], a: Act[]): Unit[] => ctx.group?.(e, a) ?? [];
+    const tiedUnits = group(tiedEntries, doneTurn);
+    const laterUnits = group(entries, doneTurn); // 시각이 다른 대조군: 유닛 전체가 같아야 한다.
+    const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+    const model = "test:model";
+    const spend = { usd: 0.25 };
+    const full = "완성된 정본 본문";
+    const canonicalEntries: Entry[] = [entries[0]!, {
+      ts: 130, role: "assistant", threadKey: TK, text: full,
+      model, reasoning: "high", spend, turnId: "turn-f4",
+    }];
+    const canonicalActs: Act[] = [
+      { ts: 110, threadKey: TK, kind: "tool", seq: 0, model },
+      { ts: 130, threadKey: TK, kind: "text", seq: 1, text: "완성된…", model },
+    ];
+    const canonical = group(canonicalEntries, canonicalActs);
+    const promoted = canonical.find((u) => u.kind === "text")?.act;
+
+    // 같은 ms 사용자 행은 활동보다 먼저: 앞 턴의 강도를 새 턴으로 넘기거나 그 반대가 되면 안 된다.
+    const boundaryEntries: Entry[] = [
+      { ts: 130, role: "user", threadKey: TK, text: "새 질문" },
+      canonicalEntries[1]!,
+    ];
+    const boundary = group(boundaryEntries, canonicalActs);
+    const sameTimeTool = { ...canonicalActs[0]!, ts: 130 };
+    const userFirst = group(boundaryEntries, [sameTimeTool, canonicalActs[1]!]);
+    // 답→사용자 행 순서까지 뒤집는 단순 역할 우선 정렬도 막는다.
+    const answerBeforeUser = group([canonicalEntries[1]!, boundaryEntries[0]!], canonicalActs);
+
+    const attachment: Entry = { ts: 130, role: "assistant", threadKey: TK, text: "파일", attachments: [{ rel: "f4.txt" }] };
+    const options: Entry = { ts: 130, role: "assistant", threadKey: TK, text: "선택", kind: "prompt.options" };
+    const visible = group([entries[0]!, attachment, options, canonicalEntries[1]!], canonicalActs);
+    const otherThread = "dashboard:other";
+    const foreign = group([{ ...canonicalEntries[1]!, threadKey: otherThread }], canonicalActs);
+    const foreignTool = group(canonicalEntries, [{ ...canonicalActs[0]!, threadKey: otherThread }, canonicalActs[1]!]);
+    const segments: Act[] = [
+      { ts: 110, threadKey: TK, kind: "text", seq: 0, text: "앞부분" },
+      { ts: 120, threadKey: TK, kind: "tool", seq: 1, model },
+      { ts: 130, threadKey: TK, kind: "text", seq: 2, text: "뒷부분" },
+    ];
+    const multi = group([{ ...canonicalEntries[1]!, text: "앞부분\n뒷부분" }], segments);
+    const chronologicalEntries: Entry[] = [
+      { ts: 90, role: "assistant", threadKey: TK, text: "이전 답" },
+      entries[0]!, entries[1]!,
+      { ts: 140, role: "user", threadKey: TK, text: "다음 질문" },
+    ];
+    const chronological = group(chronologicalEntries, doneTurn);
+
+    // 검토 재현: 답1의 완료 시각이 다음 턴의 첫 활동과 같아도 턴을 넘지 않는다.
+    const firstAnswer: Entry = { ...canonicalEntries[1]!, text: "답1", turnId: "t1" };
+    const secondAnswer: Entry = { ...canonicalEntries[1]!, ts: 151, text: "답2", reasoning: "low", spend: { usd: 0.5 }, turnId: "t2" };
+    const firstActs: Act[] = [canonicalActs[0]!, { ...canonicalActs[1]!, ts: 120, text: "답1" }];
+    const crossEntries = [entries[0]!, firstAnswer, secondAnswer];
+    const nextText: Act[] = [...firstActs, { ts: 130, threadKey: TK, kind: "text", seq: 0, text: "답2", model }];
+    const crossText = group(crossEntries, nextText);
+    const nextTools: Act[] = [...firstActs, { ts: 130, threadKey: TK, kind: "tool", seq: 0, model }];
+    const crossTool = group([entries[0]!, firstAnswer], nextTools);
+    const sameBodyCross = group([entries[0]!, firstAnswer, { ...secondAnswer, text: "답1" }], [...firstActs, { ...nextText[2]!, text: "답1" }]);
+    const newUser = { ...entries[0]!, ts: 130 };
+    const newUserTurn = group([newUser, canonicalEntries[1]!], [
+      { ...canonicalActs[0]!, seq: 9 }, { ...sameTimeTool, seq: 0 }, canonicalActs[1]!,
+    ]);
+    const earlierUserTurn = group([{ ...newUser, ts: 125 }, canonicalEntries[1]!], [
+      { ...canonicalActs[0]!, seq: 9 }, { ...sameTimeTool, seq: 0 }, canonicalActs[1]!,
+    ]);
+    // 동률 묶음 안에서도 증가하던 seq가 리셋되면 그 앞까지만 이동한다.
+    const insideReset = group(crossEntries, [canonicalActs[0]!, { ...firstActs[1]!, ts: 130 }, nextText[2]!]);
+    const correctTurns = (us: Unit[]): boolean => {
+      const texts = us.filter((u) => u.kind === "text");
+      return texts.length === 2 && !us.some((u) => u.entry?.role === "assistant") &&
+        texts[0]?.act?.text === "답1" && texts[0]?.act?.turnId === "t1" && texts[0]?.act?.reasoning === "high" && same(texts[0]?.act?.spend, spend) &&
+        texts[1]?.act?.text === "답2" && texts[1]?.act?.turnId === "t2" && texts[1]?.act?.reasoning === "low" && same(texts[1]?.act?.spend, secondAnswer.spend);
+    };
+    const notice: Entry = { ts: 130, role: "assistant", threadKey: TK, text: "알림", notice: true };
+    const delivery: Entry = { ts: 130, role: "assistant", threadKey: TK, text: SCHED };
+    const noticeOnly = group([entries[0]!, notice], canonicalActs);
+    const deliveryOnly = group([entries[0]!, delivery], canonicalActs);
+    const deliveryAndAnswer = group([entries[0]!, delivery, canonicalEntries[1]!], canonicalActs);
+    const noticeAndAnswer = group([entries[0]!, { ...notice, text: full }, canonicalEntries[1]!], canonicalActs);
+    const attachmentAndAnswer = group([entries[0]!, attachment, canonicalEntries[1]!], canonicalActs);
+    const optionsAndAnswer = group([entries[0]!, options, canonicalEntries[1]!], canonicalActs);
+    const visibleBeforeText = (us: Unit[], row: Entry): boolean => {
+      const index = us.findIndex((u) => u.entry === row);
+      return index >= 0 && index < us.findIndex((u) => u.kind === "text");
+    };
+    // 非답 행 하나만 있을 때도 가드를 직접 밟는다(본문을 답과 같게 해 본문 일치 우회 방지).
+    const loneAttachment = { ...attachment, text: full };
+    const loneOptions = { ...options, text: full };
+    const loneNotice = { ...notice, text: full };
+    const loneUser = { ...canonicalEntries[1]!, role: "user" };
+
+    // 실제 생산 함수의 출력: 스트림에는 제안 앞 개행이 남고 정본에서는 trimEnd 된다.
+    const suggestedRaw = "정리했습니다 — 회귀 답입니다.\n\n<next-message>다음 검사를 해줘</next-message>";
+    const suggestedSegment = stepSuggestionStream(suggestedRaw, false).emit;
+    const suggestedAnswer = extractInlineSuggestion(suggestedRaw).text;
+    const suggestedActs = [canonicalActs[0]!, { ...canonicalActs[1]!, text: suggestedSegment }];
+    const suggestedEntry = { ...canonicalEntries[1]!, text: suggestedAnswer };
+    const suggested = group([entries[0]!, suggestedEntry], suggestedActs);
+    const suggestedLater = group([entries[0]!, { ...suggestedEntry, ts: 131 }], suggestedActs);
+    const suggestedText = suggested.find((u) => u.kind === "text")?.act;
+    // 완료 표식 없는 배달까지 새 공백 정규화에 걸려 사라지면 안 된다.
+    const unmarkedDelivery = { ...suggestedEntry, turnId: undefined };
+    const unmarked = group([entries[0]!, unmarkedDelivery], suggestedActs);
+    // 도구 없는 단답 두 턴: 0 → 0도 경계다(0 < 0은 거짓).
+    const shortTurns = group([
+      entries[0]!, { ...firstAnswer, text: "네" }, { ...secondAnswer, text: "네" },
+    ], [
+      { ts: 120, threadKey: TK, kind: "text", seq: 0, text: "네", model },
+      { ts: 130, threadKey: TK, kind: "text", seq: 0, text: "네", model },
+    ]);
+
     return [
+      assert("F4 제안 생산 출력: 꼬리 개행 차이·답 1개·turnId와 강도 보존", suggestedSegment === suggestedAnswer + "\n\n" &&
+        same(suggested.map((u) => u.kind), ["msg", "turn", "text"]) && suggestedText?.turnId === "turn-f4" &&
+        suggestedText.reasoning === "high" && same(suggestedText.spend, spend) && suggested[1]?.reasoning === "high" &&
+        same(suggested, suggestedLater), { suggestedSegment, suggestedAnswer, suggested, suggestedLater }),
+      assert("F4 공백 대응은 완료 답에만: 표식 없는 배달은 그대로", visibleBeforeText(unmarked, unmarkedDelivery), unmarked),
+      assert("F4 단답 두 턴 seq 0→0: 각 답·turnId·강도 보존", same(shortTurns.map((u) => u.kind), ["msg", "text", "text"]) &&
+        same(shortTurns.filter((u) => u.kind === "text").map((u) => [u.act?.text, u.act?.turnId, u.act?.reasoning]), [["네", "t1", "high"], ["네", "t2", "low"]]), shortTurns),
+      assert("F4 본문이 같은 사용자도 답으로 이동하지 않는다", visibleBeforeText(group([loneUser], canonicalActs), loneUser), group([loneUser], canonicalActs)),
+      assert("F4 같은 본문의 다음 턴도 seq 경계로 메타 분리", same(sameBodyCross.filter((u) => u.kind === "text").map((u) => u.act?.turnId), ["t1", "t2"]) && !sameBodyCross.some((u) => u.entry?.role === "assistant"), sameBodyCross),
+      assert("F4 이전 시각 사용자 경계도 seq 이력 초기화", same(earlierUserTurn.map((u) => u.kind), ["turn", "msg", "turn", "text"]) && earlierUserTurn[0]?.reasoning === undefined && earlierUserTurn[2]?.reasoning === "high" && earlierUserTurn[3]?.act?.turnId === "turn-f4", earlierUserTurn),
+      assert("F4 사용자 경계 뒤 seq 리셋은 새 답의 자기 턴", same(newUserTurn.map((u) => u.kind), ["turn", "msg", "turn", "text"]) && newUserTurn[0]?.reasoning === undefined && newUserTurn[2]?.reasoning === "high" && newUserTurn[3]?.act?.turnId === "turn-f4", newUserTurn),
+      assert("F4 다음 턴 텍스트 동률: 각 답 1개와 자기 turnId·강도·비용", correctTurns(crossText), crossText),
+      assert("F4 다음 턴 도구 동률: 앞 턴 강도를 다음 카드에 주지 않는다", crossTool.filter((u) => u.kind === "turn")[0]?.reasoning === "high" && crossTool.filter((u) => u.kind === "turn")[1]?.reasoning === undefined && crossTool.find((u) => u.kind === "text")?.act?.turnId === "t1", crossTool),
+      assert("F4 동률 내부 seq 리셋: 같은 턴까지만 이동", correctTurns(insideReset), insideReset),
+      assert("F4 동률 알림 단독·답과 함께: 알림 위치와 답 1개 보존", visibleBeforeText(noticeOnly, notice) && noticeAndAnswer.filter((u) => u.kind === "msg").length === 2 && noticeAndAnswer.filter((u) => u.kind === "text").length === 1 && visibleBeforeText(group([loneNotice], canonicalActs), loneNotice), { noticeOnly, noticeAndAnswer, lone: group([loneNotice], canonicalActs) }),
+      assert("F4 동률 평범한 배달 단독·답과 함께: 배달 보존 및 답 1개", visibleBeforeText(deliveryOnly, delivery) && visibleBeforeText(deliveryAndAnswer, delivery) && deliveryAndAnswer.filter((u) => u.kind === "msg").length === 2 && deliveryAndAnswer.filter((u) => u.kind === "text").length === 1, { deliveryOnly, deliveryAndAnswer }),
+      assert("F4 인접 첨부→답: 첨부 위치와 답 1개 보존", visibleBeforeText(attachmentAndAnswer, attachment) && attachmentAndAnswer.filter((u) => u.kind === "msg").length === 2 && visibleBeforeText(group([loneAttachment], canonicalActs), loneAttachment), attachmentAndAnswer),
+      assert("F4 인접 선택지→답: 선택지는 조각 앞으로 보존", visibleBeforeText(optionsAndAnswer, options) && optionsAndAnswer.filter((u) => u.kind === "msg").length === 2 && visibleBeforeText(group([loneOptions], canonicalActs), loneOptions), optionsAndAnswer),
+      assert("F4 같은 ms: 탭 전환과 새로고침 모두 답 1개·live 0", tiedActive.n === 1 && tiedActive.live === 0 && tiedInactive.n === 1 && tiedInactive.live === 0, { tiedActive, tiedInactive }),
+      assert("F4 시각이 다른 대조군: 동률 수정 뒤에도 유닛 전체가 동일", same(tiedUnits, laterUnits), { tiedUnits, laterUnits }),
+      assert("F4 동률 정본 승격·강도·비용·turnId 및 도구 강도 보존", promoted?.text === full && promoted.reasoning === "high" && same(promoted.spend, spend) && promoted.turnId === "turn-f4" && canonical.find((u) => u.kind === "turn")?.reasoning === "high", canonical),
+      assert("F4 사용자 경계: 이전 도구에 새 답의 강도를 주지 않는다", same(boundary.map((u) => u.kind), ["turn", "msg", "text"]) && boundary[0]?.reasoning === undefined && boundary[1]?.entry?.role === "user", boundary),
+      assert("F4 동률 사용자→도구→텍스트 순서와 새 턴 강도 보존", same(userFirst.map((u) => u.kind), ["msg", "turn", "text"]) && userFirst[0]?.entry?.role === "user" && userFirst[1]?.reasoning === "high", userFirst),
+      assert("F4 같은 ms 답→사용자 경계는 뒤집지 않는다", same(answerBeforeUser.map((u) => u.kind), ["turn", "msg", "msg", "text"]) && answerBeforeUser[1]?.entry?.role === "assistant" && answerBeforeUser[2]?.entry?.role === "user" && answerBeforeUser[0]?.reasoning === "high" && answerBeforeUser[3]?.act?.reasoning === undefined, answerBeforeUser),
+      assert("F4 동률 첨부·선택지는 사라지지 않고 원래 순서 보존", same(visible.filter((u) => u.kind === "msg").map((u) => u.entry), [entries[0], attachment, options]) && visible.filter((u) => u.kind === "text").length === 1 && visible.find((u) => u.kind === "text")?.act?.text === full, visible),
+      assert("F4 다른 스레드의 답을 흡수하거나 메타를 옮기지 않는다", foreign.filter((u) => u.kind === "msg").length === 1 && foreign.find((u) => u.kind === "text")?.act?.text === "완성된…" && foreign.every((u) => u.reasoning === undefined && u.act?.reasoning === undefined) && foreignTool.find((u) => u.kind === "turn")?.reasoning === undefined, { foreign, foreignTool }),
+      assert("F4 여러 세그먼트: 뒤쪽 세그먼트는 정본 전체로 올리지 않는다", same(multi.map((u) => u.kind), ["text", "turn", "text"]) && same(multi.filter((u) => u.kind === "text").map((u) => u.act?.text), ["앞부분", "뒷부분"]), multi),
+      assert("F4 다른 시각의 메시지·활동은 기존 시간순 유지", same(chronological.map((u) => u.kind), ["msg", "msg", "turn", "text", "msg"]) && same(chronological.filter((u) => u.kind === "msg").map((u) => u.entry?.ts), [90, 100, 140]), chronological),
       assert("판정과 병합을 실제로 뽑아 돌렸다(문자열 검사 아님)", ctx.split !== undefined && ctx.group !== undefined, sp === null ? "★splitLiveResume 추출 실패" : "OK"),
       assert(
         "★① 답이 끝난 세션이 진행 중으로 표시돼 있어도(다음 턴 아직 활동 없음) 답은 한 번만 뜬다",

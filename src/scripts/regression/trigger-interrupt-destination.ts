@@ -23,7 +23,7 @@ export const check: RegressionCheck = {
       for (const mode of ["interrupt", "interrupt-null", "undelivered", "complete", "error"]) {
         const key = `${kind}:${++id}`;
         const dest = { channel: mode === "interrupt-null" ? "http-bridge" : "telegram", target: mode === "interrupt-null" ? null : `fixture-${id}` };
-        const row = { id, label: "fixture", enabled: true, triggerType: "cron", cronExpr: "* * * * *", timezone: "UTC", prompt: "fixture {path}", path: "/fixture", recursive: false, debounceMs: 1, eventFilter: "all", pattern: null, destChannel: dest.channel, destTarget: dest.target };
+        const row = { id, label: "fixture", enabled: true, triggerType: "cron", cronExpr: "* * * * *", timezone: "UTC", prompt: "fixture {path}", path: "/fixture", recursive: false, debounceMs: 1, eventFilter: "all", pattern: null, destChannel: dest.channel, destTarget: dest.target, originThreadKey: null };
         const cache = new Map<string, any>();
         let fire: (() => void) | undefined;
         let modelInput: any;
@@ -46,13 +46,15 @@ export const check: RegressionCheck = {
           cache.set(filename, exports);
           const requireFixture = (name: string): any => {
             if (name === "node:path") return path;
-            if (name === "croner") return { Cron: class { constructor(_expr: unknown, _opts: unknown, cb: () => void) { fire = cb; } stop() {} } };
+            // 콜백 없는 Cron 은 놓친 실행 보충의 시각 계산용(2026-10-20) — 발화 콜백을 덮지 않는다.
+            if (name === "croner") return { Cron: class { constructor(_expr: unknown, _opts: unknown, cb?: () => void) { if (cb !== undefined) fire = cb; } stop() {} previousRuns() { return []; } } };
             if (name === "chokidar") return { watch: () => {
               const watcher = { on: (event: string, cb: (...args: string[]) => void) => { if (event === "all") fire = () => cb("change", "/fixture/file.txt"); return watcher; }, close: async () => {} };
               return watcher;
             } };
             if (name.endsWith("/eventbus.js")) return { safeUnsubscribe: (fn: any) => fn?.() };
-            if (name.endsWith("/schedules.js") || name.endsWith("/watches.js")) return store;
+            // 한 번 타이머(2026-10-20) — 이 검사의 행은 cron 이라 타이머가 아니고 지울 일도 없다.
+            if (name.endsWith("/schedules.js") || name.endsWith("/watches.js")) return { isTimer: (r: { triggerType?: string }) => r.triggerType === "once", deleteSchedule: () => false, markSchedulerAlive: () => {}, schedulerLastAlive: () => null, ...store };
             if (name.endsWith("/claude.js")) return { runClaude: model };
             if (name.endsWith("/inflight-turns.js")) return inflight;
         // 스레드 줄 + 진행 중 등록(2026-10-14) — 실제 모듈. 그 안의 진행 중 등록은 위 `inflight` 와 같은 인스턴스다.
@@ -63,6 +65,8 @@ export const check: RegressionCheck = {
         if (name.endsWith("/steering.js")) return steering;
             if (name.endsWith("/settings.js")) return { loadSchedulerRetryEnabled: () => false };
             if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
+            // 만든 대화에서 처리하는 갈래(2026-10-20)는 `file-watch-runs-in-origin` 이 본다 — 이 검사는 전용 세션 중단 통지만.
+            if (name.endsWith("/trigger-in-session.js")) return { runTriggerInSession: async () => { throw new Error("전용 세션 갈래만"); } };
             // 스케줄 이력 정책(2026-09-26) — 이 검사의 행은 keepRuns 가 없어 아무것도 안 한다.
             if (name.endsWith("/store/sessions.js")) return { canonicalSessionChannel: (_tk: string, ch: string) => ch };
             if (name.endsWith("/thread-reset.js")) return { applyRunHistory: () => null };
@@ -74,7 +78,7 @@ export const check: RegressionCheck = {
             throw new Error(`모의하지 않은 import: ${name}`);
           };
           const code = ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
-          vm.runInNewContext(code, { exports, require: requireFixture, AbortController, process: { cwd: () => "/fixture" }, console: { log() {}, warn() {}, error() {} }, setTimeout, clearTimeout }, { filename });
+          vm.runInNewContext(code, { exports, require: requireFixture, AbortController, process: { cwd: () => "/fixture" }, console: { log() {}, warn() {}, error() {} }, setTimeout, clearTimeout, setInterval, clearInterval }, { filename });
           return exports;
         };
         const Plugin = load(path.join(repo, "plugins", kind, "src/index.ts")).default;

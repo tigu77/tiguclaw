@@ -86,8 +86,8 @@ registered data routes from plugin: hello (greeting)
 
 Then the value is at `/api/plugin-data/hello/greeting?who=you`.
 
-> **To put the widget on your home screen, just ask** — *"put the hello card at the top of my
-> home."* There is no drag-and-drop grid; layout is data the assistant writes.
+> **To put the widget in the widget panel, just ask** — *"put the hello card at the top of the widget panel."*
+> The widget panel opens from the 🧩 button at the top right, on any screen. You can also drag the handle above a widget to reorder.
 
 ---
 
@@ -101,7 +101,7 @@ Then the value is at `/api/plugin-data/hello/greeting?who=you`.
 | `kind` | See below. A string or an array |
 | `needs` | What you're asking for (§4) |
 | `settings` | What you ask the person (§5) |
-| `widgets` | Widgets that can go on the home screen (§5-1) |
+| `widgets` | Widgets that can go in the widget panel (§5-1) |
 
 > ★**Break the name rule and your plugin quietly doesn't exist.** The screen only says *"No
 > usable plugin found"*; the real reason is in **the log**. If it doesn't show up, check the
@@ -253,7 +253,7 @@ when there are no candidates — your catalog's `suggest.note.<note>`. The butto
 ---
 
 
-## 5-1. `widgets` — what can go on the home screen
+## 5-1. `widgets` — what can go in the widget panel
 
 ```json
 "widgets": [
@@ -265,17 +265,17 @@ The widget itself is registered by `web/widget.js` via
 `tiguWidgets.register("<plugin>/<id>")`. **What you declare here is the list.** Registration
 happens in the browser, so without this declaration the daemon has no way to know which
 widgets a plugin has — which means no switch on the settings screen, and an assistant that
-cannot act on "put that on my home screen" because it does not know the name.
+cannot act on "put that in the widget panel" because it does not know the name.
 
 | Key | Meaning |
 |---|---|
 | `id` | Must match the second half of `register("<plugin>/<id>")`. Lowercase, digits, hyphens |
-| `size` | `small` (default) or `wide`. A size class, not grid coordinates |
-| `default` | If true, the widget goes on the home screen as soon as the plugin is there (see below) |
+| `size` | `small` (default) or `wide`. A size class, not coordinates (the widget panel is one column, so for now both take the full panel width). To adapt to the width, use CSS `@container` — the widget box is the container |
+| `default` | If true, the widget goes in the widget panel as soon as the plugin is there (see below) |
 | `labelKey` | Name shown next to the switch. A key in the plugin's own catalog (§7) |
 
 > ★**`default` only applies to plugins that ship with the app.** A plugin the user installed
-> is not placed automatically even if it declares true — the home screen belongs to the user.
+> is not placed automatically even if it declares true — the widget panel belongs to the user.
 > The switch on the settings screen turns it on just the same.
 
 > ★**Do not use `default` for a widget that needs configuration.** A weather widget needs a

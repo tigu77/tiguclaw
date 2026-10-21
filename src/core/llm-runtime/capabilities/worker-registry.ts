@@ -65,6 +65,7 @@ import {
   publishSteerAttempt,
   takeUndeliveredChildResults,
   spawnNotifyDest,
+  parentJobIdOf,
   failureOutcome,
   type WorkerOutcome,
 }
@@ -757,7 +758,8 @@ export const createWorkerMcpServer = (
    */
   const listAllWorkers = tool(
     "list_all_workers",
-    "**모든 대화(세션)** 의 백그라운드 매니저를 조회합니다. 사용자가 '전체'·'다른 대화 것까지'·'서버에서 도는 거 전부' 처럼 **명시적으로** 물을 때만 쓰세요. 평소 '지금 뭐 돌고 있어?' 는 list_workers(이 대화) 입니다.",
+    "**모든 대화(세션)** 의 백그라운드 매니저를 조회합니다. 사용자가 '전체'·'다른 대화 것까지'·'서버에서 도는 거 전부' 처럼 **명시적으로** 물을 때만 쓰세요. 평소 '지금 뭐 돌고 있어?' 는 list_workers(이 대화) 입니다. " +
+      "줄마다 작업 id·속한 대화·부모 작업이 붙습니다 — 다른 대화의 작업은 이름으로는 지목되지 않으니(동명 오인 방지), 사용자가 그 작업을 분명히 가리켰을 때 그 id 를 `job_id` 로 넘기세요. 멈추기 전엔 그 작업의 하위 작업도 함께 멈춘다는 것을 알리세요.",
     {
       running_only: z
         .boolean()
@@ -777,6 +779,9 @@ export const createWorkerMcpServer = (
           );
         }
         // 내 것/남의 것을 **줄 단위로 표시** — 통합 목록이라도 오인하지 않게.
+        // ★id·속한 대화·부모도 싣는다 (2026-10-20 회사돌쇠). 종전엔 이름·상태·경과·이 대화/다른 대화뿐이라, 다른 대화의 작업을
+        //  정확히 지목할 재료가 없었다(이름 지목은 이 대화 안에서만 — 동명 보호). 대화 전문 같은 내용은 싣지 않는다.
+        const labelOf = new Map(all.map((j) => [j.jobId, j.label]));
         const lines = all.map((j) => {
           const end = j.finishedAt ?? now;
           const elapsed = formatElapsed(j.startedAt, end);
@@ -784,7 +789,10 @@ export const createWorkerMcpServer = (
             ownSession !== "" && jobBelongsToSession(j, ownSession)
               ? "이 대화"
               : "다른 대화";
-          return `- '${j.label}' — ${STATUS_LABEL[j.status]} (${elapsed}, ${mine})`;
+          const owner = resolveOwnerThreadKey(j.threadKey);
+          const parent = parentJobIdOf(j.threadKey);
+          const parentText = parent !== undefined ? ` · 부모 '${labelOf.get(parent) ?? parent}'(\`${parent}\`)` : "";
+          return `- '${j.label}' — ${STATUS_LABEL[j.status]} (${elapsed}, ${mine}) · id \`${j.jobId}\` · 대화 \`${owner || j.threadKey}\`${parentText}`;
         });
         return okText(`## 백그라운드 매니저 (전체 대화)\n\n${lines.join("\n")}`);
       } catch (e) {

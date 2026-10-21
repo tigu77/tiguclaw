@@ -26,7 +26,7 @@ export const check: RegressionCheck = {
   async run(): Promise<Assertion[]> {
     assertIsolated();
     const id = 990001;
-    const row = { id, label: "회귀-지금실행", enabled: true, triggerType: "cron", cronExpr: "10 8 * * *", timezone: "Asia/Seoul", prompt: "회귀-지금실행 지시", destChannel: "telegram", destTarget: "fixture-dest" };
+    const row = { id, label: "회귀-지금실행", enabled: true, triggerType: "cron", cronExpr: "10 8 * * *", timezone: "Asia/Seoul", prompt: "회귀-지금실행 지시", destChannel: "telegram", destTarget: "fixture-dest", originThreadKey: null };
     let hooks: Hooks = {};
     const inputs: Array<{ text?: string; threadKey?: string; channel?: string; triggerRun?: { kind: string; id: number } }> = [];
     let finish: (() => void) | undefined;
@@ -46,7 +46,10 @@ export const check: RegressionCheck = {
         if (name === "node:path") return path;
         if (name === "croner") return { Cron: class { stop() {} } };
         if (name.endsWith("/eventbus.js")) return { safeUnsubscribe: (fn: (() => void) | undefined) => fn?.() };
-        if (name.endsWith("/schedules.js")) return store;
+        // 한 번 타이머(2026-10-20) — 이 검사의 행은 cron 이라 타이머가 아니고 지울 일도 없다.
+        if (name.endsWith("/schedules.js")) return { isTimer: (r: { triggerType?: string }) => r.triggerType === "once", deleteSchedule: () => false, markSchedulerAlive: () => {}, schedulerLastAlive: () => null, ...store };
+        // 만든 대화에서 처리하는 갈래(2026-10-20)는 `schedule-timers` 가 본다 — 이 검사의 행은 전용 세션.
+        if (name.endsWith("/trigger-in-session.js")) return { runTriggerInSession: async () => { throw new Error("전용 세션 갈래만"); } };
         if (name.endsWith("/claude.js")) return { runClaude: model };
         if (name.endsWith("/inflight-turns.js")) return inflight;
         // 스레드 줄 + 진행 중 등록(2026-10-14) — 실제 모듈. 그 안의 진행 중 등록은 위 `inflight` 와 같은 인스턴스다.
@@ -67,7 +70,7 @@ export const check: RegressionCheck = {
         throw new Error(`모의하지 않은 import: ${name}`);
       };
       const code = ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
-      vm.runInNewContext(code, { exports, require: requireFixture, AbortController, process: { cwd: () => "/fixture" }, console: { log() {}, warn() {}, error() {} }, setTimeout, clearTimeout }, { filename });
+      vm.runInNewContext(code, { exports, require: requireFixture, AbortController, process: { cwd: () => "/fixture" }, console: { log() {}, warn() {}, error() {} }, setTimeout, clearTimeout, setInterval, clearInterval }, { filename });
       return exports;
     };
     const Plugin = load(path.join(repo, "plugins/scheduler/src/index.ts")).default as new () => { startTrigger: (b: unknown, d?: unknown) => Promise<void>; stop: () => Promise<void> };

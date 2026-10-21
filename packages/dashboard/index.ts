@@ -39,6 +39,9 @@
  *  - POST /api/restart   → bridge POST /restart         (admin, 데몬 재시작)
  *  - POST /api/cancel-queued → bridge POST /cancel-queued (admin, 대기 중 메시지 취소)
  *  - POST /api/cancel-worker → bridge POST /cancel-worker (write, 진행 중 백그라운드 매니저 취소)
+ *  - GET  /api/file-view → bridge GET  /file-view       (JSON pass, Edit 카드 «지금 파일에서 보기»)
+ *  - GET  /api/timers    → bridge GET  /timers          (JSON pass, 한 번 타이머 — 백그라운드 패널)
+ *  - POST /api/cancel-timer → bridge POST /cancel-timer (write, 타이머 멈추기)
  *  - GET  /api/shells    → bridge GET  /shells          (JSON pass, 백그라운드 셸 관측 레인 시드)
  *  - GET  /api/shell-output → bridge GET /shell-output  (JSON pass, ★비소비 tail 스냅샷 폴링)
  *  - POST /api/kill-shell → bridge POST /kill-shell     (write, 백그라운드 셸 강제 종료)
@@ -795,6 +798,15 @@ const server = http.createServer((req, res) => {
       });
       return;
     }
+    // 위젯 순서(2026-10-20, 위젯 패널 끌어서 놓기) — 판정(순열·충돌)은 코어. 409 = 그새 바뀜.
+    if (pathname === "/api/home-widgets/order" && method === "POST") {
+      await proxyJson(res, "/home-widgets/order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: await readBody(req),
+      });
+      return;
+    }
     // 플러그인 데이터 라우트 (2026-08-28, 위젯 플랫폼 §E.2) — 홈 위젯이 값을 받는 길.
     // ★**프리픽스 하나**다. 플러그인마다 여기 한 줄씩 늘면 그게 곧 드리프트 자리다 —
     //  이 파일은 판정을 안 한다(모르는 플러그인·라우트는 bridge 가 404 로 답한다).
@@ -1196,6 +1208,21 @@ const server = http.createServer((req, res) => {
         headers: { "Content-Type": "application/json" },
         body,
       });
+      return;
+    }
+    // Edit·Write 카드의 «지금 파일에서 보기»(2026-10-21) — 쿼리(path)를 통째로 넘긴다.
+    if (pathname === "/api/file-view" && method === "GET") {
+      await proxyJson(res, `/file-view${url.search}`);
+      return;
+    }
+    // 한 번 타이머(2026-10-20) — 백그라운드 패널이 건 대화 쪽에 보여 주고 멈춘다. /api/worker-jobs·/api/cancel-worker 동형.
+    if (pathname === "/api/timers" && method === "GET") {
+      await proxyJson(res, "/timers");
+      return;
+    }
+    if (pathname === "/api/cancel-timer" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/cancel-timer", { method: "POST", headers: { "Content-Type": "application/json" }, body });
       return;
     }
     // 백그라운드 셸 관측 레인(ADR 2026-07-17 Phase 3, 표면 C) — bridge GET /shells

@@ -26,7 +26,7 @@ import { formatConversationContext } from "../../core/prompt-assembly.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-type Captured = { text: string; threadKey: string; triggerRun?: { kind: string; id: number; event?: string; path?: string }; interruptDest?: unknown };
+type Captured = { text: string; threadKey: string; triggerRun?: { kind: string; id: number; event?: string; path?: string }; notifyDest?: { channel: string; target: string | null }; interruptDest?: unknown };
 type WatcherMod = {
   registerWatcher: (row: Record<string, unknown>, bus: unknown, deps: Record<string, unknown>) => void;
   unregisterWatcher: (id: number) => void;
@@ -48,7 +48,12 @@ const facadeForwards = async (): Promise<Captured | undefined> => {
     if (name.endsWith("/watches.js")) return { getWatch: () => row, listWatches: () => [row], recordFiring: () => {}, updateWatch: () => {}, recordWatchRun: () => {}, watchRunTimes: () => [] };
     // 이력 정책은 `file-watch-history-policy` 가 진짜 저장소로 잰다 — 여기선 이어감(null)이라 부르지 않는다.
     if (name.endsWith("/thread-reset.js")) return { applyRunHistory: () => null };
-    if (name.endsWith("/sessions.js")) return { canonicalSessionChannel: (_tk: string, ch: string) => ch };
+    if (name.endsWith("/sessions.js")) return { canonicalSessionChannel: (_tk: string, ch: string) => ch, getSessionChannelMeta: () => null, isConversationLive: () => false, SESSION_STORAGE_CHANNEL: "http-bridge" };
+    // 만든 대화에서 처리하는 갈래(2026-10-20)의 import — 이 검사는 전용 세션 갈래만 돈다(그 갈래는 `file-watch-runs-in-origin`).
+    if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
+    if (name.endsWith("/trigger-in-session.js")) return { runTriggerInSession: async () => { throw new Error("이 검사는 전용 세션 갈래만 돈다"); } };
+    if (name.endsWith("/worker-jobs.js")) return { mainMessageHandler: () => undefined };
+    if (name.endsWith("/outbound.js")) return { attachmentSenderFor: () => undefined, deliverOutbound: async () => ({ delivered: true }), optionsPresenterFor: () => undefined };
     if (name === "./watcher.js") return { registerWatcher: (_r: unknown, _b: unknown, d: typeof deps) => { deps = d; }, unregisterWatcher: () => {} };
     if (name === "./mcp.js") return { setFileWatchLifecycleHooks: () => {}, createFileWatchMcpServer: () => ({}) };
     throw new Error(`모의하지 않은 import: ${name}`);
@@ -63,7 +68,7 @@ const facadeForwards = async (): Promise<Captured | undefined> => {
   await plugin.startTrigger({ subscribe: () => () => {}, publish: () => {} }, { cwd: "/fixture" });
   await deps?.runClaude({
     text: "p", threadKey: "file-watch:77", channel: "file-watch", cwd: "/fixture",
-    interruptDest: { channel: "cli", target: null },
+    notifyDest: { channel: "telegram", target: "fixture-chat" },
     triggerRun: { kind: "watch", id: 77, event: "change", path: "/fixture/a.json" },
   });
   await plugin.stop();
@@ -89,7 +94,7 @@ export const check: RegressionCheck = {
       mod.registerWatcher(
         {
           id, label: `regr-${id}`, path: dir, pattern: null, recursive: false, debounceMs: 50, eventFilter: "add",
-          prompt: stored, destChannel: "cli", destTarget: null, enabled: true,
+          prompt: stored, destChannel: "telegram", destTarget: "fixture-chat", enabled: true,
           createdAt: 0, updatedAt: 0, lastFiredAt: null, lastPath: null, lastEvent: null, lastStatus: null, lastError: null,
         },
         { publish: () => {}, subscribe: () => () => {}, history: () => [] },
@@ -114,8 +119,12 @@ export const check: RegressionCheck = {
       assert("★헌법 ④ 면제 문구(«지시문은 그 …의 지시다»)는 감시에 붙지 않는다", !one.includes("지시문은"), one),
       assert("★진짜 감시 발화가 triggerRun {watch, id, event, path} 를 싣는다", fired?.triggerRun?.kind === "watch" && fired.triggerRun.id === id && fired.triggerRun.event === "add" && fired.triggerRun.path === file, fired?.triggerRun),
       assert("모델 입력 글은 저장된 지시 그대로다(안내를 지시문에 섞지 않는다 — 치환만)", fired?.text === `바뀐 파일을 확인해: ${file} (add)`, fired?.text),
-      assert("★데몬 파사드가 triggerRun 을 코어까지 넘기고, 파사드 몫(interruptDest)은 넘기지 않는다",
-        core?.triggerRun?.kind === "watch" && core.triggerRun.id === 77 && core.interruptDest === undefined && core.threadKey === "file-watch:77", core),
+      // ★2026-10-20 회사돌쇠: 사람 도달 좌표를 파사드가 빼고 넘겨, 감시가 띄운 매니저의 완료 보고가 내부 채널 `file-watch` 로 가 미배달됐다.
+      assert("★★진짜 감시 발화가 **감시의 배달 목적지**를 `notifyDest` 로 싣는다(스케줄과 같은 필드) — 매니저 완료 보고·쿨다운 알림이 읽는다",
+        JSON.stringify(fired?.notifyDest) === JSON.stringify({ channel: "telegram", target: "fixture-chat" }), fired?.notifyDest),
+      assert("★데몬 파사드가 triggerRun 과 **notifyDest 를 코어까지** 넘긴다(옛 이름 interruptDest 는 없다)",
+        core?.triggerRun?.kind === "watch" && core.triggerRun.id === 77 && core.threadKey === "file-watch:77" &&
+          JSON.stringify(core.notifyDest) === JSON.stringify({ channel: "telegram", target: "fixture-chat" }) && core.interruptDest === undefined, core),
     ];
   },
 };

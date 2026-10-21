@@ -10,7 +10,7 @@ const IN_PROCESS_MCP_FACTORIES: Record<string, () => ReturnType<typeof createMem
   memory: createMemoryMcpServer,
 };
 
-import { listSchedules } from "../../src/store/schedules.js";
+import { isTimer, listSchedules } from "../../src/store/schedules.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { readHomeWidgets } from "../../src/core/home-widgets.js";
 import { adaptClaudeMcpServer } from "../../src/core/llm-runtime/adapters/_mcp-bridge.js";
@@ -31,7 +31,8 @@ export const handleInventory = async (ctx: RouteCtx): Promise<void> => {
     const inv = await collectInventory();
     let schedules: Array<Record<string, unknown>> = [];
     try {
-      schedules = listSchedules().map((r) => {
+      // ★한 번 타이머는 인벤토리에 안 쌓는다(정태님 10-20 «인벤토리에 쌓이는 게 별로») — 건 대화의 백그라운드 패널에만 보인다.
+      schedules = listSchedules().filter((r) => !isTimer(r)).map((r) => {
         let nextRun: string | null = null;
         if (r.enabled && r.triggerType === "cron") {
           try {
@@ -248,6 +249,36 @@ export const handleHomeWidgets = async (ctx: RouteCtx): Promise<void> => {
  *  것이 이 절반인데, 정태님 판단으로 **이 절반만** 연다: 설치했는데 왜 안 보이지가
  *  그대로 남기 때문이다.
  */
+/**
+ * 위젯 순서 바꾸기 — 위젯 패널의 끌어서 놓기 (2026-10-20). 판정(순열·충돌·안 보이는 항목 제자리)은 코어 `reorderHomeWidgets` 한 곳.
+ * 그새 목록이 바뀌었으면 409 — 화면이 최신 목록을 다시 읽는다.
+ */
+export const handleHomeWidgetOrder = async (ctx: RouteCtx): Promise<void> => {
+  const { req, res } = ctx;
+  const { readJsonBody } = await import("./http-body.js");
+  const { reorderHomeWidgets } = await import("../../src/core/home-widgets.js");
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (e) {
+    writeJson(res, bodyErrorStatus(e), { ok: false, error: "본문이 JSON 이 아닙니다." });
+    return;
+  }
+  if (!Array.isArray(body.order)) {
+    writeJson(res, 400, { ok: false, error: "order(위젯 id 배열)가 필요합니다." });
+    return;
+  }
+  const known = new Set(listLivePlugins().map((p) => p.name));
+  try {
+    const r = reorderHomeWidgets(body.order, known);
+    writeJson(res, r.ok ? 200 : r.conflict ? 409 : 400, r);
+  } catch (e) {
+    // 깨진 설정 파일 — 덮지 않는다(mutateHome 이 던진다).
+    writeJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
+  return;
+};
+
 export const handleHomeWidgetToggle = async (ctx: RouteCtx): Promise<void> => {
   const { req, res } = ctx;
   const { readJsonBody } = await import("./http-body.js");

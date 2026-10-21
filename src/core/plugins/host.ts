@@ -32,6 +32,8 @@ import {
   type AuthLogin,
 } from "../llm-runtime/auth-registry.js";
 import { pluginFetch } from "../plugin-fetch.js";
+import { resolveOwnerThreadKey } from "../worker-jobs.js";
+import { isHumanSessionKey } from "../../store/sessions.js";
 import {
   effectiveSettings,
   type PluginSettingSpec,
@@ -257,6 +259,12 @@ export interface PluginTurn {
 export interface PluginHost {
   readonly turn?: PluginTurn;
   /**
+   * **이 턴이 속한 사람의 대화** — 트리거를 «만든 대화로» 되돌릴 때 적는 값(2026-10-20, 파일 감시).
+   * 매니저·서브 안의 턴이면 맨 위 소유 대화로 올라간다. 사람이 없는 자리(스케줄·감시·엔드포인트 턴)거나 턴 밖이면 null.
+   * ★서버가 정한다 — 모델이 넘기는 세션 id 를 믿지 않으려고 둔 자리다.
+   */
+  turnSession(): string | null;
+  /**
    * **설정 언어** — 외부 API 에 언어를 넘겨야 할 때 쓴다.
    *
    * ★없어서 `weather` 가 지오코딩에 `language=ko` 를 **박아놨고**, 영어 사용자가 한국어
@@ -462,6 +470,11 @@ export const createPluginHost = (
   settingsSpec: readonly PluginSettingSpec[] = [],
 ): PluginHost => ({
   ...(turn !== undefined ? { turn } : {}),
+  turnSession: (): string | null => {
+    if (turn === undefined) return null;
+    const owner = resolveOwnerThreadKey(turn.threadKey);
+    return owner !== "" && isHumanSessionKey(owner) ? owner : null;
+  },
   // ★읽을 때마다 새로 — 설정 언어를 바꾸면 재시작 없이 다음 호출부터(설정류는 매번 fresh, 2026-10-01). 종전엔 플러그인 시작 때
   //  한 번 읽어, 언어를 바꿔도 구독 인증 버튼·안내가 재시작 전까지 옛 언어였다.
   get locale(): string { return readLocale(); },

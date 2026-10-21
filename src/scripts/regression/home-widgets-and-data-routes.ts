@@ -277,12 +277,15 @@ export const check: RegressionCheck = {
         missing.length === 0 ? `3/3 어댑터` : `누락: ${missing.join(", ")}`,
       ),
     );
+    // ★2026-10-20: 위젯은 홈이 아니라 위젯 패널에 뜬다 — poll 을 끄는 자리는 «홈을 떠날 때» 가 아니라 **패널을 닫을 때**다.
+    //  수명 전체(열기·닫기·늦은 응답·숨은 탭)는 `widget-panel-lifecycle` 이 실행으로 본다. 여기선 홈에 위젯 조회가 남지 않았는지만.
     const overview = read("packages/dashboard/js/view-overview.js");
+    const leftover = ["/api/plugin-data", "widgetHost.mount", "setInterval"].filter((t) => overview.includes(t));
     out.push(
       assert(
-        "★홈을 떠나면 poll 을 끄는 자리가 **정의점**(setActiveNav)에 있다 — 뷰로 들어가는 문은 여럿이라 문마다 붙이면 또 빠뜨린다",
-        /const setActiveNav = \(view\) => \{[\s\S]{0,400}?stopHomeWidgets\(\)/.test(overview),
-        (overview.match(/[^\n]*stopHomeWidgets\(\);[^\n]*/) ?? ["없음"])[0].trim(),
+        "★홈 화면엔 위젯 조회·마운트·주기 타이머가 없다(위젯은 패널 몫 — 홈에 남으면 두 자리에서 같은 위젯이 돈다)",
+        leftover.length === 0,
+        leftover.length === 0 ? "홈에 위젯 코드 0" : `남은 것: ${leftover.join(", ")}`,
       ),
     );
 

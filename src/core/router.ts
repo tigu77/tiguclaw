@@ -181,6 +181,9 @@ export const route = async (
       //  ★`inbound` 는 «정규 인입 경로» 라는 뜻이지 «사람이 쳤다» 가 아니다.
       //   라우터를 우회하는 직접 호출은 미지정으로 남아 로그가 `unknown` 을 찍는다.
       turnOrigin: msg.turnOrigin ?? (msg.synthetic === true ? "synthetic-other" : "inbound"),
+      // 트리거가 사람의 대화에 넣은 턴(만든 대화에서 처리되는 파일 감시)의 표식 — 모델 컨텍스트의 «감시(#id)의 실행» 줄(2026-10-20).
+      ...(msg.triggerRun !== undefined ? { triggerRun: msg.triggerRun } : {}),
+      ...(msg.notifyDest !== undefined ? { notifyDest: msg.notifyDest } : {}),
       // 축1(2026-06-25) — 선택지 제시 클로저를 sendAttachment 와 동일 경로로 운반.
       // ★합성 턴은 빠진 자리를 이 세션의 사용자 턴 모양대로 채운다 — 도구 목록이 같아야 이력 캐시가 안 깨진다
       //  (turn-action-shape.ts). 사용자 턴은 모양을 기록하고 그대로 간다.

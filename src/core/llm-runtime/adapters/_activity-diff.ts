@@ -108,6 +108,16 @@ function toLines(s: string): string[] {
   return arr;
 }
 
+/**
+ * 그 턴의 cwd 로 푼 절대 경로 — 상대 경로 카드를 화면이 열 수 있게(2026-10-21 «지금 파일에서 보기» · 「↗ 열기」).
+ *  `startLineOf` 가 푸는 것과 같은 규칙이다. 못 풀면(상대 경로인데 cwd 없음) undefined — 지어내지 않는다.
+ */
+function absPathOf(path: string | undefined, cwd?: string): string | undefined {
+  if (path === undefined || path === "") return undefined;
+  if (nodePath.isAbsolute(path)) return path;
+  return cwd === undefined || cwd === "" ? undefined : nodePath.resolve(cwd, path);
+}
+
 /** 줄 배열 → 크기 캡 적용된 ActivityDiff (added/removed 는 호출부가 총계로 넘김). */
 function capped(
   rows: ActivityDiffLine[],
@@ -115,6 +125,7 @@ function capped(
   removed: number,
   path: string | undefined,
   startLine?: number,
+  absPath?: string,
 ): ActivityDiff {
   let truncated = false;
   const out: ActivityDiffLine[] = [];
@@ -130,6 +141,7 @@ function capped(
   }
   return {
     ...(path !== undefined ? { path } : {}),
+    ...(absPath !== undefined ? { absPath } : {}),
     ...(startLine !== undefined ? { startLine } : {}),
     added,
     removed,
@@ -165,11 +177,11 @@ function editDiff(
     }
   }
   if (rows.length === 0) return undefined;
-  return capped(rows, added, removed, path, startLineOf(path, oldStr, newStr, cwd));
+  return capped(rows, added, removed, path, startLineOf(path, oldStr, newStr, cwd), absPathOf(path, cwd));
 }
 
-/** Write: 쓴 내용 전부 추가(before 는 관측 시점에 없음 — I/O 결합 회피). */
-function writeDiff(input: Record<string, unknown>): ActivityDiff | undefined {
+/** Write: 쓴 내용 전부 추가(before 는 관측 시점에 없음 — I/O 결합 회피). cwd 는 경로를 풀 때만 쓴다. */
+function writeDiff(input: Record<string, unknown>, cwd?: string): ActivityDiff | undefined {
   const content = input.content;
   if (typeof content !== "string") return undefined;
   const path =
@@ -182,7 +194,7 @@ function writeDiff(input: Record<string, unknown>): ActivityDiff | undefined {
   if (lines.length === 0) return undefined;
   const rows: ActivityDiffLine[] = lines.map((text) => ({ op: "+" as const, text }));
   // 파일 전체를 새로 쓰는 것이므로 **1번 줄부터**다 — 읽을 필요 없이 확정이다.
-  return capped(rows, lines.length, 0, path, 1);
+  return capped(rows, lines.length, 0, path, 1, absPathOf(path, cwd));
 }
 
 /**
@@ -197,7 +209,7 @@ export function buildActivityDiff(
   if (!input || typeof input !== "object") return undefined;
   try {
     if (toolName === "Edit") return editDiff(input, cwd);
-    if (toolName === "Write") return writeDiff(input);
+    if (toolName === "Write") return writeDiff(input, cwd);
   } catch {
     /* diff 생성 실패가 관측/턴을 무르지 않는다. */
   }

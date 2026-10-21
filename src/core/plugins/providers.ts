@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { appRoot, getPaths } from "../paths.js";
 import { countMemories, listMemories } from "../../store/memory.js";
-import { listSchedules } from "../../store/schedules.js";
+import { isTimer, listSchedules } from "../../store/schedules.js";
 import { collectInventory } from "./inventory.js";
 import { refusalToRun, resolveEntry } from "./loader.js";
 import { listProviderNames, resolveProviderConn } from "../llm-runtime/provider-registry.js";
@@ -168,7 +168,8 @@ const coreMemoryModule = (): Module => {
 };
 
 const coreScheduleModule = (): Module => {
-  const schedules = listSchedules();
+  // 한 번 타이머는 뺀다 — 오래 사는 스케줄만 센다(인벤토리와 같은 규칙).
+  const schedules = listSchedules().filter((s) => !isTimer(s));
   const enabled = schedules.filter((s) => s.enabled);
   return {
     id: "core.schedule",

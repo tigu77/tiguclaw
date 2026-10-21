@@ -581,6 +581,7 @@ const main = async (): Promise<void> => {
   let schedulesErrors = 0;
   let schedulesCron = 0;
   let schedulesReboot = 0;
+  let schedulesTimer = 0;
   let schedulesOk = false;
   if (storeOk) {
     try {
@@ -590,6 +591,7 @@ const main = async (): Promise<void> => {
         if (r.enabled) schedulesActive += 1;
         if (r.lastStatus === "error") schedulesErrors += 1;
         if (r.triggerType === "reboot") schedulesReboot += 1;
+        else if (r.triggerType === "once") schedulesTimer += 1;
         else schedulesCron += 1;
       }
       schedulesOk = true;
@@ -607,7 +609,7 @@ const main = async (): Promise<void> => {
       console.log(
         line(
           "active schedules",
-          `${schedulesActive}/${schedulesTotal} ✅  (cron=${schedulesCron}, reboot=${schedulesReboot})`,
+          `${schedulesActive}/${schedulesTotal} ✅  (cron=${schedulesCron}, reboot=${schedulesReboot}, timer=${schedulesTimer})`,
         ),
       );
     }

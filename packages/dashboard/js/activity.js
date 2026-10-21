@@ -604,6 +604,7 @@
       const resyncBackground = () => {
         try { if (typeof window.reconcileBgJobs === "function") window.reconcileBgJobs(); } catch { /* noop */ }
         try { if (typeof window.resyncShells === "function") window.resyncShells(); } catch { /* noop */ }
+        try { if (typeof window.resyncTimers === "function") window.resyncTimers(); } catch { /* noop */ }
       };
       window.resyncBackground = resyncBackground;
 

@@ -32,7 +32,7 @@ import { clearChannelSessionBinding, getChannelSessionBinding, setChannelSession
 import { DEFAULT_SESSION_ID } from "../threadkey.js";
 import { collectInventory, formatInventoryForUser } from "../plugins/inventory.js";
 import { contextPressureLabel, lookupContextWindow } from "../llm-runtime/context-windows.js";
-import { deleteSchedule, listSchedules, updateSchedule } from "../../store/schedules.js";
+import { deleteSchedule, getSchedule, isTimer, listSchedules, updateSchedule } from "../../store/schedules.js";
 import { SESSION_STORAGE_CHANNEL, getSession, getThreadName, listThreads, sessionDisplayName, setThreadName } from "../../store/sessions.js";
 import { clearCooldowns, resolveModelSpecs } from "../llm-runtime/index.js";
 import { appBuildId, appVersion } from "../version.js";
@@ -188,7 +188,9 @@ export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
             const triggerPart =
               s.triggerType === "reboot"
                 ? "reboot"
-                : `cron (${s.cronExpr} | ${s.timezone})`;
+                : s.triggerType === "once"
+                  ? `timer (${s.runAt !== null ? new Date(s.runAt).toISOString() : "-"})`
+                  : `cron (${s.cronExpr} | ${s.timezone})`;
             return `#${s.id} [${en}] ${s.label} ${triggerPart} → ${dest} | last: ${status}`;
           });
           await replyCommand(msg,lines.join("\n"));
@@ -241,6 +243,12 @@ export const handleSchedule = async (ctx: SlashCtx): Promise<void> => {
     if (sub === "enable" || sub === "disable") {
       const enable = sub === "enable";
       try {
+        // 시각이 지난 타이머는 켜지 않는다 — 켜면 곧바로 «늦게» 울거나(24시간 안) 말없이 지워졌다(적대 검토 10-20 #7). 새로 걸게 한다.
+        const before = getSchedule(id);
+        if (enable && before !== undefined && isTimer(before) && (before.runAt ?? 0) <= Date.now()) {
+          await replyCommand(msg, translate("srv.schedule.timerPast", { id }));
+          return;
+        }
         const updated = updateSchedule(id, { enabled: enable });
         if (updated === undefined) {
           await replyCommand(msg, translate("srv.schedule.notFound", { id }));

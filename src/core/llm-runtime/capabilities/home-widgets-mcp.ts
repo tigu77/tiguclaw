@@ -59,8 +59,8 @@ const describeState = (): string => {
   const lines: string[] = [];
   lines.push(
     widgets.length === 0
-      ? "지금 홈에 놓인 위젯: 없음."
-      : `지금 홈에 놓인 위젯 ${widgets.length}개(위에서부터):\n` +
+      ? "지금 위젯 패널에 놓인 위젯: 없음."
+      : `지금 위젯 패널에 놓인 위젯 ${widgets.length}개(위에서부터):\n` +
           widgets
             .map(
               (w, i) =>
@@ -124,7 +124,7 @@ const WIDGET_SCHEMA = z.object({
 
 const CONFIGURE_HOME = tool(
   "configure_home",
-  "대시보드 홈에 어떤 위젯을 어떤 순서로 놓을지 읽거나 바꿉니다. " +
+  "대시보드 위젯 패널(어느 화면에서나 여는 오른쪽 패널)에 어떤 위젯을 어떤 순서로 놓을지 읽거나 바꿉니다. " +
     "`widgets` 없이 부르면 현재 배치와 놓을 수 있는 것들을 알려주고, " +
     "`widgets` 를 주면 그 배열로 **통째 교체**합니다(순서 = 화면 순서). " +
     "하나만 추가·삭제하려면 먼저 읽고, 고친 배열을 다시 보내세요.",
@@ -134,7 +134,7 @@ const CONFIGURE_HOME = tool(
       .max(HOME_WIDGET_MAX)
       .optional()
       .describe(
-        `홈에 놓을 위젯 전체(최대 ${HOME_WIDGET_MAX}개). 생략하면 아무것도 바꾸지 않고 현재 상태만 돌려줍니다.`,
+        `위젯 패널에 놓을 위젯 전체(최대 ${HOME_WIDGET_MAX}개). 생략하면 아무것도 바꾸지 않고 현재 상태만 돌려줍니다.`,
       ),
   },
   async (args: { widgets?: unknown }) => {
@@ -159,7 +159,7 @@ const CONFIGURE_HOME = tool(
       return errText(e instanceof Error ? e.message : String(e));
     }
     return okText(
-      `홈 배치를 바꿨습니다.\n${describeState()}\n` +
+      `위젯 배치를 바꿨습니다.\n${describeState()}\n` +
         "★열려 있는 대시보드는 다음 갱신에 반영됩니다.",
     );
   },

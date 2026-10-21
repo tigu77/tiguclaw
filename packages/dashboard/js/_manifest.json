@@ -1,6 +1,7 @@
 [
   "util.js",
   "constants.js",
+  "side-panels.js",
   "update-chip.js",
   "context-menu.js",
   "view-overview.js",
@@ -11,11 +12,14 @@
   "view-providers.js",
   "view-plugins.js",
   "view-inventory.js",
+  "widget-panel.js",
   "chat-core.js",
   "step-detail.js",
   "resource-store.js",
   "background-drawer.js",
+  "bg-timers.js",
   "virtualization.js",
+  "file-view.js",
   "token-delta.js",
   "markdown.js",
   "channel-hints.js",
@@ -37,5 +41,6 @@
   "perf.js",
   "chat-send.js",
   "mic-input.js",
-  "mobile-nav.js"
+  "mobile-nav.js",
+  "header-fit.js"
 ]

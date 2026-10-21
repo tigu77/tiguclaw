@@ -9,10 +9,10 @@
 
 /**
  * 들어온 메시지가 어디로 갔나 — `steer`=진행 턴에 끼움 · `queued`=앞 턴 뒤에 대기 · `new`=새 턴 ·
- * `command`=큐를 안 타고 즉시 처리한 제어 명령(`/stop`·`/restart`·`/update`·`/logs`·`/diagnose`). 턴 경계 진단에 `/stop`
+ * `command`=큐를 안 타고 즉시 처리한 제어 명령(`/stop`·`/restart`·`/update`·`/logs`·`/diagnose`) · `skipped`=트리거가 넣은 턴이 차례에서 무효(`beforeTurn`). 턴 경계 진단에 `/stop`
  * 도착 시각이 가장 필요한데 종전엔 안 남았다(2026-09-29 적대 검토).
  */
-export type InboundRoute = "steer" | "queued" | "new" | "command";
+export type InboundRoute = "steer" | "queued" | "new" | "command" | "skipped";
 
 export const formatInboundLog = (m: {
   channel: string;
@@ -30,6 +30,8 @@ export const formatInboundLog = (m: {
         ? "앞 턴 뒤에 대기"
         : m.route === "command"
           ? "즉시 처리(제어 명령)"
-          : "새 턴";
+          : m.route === "skipped"
+            ? "차례가 왔지만 돌리지 않음(넣은 쪽이 더는 유효하지 않다고 답함)"
+            : "새 턴";
   return `[inbound] channel=${m.channel} session=${m.threadKey} len=${m.textLength} att=${m.attachments}${m.synthetic === true ? " synthetic" : ""} → ${where}`;
 };

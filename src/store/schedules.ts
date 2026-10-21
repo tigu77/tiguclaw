@@ -1,7 +1,14 @@
 import { getDb } from "./sessions.js";
 import { SCHEDULE_RUN_LOG, deleteTriggerRuns, recordTriggerRun, triggerRunTimes } from "./trigger-runs.js";
 
-export type TriggerType = "cron" | "reboot";
+/**
+ * `cron`·`reboot` = 끝없는 반복(인벤토리에 남는 **스케줄**). `once` = 한 번 울리는 **타이머**(2026-10-20) — `runAt` 에 울리고 지워진다,
+ *  건 대화의 백그라운드 패널에만 보인다. 간격 반복은 없다(반복 확인은 비서가 한 번 타이머를 다시 건다 — 설계 2026-10-20-schedule-timers-design §0).
+ */
+export type TriggerType = "cron" | "reboot" | "once";
+
+/** 타이머(끝이 있는 것)인가 — 보이는 곳·지우는 시점을 이 한 줄로 가른다. */
+export const isTimer = (r: { triggerType: TriggerType }): boolean => r.triggerType === "once";
 
 export interface ScheduleRow {
   id: number;
@@ -20,6 +27,10 @@ export interface ScheduleRow {
   triggerType: TriggerType;
   /** 이력 정책 — null = 계속(기본), 0 = 매번 새로 시작, N = 직전 N회만 유지. */
   keepRuns: number | null;
+  /** `once` 가 울릴 시각(ms). 다른 종류는 null. */
+  runAt: number | null;
+  /** 처리되는 대화 — 만든 사람의 대화(서버가 적음). null = 전용 세션 `scheduler:<id>`(이 칸 전의 스케줄·사람 없는 자리에서 만든 것). */
+  originThreadKey: string | null;
 }
 
 interface DbScheduleRow {
@@ -38,13 +49,15 @@ interface DbScheduleRow {
   last_error: string | null;
   trigger_type: string;
   keep_runs: number | null;
+  run_at: number | null;
+  origin_thread_key: string | null;
 }
 
 const SELECT_COLS = `id, label, cron_expr, timezone, prompt,
        dest_channel, dest_target, enabled,
        created_at, updated_at,
        last_fired_at, last_status, last_error,
-       trigger_type, keep_runs`;
+       trigger_type, keep_runs, run_at, origin_thread_key`;
 
 const toRow = (r: DbScheduleRow): ScheduleRow => ({
   id: r.id,
@@ -61,8 +74,10 @@ const toRow = (r: DbScheduleRow): ScheduleRow => ({
   lastStatus:
     r.last_status === "ok" || r.last_status === "error" ? r.last_status : null,
   lastError: r.last_error,
-  triggerType: r.trigger_type === "reboot" ? "reboot" : "cron",
+  triggerType: r.trigger_type === "reboot" ? "reboot" : r.trigger_type === "once" ? "once" : "cron",
   keepRuns: typeof r.keep_runs === "number" && r.keep_runs >= 0 ? r.keep_runs : null,
+  runAt: typeof r.run_at === "number" ? r.run_at : null,
+  originThreadKey: typeof r.origin_thread_key === "string" && r.origin_thread_key !== "" ? r.origin_thread_key : null,
 });
 
 export const addSchedule = (input: {
@@ -74,6 +89,8 @@ export const addSchedule = (input: {
   destTarget?: string | null;
   triggerType?: TriggerType;
   keepRuns?: number | null;
+  runAt?: number | null;
+  originThreadKey?: string | null;
 }): ScheduleRow => {
   const handle = getDb();
   const now = Date.now();
@@ -85,8 +102,8 @@ export const addSchedule = (input: {
       `INSERT INTO schedules
        (label, cron_expr, timezone, prompt, dest_channel, dest_target,
         enabled, created_at, updated_at,
-        last_fired_at, last_status, last_error, trigger_type, keep_runs)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, ?, ?)`,
+        last_fired_at, last_status, last_error, trigger_type, keep_runs, run_at, origin_thread_key)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`,
     )
     .run(
       input.label,
@@ -99,6 +116,8 @@ export const addSchedule = (input: {
       now,
       triggerType,
       input.keepRuns ?? null,
+      input.runAt ?? null,
+      input.originThreadKey ?? null,
     );
   const id = Number(result.lastInsertRowid);
   const created = getSchedule(id);
@@ -149,6 +168,8 @@ export const updateSchedule = (
     label: string;
     triggerType: TriggerType;
     keepRuns: number | null;
+    runAt: number | null;
+    originThreadKey: string | null;
   }>,
 ): ScheduleRow | undefined => {
   const existing = getSchedule(id);
@@ -191,6 +212,14 @@ export const updateSchedule = (
   if (patch.keepRuns !== undefined) {
     sets.push("keep_runs = ?");
     vals.push(patch.keepRuns);
+  }
+  if (patch.runAt !== undefined) {
+    sets.push("run_at = ?");
+    vals.push(patch.runAt);
+  }
+  if (patch.originThreadKey !== undefined) {
+    sets.push("origin_thread_key = ?");
+    vals.push(patch.originThreadKey);
   }
   if (sets.length === 0) return existing;
 
@@ -238,6 +267,15 @@ export const deleteSchedule = (id: number): boolean => {
 };
 
 export { KEEP_RUNS_MAX } from "./trigger-runs.js";
+
+/** 스케줄러가 살아 있던 마지막 시각 — 없으면 null(처음 켠 설치·업데이트 직후: 보충하지 않는다). */
+export const schedulerLastAlive = (): number | null =>
+  (getDb().prepare(`SELECT ts FROM scheduler_alive WHERE id = 1`).get() as { ts: number } | undefined)?.ts ?? null;
+
+/** 살아 있음을 적는다 — 스케줄러가 주기적으로·멈출 때 부른다. */
+export const markSchedulerAlive = (ts: number): void => {
+  getDb().prepare(`INSERT INTO scheduler_alive (id, ts) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET ts = excluded.ts`).run(ts);
+};
 
 /** 발화 기록 한 줄 — 판정·바운드는 `trigger-runs.ts` 한 곳(감시와 같은 규칙). `ts` = 발화 시작 시각. */
 export const recordScheduleRun = (scheduleId: number, ts: number): void => recordTriggerRun(SCHEDULE_RUN_LOG, scheduleId, ts);

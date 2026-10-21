@@ -55,6 +55,7 @@ const EXPECTED: Record<string, Grade> = {
   "POST /project-forget": "write",
   "POST /project-rename": "write",
   "POST /home-widgets": "write",
+  "POST /home-widgets/order": "write", // 위젯 패널 순서 저장(2026-10-20) — 순열만 받지만 설정을 쓴다
 };
 /** 커스텀 엔드포인트(자식이 홈에 만든다) — 선언 role 이 게이트다 · 미선언은 write 기본. */
 const CUSTOM: Record<string, Grade> = { "POST /regr-admin-ep": "admin", "POST /regr-default-ep": "write" };

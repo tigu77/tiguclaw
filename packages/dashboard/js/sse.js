@@ -210,6 +210,8 @@
           // 성공·실패 모두 잡 원장의 관측값/미보고 상태를 다시 받는다.
           if (typeof tk === "string" && /^(?:worker|agent):/.test(tk) &&
               typeof window.refreshJobUsageSoon === "function") window.refreshJobUsageSoon();
+          // 비서가 방금 타이머를 걸었거나, 타이머가 막 울리고 지워졌을 수 있다 — 백그라운드 패널의 타이머 줄을 다시 받는다(bg-timers.js, 연달아 와도 한 번).
+          if (typeof window.resyncTimers === "function") window.resyncTimers();
           if (ev.type === "llm.turn_done") {
             cancelErrClear(tk); markTurnDone(tk); // 성공 종결 = 즉시.
             setTurnCost(tk, ev.payload || {});    // 턴 비용(토큰) 카드에 고정 — 2026-07-26.

@@ -53,6 +53,11 @@ const loadFacade = async (opts: { reply: () => string; logs: string[]; queue: { 
     if (name.endsWith("/store/watches.js")) return watches;
     if (name.endsWith("/store/thread-reset.js")) return threadReset;
     if (name.endsWith("/store/sessions.js")) return sessions;
+    // 만든 대화에서 처리하는 갈래(2026-10-20)의 import — 이 검사는 전용 세션 갈래만 돈다(그 갈래는 `file-watch-runs-in-origin`).
+    if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
+    if (name.endsWith("/trigger-in-session.js")) return { runTriggerInSession: async () => { throw new Error("이 검사는 전용 세션 갈래만 돈다"); } };
+    if (name.endsWith("/worker-jobs.js")) return { mainMessageHandler: () => undefined };
+    if (name.endsWith("/outbound.js")) return { attachmentSenderFor: () => undefined, deliverOutbound: async () => ({ delivered: true }), optionsPresenterFor: () => undefined };
     if (name === "./watcher.js") return { registerWatcher: (_r: unknown, _b: unknown, d: typeof deps) => { deps = d; }, unregisterWatcher: () => {} };
     if (name === "./mcp.js") return { setFileWatchLifecycleHooks: () => {}, createFileWatchMcpServer: () => ({}) };
     throw new Error(`모의하지 않은 import: ${name}`);
@@ -95,7 +100,7 @@ export const check: RegressionCheck = {
     const calledAt: number[] = [];
     const { run, stop } = await loadFacade({ reply: () => reply, logs, queue, calledAt });
     const tkF = `file-watch:${fresh.id}`;
-    const turn = (id: number, tk: string) => ({ text: "t", threadKey: tk, channel: "file-watch", cwd: "/fixture", interruptDest: { channel: "cli", target: null }, triggerRun: { kind: "watch", id, event: "add", path: "/fixture/a.json" } });
+    const turn = (id: number, tk: string) => ({ text: "t", threadKey: tk, channel: "file-watch", cwd: "/fixture", notifyDest: { channel: "cli", target: null }, triggerRun: { kind: "watch", id, event: "add", path: "/fixture/a.json" } });
     const beforeF = sessions.getContextBoundary("file-watch", tkF);
     await run(turn(fresh.id, tkF));
     const entryF = queue.boundaryAtEntry;

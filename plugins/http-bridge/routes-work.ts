@@ -12,6 +12,7 @@ import { killShellById, listShells, tailShell } from "../../src/core/llm-runtime
 import { writeJson } from "../../src/core/net/write-json.js";
 import { RUNNING_WORK, stampFor } from "../../src/core/resource-revision.js";
 import { cancelJob, cancelQueuedTurn, getJob, getJobActivity, listJobs, resolveOwnerThreadKey } from "../../src/core/worker-jobs.js";
+import { deleteSchedule, getSchedule, isTimer, listSchedules } from "../../src/store/schedules.js";
 import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
 
@@ -157,6 +158,42 @@ export const handleCancelWorker = async (ctx: RouteCtx): Promise<void> => {
   const cancelled = cancelJob(jobId);
   writeJson(res, 200, { ok: true, cancelled });
   return;
+};
+
+/**
+ * **한 번 타이머** — 백그라운드 패널이 건 대화 쪽에 보여 준다(2026-10-20 — 인벤토리엔 안 쌓는다: 정태님 «쌓이는 게 별로»).
+ *  화면이 «현재 세션» 으로 거르므로 여기선 전부 준다(잡 목록 `/worker-jobs` 와 같은 모양). 꺼 둔 타이머도 준다 — 울리지 않는다는 사실도 보여야 한다.
+ *  ★실패한 타이머는 실행기가 꺼 둔 채 남긴다(`lastStatus: "error"`) — 화면이 «실패» 로 보이고 사용자가 지운다.
+ */
+export const handleTimers = async (ctx: RouteCtx): Promise<void> => {
+  const timers = listSchedules()
+    .filter(isTimer)
+    .map((r) => ({ id: r.id, label: r.label, prompt: r.prompt.slice(0, 200), runAt: r.runAt, originThreadKey: r.originThreadKey, enabled: r.enabled, lastStatus: r.lastStatus, lastError: r.lastError }));
+  writeJson(ctx.res, 200, { timers });
+};
+
+/** 타이머 멈추기 — **타이머만** 지운다(정기 스케줄은 이 문으로 못 지운다 — 그건 인벤토리·`/schedule delete` 의 일). */
+export const handleCancelTimer = async (ctx: RouteCtx): Promise<void> => {
+  const { req, res } = ctx;
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
+    return;
+  }
+  const id = typeof body.id === "number" && Number.isInteger(body.id) ? body.id : NaN;
+  const row = Number.isNaN(id) ? undefined : getSchedule(id);
+  if (row === undefined || !isTimer(row)) {
+    writeJson(res, 404, { error: "not_a_timer" });
+    return;
+  }
+  const deleted = deleteSchedule(id);
+  // 플러그인이 건 setTimeout 도 내린다 — `/schedule delete` 와 같은 통보(플러그인이 구독).
+  ctx.bus?.publish({ type: "scheduler.toggle", ts: Date.now(), payload: { id, action: "delete" } });
+  console.log(`[scheduler:${id}] 타이머 '${row.label}' 대시보드에서 멈춤 — 지웠다`);
+  writeJson(res, 200, { ok: true, deleted });
 };
 
 export const handleKillShell = async (ctx: RouteCtx): Promise<void> => {

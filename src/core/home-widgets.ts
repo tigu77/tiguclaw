@@ -41,6 +41,8 @@ export interface HomeWidget {
 
 export interface HomeWidgetsResolution {
   readonly widgets: HomeWidget[];
+  /** `widgets[i]` 가 원본 배열의 몇 번째 항목에서 왔나 — 순서 쓰기가 «정규화와 같은 판정» 으로 자리를 찾게(2026-10-20). */
+  readonly sources?: readonly number[];
   /** 왜 떨어졌는지 — 모델이 고쳐서 다시 부를 수 있어야 한다. */
   readonly rejected: { readonly at: string; readonly reason: string }[];
 }
@@ -221,8 +223,9 @@ export const normalizeHomeWidgets = (
   knownPlugins: ReadonlySet<string>,
 ): HomeWidgetsResolution => {
   const widgets: HomeWidget[] = [];
+  const sources: number[] = [];
   const rejected: { at: string; reason: string }[] = [];
-  if (raw === undefined || raw === null) return { widgets, rejected };
+  if (raw === undefined || raw === null) return { widgets, rejected, sources };
   if (!Array.isArray(raw)) {
     return { widgets, rejected: [{ at: "widgets", reason: "배열이 아닙니다." }] };
   }
@@ -309,8 +312,9 @@ export const normalizeHomeWidgets = (
     }
     seen.add(id);
     widgets.push({ id, type, size: sizeRaw as HomeWidgetSize, config });
+    sources.push(i);
   }
-  return { widgets, rejected };
+  return { widgets, rejected, sources };
 };
 
 /**
@@ -359,7 +363,7 @@ export const readHomeWidgets = (
  * ★깨진 파일이면 **여기서 던진다**(적대 검토 A-F1). 덮으면 모델 프로파일·테마가 함께
  *  사라지고, 모델은 "바꿨습니다" 를 받는다.
  */
-const mutateHome = (fn: (home: Record<string, unknown>) => void): void => {
+const mutateHome = (fn: (home: Record<string, unknown>) => void | false): void => {
   const file = getPaths().settings;
   const { root } = readRaw(true);
   const existingDashboard = root.dashboard;
@@ -374,7 +378,8 @@ const mutateHome = (fn: (home: Record<string, unknown>) => void): void => {
     existingHome !== null && typeof existingHome === "object" && !Array.isArray(existingHome)
       ? (existingHome as Record<string, unknown>)
       : {};
-  fn(home);
+  // ★`false` = 바꿀 것이 없다 — 파일을 다시 쓰지 않는다(거절·변경 없음에도 서식·mtime 을 바꾸던 것, 레드팀 10-20).
+  if (fn(home) === false) return;
   if (Object.keys(home).length === 0) delete dashboard.home;
   else dashboard.home = home;
   if (Object.keys(dashboard).length === 0) delete root.dashboard;
@@ -566,4 +571,42 @@ export const setHomeWidgetEnabled = (
     return { ok: false, reason: `홈 위젯은 최대 ${HOME_WIDGET_MAX}개입니다 — 하나를 내리고 다시 켜세요.` };
   }
   return changed ? { ok: true } : { ok: true, reason: "이미 그 상태였습니다." };
+};
+
+/**
+ * **순서만** 바꾼다 — 위젯 패널의 끌어서 놓기가 쓴다 (2026-10-20, [설계](../../docs/decisions/2026-10-20-widget-panel-design.md) §2.2).
+ *
+ * `ids` = 화면에 보이는(정규화된) 위젯의 새 순서. **지금 보이는 집합과 정확히 같을 때만**(순열) 쓴다 — 그새 비서가 넣거나 뺐으면
+ * `conflict` 로 거절하고 화면이 최신 목록을 다시 읽는다(덮어쓰지 않는다). 크기·config·추가·제거는 여전히 `configure_home` 몫.
+ * ★안 보이는 항목(꺼진 플러그인 것 · 깨진 항목)은 **제자리를 지킨다** — 보이는 것들이 차지하던 자리만 새 순서로 채운다.
+ *  지우거나 뒤로 몰면 플러그인을 다시 켰을 때 그 위젯의 자리가 사라진다.
+ */
+export const reorderHomeWidgets = (
+  ids: readonly unknown[],
+  knownPlugins: ReadonlySet<string>,
+): { ok: true; changed: boolean } | { ok: false; conflict: boolean; reason: string } => {
+  if (!ids.every((x): x is string => typeof x === "string") || new Set(ids).size !== ids.length) {
+    return { ok: false, conflict: false, reason: "order 는 겹치지 않는 위젯 id 문자열 배열이어야 합니다." };
+  }
+  let out: { ok: true; changed: boolean } | { ok: false; conflict: boolean; reason: string } = {
+    ok: false,
+    conflict: true,
+    reason: "위젯 목록이 그새 바뀌었습니다 — 최신 목록을 다시 읽으세요.",
+  };
+  mutateHome((home) => {
+    const cur = Array.isArray(home.widgets) ? (home.widgets as unknown[]) : [];
+    // 보이는 위젯이 원본에서 앉은 자리 — ★정규화가 고른 **그 항목**(첫 «유효» 항목)이다. 종전엔 «첫 id·type 일치» 로 따로 찾아,
+    //  같은 id 의 무효 항목이 앞에 있으면 엉뚱한 자리를 바꾸고 «성공·변경 없음» 을 돌려줬다(레드팀 10-20 P4).
+    const { widgets: visible, sources = [] } = normalizeHomeWidgets(cur, knownPlugins);
+    if (visible.length !== ids.length || !visible.every((w) => ids.includes(w.id))) return false;
+    const byId = new Map(visible.map((w, k) => [w.id, cur[sources[k] as number]]));
+    const sorted = [...sources].sort((a, b) => a - b);
+    const next = [...cur];
+    sorted.forEach((slot, k) => { next[slot] = byId.get(ids[k] as string); });
+    const changed = next.some((e, k) => e !== cur[k]);
+    out = { ok: true, changed };
+    if (!changed) return false;
+    home.widgets = next;
+  });
+  return out;
 };

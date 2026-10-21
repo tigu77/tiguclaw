@@ -870,9 +870,10 @@
         return known.length === 0 ? 0 : String(Math.max.apply(null, known)).length;
       };
 
-      const buildDiffBlock = (diff) => {
+      const buildDiffBlock = (diff, opts) => {
+        const inFileView = !!(opts && opts.inFileView);
         const wrap = document.createElement("div");
-        wrap.className = "act-diff";
+        wrap.className = "act-diff" + (inFileView ? " act-diff-open-body" : "");
         const head = document.createElement("div");
         head.className = "act-diff-head";
         const caret = document.createElement("span");
@@ -922,7 +923,8 @@
             fetch("/api/open-path", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ path: diff.path }),
+              // ★관측이 그 턴의 cwd 로 푼 절대 경로를 먼저 — 상대 경로 카드는 데몬 cwd 로 풀려 못 열렸다(2026-10-21).
+              body: JSON.stringify({ path: diff.absPath || diff.path }),
             })
               .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
               .then(({ ok, d }) => {
@@ -941,6 +943,20 @@
               });
           });
           head.appendChild(ob);
+          // ⤢ «지금 파일에서 보기»(2026-10-21, file-view.js) — 위에 이 조각 그대로, 아래에 지금 디스크의 파일. 창 안의 조각엔 다시 달지 않는다.
+          if (!inFileView) {
+            const fv = document.createElement("button");
+            fv.type = "button";
+            fv.className = "act-diff-open act-diff-fileview";
+            fv.textContent = "⤢";
+            fv.title = i18n("fv.open");
+            fv.setAttribute("aria-label", i18n("fv.open"));
+            fv.addEventListener("click", (e) => {
+              e.stopPropagation(); // 부모 스텝 토글을 뺏지 않는다
+              if (typeof window.openFileView === "function") window.openFileView(diff);
+            });
+            head.appendChild(fv);
+          }
         }
         const stat = document.createElement("span");
         stat.className = "act-diff-stat";

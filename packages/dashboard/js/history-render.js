@@ -387,6 +387,41 @@
           ...entries.map((e) => ({ ts: e.ts, m: e })),
           ...activities.map((a) => ({ ts: a.ts, a })),
         ].sort((x, y) => x.ts - y.ts);
+        // 동률의 마지막 답 행만 자기 턴의 활동 뒤로 보낸다. seq 비증가는
+        // 다음 턴 경계(splitLiveResume와 동일) — 이전 시각의 활동도 함께 본다.
+        // 평범한 배달도 assistant이므로 역할만으로 답이라 할 수 없다.
+        // 텍스트가 대응할 때만 이동하고, 앞의 배달·첨부·선택지는 제자리에 둔다.
+        let previousActivity = null;
+        for (let start = 0; start < merged.length;) {
+          let end = start + 1;
+          while (end < merged.length && merged[end].ts === merged[start].ts) end++;
+          let activityStart = start;
+          while (activityStart < end && merged[activityStart].m) activityStart++;
+          let activityEnd = activityStart;
+          if (merged.slice(start, activityStart).some((it) => it.m.role === "user")) previousActivity = null;
+          let prev = previousActivity;
+          let text = null;
+          while (activityEnd < end) {
+            const a = merged[activityEnd].a;
+            if (prev && (a.seq ?? 0) <= (prev.seq ?? 0)) break;
+            if (a.kind === "text") text = a.text;
+            prev = a;
+            activityEnd++;
+          }
+          if (activityStart < end) previousActivity = merged[end - 1].a;
+          const m = activityStart > start ? merged[activityStart - 1].m : null;
+          if (m && m.role === "assistant" && m.notice !== true &&
+              !(typeof m.kind === "string" && m.kind !== "") && !(m.attachments && m.attachments.length) &&
+              typeof text === "string" && text !== "" && typeof m.text === "string" &&
+              (m.text === text || canonicalBodyFor(text, m.text) !== null || m.text.endsWith(text) ||
+                // 제안 태그 제거는 정본만 trimEnd 한다. 완료 답 표식이 있을 때만
+                // 이 차이를 허용한다 — 평범한 배달의 접두·접미 대응은 넓히지 않는다.
+                (typeof m.turnId === "string" && m.turnId !== "" && text.trimEnd() !== "" && m.text.trimEnd() === text.trimEnd()))) {
+            const [answer] = merged.splice(activityStart - 1, 1);
+            merged.splice(activityEnd - 1, 0, answer);
+          }
+          start = end;
+        }
         const units = [];
         // ★이 턴의 도구 카드들 — 답변 행이 오면 그 강도를 **짝 모델인 카드에만** 넘긴다(2026-09-30 정태님: 기록으로
         //  다시 그린 도구 카드에 강도가 없었다). 사용자 행이 턴 경계다.

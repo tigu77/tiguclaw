@@ -311,13 +311,14 @@ export const check: RegressionCheck = {
         /dispose\.push\(off\)/.test(host) ? "onDispose 에 건다" : "★해지를 안 건다",
       ),
     );
-    const overview = readFileSync(path.join(DASH, "js/view-overview.js"), "utf8");
+    // ★2026-10-20: 위젯은 위젯 패널(`widget-panel.js`)이 그린다(종전 홈).
+    const panelSrc = readFileSync(path.join(DASH, "js/widget-panel.js"), "utf8");
     out.push(
       assert(
         "★live 위젯엔 poll 을 안 건다(라우트가 없으면 받아올 게 없다 — 종전엔 404 를 맞고 '값을 못 받았습니다' 로 떴다)",
-        /homeDataRoutes\.includes\(w\.type\)/.test(overview) &&
-          /if \(!homeDataRoutes\.includes\(w\.type\)\) continue;/.test(overview),
-        `판정 사용=${/homeDataRoutes\.includes/.test(overview)}`,
+        /if \(!dataRoutes\.includes\(w\.type\)\) \{\s*void widgetHost\.mount\(box, \{ widget: w\.type, data: null \}\)/.test(panelSrc) &&
+          /if \(!dataRoutes\.includes\(w\.type\)\) continue;/.test(panelSrc),
+        `판정 사용=${/dataRoutes\.includes/.test(panelSrc)}`,
       ),
     );
 

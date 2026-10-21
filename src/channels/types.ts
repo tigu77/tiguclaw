@@ -70,6 +70,10 @@ export type TurnOrigin =
   | "synthetic-other"
   /** 가지 결론 정리 턴 — 끼워넣기(steering)를 받지 않는다(그 사이 친 말이 결론에 섞인다). */
   | "fork-carry"
+  /** 파일 감시가 **만든 대화 안**에 넣은 실행 턴(2026-10-20) — 진단용. */
+  | "file-watch"
+  /** 스케줄·타이머가 **만든 대화 안**에 넣은 실행 턴(2026-10-20) — 진단용. */
+  | "schedule"
   | "unknown";
 
 /**
@@ -90,6 +94,23 @@ export interface ChannelMessageRef {
 export interface IncomingMessage {
   /** 턴 출처 — 진단용(위 `TurnOrigin`, `fork-carry` 만 끼워넣기 차단에 쓰인다). 미지정은 라우터가 기본값을 정한다. */
   turnOrigin?: TurnOrigin;
+  /**
+   * 이 턴을 연 트리거 실행(2026-10-20) — 트리거가 **사람의 대화 안**에 턴을 넣을 때(만든 대화에서 처리되는 파일 감시) 라우터가 모델 입력까지 운반한다.
+   *  모델 컨텍스트의 «이 턴은 감시(#id)의 실행» 줄이 이 값에서 나온다. 사람이 친 메시지엔 없다.
+   */
+  triggerRun?: import("../core/llm-runtime/types.js").TriggerRun;
+  /**
+   * **줄에서 차례가 왔을 때 마지막으로 묻는다**(2026-10-20) — `null` 이면 그대로 돌고, 문자열이면 그 사유로 **돌지 않는다**(모델 호출 0).
+   *  트리거가 사람의 대화 줄에 넣은 턴이 쓴다: 기다리는 사이 감시가 지워지거나 꺼지거나 대화가 사라졌으면 실행하지 않는다.
+   *  ★판정은 넣은 쪽이 갖는다(코어는 묻기만) — 감시의 사정을 코어가 알 이유가 없다.
+   */
+  beforeTurn?: () => string | null;
+  /**
+   * 이 턴의 **사람 도달 좌표**(2026-10-20 레드팀 P-2) — 실행되는 대화(채널·주소)와 결과가 나가는 곳이 다를 때(만든 대화에서 처리되는 감시: 대화는
+   *  대시보드, 결과는 텔레그램). 라우터가 모델 입력의 `notifyDest` 로 나른다 → 그 턴이 띄운 매니저·서브의 완료 보고·쿨다운 알림이 여기로 간다.
+   *  ★채널 주소(`channelAddress`)를 이 용도로 쓰지 않는다 — 그건 세션 채널 메타에 적혀, 그 대화의 다른 통지까지 엉뚱한 곳으로 보냈다.
+   */
+  notifyDest?: { channel: ChannelName; target: string | null };
   channel: ChannelName;
   channelUserId: string;
   threadKey: string;

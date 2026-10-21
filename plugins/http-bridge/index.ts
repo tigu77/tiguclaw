@@ -107,11 +107,11 @@ import {
 import { handleHealth, handleLogStatus, handleLogClear, handleUpdateAvailability, handleUpdateChangelog, handleSelfUpdate, handleRestart, handleChangelog } from "./routes-ops.js";
 import { handleEvents, handleEndpointCalls, handleAllActivity } from "./routes-activity.js";
 import { handleProjects, handleProjectCapability, handleProjectDetail, handleProjectForget, handleProjectRename } from "./routes-projects.js";
-import { handleWorkerJobs, handleShells, handleShellOutput, handleCancelQueued, handleCancelWorker, handleKillShell } from "./routes-work.js";
+import { handleWorkerJobs, handleShells, handleShellOutput, handleCancelQueued, handleCancelWorker, handleKillShell, handleTimers, handleCancelTimer } from "./routes-work.js";
 import { handleGetSessionProjects, handlePostSessionProjects } from "./routes-session-projects.js";
 import { handleMessages, handleChatHistory, handleChatSearch } from "./routes-chat.js";
-import { handlePluginIcon, handleAttachmentServe, handleTranscribe, handleOpenPath } from "./routes-files.js";
-import { handleInventory, handleInventoryItem, handleContextMenuItems, handleCommands, handleMcpTools, handleHomeWidgets, handleHomeWidgetToggle, handlePluginData, handlePlugins, handlePluginsAction } from "./routes-inventory.js";
+import { handlePluginIcon, handleAttachmentServe, handleTranscribe, handleOpenPath, handleFileView } from "./routes-files.js";
+import { handleInventory, handleInventoryItem, handleContextMenuItems, handleCommands, handleMcpTools, handleHomeWidgets, handleHomeWidgetToggle, handleHomeWidgetOrder, handlePluginData, handlePlugins, handlePluginsAction } from "./routes-inventory.js";
 import type { RouteCtx } from "./route-ctx.js";
 import {
   serveGatewayChat,
@@ -501,6 +501,12 @@ class HttpBridge implements Channel, Observer {
                   ? "admin"
                 : pathname === "/cancel-worker" && method === "POST"
                   ? "write"
+                : pathname === "/timers" && method === "GET"
+                  ? "read"
+                : pathname === "/file-view" && method === "GET"
+                  ? "read" // «지금 파일에서 보기» — 등록 프로젝트 안 파일 읽기만(판정은 「↗ 열기」와 같은 함수 + 비밀 파일 거절)
+                : pathname === "/cancel-timer" && method === "POST"
+                  ? "write" // 자기 타이머 멈추기 — /cancel-worker 동형
                 : pathname === "/kill-shell" && method === "POST"
                   ? "write"
                 : pathname === "/open-path" && method === "POST"
@@ -516,7 +522,9 @@ class HttpBridge implements Channel, Observer {
                 : pathname === "/home-widgets" && method === "GET"
                   ? "read" // 배치 조회.
                 : pathname === "/home-widgets" && method === "POST"
-                  ? "write" // 위젯 켜기/끄기 — 순서·크기는 여전히 도구(configure_home)만.
+                  ? "write" // 위젯 켜기/끄기 — 크기·config 는 여전히 도구(configure_home)만.
+                : pathname === "/home-widgets/order" && method === "POST"
+                  ? "write" // 위젯 순서(위젯 패널 끌어서 놓기) — 순열만 받는다.
                 : pathname.startsWith("/plugin-data/") && method === "GET"
                   ? // ★**프리픽스 한 줄**이다 — 플러그인마다 여기 한 줄씩 늘면 그게 곧
                     //  손으로 관리하는 목록이고, 이 사다리는 이미 한 번 빠뜨려서 read 토큰이
@@ -543,6 +551,10 @@ class HttpBridge implements Channel, Observer {
     }
     if (pathname === "/home-widgets" && method === "POST") {
       await handleHomeWidgetToggle(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/home-widgets/order" && method === "POST") {
+      await handleHomeWidgetOrder(this.routeCtx(req, res, url));
       return;
     }
 
@@ -1006,6 +1018,21 @@ class HttpBridge implements Channel, Observer {
     // — 여기선 신호 발사 여부만 정직 반환.
     if (pathname === "/cancel-worker" && method === "POST") {
       await handleCancelWorker(this.routeCtx(req, res, url));
+      return;
+    }
+
+    // /file-view — Edit·Write 카드의 «지금 파일에서 보기»(2026-10-21). 읽기만, 저장 없음.
+    if (pathname === "/file-view" && method === "GET") {
+      await handleFileView(this.routeCtx(req, res, url));
+      return;
+    }
+    // /timers · /cancel-timer — 한 번 타이머(2026-10-20). 백그라운드 패널이 건 대화 쪽에 보여 주고 멈춘다(타이머만 — 정기 스케줄은 이 문으로 못 지운다).
+    if (pathname === "/timers" && method === "GET") {
+      await handleTimers(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/cancel-timer" && method === "POST") {
+      await handleCancelTimer(this.routeCtx(req, res, url));
       return;
     }
 

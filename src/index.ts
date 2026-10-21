@@ -1799,9 +1799,19 @@ const queueHandler: MessageHandler = (msg) => {
   // (텔레그램·cli·스케줄·합성 turn)는 익명 항목 = 취소 불가·현행 동작(회귀 0). 취소된 항목은
   // CANCELLED_TURN_RESULT 로 no-op resolve → POST 핸들러가 {cancelled:true} 응답(G1).
   console.log(inboundLine(msg, threadHasQueuedTurn(msg.threadKey) ? "queued" : "new"));
-  return enqueueThreadTurn(msg.threadKey, () => handler(msg), {
-    id: msg.correlationId,
-  });
+  return enqueueThreadTurn(
+    msg.threadKey,
+    () => {
+      // 트리거가 넣은 턴 — 차례가 온 지금 아직 유효한가(`IncomingMessage.beforeTurn`). 아니면 모델을 안 부르고 넘어간다.
+      const skip = msg.beforeTurn?.() ?? null;
+      if (skip !== null) {
+        console.log(`${inboundLine(msg, "skipped")} — ${skip}`);
+        return Promise.resolve();
+      }
+      return handler(msg);
+    },
+    { id: msg.correlationId },
+  );
 };
 
 // 채널·재주입이 받는 입구 — 종료 중이면 맨 앞에서 거절한다(2026-10-09 적대 검토: 종료 중 도착한 메시지가 새 턴을

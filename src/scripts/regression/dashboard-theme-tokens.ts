@@ -32,6 +32,8 @@ const jsSetVars = async (): Promise<Set<string>> => {
     if (!f.endsWith(".js")) continue;
     const src = await readFile(new URL(f, dir), "utf8");
     for (const m of src.matchAll(/setProperty\(\s*["']--([a-z0-9-]+)["']/g)) out.add(m[1]!);
+    // 패널 폭 손잡이(`side-panels.js attachPanelResize`)는 변수 이름을 인자로 받아 거기서 setProperty 한다 — 넘기는 자리의 리터럴을 센다.
+    for (const m of src.matchAll(/cssVar:\s*["']--([a-z0-9-]+)["']/g)) out.add(m[1]!);
   }
   return out;
 };

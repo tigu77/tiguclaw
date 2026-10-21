@@ -60,6 +60,13 @@
       <div class="brand"><img class="brand-icon" src="/icon.png" alt="" width="32" height="32" /><span data-i18n="app.brand">티구클로</span></div>
       <div class="sub" id="app-sub" data-i18n="app.sub">대시보드</div>
       <div class="spacer"></div>
+      <!-- ★오른쪽 패널 두 문(2026-10-20) — **어느 화면에서나** 연다(종전 백그라운드 버튼은 채팅 헤더에만 있었다). 순서 = 패널 순서. -->
+      <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업" data-i18n-attrs="aria-label=bg.title;title=bg.title">
+        <span class="bg-icon" aria-hidden="true">📋</span><span class="bg-word" data-i18n="bg.word">백그라운드</span> <span class="bg-badge" id="bg-badge">0</span>
+      </button>
+      <button id="wg-toggle" type="button" aria-label="위젯" title="위젯" data-i18n-attrs="aria-label=wg.title;title=wg.title">
+        <span class="wg-icon" aria-hidden="true">🧩</span><span class="wg-word" data-i18n="wg.word">위젯</span>
+      </button>
       <div class="live">
         <span class="dot" id="conn-dot"></span>
         <span id="conn-text" data-i18n="conn.connecting">연결 중…</span>
@@ -173,9 +180,6 @@
               <button id="chat-search-btn" type="button" aria-label="대화 검색" title="대화 검색 (전 세션)" data-i18n-attrs="aria-label=search.title;title=search.btn.title">
                 <span class="cs-icon" aria-hidden="true">🔍</span><span class="cs-word" data-i18n="search.btn.text">검색</span>
               </button>
-              <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업" data-i18n-attrs="aria-label=bg.title;title=bg.title">
-                <span class="bg-icon" aria-hidden="true">📋</span><span class="bg-word" data-i18n="bg.word">백그라운드</span> <span class="bg-badge" id="bg-badge">0</span>
-              </button>
             </div>
           </div>
           <div class="log-tools">
@@ -263,6 +267,15 @@
       <div id="chat-search-status" class="cs-status"></div>
       <div id="chat-search-results" class="cs-results"></div>
     </aside>
+    <div id="wg-backdrop"></div>
+    <aside id="widget-panel" class="overlay-panel" aria-label="위젯" data-i18n-attrs="aria-label=wg.title" aria-hidden="true">
+      <div id="wg-resize" title="드래그로 폭 조절" data-i18n-attrs="title=common.resize"></div>
+      <div class="bg-head">
+        <h3 class="panel-title" data-i18n="wg.title">위젯</h3>
+        <button class="sd-close" id="wg-close" type="button" aria-label="닫기" title="닫기" data-i18n-attrs="aria-label=common.close;title=common.close">✕</button>
+      </div>
+      <div class="wg-list" id="wg-list"></div>
+    </aside>
     <div id="bg-backdrop"></div>
     <aside id="bg-panel" class="overlay-panel" aria-label="백그라운드 작업" data-i18n-attrs="aria-label=bg.title" aria-hidden="true">
       <div class="bg-resize" id="bg-resize" title="드래그로 폭 조절" data-i18n-attrs="title=common.resize"></div>
@@ -274,6 +287,11 @@
       <div class="bg-filter" id="bg-scope-filter">
         <button class="bg-fbtn active" type="button" data-scope="session" aria-pressed="true" data-i18n="bg.scope.session">현재 세션</button>
         <button class="bg-fbtn" type="button" data-scope="all" aria-pressed="false" data-i18n="bg.scope.all">전체 세션</button>
+      </div>
+      <!-- 한 번 타이머(2026-10-20) — 이 대화가 건 것만(스코프 토글을 따른다). 없으면 숨는다. bg-timers.js 소관. -->
+      <div class="bg-timers" id="bg-timers" hidden>
+        <div class="bg-timers-head" data-i18n="bg.timers.head">⏱ 타이머</div>
+        <div class="bg-timers-list" id="bg-timers-list"></div>
       </div>
       <!-- 작업 그룹(매니저·에이전트 혼재) — 접이식 카테고리 헤더 + 본문(상태필터 + 리스트).
            kind(매니저/에이전트)는 카드 배지로만 구분, 그룹은 나누지 않는다(사용자 확정). -->
@@ -316,6 +334,7 @@
          (util.js 는 constants 의 식별자를 하나도 안 쓴다 — 그래서 순서를 바꿔도 안전하다.) -->
     <script src="/js/util.js"></script>
     <script src="/js/constants.js"></script>
+    <script src="/js/side-panels.js"></script>
     <script src="/js/update-chip.js"></script>
     <script src="/js/context-menu.js"></script>
     <script src="/js/view-overview.js"></script>
@@ -329,6 +348,7 @@
     <script src="/js/view-providers.js"></script>
     <script src="/js/view-plugins.js"></script>
     <script src="/js/view-inventory.js"></script>
+    <script src="/js/widget-panel.js"></script>
     <script src="/js/chat-core.js"></script>
     <script src="/js/step-detail.js"></script>
     <!-- 실시간 계약의 화면 쪽(2026-08-28, 증분 5a·5b) — 스냅샷·이벤트·재연결을 한 규칙으로.
@@ -339,7 +359,9 @@
          "게이트는 있다가 아니라 도는가" 의 정확한 사례. -->
     <script src="/js/resource-store.js"></script>
     <script src="/js/background-drawer.js"></script>
+    <script src="/js/bg-timers.js"></script>
     <script src="/js/virtualization.js"></script>
+    <script src="/js/file-view.js"></script>
     <script src="/js/token-delta.js"></script>
     <script src="/js/markdown.js"></script>
     <script src="/js/channel-hints.js"></script>
@@ -362,5 +384,6 @@
     <script src="/js/chat-send.js"></script>
     <script src="/js/mic-input.js"></script>
     <script src="/js/mobile-nav.js"></script>
+    <script src="/js/header-fit.js"></script>
   </body>
 </html>

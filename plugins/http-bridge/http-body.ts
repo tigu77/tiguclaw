@@ -6,6 +6,7 @@
  */
 import http from "node:http";
 import { ATTACH_MAX_FILE_BYTES, ATTACH_MAX_TOTAL_BYTES } from "./attachments.js";
+import { translate } from "../../src/core/i18n.js";
 
 /**
  * **본문 상한 — 숫자를 정하지 않고 «이미 집행되는 계약» 에서 유도한다** (2026-09-14).
@@ -40,7 +41,7 @@ export const BODY_LIMIT_AUDIO = base64WireBytes(ATTACH_MAX_FILE_BYTES) + 256 * 1
 export class BodyTooLargeError extends Error {
   readonly limitBytes: number;
   constructor(limitBytes: number) {
-    super(`요청 본문이 한도(${Math.floor(limitBytes / MiB)}MiB)를 초과했습니다.`);
+    super(translate("srv.body.tooLarge", { mib: Math.floor(limitBytes / MiB) }));
     this.name = "BodyTooLargeError";
     this.limitBytes = limitBytes;
   }

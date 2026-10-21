@@ -74,7 +74,7 @@ export const check: RegressionCheck = {
         (() => {
           const m = /const STALE_MS = (\d+) \* 60_000;/.exec(bridge);
           const min = m !== null ? Number(m[1]) : NaN;
-          return Number.isFinite(min) && min > 0 && min <= 60 && /완료 기록 없음/.test(bridge);
+          return Number.isFinite(min) && min > 0 && min <= 60 && /translate\("srv\.endpoint\.interrupted"\)/.test(bridge);
         })(),
         `STALE_MS=${/const STALE_MS = ([^;]+);/.exec(bridge)?.[1] ?? "없음"}`,
       ),

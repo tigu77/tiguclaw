@@ -62,6 +62,7 @@ export const check: RegressionCheck = {
         if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
         if (name.endsWith("/store/sessions.js")) return { canonicalSessionChannel: (_tk: string, ch: string) => ch };
         if (name.endsWith("/thread-reset.js")) return { applyRunHistory: () => null };
+        if (name.endsWith("/i18n.js")) return { translate: (k: string) => k }; // 실패 사유 문구(2026-10-21 카탈로그 키) — 키 그대로
         if (name.endsWith("/core/outbound.js")) return { optionsPresenterFor: () => undefined, attachmentSenderFor: () => undefined };
         if (name === "./dispatcher.js") return { dispatch: async () => {} };
         // ★MCP 가 받는 훅을 가로챈다 — run_schedule 핸들러가 부르는 바로 그것.

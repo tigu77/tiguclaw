@@ -17,7 +17,7 @@ export const publishPromptOptions = (
     note?: string;
   },
 ): { ok: true } | { ok: false; error: string } => {
-  if (bus === null) return { ok: false, error: "control bus not started (관측 미연결)" };
+  if (bus === null) return { ok: false, error: "control bus not started (observer not connected)" };
   try {
     bus.publish({
       type: "prompt.options",

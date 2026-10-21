@@ -23,6 +23,7 @@ import { resolveSessionId } from "../../src/core/threadkey.js";
 import { SESSION_STORAGE_CHANNEL, clearSessionModelProfile, setSessionModelProfile } from "../../src/store/sessions.js";
 import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
+import { translate } from "../../src/core/i18n.js";
 
 
 
@@ -43,7 +44,7 @@ export const handleSetDefaultProfile = async (ctx: RouteCtx): Promise<void> => {
   }
   if (!isSelectableProfile(name)) {
     writeJson(res, 400, {
-      error: `존재하지 않는 프로파일: ${name}`,
+      error: translate("srv.settings.noProfile", { name }),
       available: Object.keys(resolveModelProfiles().profiles),
     });
     return;
@@ -74,14 +75,14 @@ export const handleSetProfileColor = async (ctx: RouteCtx): Promise<void> => {
   }
   const raw = cbody.color;
   if (raw !== null && typeof raw !== "string") {
-    writeJson(res, 400, { error: "color 는 '#rrggbb' 문자열이거나 null(지우기) 이어야 합니다" });
+    writeJson(res, 400, { error: translate("srv.settings.badColor") });
     return;
   }
   try {
     const ok = setResolvedProfileColor(name, raw === null ? undefined : raw);
     if (!ok) {
       writeJson(res, 400, {
-        error: `'${name}' 프로파일을 못 찾았거나 색 형식이 '#rrggbb' 가 아닙니다`,
+        error: translate("srv.settings.colorFailed", { name }),
       });
       return;
     }
@@ -182,7 +183,7 @@ export const handleSetLocale = async (ctx: RouteCtx): Promise<void> => {
   }
   try {
     if (!setLocale(want)) {
-      writeJson(res, 400, { error: `'${want}' 언어가 설치돼 있지 않습니다` });
+      writeJson(res, 400, { error: translate("srv.settings.noLocale", { name: want }) });
       return;
     }
     // 명령 메뉴(텔레그램 `setMyCommands`)는 부팅·명령 변경 때만 다시 그린다 — 언어가 바뀌면 다시 그리게 알린다(2026-10-07 적대 검토 P4).
@@ -210,7 +211,7 @@ export const handleSetTheme = async (ctx: RouteCtx): Promise<void> => {
     if (tbody.theme !== undefined) {
       const want = typeof tbody.theme === "string" ? tbody.theme.trim() : "";
       if (!setTheme(want === "" ? undefined : want)) {
-        writeJson(res, 400, { error: `'${want}' 테마가 설치돼 있지 않습니다` });
+        writeJson(res, 400, { error: translate("srv.settings.noTheme", { name: want }) });
         return;
       }
       changed.theme = want;
@@ -315,7 +316,7 @@ export const handleSetSessionProfile = async (ctx: RouteCtx): Promise<void> => {
   // 실존 프로파일 검증(댕글링 차단 = constraint 2 방어심).
   if (!isSelectableProfile(rawProfile)) {
     writeJson(res, 400, {
-      error: `존재하지 않는 프로파일: ${rawProfile}`,
+      error: translate("srv.settings.noProfile", { name: rawProfile }),
       available: Object.keys(resolveModelProfiles().profiles),
     });
     return;
@@ -363,7 +364,7 @@ export const handleSetModuleEnabled = async (ctx: RouteCtx): Promise<void> => {
     );
     if (!known) {
       writeJson(res, 400, {
-        error: `존재하지 않는 모듈: ${name}`,
+        error: translate("srv.settings.noModule", { name }),
         available: [...inv.channel, ...inv.external_plugin].map((e) => e.name),
       });
       return;
@@ -375,8 +376,7 @@ export const handleSetModuleEnabled = async (ctx: RouteCtx): Promise<void> => {
         ok: false,
         name,
         error:
-          `'${name}' 은 코어 모듈이라 끌 수 없습니다 — 끄면 대시보드와 이 API 가 함께 ` +
-          "멈추고, 다시 켤 경로도 여기 하나뿐이라 제품 안에서 되돌릴 수 없게 됩니다.",
+          translate("srv.settings.coreModule", { name }),
       });
       return;
     }

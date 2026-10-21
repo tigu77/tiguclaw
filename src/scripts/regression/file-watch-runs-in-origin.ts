@@ -314,7 +314,7 @@ export const check: RegressionCheck = {
       assert(
         "★★진짜 감시기: 만든 대화를 실행기에 넘기고(originThreadKey) · 그 대화에서 돈 결과는 **다시 보내지 않으며**(두 번 배달 0) 성공으로 적는다 · 대화가 없으면 **실패로** 적는다 · 차례 전에 끝났으면(not-run) 아무것도 적지 않는다",
         ran.inputs[0]?.originThreadKey === ORIGIN && ran.dispatched === 0 && ran.fired[0]?.ok === true &&
-          gone.dispatched === 0 && gone.fired[0]?.ok === false && String(gone.fired[0]?.error ?? "").includes("대화") &&
+          gone.dispatched === 0 && gone.fired[0]?.ok === false && String(gone.fired[0]?.error ?? "").includes(ORIGIN) &&
           failedRun.fired[0]?.ok === false && String(failedRun.fired[0]?.error ?? "").includes("한도 초과") &&
           notRun.inputs.length === 1 && notRun.fired.length === 0 && notRun.dispatched === 0 &&
           usedLog.includes("→ telegram:chat-NEW") && !usedLog.includes("chat-1 ") &&

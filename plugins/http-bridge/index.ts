@@ -17,7 +17,7 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { writeJson } from "../../src/core/net/write-json.js";
-import { withViewerLanguage } from "../../src/core/i18n.js";
+import { translate, withViewerLanguage } from "../../src/core/i18n.js";
 import type {
   Channel,
   IncomingMessage,
@@ -154,7 +154,7 @@ class HttpBridge implements Channel, Observer {
     //  인입 없는 턴의 선택지가 텔레그램에만 가고 대시보드엔 안 떴다(회사돌쇠 실사용 «간혹 텔레그램에만»).
     presentOptionsTo: async (target, question, options, opts) => {
       const threadKey = target ?? opts?.replyToSession ?? null;
-      if (threadKey === null) return { ok: false as const, error: "어느 대화에 띄울지 좌표가 없습니다" };
+      if (threadKey === null) return { ok: false as const, error: translate("srv.options.noTarget") };
       return publishPromptOptions(this.bus, {
         channel: this.name,
         threadKey,

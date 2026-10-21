@@ -8,10 +8,14 @@
  *  ② 자리표시자가 en·ko·호출부 params 셋 다 같다(빠지면 숫자·이름이 사라진 문장, 남으면 `{n}` 이 그대로)
  *  ③ 아무도 안 부르는 `srv.` 키가 없다(문구를 고치며 키를 바꾸면 번역이 조용히 고아가 된다)
  *  ④ 영어 값에 한글이 없다(조각을 반대로 넣으면 영어 사용자에게 한국어가 간다)
+ *  ⑤ ★화면이 받는 서버 응답 면(브리지 플러그인 전체·대시보드 서버)의 문자열에 한글이 없다 (2026-10-21 정태님 «한국어 하드코딩은
+ *     무조건 고쳐야»). 종전엔 ①~④ 가 **키를 쓴 곳만** 봤다 — 키를 안 쓰고 한국어를 박은 줄은 아무도 안 봤고, 그렇게 브리지에만
+ *     45곳이 쌓였다. 문자열 리터럴을 구문 트리로 센다(주석·`console.*` 인자는 빼고 — 로그는 이 규칙 밖).
  *
  * 등급: **소스·자산 게이트** — 실제 소스와 카탈로그를 읽어 대조한다.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
+import ts from "typescript";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -99,6 +103,26 @@ export const paramKeysAt = (src: string, from: number): string[] | undefined => 
   return keys;
 };
 
+/** 문자열 리터럴(템플릿 조각 포함) 중 한글이 든 것 — `console.*` 호출 인자는 뺀다(로그는 영어로 둘 이유도, 번역할 이유도 없다). */
+export const hangulLiterals = (file: string, src: string): string[] => {
+  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true);
+  const inConsole = (n: ts.Node): boolean => {
+    for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
+      if (ts.isCallExpression(p) && ts.isPropertyAccessExpression(p.expression) && ts.isIdentifier(p.expression.expression) && p.expression.expression.text === "console") return true;
+    }
+    return false;
+  };
+  const out: string[] = [];
+  const walk = (n: ts.Node): void => {
+    if ((ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) || ts.isTemplateHead(n) || ts.isTemplateMiddle(n) || ts.isTemplateTail(n)) && HANGUL.test(n.text) && !inConsole(n)) {
+      out.push(`${file}:${sf.getLineAndCharacterOfPosition(n.getStart()).line + 1}`);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(sf);
+  return out;
+};
+
 export const check: RegressionCheck = {
   name: "server-strings-catalog",
   guards:
@@ -132,6 +156,10 @@ export const check: RegressionCheck = {
     const callMismatch = calls.filter((c) => c.params !== undefined && en[c.key] !== undefined && c.params.slice().sort().join(",") !== ph(en[c.key]));
     const orphans = srvKeys.filter((k) => !mentioned.has(k));
     const hangulInEn = srvKeys.filter((k) => HANGUL.test(en[k] ?? ""));
+    const surface = [...tsFiles(path.join(REPO, "plugins/http-bridge")), path.join(REPO, "packages/dashboard/index.ts")];
+    const hardcoded = surface.flatMap((f) => hangulLiterals(path.relative(REPO, f), readFileSync(f, "utf8")));
+    // 그물이 진짜인지 — 같은 함수가 한글 리터럴은 잡고 주석·로그는 놓아준다.
+    const probe = hangulLiterals("probe.ts", 'const a = "한글"; // 주석 한글\nconsole.warn(`로그 ${a}`); const b = `x ${a} 끝`;');
     return [
       assert(
         "★서버 문구가 실제로 키로 나간다(호출부 0 이면 이 검사는 아무것도 지키지 않는다)",
@@ -157,6 +185,11 @@ export const check: RegressionCheck = {
         "아무도 안 부르는 srv 키가 없다(고아 번역)",
         orphans.length === 0,
         orphans.length === 0 ? "고아 0" : `고아 ${orphans.length}: ${orphans.slice(0, 6).join(", ")}`,
+      ),
+      assert(
+        "★화면이 받는 서버 응답 면(브리지·대시보드 서버)에 한국어 하드코딩이 없다 — 키(`srv.…`)로",
+        surface.length >= 20 && probe.length === 2 && hardcoded.length === 0,
+        hardcoded.length === 0 ? `파일 ${surface.length} · 탐지기 자체검사 ${probe.length}/2` : `${hardcoded.length}곳: ${hardcoded.slice(0, 6).join(", ")}`,
       ),
       assert(
         "영어 값에 한글이 없다",

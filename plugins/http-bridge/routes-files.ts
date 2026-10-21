@@ -9,6 +9,7 @@ import * as nodeFs from "node:fs";
 import { systemOpener } from "../../src/core/onboard-ready.js";
 import crypto from "node:crypto";
 import { resolveTranscriptionProvider } from "../../src/core/llm-runtime/transcription/index.js";
+import { translate } from "../../src/core/i18n.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { getPaths } from "../../src/core/paths.js";
 import { listProjects } from "../../src/store/projects.js";
@@ -173,12 +174,12 @@ export const handleTranscribe = async (ctx: RouteCtx): Promise<void> => {
   }
   const buf = Buffer.from(dataBase64, "base64");
   if (buf.length === 0) {
-    writeJson(res, 400, { error: "빈 오디오" });
+    writeJson(res, 400, { error: translate("srv.transcribe.empty") });
     return;
   }
   if (buf.length > ATTACH_MAX_FILE_BYTES) {
     writeJson(res, 400, {
-      error: `오디오가 한도(${ATTACH_MAX_FILE_BYTES / 1024 / 1024}MB)를 초과합니다.`,
+      error: translate("srv.transcribe.tooBig", { mb: ATTACH_MAX_FILE_BYTES / 1024 / 1024 }),
     });
     return;
   }
@@ -187,7 +188,7 @@ export const handleTranscribe = async (ctx: RouteCtx): Promise<void> => {
   const resolved = resolveTranscriptionProvider(process.cwd());
   if (resolved === null) {
     writeJson(res, 200, {
-      error: "전사가 설정되지 않았습니다 (settings.json transcription).",
+      error: translate("srv.transcribe.notConfigured"),
     });
     return;
   }
@@ -211,7 +212,7 @@ export const handleTranscribe = async (ctx: RouteCtx): Promise<void> => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.warn(`[transcribe] 실패 — ${msg}`);
-    writeJson(res, 200, { error: `전사 실패: ${msg}` });
+    writeJson(res, 200, { error: translate("srv.transcribe.failed", { msg }) });
   } finally {
     if (tmpPath !== "") {
       try {
@@ -236,7 +237,7 @@ export const resolveInProject = (
   try {
     real = nodeFs.realpathSync(abs);
   } catch {
-    return { status: 404, error: "경로가 존재하지 않습니다" };
+    return { status: 404, error: translate("srv.openPath.notFound") };
   }
   const roots = listProjects().map((p) => {
     const r = nodePath.resolve(p.path);
@@ -247,12 +248,12 @@ export const resolveInProject = (
     }
   });
   if (!roots.some((r) => real === r || real.startsWith(r + nodePath.sep))) {
-    return { status: 403, error: "등록된 프로젝트 경로가 아닙니다(허용된 경로만 열 수 있음)" };
+    return { status: 403, error: translate("srv.openPath.notProject") };
   }
   try {
     return { real, st: nodeFs.statSync(real) };
   } catch {
-    return { status: 404, error: "경로가 존재하지 않습니다" };
+    return { status: 404, error: translate("srv.openPath.notFound") };
   }
 };
 
@@ -260,38 +261,50 @@ export const resolveInProject = (
 export const FILE_VIEW_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
- * 비밀 파일인가 — 이름이 `.env`·`.env.*` 이거나 경로 조각에 `.git` 이 있다(2026-10-21 설계 §2.2).
+ * 비밀 파일인가 — 이름이 `.env`·`.env.*` 이거나 경로 조각에 `.git`·`.ssh`·`.aws` 가 있다(2026-10-21 설계 §2.2 · `.ssh`·`.aws` 는 범위를 연 날 더했다).
  *  ★읽기는 내용이 HTTP 로 나간다 — tiguclaw 레포 자신이 프로젝트로 등록돼 있어 `.env`(봇 토큰)가 범위 안이다. 손 목록을 키우지 않는다.
+ *  ★**대소문자를 가리지 않는다**(10-21 적대 검토 — macOS·Windows 기본 파일시스템은 `.ENV` 로 `.env` 가 열린다, 실측 200 · 비밀 내용).
  */
 export const isSecretPath = (p: string): boolean => {
-  const parts = p.split(/[\\/]+/);
+  const parts = p.toLowerCase().split(/[\\/]+/);
   const name = parts[parts.length - 1] ?? "";
-  return name === ".env" || name.startsWith(".env.") || parts.includes(".git");
+  return name === ".env" || name.startsWith(".env.") || parts.includes(".git") || parts.includes(".ssh") || parts.includes(".aws");
 };
 
 /**
  * `GET /file-view?path=<절대경로>` — Edit·Write 카드의 «지금 파일에서 보기»(2026-10-21 설계 v2). 지금 디스크의 내용을 **읽기만** 한다.
- *  판정 = 「↗ 열기」와 같은 함수 + 읽기 규칙(상대 경로 거절 · 비밀 파일은 심링크 **전후** 둘 다 · 일반 파일 · 2MB · NUL 이면 바이너리).
+ *  판정 = 읽기 규칙(상대 경로 거절 · 비밀 파일은 심링크 **전후** 둘 다 · 일반 파일 · 2MB · NUL 이면 바이너리). 범위는 어떤 경로든(10-21 정태님 —
+ *  처음엔 「↗ 열기」와 같은 «등록 프로젝트 하위» 였다).
  *  ★판정은 **열기 전과 연 뒤 두 번** — 연 뒤엔 연 파일과 그 경로의 파일이 같은지까지 본다(검사·읽기 사이 경합). 아무것도 저장하지 않는다.
  */
 export const handleFileView = async (ctx: RouteCtx): Promise<void> => {
   const { res, url } = ctx;
   const pathIn = (url.searchParams.get("path") ?? "").trim();
   if (pathIn === "" || !nodePath.isAbsolute(pathIn)) {
-    writeJson(res, 400, { error: "절대 경로가 필요합니다" });
+    writeJson(res, 400, { error: translate("srv.fileView.needAbsolute") });
     return;
   }
   // 판정 하나 — 연 **뒤에도** 같은 것을 다시 본다(아래).
   const judge = (): { status: number; error: string } | { real: string; st: import("node:fs").Stats } => {
-    if (isSecretPath(pathIn)) return { status: 403, error: "비밀 파일은 보여 주지 않습니다" };
-    const found = resolveInProject(pathIn);
-    if ("status" in found) return found;
-    if (isSecretPath(found.real)) return { status: 403, error: "비밀 파일은 보여 주지 않습니다" };
-    if (!found.st.isFile()) return { status: 403, error: "일반 파일만 볼 수 있습니다" };
-    if (found.st.size > FILE_VIEW_MAX_BYTES) return { status: 413, error: "파일이 커서(2MB 초과) 보여 줄 수 없습니다" };
+    if (isSecretPath(pathIn)) return { status: 403, error: translate("srv.fileView.secret") };
+    // ★범위는 **어떤 경로든**(2026-10-21 정태님 «유저가 풀권한이라 큰 문제가 아니다» — 대시보드에 닿는 사람은 이미 비서에게 아무 파일이나
+    //  읽게 할 수 있다). 프로젝트 하위 제한은 「↗ 열기」(OS 앱으로 **실행**하는 길)에만 남긴다. 비밀 파일 거절은 유지 — 토큰이 화면에 뜨지 않게.
+    //  ★전제: 대시보드에 닿는 사람 = 비서를 마음대로 쓰는 주인. **사용자별 권한이 생기면 이 범위를 그 권한에 묶는다**(정태님 같은 날).
+    let found: { real: string; st: import("node:fs").Stats };
+    try {
+      // ★`.native` — 디스크가 아는 **진짜 이름**을 돌려준다. JS 판은 입력한 대소문자를 그대로 둬(`.ENV` → `.ENV`) 판정이 별칭을 봤다.
+      //  Windows 에선 8.3 짧은 이름·끝 점/공백 같은 별칭도 진짜 이름으로 펴진다(최종 경로 이름).
+      const real = nodeFs.realpathSync.native(pathIn);
+      found = { real, st: nodeFs.statSync(real) };
+    } catch {
+      return { status: 404, error: translate("srv.fileView.notFound") };
+    }
+    if (isSecretPath(found.real)) return { status: 403, error: translate("srv.fileView.secret") };
+    if (!found.st.isFile()) return { status: 403, error: translate("srv.fileView.notFile") };
+    if (found.st.size > FILE_VIEW_MAX_BYTES) return { status: 413, error: translate("srv.fileView.tooBig") };
     return found;
   };
-  // ① 열기 전 — 빨리 거절한다(프로젝트 밖·비밀·특수 파일은 열지도 않는다: FIFO 를 열면 요청이 매달린다).
+  // ① 열기 전 — 빨리 거절한다(비밀·특수 파일은 열지도 않는다: FIFO 를 열면 요청이 매달린다).
   const before = judge();
   if ("status" in before) {
     writeJson(res, before.status, { error: before.error });
@@ -306,7 +319,7 @@ export const handleFileView = async (ctx: RouteCtx): Promise<void> => {
   try {
     fh = await fs.open(pathIn, flags);
   } catch {
-    writeJson(res, 404, { error: "파일을 열지 못했습니다" });
+    writeJson(res, 404, { error: translate("srv.fileView.cantOpen") });
     return;
   }
   try {
@@ -320,15 +333,15 @@ export const handleFileView = async (ctx: RouteCtx): Promise<void> => {
     try {
       atPath = nodeFs.statSync(after.real, { bigint: true });
     } catch {
-      writeJson(res, 409, { error: "파일이 바뀌는 중이라 읽지 않았습니다 — 다시 시도하세요" });
+      writeJson(res, 409, { error: translate("srv.fileView.changing") });
       return;
     }
     if (atPath.dev !== opened.dev || atPath.ino !== opened.ino) {
-      writeJson(res, 409, { error: "파일이 바뀌는 중이라 읽지 않았습니다 — 다시 시도하세요" });
+      writeJson(res, 409, { error: translate("srv.fileView.changing") });
       return;
     }
     if (!opened.isFile()) {
-      writeJson(res, 403, { error: "일반 파일만 볼 수 있습니다" });
+      writeJson(res, 403, { error: translate("srv.fileView.notFile") });
       return;
     }
     // 상한+1 바이트까지만 읽는다 — 연 뒤에 커져도 무제한으로 읽지 않는다(크기는 열기 전 판정이 이미 봤고, 그 뒤 커진 것은 여기서 걸린다).
@@ -341,17 +354,17 @@ export const handleFileView = async (ctx: RouteCtx): Promise<void> => {
       if (n >= buf.length) break;
     }
     if (n > FILE_VIEW_MAX_BYTES) {
-      writeJson(res, 413, { error: "파일이 커서(2MB 초과) 보여 줄 수 없습니다" });
+      writeJson(res, 413, { error: translate("srv.fileView.tooBig") });
       return;
     }
     const data = buf.subarray(0, n);
     if (data.includes(0)) {
-      writeJson(res, 415, { error: "바이너리 파일이라 보여 줄 수 없습니다" });
+      writeJson(res, 415, { error: translate("srv.fileView.binary") });
       return;
     }
     writeJson(res, 200, { content: data.toString("utf8") });
   } catch {
-    writeJson(res, 404, { error: "파일을 읽지 못했습니다" });
+    writeJson(res, 404, { error: translate("srv.fileView.cantRead") });
   } finally {
     await fh.close().catch(() => {});
   }
@@ -389,12 +402,12 @@ export const handleOpenPath = async (ctx: RouteCtx): Promise<void> => {
   const { real, st } = found;
   if (st.isFile() && (st.mode & 0o111) !== 0) {
     writeJson(res, 403, {
-      error: "실행 권한이 있는 파일은 열지 않습니다(실행 위험) — 편집기에서 직접 여세요",
+      error: translate("srv.openPath.executable"),
     });
     return;
   }
   if (!st.isFile() && !st.isDirectory()) {
-    writeJson(res, 403, { error: "일반 파일·디렉터리만 열 수 있습니다" });
+    writeJson(res, 403, { error: translate("srv.openPath.notRegular") });
     return;
   }
   const match = { path: real };

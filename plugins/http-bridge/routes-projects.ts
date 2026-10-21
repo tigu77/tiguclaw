@@ -18,6 +18,7 @@ import fs from "node:fs/promises";
 import nodePath from "node:path";
 import path from "node:path";
 import type { RouteCtx } from "./route-ctx.js";
+import { translate } from "../../src/core/i18n.js";
 
 export const handleProjects = async (ctx: RouteCtx): Promise<void> => {
   const { res } = ctx;
@@ -51,7 +52,7 @@ export const handleProjectCapability = async (ctx: RouteCtx): Promise<void> => {
     return;
   }
   if (kind !== "skill" && kind !== "agent") {
-    writeJson(res, 400, { error: "kind 는 skill 또는 agent" });
+    writeJson(res, 400, { error: translate("srv.proj.badKind") });
     return;
   }
   try {
@@ -64,13 +65,13 @@ export const handleProjectCapability = async (ctx: RouteCtx): Promise<void> => {
             (x) => x.source === "project" && x.name === name,
           );
     if (found === undefined) {
-      writeJson(res, 404, { error: `이 프로젝트의 ${kind} '${name}' 을 찾을 수 없습니다.` });
+      writeJson(res, 404, { error: translate("srv.proj.assetMissing", { kind, name }) });
       return;
     }
     const raw = await fs.readFile(found.filePath, "utf8");
     // 상한 — 브라우저 DOM 에 통째로 붓지 않는다(비대화 방지). 넘으면 잘렸다고 말한다.
     const CAP = 64 * 1024;
-    const body = raw.length > CAP ? `${raw.slice(0, CAP)}\n\n…(${raw.length - CAP}자 생략 — 전문은 ${found.filePath})` : raw;
+    const body = raw.length > CAP ? `${raw.slice(0, CAP)}\n\n…${translate("srv.proj.bodyCut", { n: raw.length - CAP, path: found.filePath })}` : raw;
     writeJson(res, 200, { name: found.name, kind, body });
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);

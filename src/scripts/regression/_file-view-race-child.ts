@@ -3,7 +3,7 @@
  *
  * ★자식으로 도는 이유: 내장 `fs/promises.open` 을 잠시 갈아 끼운다 — 같은 프로세스의 다른 검사에 새면 안 된다.
  * 주입 순서(`open` 을 감싼다):
- *   · `swapBefore` — 열기 **직전** 대상을 프로젝트 밖 파일을 가리키는 심링크로 바꾼다
+ *   · `swapBefore` — 열기 **직전** 대상을 비밀 파일(밖의 `.env`)을 가리키는 심링크로 바꾼다
  *   · `swapAfter`  — 연 **직후** 같은 교체(연 것은 원래 파일, 경로는 밖)
  *   · `replaceAfter` — 연 직후 같은 이름의 **다른 파일**로 바꾼다(경로 판정은 통과 · 파일이 다르다)
  *   · `growOnRead` — 첫 읽기 직전 같은 파일을 2MB+1 로 키운다(연 뒤 커짐 — 상한+1 까지만 읽어야 한다)
@@ -23,7 +23,8 @@ const root = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), "tiguclaw-regres
 const outsideDir = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-fvrace-out-")));
 upsertProject({ path: root, name: "regr-fvrace", status: "active" } as never);
 const target = path.join(root, "a.txt");
-const outside = path.join(outsideDir, "outside.txt");
+// 범위가 «어떤 경로든» 이 된 뒤(10-21) 경합이 지킬 것은 **비밀 파일**이다 — 교체 대상은 밖의 `.env`.
+const outside = path.join(outsideDir, ".env");
 fs.writeFileSync(outside, "SYNTHETIC_OUTSIDE");
 const swapToOutside = (): void => { fs.unlinkSync(target); fs.symlinkSync(outside, target); };
 const originalOpen = fsp.open;

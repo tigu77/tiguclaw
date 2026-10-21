@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A widget panel.** Open it from the 🧩 button in the header, on any screen. On desktop it can sit next to the background panel, and you drag the handle above a widget to reorder.
 - **One-shot timers.** Ask "check the build in 10 minutes" and the assistant sets a timer at least a minute ahead. It fires once and then deletes itself, so it never piles up in your schedule list.
-- **Edit and Write cards can show the current file.** Press ⤢ to open the file as it is on disk now, below the changed snippet; when the snippet matches exactly one place, those lines are highlighted. Only files inside registered projects open, and `.env` and `.git` never do.
+- **Edit and Write cards can show the current file.** Press ⤢ to open the file as it is on disk now, below the changed snippet; when the snippet matches exactly one place, those lines are highlighted. Secret files (`.env`, `.git`, `.ssh`, `.aws`) never open.
 
 ### Changed
 
@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Registering a schedule that runs at startup (`reboot`) showed a false "schedule failed" alert even though nothing was wrong.**
 - **Completion reports from background jobs started by a file watch got lost instead of reaching the watch's destination.** A report that failed to send was also recorded as sent; it now tries a fallback notice and records a failure if that fails too.
 - **On the mobile dashboard, the header overflowed and pushed the page sideways when the update button appeared.**
+- **Some error messages appeared in Korean even with the English interface.** Settings, widget, sign-in and chat-attachment errors, endpoint history, timer failure reasons, Telegram attachment notices and compaction-failure lines now follow the interface language.
 
 ## [0.74.0] - 2026-10-20
 

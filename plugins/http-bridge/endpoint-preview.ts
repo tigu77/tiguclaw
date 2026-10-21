@@ -5,6 +5,8 @@
  *  라우트). 두 모듈이 같은 걸 필요로 하는 순간 자리는 셋 중 하나다 — 한쪽에 두고 import
  *  하거나(순환 위험), 복사하거나(두 벌), **따로 두거나**. 셋째가 맞다.
  */
+import { translate } from "../../src/core/i18n.js";
+
 export const ENDPOINT_PREVIEW_MAX = 4000;
 
 /** 관측 이벤트용 미리보기 — 길면 앞부분만 + 잘린 사실·원본 길이 명시(조용한 절단 금지). */
@@ -13,6 +15,6 @@ export const endpointPreview = (s: string): string => {
   if (text.length <= ENDPOINT_PREVIEW_MAX) return text;
   return (
     text.slice(0, ENDPOINT_PREVIEW_MAX) +
-    `\n\n… (전체 ${text.length.toLocaleString()}자 중 앞 ${ENDPOINT_PREVIEW_MAX.toLocaleString()}자만 표시 — 전문은 대화 기록에 보존됩니다)`
+    "\n\n" + translate("srv.endpoint.previewCut", { total: text.length.toLocaleString(), shown: ENDPOINT_PREVIEW_MAX.toLocaleString() })
   );
 };

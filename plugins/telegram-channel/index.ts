@@ -654,7 +654,7 @@ const acquireAttachment = async (
   // 크기 상한 — getFile 전에 알 수 있으면 (file_size) 즉시 차단.
   if (ref.fileSize !== undefined && ref.fileSize > ATTACHMENT_MAX_BYTES) {
     return {
-      note: `[첨부 파일이 너무 큼: ${displayName} (${humanSize(ref.fileSize)}) — 처리 생략]`,
+      note: translate("srv.telegram.attachTooBig", { name: displayName, size: humanSize(ref.fileSize) }),
     };
   }
 
@@ -662,24 +662,24 @@ const acquireAttachment = async (
     const file = await ctx.api.getFile(ref.fileId);
     const filePath = file.file_path;
     if (filePath === undefined) {
-      return { note: `[첨부 다운로드 실패: ${displayName} (file_path 없음)]` };
+      return { note: translate("srv.telegram.attachNoPath", { name: displayName }) };
     }
     // getFile 가 보고한 크기로 2차 가드.
     if (file.file_size !== undefined && file.file_size > ATTACHMENT_MAX_BYTES) {
       return {
-        note: `[첨부 파일이 너무 큼: ${displayName} (${humanSize(file.file_size)}) — 처리 생략]`,
+        note: translate("srv.telegram.attachTooBig", { name: displayName, size: humanSize(file.file_size) }),
       };
     }
 
     const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
     const res = await fetch(url);
     if (!res.ok) {
-      return { note: `[첨부 다운로드 실패: ${displayName} (HTTP ${res.status})]` };
+      return { note: translate("srv.telegram.attachHttp", { name: displayName, status: res.status }) };
     }
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.byteLength > ATTACHMENT_MAX_BYTES) {
       return {
-        note: `[첨부 파일이 너무 큼: ${displayName} (${humanSize(buf.byteLength)}) — 처리 생략]`,
+        note: translate("srv.telegram.attachTooBig", { name: displayName, size: humanSize(buf.byteLength) }),
       };
     }
 
@@ -704,7 +704,7 @@ const acquireAttachment = async (
     return { attachment };
   } catch (e) {
     console.error(`telegram attachment download failed — ${describeTelegramError(e)}`);
-    return { note: `[첨부 다운로드 실패: ${displayName}]` };
+    return { note: translate("srv.telegram.attachFailed", { name: displayName }) };
   }
 };
 

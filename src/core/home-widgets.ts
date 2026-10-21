@@ -23,6 +23,7 @@ import {
   readSettingsRootLenient,
   writeSettingsRootAtomic,
 } from "./settings-file.js";
+import { translate } from "./i18n.js";
 
 /** 크기 등급 — 격자 좌표가 아니라 **의미**다. 실제 열 수는 CSS 가 정한다. */
 export type HomeWidgetSize = "small" | "wide";
@@ -538,7 +539,7 @@ export const setHomeWidgetEnabled = (
 ): { ok: boolean; reason?: string } => {
   const spec = available.find((w) => w.type === type);
   if (spec === undefined) {
-    return { ok: false, reason: `위젯 "${type}" 은 지금 돌고 있는 플러그인의 것이 아닙니다.` };
+    return { ok: false, reason: translate("srv.widgets.notRunning", { type }) };
   }
   const seeded = readSeeded();
   let changed = false;
@@ -568,9 +569,9 @@ export const setHomeWidgetEnabled = (
     if (on && !seeded.has(type)) home.seeded = [...seeded, type];
   });
   if (capped) {
-    return { ok: false, reason: `홈 위젯은 최대 ${HOME_WIDGET_MAX}개입니다 — 하나를 내리고 다시 켜세요.` };
+    return { ok: false, reason: translate("srv.widgets.max", { n: HOME_WIDGET_MAX }) };
   }
-  return changed ? { ok: true } : { ok: true, reason: "이미 그 상태였습니다." };
+  return changed ? { ok: true } : { ok: true, reason: translate("srv.widgets.unchanged") };
 };
 
 /**
@@ -586,12 +587,12 @@ export const reorderHomeWidgets = (
   knownPlugins: ReadonlySet<string>,
 ): { ok: true; changed: boolean } | { ok: false; conflict: boolean; reason: string } => {
   if (!ids.every((x): x is string => typeof x === "string") || new Set(ids).size !== ids.length) {
-    return { ok: false, conflict: false, reason: "order 는 겹치지 않는 위젯 id 문자열 배열이어야 합니다." };
+    return { ok: false, conflict: false, reason: translate("srv.widgets.orderBad") };
   }
   let out: { ok: true; changed: boolean } | { ok: false; conflict: boolean; reason: string } = {
     ok: false,
     conflict: true,
-    reason: "위젯 목록이 그새 바뀌었습니다 — 최신 목록을 다시 읽으세요.",
+    reason: translate("srv.widgets.conflict"),
   };
   mutateHome((home) => {
     const cur = Array.isArray(home.widgets) ? (home.widgets as unknown[]) : [];

@@ -19,6 +19,7 @@ import { canonicalSessionChannel } from "../../../src/store/sessions.js";
 import { applyRunHistory } from "../../../src/store/thread-reset.js";
 import { enqueueThreadTurn } from "../../../src/core/worker-jobs.js";
 import { isUserCancelled } from "../../../src/core/steering.js";
+import { translate } from "../../../src/core/i18n.js";
 
 /**
  * 전달 실패 후 자동 재전송까지의 대기(2026-07-26). 채널 어댑터가 이미 transport 재시도를
@@ -315,7 +316,7 @@ export const runScheduleFiring = async (
           return;
         }
         if (out.skipped === "origin-gone") {
-          const error = `스케줄을 만든 대화(${origin})가 없어 실행하지 않았습니다`;
+          const error = translate("srv.schedule.originGone", { origin });
           console.error(`${tag} ${error}`);
           record({ ok: false, error });
           bus.publish({ type: "scheduler.error", ts: Date.now(), payload: { scheduleId: schedule.id, phase: "origin", error, label: fresh.label, destTarget: fresh.destTarget, willRetry: false } });
@@ -536,7 +537,7 @@ export const runScheduleFiring = async (
       console.error(`[scheduler:${schedule.id}] '${schedule.label}' 옮긴 자리에서도 «옮겨짐» — 다시 돌지 않는다(이번 실행은 건너뜀)`);
       if (once) {
         try {
-          deps.recordFiring(schedule.id, { ok: false, error: "옮긴 자리에서도 «옮겨짐» — 실행하지 못했습니다" });
+          deps.recordFiring(schedule.id, { ok: false, error: translate("srv.schedule.movedAgain") });
           updateSchedule(schedule.id, { enabled: false });
         } catch { /* 다음 부팅에 다시 본다 */ }
       }

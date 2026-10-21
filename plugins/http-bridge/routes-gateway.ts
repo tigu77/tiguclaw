@@ -30,6 +30,7 @@ import {
 } from "./gateway.js";
 import { BODY_LIMIT_ATTACHMENTS, readJsonBody, bodyErrorStatus } from "./http-body.js";
 import { endpointPreview } from "./endpoint-preview.js";
+import { translate } from "../../src/core/i18n.js";
 
 
 /**
@@ -148,7 +149,7 @@ const serveGatewayChatReserved = async (
   if (forced !== undefined && !(gatewayTools.externalTools ?? []).some((t) => t.name === forced)) {
     writeJson(res, 400, {
       error: {
-        message: `tool_choice 가 지정한 함수 "${forced}" 가 tools 목록에 없습니다.`,
+        message: `tool_choice names function "${forced}", which is not in tools.`,
         type: "invalid_tool_choice",
       },
     });
@@ -198,7 +199,7 @@ const serveGatewayChatReserved = async (
         payload: {
           callId: gwCallId,
           phase,
-          model: typeof body.model === "string" ? body.model : "(기본)",
+          model: typeof body.model === "string" ? body.model : translate("srv.gateway.defaultModel"),
           stream: body.stream === true,
           messages: messages.length,
           ...extra,
@@ -316,7 +317,7 @@ const serveGatewayChatReserved = async (
         response: endpointPreview(
           out.text !== undefined && out.text !== ""
             ? out.text
-            : `(텍스트 없음 — 도구 호출 ${(out.externalToolCalls ?? []).length}건)`,
+            : translate("srv.gateway.noText", { n: (out.externalToolCalls ?? []).length }),
         ),
         // 턴 실비용은 `turnSpend` 한 곳에서 고른다(채팅 줄·잡 합계와 같은 값).
         inputTokens: turnSpend(out.usage)?.input ?? 0,
@@ -368,7 +369,7 @@ const serveGatewayChatReserved = async (
       writeJson(res, 502, {
         error: {
           message:
-            "모델이 빈 응답을 반환했습니다(텍스트도 함수콜도 없음). 요청은 정상 처리됐으나 결과가 비었습니다 — 모델/풀 상태를 확인하세요.",
+            "The model returned an empty response (no text and no function call). The request was handled, but the result is empty — check the model or pool status.",
           type: "empty_completion",
         },
       });
@@ -380,7 +381,7 @@ const serveGatewayChatReserved = async (
     if (!hasToolCalls && gatewayTools.externalToolChoice === "required") {
       writeJson(res, 502, {
         error: {
-          message: `tool_choice:"required" 인데 모델이 함수를 호출하지 않았습니다(텍스트만 반환). 모델을 바꾸거나 tool_choice 를 "auto" 로 낮추세요.`,
+          message: `tool_choice is "required" but the model did not call a function (text only). Switch models or relax tool_choice to "auto".`,
           type: "tool_choice_unsatisfied",
         },
       });
@@ -416,7 +417,7 @@ const serveGatewayChatReserved = async (
       response: endpointPreview(
         out.text !== undefined && out.text !== ""
           ? out.text
-          : `(텍스트 없음 — 도구 호출 ${toolCalls.length}건)`,
+          : translate("srv.gateway.noText", { n: toolCalls.length }),
       ),
       inputTokens: inTok,
       outputTokens: outTok,

@@ -24,6 +24,7 @@ import { Cron } from "croner";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { RouteCtx } from "./route-ctx.js";
+import { translate } from "../../src/core/i18n.js";
 
 export const handleInventory = async (ctx: RouteCtx): Promise<void> => {
   const { res } = ctx;
@@ -192,7 +193,7 @@ export const handleMcpTools = async (ctx: RouteCtx): Promise<void> => {
   const { res, url } = ctx;
   const want = (url.searchParams.get("name") ?? "").trim();
   if (want === "") {
-    writeJson(res, 400, { error: "name 파라미터가 필요합니다" });
+    writeJson(res, 400, { error: translate("srv.inv.nameRequired") });
     return;
   }
   try {
@@ -218,7 +219,7 @@ export const handleMcpTools = async (ctx: RouteCtx): Promise<void> => {
     writeJson(res, 200, { name: want, tools });
   } catch (e) {
     writeJson(res, 500, {
-      error: `도구 조회 실패: ${e instanceof Error ? e.message : String(e)}`,
+      error: translate("srv.inv.toolsFailed", { msg: e instanceof Error ? e.message : String(e) }),
     });
   }
   return;
@@ -261,11 +262,11 @@ export const handleHomeWidgetOrder = async (ctx: RouteCtx): Promise<void> => {
   try {
     body = await readJsonBody(req);
   } catch (e) {
-    writeJson(res, bodyErrorStatus(e), { ok: false, error: "본문이 JSON 이 아닙니다." });
+    writeJson(res, bodyErrorStatus(e), { ok: false, error: translate("srv.body.notJson") });
     return;
   }
   if (!Array.isArray(body.order)) {
-    writeJson(res, 400, { ok: false, error: "order(위젯 id 배열)가 필요합니다." });
+    writeJson(res, 400, { ok: false, error: translate("srv.widgets.orderRequired") });
     return;
   }
   const known = new Set(listLivePlugins().map((p) => p.name));
@@ -288,12 +289,12 @@ export const handleHomeWidgetToggle = async (ctx: RouteCtx): Promise<void> => {
   try {
     body = await readJsonBody(req);
   } catch (e) {
-    writeJson(res, bodyErrorStatus(e), { ok: false, error: "본문이 JSON 이 아닙니다." });
+    writeJson(res, bodyErrorStatus(e), { ok: false, error: translate("srv.body.notJson") });
     return;
   }
   const type = typeof body.type === "string" ? body.type : "";
   if (type === "" || typeof body.enabled !== "boolean") {
-    writeJson(res, 400, { ok: false, error: "type(문자열)·enabled(참거짓)가 필요합니다." });
+    writeJson(res, 400, { ok: false, error: translate("srv.widgets.toggleArgs") });
     return;
   }
   const r = setHomeWidgetEnabled(type, body.enabled, listAvailableHomeWidgets());
@@ -307,7 +308,7 @@ export const handlePluginData = async (ctx: RouteCtx): Promise<void> => {
   const plugin = decodeURIComponent(rest[0] ?? "");
   const route = decodeURIComponent(rest[1] ?? "");
   if (rest.length !== 2 || plugin === "" || route === "") {
-    writeJson(res, 404, { error: "/plugin-data/<plugin>/<route> 형식이어야 합니다." });
+    writeJson(res, 404, { error: translate("srv.pluginData.badPath") });
     return;
   }
   const query: Record<string, string> = {};
@@ -428,7 +429,7 @@ export const handlePluginsAction = async (ctx: RouteCtx): Promise<void> => {
       if (!okType) {
         writeJson(res, 400, {
           ok: false,
-          reason: "value 는 문자열·숫자·참거짓이어야 합니다",
+          reason: translate("srv.pluginSetting.badValueType"),
           reasonKey: "plugins.reason.badValueType",
         });
         return;

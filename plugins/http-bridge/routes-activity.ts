@@ -18,6 +18,7 @@ import { getRecentChatLog } from "../../src/store/chat-log.js";
 import { listEvents } from "../../src/store/events.js";
 import { historyActivities } from "./history-activities.js";
 import type { RouteCtx } from "./route-ctx.js";
+import { translate } from "../../src/core/i18n.js";
 
 export const handleEvents = async (ctx: RouteCtx): Promise<void> => {
   const { req, res } = ctx;
@@ -125,7 +126,7 @@ export const handleEndpointCalls = async (ctx: RouteCtx): Promise<void> => {
               phase: "done",
               ok: false,
               response:
-                "(완료 기록 없음 — 데몬 재시작 등으로 중단된 호출입니다. 생성 중이던 응답은 남지 않았습니다.)",
+                translate("srv.endpoint.interrupted"),
             }
           : { ts: c.ts, kind: c.kind, ...c.payload },
       );

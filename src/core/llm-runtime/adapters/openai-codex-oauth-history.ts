@@ -2244,7 +2244,7 @@ const compactThreadNowUnlocked = async (
     //  (회귀의 배선 단언이 이 두 번째 쓰기 경로를 잡아냈다.)
     if (!isUsableSummary(fresh)) {
       const got = fresh.trim().length;
-      noteCompactionOutcome(threadKey, false, `요약 ${got}자(수동)`, prompt.length);
+      noteCompactionOutcome(threadKey, false, translate("srv.compact.summaryCharsManual", { n: got }), prompt.length);
       return {
         ok: false,
         reason: translate("srv.compact.tooShort", { got, min: MIN_USABLE_SUMMARY_CHARS }),
@@ -2604,7 +2604,7 @@ const compactThreadHistoryUnlocked = async (args: {
         `[${args.adapter} 6b] 요약 건너뜀 — '${cdKey}' 쿨다운 ${Math.ceil(cdLeft / 60000)}분 남음 ` +
           `(oldest-drop 폴백, watermark 유지 → 해제 후 재시도)`,
       );
-      noteCompactionOutcome(args.threadKey, false, "쿨다운", prompt.length, args.adapter);
+      noteCompactionOutcome(args.threadKey, false, translate("srv.compact.cooldown"), prompt.length, args.adapter);
       break; // 쿨다운 중엔 더 시도하지 않는다.
     } else
     try {
@@ -2666,7 +2666,7 @@ const compactThreadHistoryUnlocked = async (args: {
             `${compactionDiag(args.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}) ` +
             `→ 다음 시도 예산 ${shrinkFoldBudget(args.threadKey)}자로 축소`,
         );
-        noteCompactionOutcome(args.threadKey, false, `요약 ${got}자`, prompt.length, args.adapter);
+        noteCompactionOutcome(args.threadKey, false, translate("srv.compact.summaryChars", { n: got }), prompt.length, args.adapter);
       }
     } catch (e) {
       // 요약 실패/타임아웃 → 현행 oldest-drop 폴백. 턴은 깨지 않음(데몬 생존 원칙 3).

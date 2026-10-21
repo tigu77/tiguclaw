@@ -43,6 +43,7 @@ import { ingestAttachments, publishOutboundAttachment } from "./attachments.js";
 import { historyActivities } from "./history-activities.js";
 import { BODY_LIMIT_ATTACHMENTS, readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
+import { translate } from "../../src/core/i18n.js";
 
 export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
   const { req, res } = ctx;
@@ -69,13 +70,13 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
       error:
         e instanceof AttachmentError
           ? e.message
-          : `attachment 처리 실패: ${e instanceof Error ? e.message : String(e)}`,
+          : translate("srv.attach.failed", { msg: e instanceof Error ? e.message : String(e) }),
     });
     return;
   }
   // 파일만 보내는 경우(캡션 없는 첨부)도 허용 — text 또는 attachments 중 하나면 진행.
   if (text === "" && attachments.length === 0) {
-    writeJson(res, 400, { error: "text 또는 attachments 가 필요합니다." });
+    writeJson(res, 400, { error: translate("srv.chat.empty") });
     return;
   }
   // 채널/세션 분리(ADR 2026-07-15 §D1/§D2) — 대시보드는 활성 탭 세션 id 를 body.threadKey

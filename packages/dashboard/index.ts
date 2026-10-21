@@ -368,7 +368,7 @@ const server = http.createServer((req, res) => {
         res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
         res.end(
           JSON.stringify({
-            error: "cross-site 요청 차단(CSRF) — 대시보드 화면에서만 호출할 수 있습니다.",
+            error: "cross-site request blocked (CSRF) — only the dashboard page can call this.",
           }),
         );
         return;

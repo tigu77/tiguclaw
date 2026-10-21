@@ -11,6 +11,7 @@ import path from "node:path";
 import type { Attachment, AttachmentKind } from "../../src/channels/types.js";
 import { getPaths } from "../../src/core/paths.js";
 import type { EventBus } from "../../src/core/eventbus.js";
+import { translate } from "../../src/core/i18n.js";
 
 /**
  * **개수 상한.** ★`export` 다 — `/health` 가 이 셋을 화면에 실어 보낸다 (2026-09-15).
@@ -106,7 +107,7 @@ export const ingestAttachments = async (
 ): Promise<Attachment[]> => {
   if (!Array.isArray(raw) || raw.length === 0) return [];
   if (raw.length > ATTACH_MAX_COUNT) {
-    throw new AttachmentError(`첨부는 최대 ${ATTACH_MAX_COUNT}개까지 가능합니다.`);
+    throw new AttachmentError(translate("srv.attach.tooMany", { n: ATTACH_MAX_COUNT }));
   }
   const dir = path.join(getPaths().attachmentsDir, channel, yyyymmddUtc());
   const out: Attachment[] = [];
@@ -125,13 +126,13 @@ export const ingestAttachments = async (
     if (buf.length === 0) continue;
     if (buf.length > ATTACH_MAX_FILE_BYTES) {
       throw new AttachmentError(
-        `'${filename}' 이(가) 파일당 한도(${ATTACH_MAX_FILE_BYTES / 1024 / 1024}MB)를 초과합니다.`,
+        translate("srv.attach.fileTooBig", { name: filename, mb: ATTACH_MAX_FILE_BYTES / 1024 / 1024 }),
       );
     }
     total += buf.length;
     if (total > ATTACH_MAX_TOTAL_BYTES) {
       throw new AttachmentError(
-        `첨부 총합이 한도(${ATTACH_MAX_TOTAL_BYTES / 1024 / 1024}MB)를 초과합니다.`,
+        translate("srv.attach.totalTooBig", { mb: ATTACH_MAX_TOTAL_BYTES / 1024 / 1024 }),
       );
     }
     await fs.mkdir(dir, { recursive: true });
@@ -206,10 +207,10 @@ export const publishOutboundAttachment = async (input: {
 }): Promise<{ ok: true } | { ok: false; error: string }> => {
   const meta = await persistOutboundAttachment(input.filePath, input.channel).catch(() => null);
   if (meta === null) {
-    return { ok: false, error: `파일을 찾을 수 없거나 접근할 수 없습니다: ${input.filePath}` };
+    return { ok: false, error: translate("srv.attach.unreadable", { path: input.filePath }) };
   }
   if (input.bus === null) {
-    return { ok: false, error: "control bus not started (대시보드 미연결)" };
+    return { ok: false, error: "control bus not started (dashboard not connected)" };
   }
   try {
     input.bus.publish({

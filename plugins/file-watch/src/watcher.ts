@@ -28,6 +28,7 @@ import type { EventBus } from "../../../src/core/eventbus.js";
 import type { WatchRow } from "../../../src/store/watches.js";
 import type { TriggerRun } from "../../../src/core/llm-runtime/types.js";
 import { dispatch } from "./dispatcher.js";
+import { translate } from "../../../src/core/i18n.js";
 
 export interface WatcherDeps {
   /** runClaude 주입 — spike 에서 mock 가능. */
@@ -317,7 +318,7 @@ const fireWatch = async (
     // 실행하지 않았다 — 지운·끈 감시의 일을 기록하거나 보내지 않는다(«ok» 로 적으면 끈 감시가 돈 것처럼 보인다).
     if (result.skipped === "origin-gone") {
       // ★실패다 — 만든 대화가 없어 처리할 자리가 없다. 전용 세션으로 돌리지 않는다(설계: 몰래 폴백 금지). 자가 진단이 last_status 로 본다.
-      const error = `감시를 만든 대화(${row.originThreadKey ?? "-"})가 없어 실행하지 않았습니다`;
+      const error = translate("srv.watch.originGone", { origin: row.originThreadKey ?? "-" });
       console.error(`${tag} ${error} · ${secs()}`);
       deps.recordFiring(row.id, { ok: false, path: eventPath, event, error });
       bus.publish({ type: "file-watch.error", ts: Date.now(), payload: { watchId: row.id, phase: "origin", path: eventPath, event, destChannel: row.destChannel, error } });

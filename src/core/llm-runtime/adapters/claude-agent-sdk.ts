@@ -1838,7 +1838,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
               reason:
                 typeof st.compact_error === "string" && st.compact_error !== ""
                   ? st.compact_error
-                  : "압축 실패(사유 미제공)",
+                  : translate("srv.compact.failedNoReason"),
             },
           });
         } catch {
@@ -2564,7 +2564,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
           payload: {
             threadKey: input.threadKey,
             adapter: "claude",
-            reason: "압축 중 턴이 끝났습니다(중단·오류)",
+            reason: translate("srv.compact.turnEnded"),
           },
         });
       } catch {

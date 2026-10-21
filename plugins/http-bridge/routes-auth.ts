@@ -18,6 +18,7 @@ import {
 import { writeJson } from "../../src/core/net/write-json.js";
 import { readJsonBody } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
+import { translate } from "../../src/core/i18n.js";
 
 /**
  * 화면이 그리는 데 필요한 것만. 이름·인증여부·«로그인 방법이 있나»·**한도가 얼마나 남았나**.
@@ -99,7 +100,7 @@ export const handleAuthLoginBegin = async (ctx: RouteCtx): Promise<void> => {
   const provider = typeof body.provider === "string" ? body.provider.trim() : "";
   const p = provider === "" ? undefined : getAuthProvider(provider);
   if (p === undefined || p.login === undefined) {
-    writeJson(ctx.res, 400, { error: "이 설치에 그 인증 방법이 없습니다." });
+    writeJson(ctx.res, 400, { error: translate("srv.auth.noMethod") });
     return;
   }
   try {
@@ -118,11 +119,11 @@ export const handleAuthLoginFinish = async (ctx: RouteCtx): Promise<void> => {
   const pasted = typeof body.pasted === "string" ? body.pasted : "";
   const p = provider === "" ? undefined : getAuthProvider(provider);
   if (p === undefined || p.login?.finish === undefined) {
-    writeJson(ctx.res, 400, { error: "이 설치에 그 인증 방법이 없습니다." });
+    writeJson(ctx.res, 400, { error: translate("srv.auth.noMethod") });
     return;
   }
   if (pasted.trim() === "") {
-    writeJson(ctx.res, 200, { ok: false, message: "붙여넣은 내용이 비어 있습니다." });
+    writeJson(ctx.res, 200, { ok: false, message: translate("srv.auth.pasteEmpty") });
     return;
   }
   try {

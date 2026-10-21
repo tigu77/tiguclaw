@@ -69,7 +69,7 @@ export const check: RegressionCheck = {
     );
 
     // ── ② 읽기 경로 — 진짜 라우트 함수 + 격리 홈의 등록 프로젝트 ─────────────────────
-    const routes = await loadPluginModule<{ handleFileView: (c: unknown) => Promise<void> }>("../../../plugins/http-bridge/routes-files.ts");
+    const routes = await loadPluginModule<{ handleFileView: (c: unknown) => Promise<void>; isSecretPath: (p: string) => boolean }>("../../../plugins/http-bridge/routes-files.ts");
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-fileview-")));
     const outside = realpathSync(mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-fileview-out-")));
     const view = async (p: string) => {
@@ -90,6 +90,10 @@ export const check: RegressionCheck = {
       writeFileSync(path.join(outside, "b.ts"), "out\n");
       symlinkSync(path.join(outside, "b.ts"), path.join(root, "escape.ts")); // 안의 이름, 실제는 밖
       writeFileSync(path.join(root, "bin.dat"), Buffer.from([0x41, 0x00, 0x42]));
+      mkdirSync(path.join(root, ".ssh"));
+      writeFileSync(path.join(root, ".ssh", "id_test"), "KEY\n");
+      mkdirSync(path.join(root, ".aws"));
+      writeFileSync(path.join(root, ".aws", "credentials"), "KEY\n");
       writeFileSync(path.join(root, "big.txt"), "x".repeat(2 * 1024 * 1024 + 1));
       mkdirSync(path.join(root, "dir"));
       const eventsBefore = (getDb().prepare("SELECT count(*) AS n FROM events").get() as { n: number }).n;
@@ -106,15 +110,39 @@ export const check: RegressionCheck = {
         big: await view(path.join(root, "big.txt")),
         relative: await view("a.ts"),
         dir: await view(path.join(root, "dir")),
+        ssh: await view(path.join(root, ".ssh", "id_test")),
+        aws: await view(path.join(root, ".aws", "credentials")),
+        missing: await view(path.join(root, "nope.txt")),
+        // ★대소문자 별칭(10-21 적대 검토 — macOS 에서 200 · 비밀 내용이 나갔다). 대소문자 무시 FS 면 같은 파일, 아니면 없는 파일 — 어느 쪽이든 403.
+        envUpper: await view(path.join(root, ".ENV")),
+        envLocalMixed: await view(path.join(root, ".Env.local")),
+        sshUpper: await view(path.join(root, ".SSH", "id_test")),
+        gitUpper: await view(path.join(root, ".GIT", "config")),
+        // ★소문자로도 안 펴지는 별칭 — APFS 는 `ſ`(U+017F 긴 s)를 `s` 로 접어 `.ſſh` 로 `.ssh` 가 열린다(10-21 재검토 실측). 입력 판정은 못 보고
+        //  디스크의 진짜 이름(realpath.native)만 `.ssh` 로 편다 — 그 층을 지키는 사례. 별칭이 안 접히는 FS 에선 없는 파일(404) — 어느 쪽이든 200 이 아니다.
+        sshFolded: await view(path.join(root, ".\u017f\u017fh", "id_test")),
       };
       const eventsAfter = (getDb().prepare("SELECT count(*) AS n FROM events").get() as { n: number }).n;
       routeOut = { ...Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v.status])), content: r.ok.body.content, eventsDelta: eventsAfter - eventsBefore };
+      // 판정 함수 자체 — 대소문자 무시 파일시스템에선 위 라우트 검사가 «진짜 이름» 판정(realpath.native)으로도 막혀, 이 함수가 대소문자를 놓쳐도 초록이 된다.
+      const secretCases = ["/a/.ENV", "/a/.Env.Local", "/a/.SSH/id", "/a/.Git/config", "/a/.AWS/credentials"];
+      const plainCases = ["/a/env.ts", "/a/.envrc-notes/x", "/a/my.git.md"];
       out.push(
         assert(
-          "★★읽기 경로: 등록 프로젝트 안 일반 파일은 내용 그대로 · `.env`·`.env.*`·`.git/` 403 · ★**`.env` 를 가리키는 심링크도 403**(심링크 전후 둘 다) · 프로젝트 밖·심링크 탈출 403 · 바이너리 415 · 2MB 초과 413 · 상대 경로 400 · 디렉터리 거절 · 아무것도 저장 안 함",
+          "★비밀 판정은 대소문자를 가리지 않는다(`.ENV`·`.SSH/` — macOS·Windows 는 그 이름으로 비밀 파일이 열린다) · 평범한 이름은 막지 않는다",
+          secretCases.every((c) => routes.isSecretPath(c)) && plainCases.every((c) => !routes.isSecretPath(c)),
+          JSON.stringify(Object.fromEntries([...secretCases, ...plainCases].map((c) => [c, routes.isSecretPath(c)]))),
+        ),
+      );
+      out.push(
+        assert(
+          "★★읽기 경로: 일반 파일은 **어떤 경로든** 내용 그대로(프로젝트 밖·밖을 가리키는 링크 포함 — 10-21 정태님 «유저가 풀권한») · 비밀 파일 `.env`·`.env.*`·`.git/`·`.ssh/`·`.aws/` 403(★대소문자 별칭 `.ENV`·`.SSH/` 도) · ★**`.env` 를 가리키는 심링크·비밀 이름의 링크도 403**(심링크 전후 둘 다) · 바이너리 415 · 2MB 초과 413 · 상대 경로 400 · 디렉터리 거절 · 없는 파일 404 · 아무것도 저장 안 함",
           r.ok.status === 200 && r.ok.body.content === "const a = 1;\n" && r.env.status === 403 && r.envLocal.status === 403 && r.git.status === 403 &&
-            r.linkToEnv.status === 403 && r.envNamedLink.status === 403 && r.outside.status === 403 && r.escape.status === 403 && r.binary.status === 415 && r.big.status === 413 &&
-            r.relative.status === 400 && r.dir.status === 403 && eventsAfter === eventsBefore,
+            r.ssh.status === 403 && r.aws.status === 403 &&
+            r.envUpper.status === 403 && r.envLocalMixed.status === 403 && r.sshUpper.status === 403 && r.gitUpper.status === 403 && r.sshFolded.status !== 200 &&
+            r.linkToEnv.status === 403 && r.envNamedLink.status === 403 && r.outside.status === 200 && r.outside.body.content === "out\n" &&
+            r.escape.status === 200 && r.binary.status === 415 && r.big.status === 413 &&
+            r.relative.status === 400 && r.dir.status === 403 && r.missing.status === 404 && eventsAfter === eventsBefore,
           JSON.stringify(routeOut),
         ),
       );
@@ -133,7 +161,7 @@ export const check: RegressionCheck = {
     try { race = JSON.parse((rr.stdout ?? "").trim().split("\n").pop() ?? "{}"); } catch { race = {}; }
     out.push(
       assert(
-        "★★검사 뒤 파일이 바뀌어도 검사가 읽은 내용에 닿는다 — 열기 직전·직후 밖 심링크로 교체 → 403(밖 내용 0) · 연 뒤 다른 파일로 교체 → 409 · 연 뒤 3MB 로 커짐 → 413 · **읽은 양이 상한+1 이하** · 정상 200",
+        "★★검사 뒤 파일이 바뀌어도 검사가 읽은 내용에 닿는다 — 열기 직전·직후 **비밀 파일(.env)을 가리키는 심링크**로 교체 → 403(비밀 내용 0) · 연 뒤 다른 파일로 교체 → 409 · 연 뒤 3MB 로 커짐 → 413 · **읽은 양이 상한+1 이하** · 정상 200",
         race.none?.status === 200 && race.none.bytes === 5 &&
           race.swapBefore?.status === 403 && !race.swapBefore.outside &&
           race.swapAfter?.status === 403 && !race.swapAfter.outside &&

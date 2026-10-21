@@ -118,8 +118,13 @@
         document.body.appendChild(root);
         fvRoot = root;
         document.addEventListener("keydown", fvOnKey, true);
+        // 지금 파일을 못 보여 줄 때 — 이유를 말하고 빈 파일 칸은 접는다(조각은 위에 그대로 있다).
+        const unavailable = (reason) => {
+          note.textContent = i18n("fv.unavailable", { reason });
+          file.hidden = true;
+        };
         if (target === null) {
-          note.textContent = i18n("fv.noPath");
+          unavailable(i18n("fv.noPath"));
           return Promise.resolve();
         }
         note.textContent = i18n("fv.loading");
@@ -128,7 +133,7 @@
           .then(({ ok, d }) => {
             if (gen !== fvGen) return; // 닫았거나 다른 카드를 열었다
             if (!ok || !d || typeof d.content !== "string") {
-              note.textContent = (d && d.error) || i18n("fv.failed");
+              unavailable((d && d.error) || i18n("fv.failed"));
               return;
             }
             const where = locateEdit(d.content, diff);
@@ -150,7 +155,7 @@
             }
           })
           .catch(() => {
-            if (gen === fvGen) note.textContent = i18n("fv.failed");
+            if (gen === fvGen) unavailable(i18n("fv.failed"));
           });
       };
       window.openFileView = openFileView;

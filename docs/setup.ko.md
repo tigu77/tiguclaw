@@ -131,6 +131,7 @@ npm run claude-auth      # 또는 tiguclaw claude-auth
 - **어디서나 제어** — `onboard` 가 `npm link` 를 자동 실행해, 어느 폴더에서나 `tiguclaw status | restart | stop | start | update | logs | doctor | uninstall` 가 됩니다(진짜 앱처럼). **`update` 가 복구 명령이기도 합니다** — 아래 [업데이트](#업데이트) 참고. *(레포 안에선 `npm run daemon:*` 도 가능.)*
 - **서비스 관리**(macOS / Linux / Windows 공통 명령): `npm run daemon:status | daemon:restart | daemon:stop | daemon:start | daemon:logs`.
 - **일시정지 vs 제거** — `daemon:stop` 은 실행만 멈추고 등록은 유지합니다(다음 로그인 때 다시 자동 가동). `daemon:start` 로 재개. 완전히 없애려면 `daemon:uninstall`.
+- **Windows 에서 정지·업데이트가 «Access is denied» 로 막히면** — 관리자 창에서 설치해 예약작업 권한이 관리자에게만 있는 경우입니다. `tiguclaw repair` 가 그 작업에 내 계정의 권한만 넣어 줍니다(다른 설정은 바꾸지 않습니다). 일반 창에서 거부되면 관리자 PowerShell 에서 한 번만 돌리세요. 그 뒤로는 일반 창에서 관리됩니다.
 - **뭔가 이상하면?** `npm run doctor` 가 키·봇 도달·홈·서비스를 점검합니다.
 
 **규칙 가르치기.** "앞으로는 항상 ~해줘" 라고 말하면 런타임 홈의 `AGENT.md` 에 적습니다 —

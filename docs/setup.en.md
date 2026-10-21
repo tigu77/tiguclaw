@@ -134,6 +134,7 @@ If the terms are a concern, **Ollama (local, free)** and **API keys (pay-as-you-
 - **Control it from anywhere** — `onboard` runs `npm link` for you, so `tiguclaw status | restart | stop | start | update | logs | doctor | uninstall` work from any folder, like a real app. **`update` doubles as the repair command** — see [Updating](#updating). *(Inside the repo, `npm run daemon:*` works too.)*
 - **Manage the service** (same commands on macOS / Linux / Windows): `npm run daemon:status | daemon:restart | daemon:stop | daemon:start | daemon:logs`.
 - **Pause vs remove** — `daemon:stop` stops the process but keeps it registered (it still auto-starts at next login); `daemon:start` resumes it. `daemon:uninstall` removes the registration entirely.
+- **Windows: stop or update fails with «Access is denied»** — the scheduled task was installed from an administrator terminal, so only administrators can change it. `tiguclaw repair` gives your account rights on that task and changes nothing else. If a normal terminal is refused, run it once from an administrator PowerShell; after that a normal terminal manages it.
 - **Something off?** `npm run doctor` checks your keys, bot reachability, home, and service.
 
 **Teaching it your rules.** Say *"from now on, always X"* and it writes that into `AGENT.md` in your

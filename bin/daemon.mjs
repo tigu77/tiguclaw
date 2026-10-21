@@ -1193,6 +1193,55 @@ export const winRemoveStartupFallback = (c) => {
 const psq = (/** @type {string} */ s) => `'${String(s).replace(/'/g, "''")}'`;
 
 /**
+ * PowerShell 오류를 **사람이 읽는 한 줄**로 — stderr 가 리다이렉트되면 powershell.exe 는 오류를 CLIXML 로 감싸, 로그에
+ *  `#< CLIXML <Objs …>` 와 진행 표시(«모듈을 준비하는 중») 만 남았다(2026-10-21 집 윈도우). 오류 문자열(`<S S="Error">`)만 꺼낸다.
+ * @param {{ stdout: string, stderr: string }} r
+ * @returns {string}
+ */
+export const psErrorText = (r) => {
+  const raw = r.stderr || r.stdout || "";
+  if (!/^#< CLIXML/.test(raw)) return (raw || "no output").slice(0, 300);
+  // 오류 본문만 — PowerShell 은 부속 줄(«At line:…»·소스 인용·`+ CategoryInfo`)을 같은 `Error` 조각으로 잇따라 낸다. 그건 진단에 군더더기다(computer-use 와 같은 모양 판정).
+  const NOISE = /^(\+|위치 줄:|At line:|At [A-Za-z]:\\)/;
+  const parts = [...raw.matchAll(/<S S="Error">([^<]*)<\/S>/g)].map((m) => (m[1] ?? "").replace(/_x000D__x000A_/g, " ").trim()).filter((x) => x !== "" && !NOISE.test(x));
+  // ★첫 조각만 — 긴 부속 줄은 여러 조각으로 잘려 와서(실기: «…dTask], CimException») 앞머리 거르기로는 꼬리가 남는다. 첫 조각이 오류 문장이다.
+  return ((parts[0] ?? "").replace(/\s+/g, " ").trim() || "no error text").slice(0, 300);
+};
+
+/**
+ * **설치한 사용자 본인에게 그 작업의 전체 권한** (2026-10-21 집 윈도우 실측 — 근본 원인).
+ * ★`Register-ScheduledTask` 는 등록하는 **프로세스의 권한**으로 보안 설정을 만든다. 관리자 창(또는 관리자 SSH)에서 설치하면 소유자가
+ *  Administrators(`O:BA`)가 되고 본인은 `(A;;FR;;;<본인>)` — **읽기만** 받는다. 그러면 일반 창의 업데이트·정지가 작업을 끄지도 다시 등록하지도
+ *  못해(`Access is denied`) 1분 반복 트리거가 살아 남는다(업데이트는 «업데이트 중» 표식이 막지만 손으로 멈추기는 1분 안에 되살아난다).
+ * ★그래서 등록 직후 본인 SID 에 `FA` 를 **명시**한다. 일반 창에서 등록한 경우엔 이미 본인 소유라 덧붙여도 해가 없다.
+ *  실패해도 등록은 성공으로 둔다 — 이유는 `TASK_ACL_ERR:` 평문으로 남긴다(호출부가 경고로 찍는다).
+ * @param {Ctx} c
+ * @returns {string}
+ */
+export const buildWinTaskGrantScript = (c) =>
+  [
+    `try {`,
+    `$me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value`,
+    `$svc = New-Object -ComObject Schedule.Service; $svc.Connect()`,
+    `$rt = $svc.GetFolder('\\').GetTask(${psq(winTaskName(c))})`,
+    // ★작업 **계정**과 실행 계정이 같을 때만 고친다 (2026-10-22 아스트라 P2). 다른 관리자 B 의 창에서 돌리면 B 에게 권한을 주고 «복구됨» 을
+    //  찍었다 — 작업 주인 A 는 그대로 읽기만이다. 이름이 아니라 **SID** 로 비교한다(로컬·도메인·MS 계정 별칭 차이를 만들지 않는다).
+    //  못 풀면 일치로 치지 않는다. 어느 경우든 **권한을 바꾸기 전에** 멈춘다.
+    `$pu = [string]$rt.Definition.Principal.UserId`,
+    `$psid = ''`,
+    `if ($pu -match '^S-1-') { $psid = $pu } else { try { $psid = (New-Object Security.Principal.NTAccount($pu)).Translate([Security.Principal.SecurityIdentifier]).Value } catch { $psid = '' } }`,
+    `if ($psid -eq '') { 'TASK_ACL_UNRESOLVED ' + $pu }`,
+    `elseif ($psid -ne $me) { 'TASK_ACL_MISMATCH ' + $pu + ' (' + $psid + ') runner=' + $me }`,
+    `else {`,
+    // 4 = DACL 만(`D:…`). 본인 전체 권한이 이미 있으면 그대로 둔다(멱등).
+    `$sd = $rt.GetSecurityDescriptor(4)`,
+    `if ($sd -notlike ('*(A;;FA;;;' + $me + ')*')) { $rt.SetSecurityDescriptor($sd + '(A;;FA;;;' + $me + ')', 0) }`,
+    `'TASK_ACL_OK'`,
+    `}`,
+    `} catch { 'TASK_ACL_ERR: ' + $_.Exception.Message }`,
+  ].join("\n");
+
+/**
  * KeepAlive 예약작업 등록 스크립트.
  *
  * ★설계 근거 — 전부 그 기계에서 **실행으로 확인**했다(2026-08-22):
@@ -1244,6 +1293,8 @@ export const buildWinTaskScript = (c) => {
     `$principal = New-ScheduledTaskPrincipal -UserId ${psq(process.env.USERNAME ?? os.userInfo().username)} -LogonType Interactive -RunLevel Limited`,
     `Register-ScheduledTask -TaskName ${psq(winTaskName(c))} -Action $action -Trigger $atLogon,$repeat -Settings $settings -Principal $principal -Force | Out-Null`,
     `'TASK_REGISTERED'`,
+    // 본인 전체 권한(위 `buildWinTaskGrantScript`) — 등록은 이미 됐으므로 이 단계의 실패는 등록을 무르지 않는다(자기 try/catch).
+    buildWinTaskGrantScript(c),
     `} catch { 'TASK_ERR: ' + $_.Exception.Message }`,
   ].join("\n");
 };
@@ -1456,6 +1507,35 @@ const winRemoveLegacyAutostart = (c) => {
   });
 };
 
+/**
+ * 작업 상태 — **켜짐·꺼짐·없음·모름**을 가른다(2026-10-21 아스트라: 종전 판정은 «True 가 안 보이면 꺼짐» 이라 권한 거부·시간 초과·
+ *  PowerShell 실패가 전부 «꺼짐» 으로 흘러 정지가 거짓 성공을 냈다).
+ * ★«없음» 은 오류 **번호**로 가른다(`0x80070002` 파일 없음) — 문구는 시스템 언어마다 달라 판정 재료가 못 된다. 그 밖의 오류는 «모름» 이다
+ *  (없음으로 바꾸지 않는다 — 못 읽은 것을 없는 것으로 치면 «제거됨»·«멈춤» 을 거짓으로 찍는다).
+ * @param {Ctx} c
+ * @returns {{ state: "enabled" | "disabled" | "missing" | "unknown", why?: string }}
+ */
+export const winTaskState = (c) => parseWinTaskState(winPs(buildWinTaskStateScript(c)));
+/** @param {Ctx} c @returns {string} */
+export const buildWinTaskStateScript = (c) =>
+  [
+    `try {`,
+    `$svc = New-Object -ComObject Schedule.Service; $svc.Connect()`,
+    `$t = $svc.GetFolder('\\').GetTask(${psq(winTaskName(c))})`,
+    `if ($t.Enabled) { 'TASK_STATE=enabled' } else { 'TASK_STATE=disabled' }`,
+    `} catch { if ($_.Exception.HResult -eq -2147024894) { 'TASK_STATE=missing' } else { 'TASK_STATE=unknown ' + $_.Exception.Message } }`,
+  ].join("\n");
+/**
+ * @param {{ status: number | null, stdout: string, stderr: string }} r
+ * @returns {{ state: "enabled" | "disabled" | "missing" | "unknown", why?: string }}
+ */
+export const parseWinTaskState = (r) => {
+  const m = /TASK_STATE=(enabled|disabled|missing|unknown)(?: (.*))?/.exec(r.stdout);
+  if (m === null) return { state: "unknown", why: psErrorText(r) };
+  const state = /** @type {"enabled" | "disabled" | "missing" | "unknown"} */ (m[1]);
+  return state === "unknown" ? { state, why: (m[2] ?? "").trim() || "no error text" } : { state };
+};
+
 /** @param {Ctx} c */
 const winTaskExists = (c) =>
   spawnSync("schtasks", ["/query", "/tn", winTaskName(c)], { stdio: "ignore", windowsHide: true }).status === 0;
@@ -1525,6 +1605,11 @@ const winEnsureTask = (c, opts = {}) => {
     if (winRemoveStartupFallback(c)) {
       console.log(`   Removed the Startup-folder fallback — the scheduled task works, so it is no longer needed.`);
     }
+    // 본인 전체 권한(`buildWinTaskGrantScript`)을 못 줬으면 말한다 — 등록은 됐지만 일반 창의 정지·업데이트가 작업을 못 끈다.
+    const aclErr = /TASK_ACL_(?:ERR: |MISMATCH |UNRESOLVED )(.*)/.exec(r.stdout)?.[1];
+    if (aclErr !== undefined) {
+      console.warn(`   ⚠ Registered, but could not give your account full rights on the task (${aclErr.trim()}) — a normal (non-admin) terminal may not be able to stop or update it.`);
+    }
     return true;
   }
   const exists = winTaskExists(c);
@@ -1535,7 +1620,7 @@ const winEnsureTask = (c, opts = {}) => {
   //  (stderr 는 powershell 이 CLIXML 로 감싼다).
   const why = r.stdout || r.stderr || "no output";
   if (exists) {
-    console.warn(`   ⚠ Could not re-register the scheduled task — continuing with the existing registration (${why}).`);
+    console.warn(`   ⚠ Could not re-register the scheduled task — continuing with the existing registration (${why}). If access was denied, fix once with \`npm run daemon:repair\`.`);
     return true;
   }
   console.error(`   Scheduled task registration failed: ${why}`);
@@ -1610,16 +1695,72 @@ const winInstall = (c) => {
 
 /** @param {Ctx} c */
 const winUninstall = (c) => {
-  winPs(
+  const r = winPs(
     `Stop-ScheduledTask -TaskName ${psq(winTaskName(c))} -ErrorAction SilentlyContinue; ` +
-      `Unregister-ScheduledTask -TaskName ${psq(winTaskName(c))} -Confirm:$false -ErrorAction SilentlyContinue`,
+      `try { Unregister-ScheduledTask -TaskName ${psq(winTaskName(c))} -Confirm:$false -ErrorAction Stop; 'TASK_UNREGISTERED' } catch { 'TASK_UNREG_ERR ' + $_.Exception.Message }`,
   );
   winKillRunning(c);
   winRemoveLegacyAutostart(c);
   // 폴백도 함께 걷는다 — 안 지우면 uninstall 후에도 로그온마다 되살아난다.
   if (winRemoveStartupFallback(c)) console.log(`   Removed the Startup-folder fallback.`);
   rmSync(winLegacyVbsPath(c), { force: true });
+  // ★지웠는지 **다시 읽는다**(아스트라 10-21) — 종전엔 삭제 결과를 안 보고 «✅ Unregistered» 를 찍었다. 권한이 없어 작업이 남으면
+  //  로그온·1분 트리거로 계속 뜬다. «없음» 을 확인했을 때만 성공이다(못 읽은 것은 성공이 아니다).
+  const t = winTaskState(c);
+  if (t.state !== "missing") {
+    const why = /TASK_UNREG_ERR (.*)/.exec(r.stdout)?.[1]?.trim() ?? (t.state === "unknown" ? t.why : `still registered (${t.state})`);
+    console.error(
+      `🔴 could not remove the scheduled task "${winTaskName(c)}" (${why}) — it can still start the daemon at logon or within a minute. ` +
+        `Fix permissions with \`npm run daemon:repair\` (administrator terminal if refused), then uninstall again.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   console.log(`✅ Unregistered (removed the scheduled task and launcher, ${c.label}).`);
+};
+
+/**
+ * **권한만 고친다** — 예약작업에 설치한 사용자 본인의 전체 권한을 넣는다(2026-10-21, 아스트라: 관리자 재설치는 실행 환경 저장본을
+ *  그 창 기준으로 다시 써 포트 같은 값이 사라졌다). 환경·액션·포트·홈은 손대지 않고, 데몬도 안 띄운다.
+ * ★일반 창에서 거부되면(옛 설치 — 본인은 읽기만) 같은 명령을 관리자 창에서 **한 번** 돌리라고 정확히 말한다. 그 뒤로는 일반 창으로 관리한다.
+ * @param {Ctx} c
+ */
+const winRepair = (c) => {
+  const before = winTaskState(c);
+  if (before.state === "missing") {
+    console.log(`Nothing to repair — no scheduled task "${winTaskName(c)}" (install first: npm run daemon:install).`);
+    return;
+  }
+  const r = winPs(buildWinTaskGrantScript(c));
+  if (r.stdout.includes("TASK_ACL_OK")) {
+    console.log(`✅ Repaired — your account now has full rights on the scheduled task "${winTaskName(c)}". Stop, start, update and uninstall work from a normal terminal.`);
+    return;
+  }
+  // 작업 주인이 아닌 계정·풀 수 없는 계정 — 권한은 안 바꿨다. 다른 계정 대리 복구는 지원하지 않는다(그 사실을 말한다).
+  const mismatch = /TASK_ACL_MISMATCH (.*)/.exec(r.stdout)?.[1]?.trim();
+  if (mismatch !== undefined) {
+    console.error(
+      `🔴 not repaired — the scheduled task "${winTaskName(c)}" runs as a different account than this terminal (task: ${mismatch}). ` +
+        `Nothing was changed. Sign in as the account the task runs as, open PowerShell as administrator, and run npm run daemon:repair there.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const unresolved = /TASK_ACL_UNRESOLVED (.*)/.exec(r.stdout)?.[1]?.trim();
+  if (unresolved !== undefined) {
+    console.error(
+      `🔴 not repaired — could not resolve the account the scheduled task "${winTaskName(c)}" runs as ("${unresolved}"), so it cannot be compared with this terminal. Nothing was changed.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const why = /TASK_ACL_ERR: (.*)/.exec(r.stdout)?.[1]?.trim() ?? psErrorText(r);
+  console.error(
+    `🔴 could not repair the scheduled task "${winTaskName(c)}" (${why}). ` +
+      `It was probably installed from an administrator terminal. Open PowerShell as administrator, go to ${c.repoRoot}, and run: npm run daemon:repair` +
+      (c.homeRaw ? ` (with TIGUCLAW_HOME=${c.homeRaw} if you use a non-default home)` : ""),
+  );
+  process.exitCode = 1;
 };
 
 /**
@@ -1647,9 +1788,9 @@ const winStopTask = (c) => {
       `'ENABLED=' + (Get-ScheduledTask -TaskName ${psq(name)}).Settings.Enabled`,
   );
   if (!/ENABLED=False/.test(r.stdout) && winTaskExists(c)) {
-    console.warn(`⚠ could not disable the scheduled task via PowerShell (status=${r.status}): ${(r.stderr || r.stdout || "no output").slice(0, 300)} — trying schtasks.`);
+    console.warn(`⚠ could not disable the scheduled task via PowerShell (status=${r.status}): ${psErrorText(r)} — trying schtasks.`);
     const s = spawnSync("schtasks", ["/change", "/tn", name, "/disable"], { encoding: "utf8" });
-    if (s.status !== 0) console.warn(`⚠ schtasks /disable failed too (status=${s.status}): ${((s.stderr ?? "") || (s.stdout ?? "")).trim().slice(0, 300)}`);
+    if (s.status !== 0) console.warn(`⚠ schtasks /disable failed too (status=${s.status}): ${((s.stderr ?? "") || (s.stdout ?? "")).trim().slice(0, 300)} — fix once with \`npm run daemon:repair\`.`);
   }
   const survived = winKillRunning(c);
   if (survived.length > 0) return survived;
@@ -1706,6 +1847,28 @@ const winStop = (c) => {
     );
     process.exitCode = 1;
     return false;
+  }
+  // ★작업을 못 껐으면 «멈췄다» 가 1분짜리다 — 반복 트리거가 곧 다시 띄운다(2026-10-21 집 윈도우: 권한 부족으로 끄기 실패).
+  //  업데이트 중이면 «업데이트 중» 표식이 기동을 막으므로 그대로 간다. 아니면 그렇게 말하고 실패로 끝낸다(«✅ stopped» 를 찍지 않는다).
+  //  ★꺼졌는지 **못 읽었으면** 그것도 성공이 아니다(아스트라 10-21) — 없음(시작프로그램 폴백 등)만 정상으로 둔다.
+  if (activeUpdateLock(c) === null) {
+    const t = winTaskState(c);
+    if (t.state === "enabled") {
+      console.error(
+        `🔴 stop will not stick — the scheduled task could not be turned off, so it will start the daemon again within a minute. ` +
+          `Fix once: run \`npm run daemon:repair\` (in an administrator terminal if a normal one is refused), then stop again.`,
+      );
+      process.exitCode = 1;
+      return false;
+    }
+    if (t.state === "unknown") {
+      console.error(
+        `🔴 stopped the process, but could not confirm the scheduled task is off (${t.why}) — it may start the daemon again within a minute. ` +
+          `Check: schtasks /query /tn "${winTaskName(c)}" · Fix permissions: npm run daemon:repair`,
+      );
+      process.exitCode = 1;
+      return false;
+    }
   }
   console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
   return true;
@@ -2086,7 +2249,7 @@ const runSupervise = (c) => {
 
 // ───────────────────────────── dispatch ─────────────────────────────────────
 
-/** @typedef {"install" | "uninstall" | "restart" | "stop" | "start" | "status" | "logs" | "print" | "update" | "supervise"} Cmd */
+/** @typedef {"install" | "uninstall" | "repair" | "restart" | "stop" | "start" | "status" | "logs" | "print" | "update" | "supervise"} Cmd */
 
 /**
  * ★`stop` 은 **멈췄는지** 를 돌려준다(true/false) — 업데이트가 그걸 보고 설치 전에 멈춘다(2026-10-08 외부 검토 F2).
@@ -2114,6 +2277,7 @@ const handlers = {
   win32: {
     install: winInstall,
     uninstall: winUninstall,
+    repair: winRepair,
     restart: winRestart,
     stop: winStop,
     reenable: winReenable,
@@ -2345,7 +2509,18 @@ const runUpdate = (c) => {
     encoding: "utf8",
   });
   if (prev.status !== 0 || !(prev.stdout ?? "").trim()) {
-    console.error("update: not a git repository, or git is not installed — cannot update.");
+    // ★git 이 **말한 이유**를 싣는다 (2026-10-21 Windows 검증대). 관리자 창에서 받은(소유자 Administrators) 폴더를 일반 창에서 업데이트하면
+    //  git 이 `dubious ownership` 으로 거절하는데, 종전 문구는 «git 저장소가 아니거나 git 이 없다» 뿐이라 원인도 고칠 길도 안 보였다.
+    const gitSays = prev.error !== undefined
+      ? prev.error.message
+      : ((prev.stderr ?? "").split(/\r?\n/).find((l) => l.trim() !== "") ?? "").trim();
+    console.error(`update: git could not read this folder — cannot update.${gitSays ? ` git: ${gitSays.slice(0, 300)}` : ""}`);
+    if (/dubious ownership/i.test(prev.stderr ?? "")) {
+      console.error(
+        `   This folder is owned by another account (often: it was cloned from an administrator terminal). ` +
+          `Either run the update from that account/terminal, or trust it once: git config --global --add safe.directory "${c.repoRoot.replace(/\\/g, "/")}"`,
+      );
+    }
     process.exitCode = 1;
     return;
   }
@@ -2689,6 +2864,7 @@ export const runDaemonCommand = (cmd) => {
   const known = [
     "install",
     "uninstall",
+    "repair",
     "restart",
     "stop",
     "start",
@@ -2698,7 +2874,7 @@ export const runDaemonCommand = (cmd) => {
   if (!known.includes(/** @type {Cmd} */ (cmd))) {
     console.error(
       `daemon: unknown subcommand '${cmd}'. ` +
-        "Usage: install | uninstall | restart | stop | start | status | logs | print | update",
+        "Usage: install | uninstall | repair | restart | stop | start | status | logs | print | update",
     );
     process.exitCode = 1;
     return;
@@ -2729,6 +2905,10 @@ export const runDaemonCommand = (cmd) => {
     );
   }
 
+  if (cmd === "repair" && process.platform !== "win32") {
+    console.log("Nothing to repair on this OS — `repair` fixes Windows scheduled-task permissions only.");
+    return;
+  }
   const table = handlers[process.platform];
   const fn = table?.[cmd];
   if (!fn) {
@@ -2761,7 +2941,7 @@ if (invokedDirectly) {
   }
   if (!cmd) {
     console.error(
-      "Usage: node bin/daemon.mjs <install|uninstall|restart|stop|start|status|logs|print|update|supervise>",
+      "Usage: node bin/daemon.mjs <install|uninstall|repair|restart|stop|start|status|logs|print|update|supervise>",
     );
     process.exitCode = 1;
   } else {

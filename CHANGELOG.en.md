@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A widget panel.** Open it from the 🧩 button in the header, on any screen. On desktop it can sit next to the background panel, and you drag the handle above a widget to reorder.
 - **One-shot timers.** Ask "check the build in 10 minutes" and the assistant sets a timer at least a minute ahead. It fires once and then deletes itself, so it never piles up in your schedule list.
 - **Edit and Write cards can show the current file.** Press ⤢ to open the file as it is on disk now, below the changed snippet; when the snippet matches exactly one place, those lines are highlighted. Secret files (`.env`, `.git`, `.ssh`, `.aws`) never open.
+- **`tiguclaw repair` (Windows).** Gives your account rights on the scheduled task — and changes nothing else.
 
 ### Changed
 
@@ -30,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Completion reports from background jobs started by a file watch got lost instead of reaching the watch's destination.** A report that failed to send was also recorded as sent; it now tries a fallback notice and records a failure if that fails too.
 - **On the mobile dashboard, the header overflowed and pushed the page sideways when the update button appeared.**
 - **Some error messages appeared in Korean even with the English interface.** Settings, widget, sign-in and chat-attachment errors, endpoint history, timer failure reasons, Telegram attachment notices and compaction-failure lines now follow the interface language.
+- **On Windows, after installing from an administrator terminal, stop/update/uninstall from a normal terminal failed with «Access is denied».** Install now gives your account rights on the task. For an existing install like that, run `tiguclaw repair` once from an administrator terminal.
+- **On Windows, stop and uninstall could report «✅» when the task was not actually turned off or removed.** They now report success only when that is confirmed, and otherwise say why and how to fix it.
+- **Updating a folder owned by another account only said «not a git repository».** It now shows the reason git gave and how to fix it.
 
 ## [0.74.0] - 2026-10-20
 

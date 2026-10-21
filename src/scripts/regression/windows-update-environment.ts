@@ -341,6 +341,127 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       assert.equal(d.winConhostPath({}), "C:\\Windows\\System32\\conhost.exe");
       return a.execute;
     });
+    test("★등록 직후 설치한 사용자 본인에게 작업 전체 권한(FA)을 준다 — 관리자 창에서 설치하면 본인은 읽기(FR)만 받아 일반 창의 업데이트·정지가 «Access is denied» 였다(집 윈도우 10-21) · 멱등 · 실패해도 등록은 무르지 않는다", () => {
+      const script: string = d.buildWinTaskScript(c);
+      const grant: string = d.buildWinTaskGrantScript(c);
+      const reg = script.indexOf("Register-ScheduledTask");
+      const ok = script.indexOf("'TASK_REGISTERED'");
+      const at = script.indexOf(grant);
+      assert(reg >= 0 && ok > reg && at > ok, `순서: register=${reg} registered=${ok} grant=${at}`);
+      assert(/WindowsIdentity\]::GetCurrent\(\)\.User\.Value/.test(grant), "본인 SID");
+      assert(/GetSecurityDescriptor\(4\)/.test(grant) && /SetSecurityDescriptor\(\$sd \+ '\(A;;FA;;;' \+ \$me \+ '\)', 0\)/.test(grant), "DACL 에 본인 FA");
+      assert(/-notlike \('\*\(A;;FA;;;' \+ \$me \+ '\)\*'\)/.test(grant), "이미 있으면 다시 안 붙인다(멱등)");
+      assert(/^try \{/.test(grant) && /\} catch \{ 'TASK_ACL_ERR: ' \+ \$_\.Exception\.Message \}$/.test(grant), "자기 try/catch — 등록을 무르지 않는다");
+      // ★작업 계정 SID 와 실행 계정 SID 가 같을 때만 고친다(아스트라 10-22 P2) — 비교가 **권한 변경보다 앞**이고, 못 풀면 일치로 치지 않는다.
+      const cmp = grant.indexOf("elseif ($psid -ne $me)");
+      const unres = grant.indexOf("if ($psid -eq '') { 'TASK_ACL_UNRESOLVED ");
+      const set = grant.indexOf("SetSecurityDescriptor");
+      assert(/Principal\.UserId/.test(grant) && /NTAccount\(\$pu\)\)\.Translate\(\[Security\.Principal\.SecurityIdentifier\]\)/.test(grant), "작업 계정을 SID 로 푼다(이름 비교 아님)");
+      assert(unres >= 0 && cmp > unres && set > cmp, `순서: 못 풂=${unres} 불일치=${cmp} 변경=${set}`);
+      return "등록 → 확인 → (계정 일치일 때만) 권한";
+    });
+    test("PowerShell 오류(CLIXML)는 오류 문장만 한 줄로 — 진행 표시(«모듈을 준비하는 중»)·XML 을 로그에 쏟지 않는다", () => {
+      const clixml = '#< CLIXML\r\n<Objs Version="1.1.0.1"><Obj S="progress" RefId="0"><TN RefId="0"><T>x</T></TN><MS><PR N="Record"><AV>처음 사용하기 위해 모듈을 준비하는 중입니다.</AV></PR></MS></Obj><S S="Error">Disable-ScheduledTask : 액세스가 거부되었습니다._x000D__x000A_</S><S S="Error">At line:1 char:1_x000D__x000A_</S></Objs>';
+      assert.equal(d.psErrorText({ stdout: "", stderr: clixml }), "Disable-ScheduledTask : 액세스가 거부되었습니다.");
+      // 실기 모양(집 윈도우 10-21) — 본문 뒤에 위치·소스 인용·CategoryInfo 가 같은 Error 조각으로 잇따른다
+      const real = '#< CLIXML <Objs><S S="Error">Disable-ScheduledTask : Access is denied._x000D__x000A_</S><S S="Error">At line:1 char:52_x000D__x000A_</S><S S="Error">+ ... ing]::UTF8; Disable-ScheduledTask -TaskName _x000D__x000A_</S><S S="Error">+ CategoryInfo          : PermissionDenied: (PS_ScheduledTask:Root/Microsoft/...S_ScheduledTask) [Disable-Schedule</S><S S="Error">dTask], CimException_x000D__x000A_</S></Objs>';
+      assert.equal(d.psErrorText({ stdout: "", stderr: real }), "Disable-ScheduledTask : Access is denied.");
+      assert.equal(d.psErrorText({ stdout: "", stderr: "plain error" }), "plain error");
+      assert.equal(d.psErrorText({ stdout: "", stderr: "" }), "no output");
+      return "문장만";
+    });
+    // ★winStop·winUninstall·winRepair 를 실제 본문으로 — 의존은 주입한 것뿐이라, 본문이 다른 것(환경 저장·재등록)을 부르면 ReferenceError 로 빨개진다.
+    const bodyOf = (name: string): string => source.slice(source.indexOf(`const ${name} = (c) => {`), source.indexOf("\n};\n", source.indexOf(`const ${name} = (c) => {`)) + 3);
+    type TS = { state: "enabled" | "disabled" | "missing" | "unknown"; why?: string };
+    const sink = () => {
+      const out: string[] = [];
+      return {
+        out,
+        con: { log: (m: string) => out.push("log:" + m), error: (m: string) => out.push("err:" + m), warn: (m: string) => out.push("warn:" + m) },
+        proc: { set exitCode(v: number) { out.push("exit:" + v); }, get exitCode() { return 0; } },
+      };
+    };
+    const runStop = (o: { survived?: string[]; state?: TS; locked?: boolean }) => {
+      const k = sink();
+      const prevCode = process.exitCode;
+      const r = new Function("winStopTask", "winTaskState", "winTaskName", "activeUpdateLock", "console", "process", bodyOf("winStop") + "; return winStop;")(
+        () => o.survived ?? [], () => o.state ?? { state: "disabled" }, () => "task", () => (o.locked === true ? { pid: 1 } : null), k.con, k.proc,
+      )(c);
+      process.exitCode = prevCode;
+      return { r, out: k.out };
+    };
+    test("★작업 상태는 네 값 — 켜짐·꺼짐·없음·모름. «없음» 은 오류 번호(0x80070002)로만, 못 읽은 것은 «모름»(꺼짐·없음으로 바꾸지 않는다)", () => {
+      const st = (stdout: string, stderr = "", status: number | null = 0) => d.parseWinTaskState({ stdout, stderr, status });
+      assert.deepEqual(st("TASK_STATE=enabled"), { state: "enabled" });
+      assert.deepEqual(st("TASK_STATE=disabled"), { state: "disabled" });
+      assert.deepEqual(st("TASK_STATE=missing"), { state: "missing" });
+      assert.deepEqual(st("TASK_STATE=unknown 액세스가 거부되었습니다."), { state: "unknown", why: "액세스가 거부되었습니다." });
+      assert.equal(st("", "PowerShell did not respond — gave up after 20s", null).state, "unknown");
+      assert.equal(st("", "#< CLIXML <Objs><S S=\"Error\">denied</S></Objs>", 1).state, "unknown");
+      const script: string = d.buildWinTaskStateScript(c);
+      assert(/GetTask\(/.test(script) && /HResult -eq -2147024894/.test(script) && !/찾을 수 없|not found/i.test(script), "없음 = 번호로");
+      return "네 갈래";
+    });
+    test("★손으로 멈추기: 작업이 켜진 채 → 실패(«1분 안에 다시 뜬다 + repair») · 상태를 못 읽음 → 실패(성공으로 덮지 않음) · 업데이트 중 → 진행 · 꺼짐·없음 → 정상", () => {
+      const stuck = runStop({ state: { state: "enabled" } });
+      const unknown = runStop({ state: { state: "unknown", why: "Access is denied" } });
+      const updating = runStop({ state: { state: "enabled" }, locked: true });
+      const off = runStop({ state: { state: "disabled" } });
+      const gone = runStop({ state: { state: "missing" } });
+      const ok = (x: { out: string[] }) => x.out.some((m) => /✅ stopped/.test(m));
+      assert.equal(stuck.r, false); assert(stuck.out.some((m) => /will not stick/.test(m) && /daemon:repair/.test(m)) && stuck.out.includes("exit:1") && !ok(stuck), stuck.out.join(" | "));
+      assert.equal(unknown.r, false); assert(unknown.out.some((m) => /could not confirm/.test(m) && /Access is denied/.test(m)) && unknown.out.includes("exit:1") && !ok(unknown), unknown.out.join(" | "));
+      assert(updating.r === true && ok(updating), updating.out.join(" | "));
+      assert(off.r === true && ok(off) && gone.r === true && ok(gone), [...off.out, ...gone.out].join(" | "));
+      return "켜짐=실패 · 모름=실패 · 업데이트 중=진행 · 꺼짐/없음=정상";
+    });
+    const runUninstall = (o: { unreg: string; after: TS }) => {
+      const k = sink();
+      const prevCode = process.exitCode;
+      new Function("winPs", "psq", "winTaskName", "winKillRunning", "winRemoveLegacyAutostart", "winRemoveStartupFallback", "rmSync", "winLegacyVbsPath", "winTaskState", "console", "process",
+        bodyOf("winUninstall") + "; return winUninstall;")(
+        () => ({ status: 0, stdout: o.unreg, stderr: "" }), (x: string) => `'${x}'`, () => "task", () => [], () => {}, () => false, () => {}, () => "x.vbs", () => o.after, k.con, k.proc,
+      )(c);
+      process.exitCode = prevCode;
+      return k.out;
+    };
+    test("★제거는 작업이 **없어진 것을 확인**했을 때만 «✅ Unregistered» — 삭제 거부·남음·못 읽음은 실패와 repair 안내(종전: 결과를 안 보고 성공을 찍었다)", () => {
+      const done = runUninstall({ unreg: "TASK_UNREGISTERED", after: { state: "missing" } });
+      const denied = runUninstall({ unreg: "TASK_UNREG_ERR Access is denied.", after: { state: "disabled" } });
+      const left = runUninstall({ unreg: "TASK_UNREGISTERED", after: { state: "enabled" } });
+      const unknown = runUninstall({ unreg: "TASK_UNREGISTERED", after: { state: "unknown", why: "timeout" } });
+      assert(done.some((m) => /✅ Unregistered/.test(m)) && !done.includes("exit:1"), done.join(" | "));
+      for (const [name, o] of [["denied", denied], ["left", left], ["unknown", unknown]] as const) {
+        assert(!o.some((m) => /✅ Unregistered/.test(m)) && o.includes("exit:1") && o.some((m) => /could not remove/.test(m) && /daemon:repair/.test(m)), name + ": " + o.join(" | "));
+      }
+      assert(denied.some((m) => /Access is denied/.test(m)) && unknown.some((m) => /timeout/.test(m)), "이유를 싣는다");
+      return "없음 확인=성공 · 나머지=실패";
+    });
+    const runRepair = (o: { before: TS; grant: string }) => {
+      const k = sink();
+      const calls: string[] = [];
+      const prevCode = process.exitCode;
+      new Function("winTaskState", "winPs", "buildWinTaskGrantScript", "winTaskName", "psErrorText", "console", "process", bodyOf("winRepair") + "; return winRepair;")(
+        () => o.before, (sc: string) => { calls.push(sc); return { status: 0, stdout: o.grant, stderr: "" }; }, () => "GRANT", () => "task", () => "ps-err", k.con, k.proc,
+      )({ ...c, homeRaw: "" });
+      process.exitCode = prevCode;
+      return { out: k.out, calls };
+    };
+    test("★repair 는 **권한만** 고친다 — 권한 조각 하나만 돌리고(환경 저장·재등록·기동 0), 거부되면 관리자 창에서 같은 명령을 정확히 안내 · 작업이 없으면 할 일 없음 · 작업 계정과 다른 계정·못 푼 계정이면 «복구됨» 없이 실패", () => {
+      const other = runRepair({ before: { state: "enabled" }, grant: "TASK_ACL_MISMATCH SYSTEM (S-1-5-18) runner=S-1-5-21-1" });
+      const unres = runRepair({ before: { state: "enabled" }, grant: "TASK_ACL_UNRESOLVED " });
+      for (const [nm, x] of [["other", other], ["unresolved", unres]] as const) {
+        assert(!x.out.some((m) => /✅ Repaired/.test(m)) && x.out.includes("exit:1") && x.out.some((m) => /not repaired/.test(m) && /Nothing was changed/.test(m)), nm + ": " + x.out.join(" | "));
+      }
+      assert(other.out.some((m) => /different account/.test(m) && /S-1-5-18/.test(m)), "다른 계정이라고 말한다");
+      const ok = runRepair({ before: { state: "enabled" }, grant: "TASK_ACL_OK" });
+      const denied = runRepair({ before: { state: "disabled" }, grant: "TASK_ACL_ERR: Access is denied." });
+      const none = runRepair({ before: { state: "missing" }, grant: "TASK_ACL_OK" });
+      assert.deepEqual(ok.calls, ["GRANT"]); assert(ok.out.some((m) => /✅ Repaired/.test(m)) && !ok.out.includes("exit:1"), ok.out.join(" | "));
+      assert(denied.out.some((m) => /administrator/.test(m) && /npm run daemon:repair/.test(m) && /Access is denied/.test(m)) && denied.out.includes("exit:1"), denied.out.join(" | "));
+      assert.deepEqual(none.calls, []); assert(none.out.some((m) => /Nothing to repair/.test(m)), none.out.join(" | "));
+      return "조각 1회 · 거부=관리자 안내 · 없음=할 일 없음";
+    });
     test("★시작프로그램 폴백 = 같은 액션의 .lnk(창 최소화) · 걷을 때 .lnk 와 옛 .vbs 둘 다", () => {
       const a = d.winTaskAction(c);
       const q = (x: string) => `'${x.replace(/'/g, "''")}'`;
@@ -381,10 +502,10 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     test("★uninstall 이 옛 VBS 런처·폴백을 걷는다", () => {
       const fn = source.slice(source.indexOf("const winUninstall = (c) => {"), source.indexOf("\n};\n", source.indexOf("const winUninstall = (c) => {")) + 3);
       const ev: string[] = [];
-      const un = new Function("winPs", "psq", "winTaskName", "winKillRunning", "winRemoveLegacyAutostart", "winRemoveStartupFallback", "rmSync", "winLegacyVbsPath", "console",
-        fn + "; return winUninstall;")((s: string) => { ev.push(/Unregister/.test(s) ? "unregister" : "ps"); return { status: 0 }; }, (x: string) => x, () => "task",
+      const un = new Function("winPs", "psq", "winTaskName", "winKillRunning", "winRemoveLegacyAutostart", "winRemoveStartupFallback", "rmSync", "winLegacyVbsPath", "winTaskState", "console", "process",
+        fn + "; return winUninstall;")((s: string) => { ev.push(/Unregister/.test(s) ? "unregister" : "ps"); return { status: 0, stdout: "TASK_UNREGISTERED", stderr: "" }; }, (x: string) => x, () => "task",
         () => { ev.push("kill"); return []; }, () => ev.push("legacy-autostart"), () => { ev.push("remove-fallback"); return true; },
-        (p: string) => ev.push("rm:" + path.basename(p)), () => "H\\win-launch.vbs", { log: () => {}, warn: () => {}, error: () => {} });
+        (p: string) => ev.push("rm:" + path.basename(p)), () => "H\\win-launch.vbs", () => ({ state: "missing" }), { log: () => {}, warn: () => {}, error: () => {} }, { exitCode: 0 });
       un(c);
       for (const want of ["unregister", "kill", "remove-fallback", "rm:H\\win-launch.vbs"]) assert(ev.includes(want), `${want} 없음: ${ev.join(",")}`);
       return ev.join("→");

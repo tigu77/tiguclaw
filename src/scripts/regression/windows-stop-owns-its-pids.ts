@@ -39,7 +39,8 @@ export const check: RegressionCheck = {
     const quiet = { log: () => {}, error: () => {} };
     const proc = { exitCode: 0 };
     const winStopWith = (survived: string[]) =>
-      (new Function("winStopTask", "console", "process", `${fnSrc("winStop")}; return winStop;`)(() => survived, quiet, proc) as (c: unknown) => unknown)({ label: "L" });
+      // 작업 켜짐·업데이트 표식은 «꺼졌다» 로 — 못 껐을 때의 갈래는 windows-update-environment 가 본다(2026-10-21).
+      (new Function("winStopTask", "winTaskState", "winTaskName", "activeUpdateLock", "console", "process", `${fnSrc("winStop")}; return winStop;`)(() => survived, () => ({ state: "disabled" }), () => "L", () => null, quiet, proc) as (c: unknown) => unknown)({ label: "L" });
     const linuxStopWith = (fails: boolean) =>
       (new Function("systemctlUser", "console", "process", `${fnSrc("linuxStop")}; return linuxStop;`)(
         () => { if (fails) throw new Error("fixture: unit busy"); }, quiet, proc,

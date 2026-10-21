@@ -240,6 +240,8 @@ const USAGE = `tiguclaw — self-hosted AI assistant CLI
   tiguclaw logs         Tail the daemon logs
   tiguclaw install      Register the daemon with the supervisor
   tiguclaw uninstall    Unregister the daemon
+  tiguclaw repair       Windows: give your account full rights on the scheduled task (fixes «Access is denied»
+                        on stop/update after an install from an administrator terminal — changes nothing else)
   tiguclaw help         Show this help
 
   Recovering from a broken node_modules/tsx (ADR 2026-07-15): lifecycle commands (install/
@@ -290,6 +292,8 @@ const main = async (): Promise<number> => {
       return runDaemon("install");
     case "uninstall":
       return runDaemon("uninstall");
+    case "repair":
+      return runDaemon("repair");
     case "help":
     case "-h":
     case "--help":

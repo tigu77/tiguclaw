@@ -21,6 +21,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const LIFECYCLE = new Set([
   "install",
   "uninstall",
+  "repair",
   "restart",
   "stop",
   "start",

@@ -172,10 +172,20 @@ export const canOpenBrowser = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform
 export const systemOpener = (platform: NodeJS.Platform): string =>
   platform === "darwin" ? "open" : platform === "win32" ? "explorer" : "xdg-open";
 
-/** 기본 브라우저로 연다 — 결과를 기다리지 않는다(fire-and-forget). Windows explorer 는 성공해도 exit 1 이라 결과로 판정하지 않는다. */
+/**
+ * **주소(URL)** 를 기본 브라우저로 여는 명령 — 순수 함수(회귀가 직접 잰다).
+ *  ★Windows 는 `explorer` 가 아니라 `rundll32 url.dll,FileProtocolHandler` 다(2026-10-21 정태님: «codex-auth 가 브라우저 대신 탐색기를 띄운다»).
+ *   `explorer <url>` 은 문서에 없는 동작이라, 받아들이지 못하는 주소(긴 OAuth 주소 등)면 기본 폴더 탐색기를 띄운다. FileProtocolHandler 는
+ *   셸 없이 주소의 연결 프로그램(기본 브라우저)을 부른다 — Go `pkg/browser` 등이 쓰는 방식. 파일·폴더 열기는 `systemOpener`(explorer) 그대로.
+ */
+export const browserOpenCommand = (url: string, platform: NodeJS.Platform): { cmd: string; args: string[] } =>
+  platform === "win32" ? { cmd: "rundll32", args: ["url.dll,FileProtocolHandler", url] } : { cmd: systemOpener(platform), args: [url] };
+
+/** 기본 브라우저로 연다 — 결과를 기다리지 않는다(fire-and-forget). 성공해도 0 이 아닌 종료를 내는 opener 가 있어 결과로 판정하지 않는다. */
 export const openInBrowser = (url: string, platform: NodeJS.Platform = process.platform): void => {
   try {
-    execFile(systemOpener(platform), [url], () => undefined).unref();
+    const { cmd, args } = browserOpenCommand(url, platform);
+    execFile(cmd, args, () => undefined).unref();
   } catch {
     /* 못 열어도 주소는 이미 보여줬다 */
   }

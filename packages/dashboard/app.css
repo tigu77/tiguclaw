@@ -1070,7 +1070,9 @@
          있게 스팬으로 쪼개면서 그 공백이 사라지므로 여기서 낸다(모바일에선 낱말이 접혀 0). */
       #chat-search-btn .cs-icon { margin-right:4px; }
       #cs-backdrop { position:fixed; inset:0; background:rgb(var(--shadow-rgb) / .5); z-index:20; display:none; }
-      body.cs-open #cs-backdrop { display:block; }
+      /* ★백드롭은 **좁은 화면에서만**(백그라운드 패널과 같은 규칙, 2026-10-21 정태님 «검색창 패널이 떠 있는 상황에서 채팅 스크롤도»).
+         데스크톱에선 화면 전체를 덮어 채팅의 휠·클릭을 가로챘다 — 패널은 채팅을 가리지 않으니 덮을 이유가 없다. 닫기는 ✕·Esc. */
+      @media (max-width:900px) { body.cs-open #cs-backdrop { display:block; } }
       #cs-panel {
         position:fixed; top:0; right:0; bottom:0; width:420px; max-width:92vw;
         display:flex; flex-direction:column; gap:9px; padding:12px; background:var(--panel);

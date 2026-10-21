@@ -152,6 +152,14 @@ export const check: RegressionCheck = {
         `js=${js.includes("cs-open")} css=${css.includes("body.cs-open #cs-panel")}`,
       ),
       assert(
+        // ★데스크톱에선 백드롭을 깔지 않는다 — 화면 전체를 덮어 검색 패널을 연 채 채팅을 스크롤할 수 없었다(2026-10-21 정태님).
+        //  백그라운드 패널과 같은 규칙: 백드롭을 켜는 규칙은 **좁은 화면 미디어 쿼리 안에만** 있다.
+        "★검색 백드롭은 좁은 화면(≤900px)에서만 켜진다 — 데스크톱에선 패널을 연 채 채팅 스크롤·클릭이 된다",
+        /@media \(max-width:900px\) \{ body\.cs-open #cs-backdrop \{ display:block; \} \}/.test(css) &&
+          !/^\s*body\.cs-open #cs-backdrop \{ display:block; \}/m.test(css),
+        (css.match(/[^\n]*body\.cs-open #cs-backdrop[^\n]*/g) ?? []).join(" | "),
+      ),
+      assert(
         // ★Ctrl/⌘+F 를 **채팅 화면에서만** 가로챈다. 이 가드가 빠지면 대시보드 어느
         //  화면에서든 브라우저 기본 찾기를 뺏는데, 우리가 대신 줄 게 없는 자리에서
         //  남의 기능을 뺏는 것이라 사용자는 "찾기가 고장났다" 고 읽는다.

@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **On Windows, codex sign-in (`codex-auth`) opened File Explorer instead of the browser.**
+- **With the search panel open on the dashboard, the chat couldn't be scrolled or clicked.**
 - **Registering a schedule that runs at startup (`reboot`) showed a false "schedule failed" alert even though nothing was wrong.**
 - **Completion reports from background jobs started by a file watch got lost instead of reaching the watch's destination.** A report that failed to send was also recorded as sent; it now tries a fallback notice and records a failure if that fails too.
 - **On the mobile dashboard, the header overflowed and pushed the page sideways when the update button appeared.**

@@ -34,6 +34,18 @@ export const check: RegressionCheck = {
     const out: Assertion[] = [];
     const m = await import("../../core/onboard-ready.js");
 
+    // ⓪ 주소를 기본 브라우저로 여는 명령 — Windows 는 explorer 가 아니라 FileProtocolHandler(2026-10-21: codex-auth 가 탐색기를 띄웠다)
+    const oauthUrl = "https://auth.example/oauth/authorize?response_type=code&client_id=x&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fcb&scope=openid%20profile&state=s";
+    const win = m.browserOpenCommand(oauthUrl, "win32");
+    const mac = m.browserOpenCommand(oauthUrl, "darwin");
+    const lin = m.browserOpenCommand(oauthUrl, "linux");
+    out.push(assert("⓪ 주소 열기: Windows = `rundll32 url.dll,FileProtocolHandler <주소>`(explorer 아님 — 탐색기가 뜨던 것) · 맥 open · 리눅스 xdg-open · 주소는 한 인자 그대로 · 파일·폴더 열기(systemOpener)는 explorer 그대로",
+      win.cmd === "rundll32" && JSON.stringify(win.args) === JSON.stringify(["url.dll,FileProtocolHandler", oauthUrl]) &&
+        mac.cmd === "open" && JSON.stringify(mac.args) === JSON.stringify([oauthUrl]) && lin.cmd === "xdg-open" && m.systemOpener("win32") === "explorer" &&
+        // 배선 — 실제로 여는 함수가 이 명령을 쓴다(순수 함수만 맞고 여는 쪽이 옛 explorer 를 부르면 소용없다)
+        /const \{ cmd, args \} = browserOpenCommand\(url, platform\);\s*execFile\(cmd, args,/.test(readSourceSync("src/core/onboard-ready.ts")),
+      { win, mac, lin }));
+
     // ① 주소
     const urls = {
       default: m.dashboardUrlFromEnv("TIGUCLAW_PROVIDER=codex\n# DASHBOARD_PORT=12345\n"),

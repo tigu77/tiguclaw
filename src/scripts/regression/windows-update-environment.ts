@@ -449,7 +449,8 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     };
     test("★repair 는 **권한만** 고친다 — 권한 조각 하나만 돌리고(환경 저장·재등록·기동 0), 거부되면 관리자 창에서 같은 명령을 정확히 안내 · 작업이 없으면 할 일 없음 · 작업 계정과 다른 계정·못 푼 계정이면 «복구됨» 없이 실패", () => {
       const other = runRepair({ before: { state: "enabled" }, grant: "TASK_ACL_MISMATCH SYSTEM (S-1-5-18) runner=S-1-5-21-1" });
-      const unres = runRepair({ before: { state: "enabled" }, grant: "TASK_ACL_UNRESOLVED " });
+      // ★실제 출력은 끝이 trim 된 모양이다(`winPs` 의 stdout.trim — 이름이 빈 «못 풂» 은 공백까지 잘린다, 실측표와 같다).
+      const unres = runRepair({ before: { state: "enabled" }, grant: "TASK_ACL_UNRESOLVED" });
       for (const [nm, x] of [["other", other], ["unresolved", unres]] as const) {
         assert(!x.out.some((m) => /✅ Repaired/.test(m)) && x.out.includes("exit:1") && x.out.some((m) => /not repaired/.test(m) && /Nothing was changed/.test(m)), nm + ": " + x.out.join(" | "));
       }

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-10-22
+
 ### Added
 
 - **A widget panel.** Open it from the 🧩 button in the header, on any screen. On desktop it can sit next to the background panel, and you drag the handle above a widget to reorder.
@@ -23,17 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The home screen's widget area moved into the widget panel.** Widgets you placed show up there in the same order. The background button is now in the header on every screen, not only in chat.
 - **The «Background work» widget is now a compact view of the background panel.** It groups timers, managers/agents and shells by conversation, and clicking an item jumps to its card in the background panel. Each widget has its own right-click menu, where you can turn off just that widget.
 - **Setup no longer asks about models, and there is one default model profile.** With nothing configured, every task runs on the latest model of your signed-in providers (opus for Claude). To use other models, just ask tiguclaw — it saves them to `settings.json`, and what you saved wins. A tier with no profile of its own (such as `low`) uses the default profile. If you had only picked a default tier (such as mid) on the dashboard, it now runs on the single default.
+- **Short internal calls such as summaries and classification use the `low` profile (or the default if there is none).** They no longer look for a `nano` profile first — if you put a light model there, move it to `low`.
 
 ### Fixed
 
-- **A file watch or timer that fired before a new tab's first reply finished was skipped as «the conversation that created it is gone».**
 - **JSON and YAML keys and values had the same color, so syntax colors looked missing.** Keys now get their own color.
 - **On Windows, codex sign-in (`codex-auth`) opened File Explorer instead of the browser.**
 - **With the search panel open on the dashboard, the chat couldn't be scrolled or clicked.**
 - **Registering a schedule that runs at startup (`reboot`) showed a false "schedule failed" alert even though nothing was wrong.**
 - **Completion reports from background jobs started by a file watch got lost instead of reaching the watch's destination.** A report that failed to send was also recorded as sent; it now tries a fallback notice and records a failure if that fails too.
 - **On the mobile dashboard, the header overflowed and pushed the page sideways when the update button appeared.**
-- **Some error messages appeared in Korean even with the English interface.** Settings, widget, sign-in and chat-attachment errors, endpoint history, timer failure reasons, Telegram attachment notices and compaction-failure lines now follow the interface language.
+- **Some error messages appeared in Korean even with the English interface.** Settings, widget, sign-in and chat-attachment errors, endpoint history, Telegram attachment notices and compaction-failure lines now follow the interface language.
 - **On Windows, after installing from an administrator terminal, stop/update/uninstall from a normal terminal failed with «Access is denied».** Install now gives your account rights on the task. For an existing install like that, run `tiguclaw repair` once from an administrator terminal.
 - **On Windows, stop and uninstall could report «✅» when the task was not actually turned off or removed.** They now report success only when that is confirmed, and otherwise say why and how to fix it.
 - **Updating a folder owned by another account only said «not a git repository».** It now shows the reason git gave and how to fix it.
@@ -1089,7 +1091,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...HEAD
+[0.75.0]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...v0.75.0
 [0.74.0]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...v0.74.0
 [0.73.1]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...v0.73.1
 [0.73.0]: https://github.com/tigu77/tiguclaw/compare/v0.72.0...v0.73.0

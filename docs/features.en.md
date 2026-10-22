@@ -15,7 +15,7 @@ Everything else lives here. Nothing was dropped.
 - **Talk, don't type** — send a voice note on Telegram or press-and-hold the mic in the dashboard; it transcribes and gets to work. Transcription is config-driven like everything else — a local model or a cloud one, your call.
 - **Say something mid-task** — send a message while it's already working and it folds it into the turn in progress, instead of making you wait for the end or start over.
 - **One personality, many channels** — Telegram, CLI, HTTP, and the web dashboard all reach the same assistant and share one conversation memory. Start on your phone, finish at your desk.
-- **Delegates the heavy & the trivial** — hands a whole goal to a **manager** (which staffs it out as needed) so the chat stays free, and lighter work to a cheaper model tier. Which work lands on which tier is yours to set, in model profiles.
+- **Delegates the heavy & the trivial** — hands a whole goal to a **manager** (which staffs it out as needed) so the chat stays free, and lighter work to a cheaper model — set a tier profile such as `low` and it goes there (with none set, one default model does everything).
 - **Several at once, and nothing forgotten** — it can start a handful of sub-agents and keep talking to you meanwhile. Whoever handed out the work **can't finish until the results are back**, so nothing gets dropped on the floor. Steer them mid-flight, or stop them.
 - **Learns from your reactions** — corrections and approval of how it answered become one-line rules it follows from the next conversation on. When the meaning is clear it records the rule and tells you; it asks only when unsure. When it spots a workflow worth reusing — even the first time it sees one — it offers to save it as a skill in the right place (project-local or shared). Any rule it recorded comes off whenever you say so.
 - **Notices its own trouble** — it sweeps its own recent history for things that went wrong quietly (a scheduled message that never arrived, a job that died) and tells you first. Where the fix is safe and reversible — resending that one message, say — it just does it and says so; anything else it brings to you.
@@ -76,6 +76,7 @@ Talk to it like a capable teammate — from Telegram, the CLI, or HTTP. A few ex
 **Remember & schedule**
 - "Remember that I prefer TypeScript and 2-space indents." → it persists across every chat.
 - "Every weekday at 9am, send me a summary of X."
+- "Check in 30 minutes whether the build finished." → a one-shot timer; it follows up in the conversation where you asked.
 - "What did we decide about the database last week?"
 
 **Make it yours — just by asking**

@@ -1606,7 +1606,8 @@ const winEnsureTask = (c, opts = {}) => {
       console.log(`   Removed the Startup-folder fallback — the scheduled task works, so it is no longer needed.`);
     }
     // 본인 전체 권한(`buildWinTaskGrantScript`)을 못 줬으면 말한다 — 등록은 됐지만 일반 창의 정지·업데이트가 작업을 못 끈다.
-    const aclErr = /TASK_ACL_(?:ERR: |MISMATCH |UNRESOLVED )(.*)/.exec(r.stdout)?.[1];
+    // ★표식 뒤 공백을 요구하지 않는다 — `winPs` 가 출력 끝을 trim 해서, 계정 이름이 빈 «못 풂» 은 `TASK_ACL_UNRESOLVED` 만 남는다(레드팀 10-22 P-1, 실측표와 같은 모양).
+    const aclErr = /TASK_ACL_(?:ERR:|MISMATCH|UNRESOLVED)(?:[ \t]([^\n]*))?/.exec(r.stdout)?.[1] ?? (/TASK_ACL_(?:ERR|MISMATCH|UNRESOLVED)/.test(r.stdout) ? "" : undefined);
     if (aclErr !== undefined) {
       console.warn(`   ⚠ Registered, but could not give your account full rights on the task (${aclErr.trim()}) — a normal (non-admin) terminal may not be able to stop or update it.`);
     }
@@ -1746,7 +1747,9 @@ const winRepair = (c) => {
     process.exitCode = 1;
     return;
   }
-  const unresolved = /TASK_ACL_UNRESOLVED (.*)/.exec(r.stdout)?.[1]?.trim();
+  // 표식 뒤 공백·이름이 없어도 «못 풂» 이다 — 출력 끝이 trim 된다(레드팀 10-22 P-1).
+  const unresolvedHit = /TASK_ACL_UNRESOLVED(?:[ \t]([^\n]*))?/.exec(r.stdout);
+  const unresolved = unresolvedHit === null ? undefined : (unresolvedHit[1] ?? "").trim();
   if (unresolved !== undefined) {
     console.error(
       `🔴 not repaired — could not resolve the account the scheduled task "${winTaskName(c)}" runs as ("${unresolved}"), so it cannot be compared with this terminal. Nothing was changed.`,

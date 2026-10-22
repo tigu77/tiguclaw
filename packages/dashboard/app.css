@@ -802,9 +802,10 @@
       .md pre code.hljs { color:var(--text); background:none; }
       .hljs-comment, .hljs-quote { color:var(--syn-comment); font-style:italic; }
       .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-doctag, .hljs-type.class_ { color:var(--syn-keyword); }
-      .hljs-string, .hljs-attr, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color:var(--syn-string); }
+      .hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color:var(--syn-string); }
       .hljs-number, .hljs-meta { color:var(--syn-number); }
-      .hljs-type, .hljs-built_in, .hljs-title, .hljs-title.class_, .hljs-title.function_, .hljs-class .hljs-title { color:var(--syn-type); }
+      /* ★`.hljs-attr`(JSON·YAML 키·HTML 속성 이름)은 문자열과 다른 색 — 같으면 JSON 이 한 색으로 보인다(2026-10-22 정태님). GitHub 테마 배치. */
+      .hljs-type, .hljs-built_in, .hljs-title, .hljs-title.class_, .hljs-title.function_, .hljs-class .hljs-title, .hljs-attr { color:var(--syn-type); }
       .hljs-variable, .hljs-template-variable, .hljs-name, .hljs-tag, .hljs-selector-id, .hljs-selector-class { color:var(--syn-variable); }
       .hljs-attribute, .hljs-property, .hljs-symbol, .hljs-bullet, .hljs-subst, .hljs-link { color:var(--syn-attribute); }
       .hljs-deletion { color:var(--diff-del-op); }

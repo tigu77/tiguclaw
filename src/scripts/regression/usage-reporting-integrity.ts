@@ -63,7 +63,8 @@ export const check: RegressionCheck = {
       fail("worker:missing");
       const failedOnly = { ...getJob(failedId)!.usage! };
       const failedView = render(failedOnly);
-      out.push(assert("실패뿐인 자식 잡은 관측 요청 0을 실제 비용 0으로 표시하지 않음", failedOnly.turns === 0 && failedOnly.requests === 0 && failedOnly.unreportedFailedAttempts === 1 && failedView.textContent.includes("실패 시도 1회") && failedView.textContent.includes("미확인"), { failedOnly, failedView }));
+      // ★실패뿐이면 아무것도 안 보인다(2026-10-22 정태님 — 단독 «미확인» 안내는 소음). 0 으로 보이지 않는 것은 그대로.
+      out.push(assert("실패뿐인 자식 잡은 관측 요청 0을 실제 비용 0으로 표시하지 않음 — 보일 숫자가 없으면 사용량 줄 자체를 안 그린다", failedOnly.turns === 0 && failedOnly.requests === 0 && failedOnly.unreportedFailedAttempts === 1 && failedView.textContent === "" && (failedView.style as { display?: string }).display !== "", { failedOnly, failedView }));
       publishTurnDone({ adapter: "openai", model: "synthetic" }, { channel: "cli", threadKey: `agent:${failedId}`, text: "synthetic" }, { text: "done", usage }, 1);
       const recovered = { ...getJob(failedId)!.usage! };
       const recoveredView = render(recovered);

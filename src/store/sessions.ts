@@ -1684,22 +1684,46 @@ export const getThreadName = (threadKey: string): string | null => {
 };
 
 /**
- * 이 대화가 **살아 있나** — 행이 있고 보관(탭 «제거» = 보관)되지 않았다. 트리거를 «만든 대화» 로 되돌릴 때 쓴다(2026-10-20 레드팀 P-3:
+ * 이 대화가 **살아 있나** — 있고(행 또는 대화 기록) 보관(탭 «제거» = 보관)되지 않았다. 트리거를 «만든 대화» 로 되돌릴 때 쓴다(2026-10-20 레드팀 P-3:
  *  행 존재만 보면 보관한 탭에서도 감시가 계속 돌고, 매니저가 숨은 탭 소유가 됐다). 기본 세션은 늘 산다(텔레그램 대화).
  */
 export const isConversationLive = (threadKey: string): boolean => {
   if (threadKey === DEFAULT_SESSION_ID) return true;
-  const row = requireDb("isConversationLive")
-    .prepare(`SELECT COUNT(*) AS n FROM threads WHERE channel_thread_id = ? AND archived_at IS NULL`)
-    .get(threadKey) as { n: number };
-  return row.n > 0;
+  const handle = requireDb("isConversationLive");
+  // ★행이 있으면 «보관되지 않은 행이 있나» 로 판정한다(보관한 탭은 죽은 대화).
+  const rows = handle
+    .prepare(`SELECT COUNT(*) AS n, SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) AS live FROM threads WHERE channel_thread_id = ?`)
+    .get(threadKey) as { n: number; live: number | null };
+  if (rows.n > 0) return (rows.live ?? 0) > 0;
+  // ★행이 **아직 없는** 대화도 산다 — 행은 모델 호출이 끝난 뒤에 생긴다(`saveSession`). 그래서 새 탭의 첫 턴 안에서 울린 감시·타이머가
+  //  «만든 대화가 없다» 로 실패했다(2026-10-22 회사돌쇠 검증 — 같은 턴에서 만든 파일에 감시가 울림). 첫 턴이 실패·중단되면 행이 끝내 안 생긴다.
+  //  ★그래서 행이 없는 탭의 보관은 `setThreadArchived` 가 자리 행으로 남긴다 — 안 그러면 지운 탭이 여기서 «산다» 가 된다.
+  //  존재의 증거는 대화 기록이다 — 사용자 메시지는 받는 순간 남고, 기록은 지우지 않는다(보존).
+  const log = handle.prepare(`SELECT 1 FROM chat_log WHERE thread_key = ? LIMIT 1`).get(threadKey);
+  return log !== undefined;
 };
 
 export const setThreadArchived = (threadKey: string, at: number | null): number => {
   const handle = requireDb("setThreadArchived");
-  return handle
+  const changed = handle
     .prepare(`UPDATE threads SET archived_at = ? WHERE channel_thread_id = ?`)
     .run(at, threadKey).changes;
+  if (changed > 0 || at === null) return changed;
+  // ★**기록이 있는 대화만** — 아무 키에나 자리 행을 만들면 `/sessions`·세션 도구의 «0행 = 그런 세션이 없다» 가 죽어 오타도 «보관했습니다» 가 된다.
+  if (handle.prepare(`SELECT 1 FROM chat_log WHERE thread_key = ? LIMIT 1`).get(threadKey) === undefined) return 0;
+  // ★행이 아직 없는 탭(첫 턴 진행 중·첫 턴이 실패·중단돼 행이 끝내 안 생김)을 보관하면 UPDATE 가 0행이라 **보관이 조용히 사라졌다** —
+  //  `isConversationLive` 가 대화 기록으로 «산다» 를 판정하게 된 뒤(2026-10-22), 지운 탭에서 감시·타이머가 다시 돌고 그 턴의 saveSession 이
+  //  보관 안 된 행을 새로 만들었다(레드팀 10-22 P-1 재현). `setThreadName` 과 같은 자리 행으로 보관을 미리 남긴다 — 이후 saveSession 의
+  //  ON CONFLICT 는 archived_at 을 건드리지 않으므로 보관이 유지된다.
+  const channel = canonicalSessionChannel(threadKey, SESSION_STORAGE_CHANNEL);
+  const now = Date.now();
+  return handle
+    .prepare(
+      `INSERT INTO threads (channel, channel_thread_id, claude_session_id, model, system_prompt_hash, last_used_at, created_at, archived_at)
+       VALUES (?, ?, '', NULL, NULL, ?, ?, ?)
+       ON CONFLICT (channel, channel_thread_id) DO UPDATE SET archived_at = excluded.archived_at`,
+    )
+    .run(channel, threadKey, now, now, at).changes;
 };
 
 export const setThreadName = (threadKey: string, name: string | null): number => {

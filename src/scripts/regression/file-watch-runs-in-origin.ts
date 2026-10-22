@@ -21,7 +21,8 @@ import ts from "typescript";
 import { triggerRunLine } from "../../core/prompt-assembly.js";
 import { createPluginHost } from "../../core/plugins/host.js";
 import { __resetJobsForTest, registerJob } from "../../core/worker-jobs.js";
-import { initStore, isConversationLive, saveSession, setThreadArchived } from "../../store/sessions.js";
+import { deleteSession, initStore, isConversationLive, saveSession, setThreadArchived } from "../../store/sessions.js";
+import { recordChatMessage } from "../../store/chat-log.js";
 import { getWatch, deleteWatch } from "../../store/watches.js";
 import { readSourceSync, stripComments } from "./_wiring.js";
 import { assert, assertIsolated, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -335,6 +336,37 @@ export const check: RegressionCheck = {
         "★대화가 «살아 있나» 는 보관까지 본다 — 탭을 제거(보관)하면 감시는 그 대화로 안 간다 · 기본 세션은 늘 산다 · 없는 키는 아니다",
         beforeArchive && !afterArchive && isConversationLive("dashboard:default") && !isConversationLive("dashboard:regr-never"),
         JSON.stringify({ beforeArchive, afterArchive }),
+      ),
+    );
+
+    // ── ★새 탭의 **첫 턴 안** — 세션 행이 아직 없어도 대화는 산다 (2026-10-22 회사돌쇠 검증) ──────────
+    //  행은 모델 호출이 끝난 뒤 `saveSession` 이 만든다. 그 전에 울린 감시가 «만든 대화가 없다» 로 실패했다(같은 턴에서 만든 파일).
+    //  (행이 지워진 경우는 deleteSession 으로 흉내낸다 — 제품의 `/reset` 은 08-20 에 없어졌다.)
+    const FRESH_KEY = "dashboard:regr-origin-first-turn";
+    recordChatMessage({ ts: Date.now(), threadKey: FRESH_KEY, channel: "http-bridge", role: "user", text: "이 폴더 감시해줘" });
+    const freshLive = isConversationLive(FRESH_KEY);
+    const RESET_KEY = "dashboard:regr-origin-reset";
+    recordChatMessage({ ts: Date.now(), threadKey: RESET_KEY, channel: "http-bridge", role: "user", text: "안녕" });
+    saveSession({ channel: "http-bridge" as never, threadKey: RESET_KEY, claudeSessionId: "s", model: null, systemPromptHash: null });
+    deleteSession("http-bridge" as never, RESET_KEY);
+    const afterReset = isConversationLive(RESET_KEY);
+    // 보관이 이긴다 — 대화 기록이 있어도 보관한 탭은 죽은 대화다.
+    recordChatMessage({ ts: Date.now(), threadKey: LIVE_KEY, channel: "http-bridge", role: "user", text: "기록 있음" });
+    const archivedWithLog = isConversationLive(LIVE_KEY);
+    // ★행이 없는 탭을 보관(제거)해도 보관이 남는다 — 그 뒤 트리거 턴의 saveSession 이 행을 만들어도 보관 유지(레드팀 10-22 P-1).
+    const ROWLESS_KEY = "dashboard:regr-origin-rowless-archived";
+    recordChatMessage({ ts: Date.now(), threadKey: ROWLESS_KEY, channel: "http-bridge", role: "user", text: "첫 턴이 실패한 탭" });
+    setThreadArchived(ROWLESS_KEY, Date.now());
+    const rowlessArchived = isConversationLive(ROWLESS_KEY);
+    saveSession({ channel: "http-bridge" as never, threadKey: ROWLESS_KEY, claudeSessionId: "s2", model: null, systemPromptHash: null });
+    const afterSave = isConversationLive(ROWLESS_KEY);
+    // 흔적 없는 키(오타)는 보관해도 0행 — 명령·세션 도구가 «그런 세션이 없다» 로 답하는 근거다.
+    const typoArchived = setThreadArchived("dashboard:regr-origin-typo", Date.now());
+    out.push(
+      assert(
+        "★★세션 행이 아직 없는 새 탭(첫 턴 안)·행이 지워진 탭도 산다(대화 기록이 증거) — 보관한 탭은 기록이 있어도 죽은 대화 · **행 없는 탭의 보관도 남고 뒤 saveSession 이 되살리지 않는다** · 흔적 없는 키는 아니다",
+        freshLive && afterReset && !archivedWithLog && !rowlessArchived && !afterSave && typoArchived === 0 && !isConversationLive("dashboard:regr-never"),
+        JSON.stringify({ freshLive, afterReset, archivedWithLog, rowlessArchived, afterSave, typoArchived }),
       ),
     );
 

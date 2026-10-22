@@ -1237,12 +1237,9 @@
           entry.usageEl.style.display = "";
           return;
         }
-        if (input <= 0 && failed > 0) {
-          entry.usageEl.textContent = i18n("bg.usage.failed", { n: failed });
-          entry.usageEl.title = entry.usageEl.textContent;
-          entry.usageEl.style.display = "";
-          return;
-        }
+        // ★실패 시도만 있고 사용량이 아직 0 이면 **아무것도 안 보인다** (2026-10-22 정태님: «굳이 "실패 시도 1회의 사용량 미확인" 뜨는거보다
+        //  차라리 저때는 안나오는게 낫지»). 보일 숫자가 없을 때의 단독 안내는 소음이다. «0 으로 보이지 않기»(cb8a8c6b)는 그대로 — 안 보이는 것은 0 이라는 말이 아니다.
+        //  사용량이 들어오면 아래 설명(head)에 «실패 시도 N회 미확인» 이 붙어 하한임을 말한다.
         if (input <= 0 || typeof usageSummary !== "function") return; // 미보고뿐 = 표시 안 함(거짓값 금지).
         const unrep = Number(u.unreportedTurns) || 0;
         const cacheComplete = u.unreportedCacheTurns === 0 && unrep === 0 && failed === 0 && missingRequests === 0;

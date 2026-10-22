@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A file watch or timer that fired before a new tab's first reply finished was skipped as «the conversation that created it is gone».**
+- **JSON and YAML keys and values had the same color, so syntax colors looked missing.** Keys now get their own color.
 - **On Windows, codex sign-in (`codex-auth`) opened File Explorer instead of the browser.**
 - **With the search panel open on the dashboard, the chat couldn't be scrolled or clicked.**
 - **Registering a schedule that runs at startup (`reboot`) showed a false "schedule failed" alert even though nothing was wrong.**

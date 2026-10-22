@@ -1130,8 +1130,8 @@ export const getDefaultProfileName = (
   const profiles = loadModelProfiles(cwd);
   // 명시 포인터가 실존 프로파일이면 그것.
   if (explicit !== undefined && profiles[explicit] !== undefined) return explicit;
-  // ★사용자 프로파일이 **하나도 없으면**(빌트인 조립) 포인터를 그대로 돌려준다 — 등급 해석은 빌트인 쪽(`builtinTierFor`, 모르는 이름은
-  //  high)이 한다 (2026-10-14). 종전엔 여기서 버려져, 빌트인 상태에서 화면의 mid 를 기본으로 골라도 실행은 계속 high 였다.
+  // 사용자 프로파일이 **하나도 없으면**(빌트인) 포인터를 그대로 돌려준다(2026-10-14). ★2026-10-22 부터 빌트인은 `default` 하나라
+  //  이 값은 실행·표시에 영향이 없다 — 화면은 `effectiveDefaultProfileName`(빌트인이면 `default`), 실행은 `defaultPool`(빌트인 풀).
   if (explicit !== undefined && Object.keys(profiles).length === 0) return explicit;
   // 미지정/댕글링 → 첫 프로파일(순서상 처음). 없으면 "default"(어댑터 디폴트 폴백).
   const first = Object.keys(profiles)[0];

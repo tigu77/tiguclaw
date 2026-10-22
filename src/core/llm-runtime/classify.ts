@@ -18,10 +18,8 @@
  *    받는다. 데몬·턴 절대 안 죽음(임무 §3).
  *
  * 모델 tier 선택 (임무 §2 — "가장 싼/빠른 tier 를 LLM-agnostic 하게"):
- *  - 분류는 작은 작업이라 nano/low tier 가 적합. resolveTier("nano") → 없으면 "low" →
- *    둘 다 없으면 undefined(env 풀/디폴트로 폴백). tier 풀도 provider:model 콤마라
- *    어댑터 무관. self-growth 가 특정 모델을 고르지 않는다 — env 가 tier 를 정의하고,
- *    미정의면 일반 디폴트로 안전 degrade.
+ *  - 분류는 작은 작업이라 `low` 를 쓴다 — 사용자가 `low` 프로파일을 적었으면 그것, 아니면 기본 풀
+ *    (`resolveTier` 의 등급 별칭). 어댑터 무관. self-growth 가 특정 모델을 고르지 않는다.
  */
 import { assertRuntimeModelAllowed, resolveTier, runRegionA, type ModelSpec } from "./index.js";
 import { beginSummaryUsage } from "./auxiliary-usage.js";
@@ -39,20 +37,19 @@ export interface JudgeContradictionInput {
 }
 
 /**
- * **내부 단발 호출**의 싼 tier 풀 해석 — nano → low → undefined(facade 디폴트). 어댑터 무관.
+ * **내부 단발 호출**의 싼 tier 풀 해석 — `low` → undefined(facade 디폴트). 어댑터 무관.
  *
  * ★2026-08-15: `WebFetch(prompt)` 추출도 같은 판단이 필요해져 **export** 했다. 복사하면
  *  "가장 싼 tier 고르기" 라는 같은 판단이 두 곳에 생기고, 한쪽만 늙는다. 이름도
  *  classify 전용에서 중립으로 바꿨다(정의점은 여기 하나).
- * self-growth 가 모델을 고르지 않음: nano/low 등급(같은 이름의 프로파일, 없으면 빌트인)을 쓰고,
- * 둘 다 비면 undefined 로 일반 디폴트(기본 프로파일·빌트인)에 안전 degrade.
+ * ★`nano` 를 먼저 찾지 않는다 (2026-10-22 정태님 «나노는 아예 빼기로»). `nano` 가 기본 풀로 풀리게 된 뒤 남은 특례가
+ *  명시한 `low` 를 건너뛰고 기본(opus)을 골랐다(아스트라 P2 재현). `low` 프로파일이 없으면 기본 풀, `low` 가 안 풀리면
+ *  undefined 로 일반 디폴트(기본 프로파일·빌트인)에 안전 degrade.
  */
 export const cheapInternalTierSpecs = (): ModelSpec[] | undefined => {
   assertRuntimeModelAllowed();
   // 프로파일 설치본에서 레거시 `MODEL_TIER_*` 를 가리는 판단은 `resolveTier` 한 곳에 있다(2026-09-28 — 종전엔 여기서
   //  `nano` 만 막아 `low` 가 새었다). 9/26 사고: 6월 .env 의 nano 값(ollama qwen2.5 7B)으로 WebFetch 요약 127회 시한 초과.
-  const nano = resolveTier("nano");
-  if (nano.length > 0) return nano;
   const low = resolveTier("low");
   if (low.length > 0) return low;
   return undefined; // facade 디폴트(기본 프로파일 → 빌트인)
@@ -122,7 +119,7 @@ export const judgeContradiction = async (
         toolPolicy: { mode: "none" }, // 도구 0 (분류엔 불필요 + 미지원 모델 graceful)
         abortSignal: ac.signal, // 짧은 타임아웃
       },
-      { specs: cheapInternalTierSpecs() }, // nano/low tier(있으면) — LLM-agnostic 가벼운 풀
+      { specs: cheapInternalTierSpecs() }, // low(없으면 기본 풀) — LLM-agnostic 가벼운 풀
     );
     return parseVerdict(output.text);
   } catch {

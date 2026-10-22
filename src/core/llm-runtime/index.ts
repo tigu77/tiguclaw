@@ -55,7 +55,7 @@ import type {
   RegionATurnDonePayload,
   RegionATurnErrorPayload,
 } from "./types.js";
-import { builtinTierPool, builtinTierFor, isSelectableProfile } from "./builtin-profiles.js";
+import { builtinPool, isSelectableProfile } from "./builtin-profiles.js";
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
 import { ToolHangError } from "./tool-watchdog.js";
@@ -507,32 +507,31 @@ export const describeBasePool = (
   return pool.length > 0 ? { specs, source: "profile", profile: name } : { specs, source: "builtin", profileUnresolved: name };
 };
 
-export const resolveModelSpecs = (
-  override?: ModelSpec[],
-  cwd?: string,
-): ModelSpec[] => {
-  if (override !== undefined && override.length > 0) return override;
-  // (신규 2026-07-14, ADR model-profiles / 2026-07-16 models.default 포인터) 메인 턴 암묵 풀 =
-  //  기본 프로파일. 이름은 settings.json `models.default` 포인터로 지정(미설정 시 `"default"` —
-  //  무회귀: 현행 바이트 동일). 프로파일이 진실 소스, env REGION_A_MODELS 는 레거시 폴백(ADR (a)).
-  //  기본 풀은 체인의 자기 pool(chain[0])만 사용(메인 턴은 인터-프로파일 폴백 없이 풀 내 폴백만).
+/**
+ * **기본 풀** — 기본 프로파일의 첫 풀, 안 풀리면 빌트인, 둘 다 없으면 `[]`. 메인 턴(`resolveModelSpecs`)과
+ * 프로파일이 없는 등급 이름(`resolveTier`)이 **같은 답**을 쓴다(2026-10-22 — 두 곳이 갈려 화면과 실행이 달랐다).
+ */
+const defaultPool = (cwd?: string): ModelSpec[] => {
+  // (2026-07-14 ADR model-profiles / 2026-07-16 models.default 포인터) 기본 풀은 체인의 자기 pool(chain[0])만
+  //  사용(메인 턴은 인터-프로파일 폴백 없이 풀 내 폴백만).
   const defaultChain = resolveProfileChain(getDefaultProfileName(cwd), cwd);
   if (defaultChain.length > 0) {
     const pool = poolToSpecs(defaultChain[0], cwd);
     if (pool.length > 0) return pool;
   }
   // ★옛 `.env` 의 `REGION_A_MODELS` 는 더 읽지 않는다 (2026-09-29) — 부팅이 프로파일로 옮긴다(`legacy-model-env.ts`).
-  //  층이 둘이면 «지금 무엇으로 도나» 를 두 곳에서 답했다. 순서: 사용자 기본 프로파일 → 빌트인(아래).
-  // ★설정이 하나도 없으면 **인증된 provider 로 조립한다** (2026-08-13, 사용자 요청).
-  //  종전엔 여기서 곧장 DEFAULT_MODEL_SPEC(claude, 모델 미지정)로 떨어져 codex 만 인증한
-  //  설치도 claude 로 흘렀다. 사용자 설정(프로파일·env)이 먼저고 여기는 그 뒤다 — 즉
-  //  "적어둔 게 있으면 그게 이긴다" 는 불변.
-  const builtin = parseModelSpecList(
-    builtinTierPool(builtinTierFor(getDefaultProfileName(cwd)), cwd).join(","),
-    cwd,
-  );
-  if (builtin.length > 0) return builtin;
-  return [DEFAULT_MODEL_SPEC];
+  // ★설정이 하나도 없으면 **인증된 provider 로 조립한다** (2026-08-13, 사용자 요청). 사용자 설정이 먼저고 여기는
+  //  그 뒤다 — 즉 "적어둔 게 있으면 그게 이긴다" 는 불변.
+  return parseModelSpecList(builtinPool(cwd).join(","), cwd);
+};
+
+export const resolveModelSpecs = (
+  override?: ModelSpec[],
+  cwd?: string,
+): ModelSpec[] => {
+  if (override !== undefined && override.length > 0) return override;
+  const pool = defaultPool(cwd);
+  return pool.length > 0 ? pool : [DEFAULT_MODEL_SPEC];
 };
 
 // 풀의 provider 다양성 — 단일 provider 면 그 백엔드가 흔들릴 때(예: idle 타임아웃)
@@ -551,12 +550,14 @@ export const poolDiversityWarning = (): string | null => {
   );
 };
 
-// 등급(티어) → 모델 풀. agent 정의의 `model:` 이 등급(high/mid/low)이면 같은 이름의 **프로파일**, 없으면 **빌트인**.
+// 등급(티어) → 모델 풀. 등급 이름(high/mid/low…)이면 같은 이름의 **프로파일**, 없으면 **기본 풀**.
 // provider:model 직접 지정도 허용 (고급 — 특정 모델 강제). 빈/미지 → [] (어댑터 디폴트).
 // ★옛 `.env` 의 `MODEL_TIER_*` 는 더 읽지 않는다 (2026-09-29) — 부팅이 프로파일로 옮긴다(`legacy-model-env.ts`).
-const TIER_NAMES: readonly string[] = ["high", "mid", "low", "nano"]; // nano = 가장 가벼운 풀 — 내부 단발 호출(분류·요약)이 먼저 찾는다
-/** 등급 이름 — 게이트웨이 목록이 «해석되는 등급만» 광고할 때 이 목록을 `resolveTier` 로 돌린다(사본을 두지 않는다). */
-export const LEGACY_TIERS: readonly string[] = TIER_NAMES;
+// ★`default` 도 이 목록이다 — 빌트인 프로파일의 이름이고, 매니저·서브에이전트 도구는 원래 «기본 모델» 로 받아 왔다.
+// ★`nano` 는 등급이 아니다 (2026-10-22 정태님 «나노는 아예 빼기로») — 사용자가 `nano` 라는 프로파일을 적으면 그 이름으로 풀릴 뿐이다.
+const TIER_NAMES: readonly string[] = ["default", "high", "mid", "low"];
+/** 표준 등급 이름인가 — 같은 이름의 프로파일이 없으면 기본 풀로 풀린다(그래서 게이트웨이는 따로 광고하지 않는다). */
+export const isTierAlias = (name: string): boolean => TIER_NAMES.includes(name.trim().toLowerCase());
 
 /**
  * **세션 프로파일 → 풀** — 지금 **고를 수 있는 이름일 때만** 푼다(화면 목록과 같은 판정 `isSelectableProfile`).
@@ -586,14 +587,10 @@ export const resolveTier = (
     //  않는다» 로 닫는다(목록이 이 함수를 부른다).
     return poolToSpecs(profileChain[0]!, cwd);
   }
-  // 등급 키워드 — 같은 이름의 프로파일이 없으면 빌트인.
-  const s = raw.toLowerCase();
-  if (TIER_NAMES.includes(s)) {
-    // ★같은 이름의 프로파일이 없을 때 — 빌트인(인증된 provider 조립)으로. 종전엔 여기서 []
-    //  이라 등급 이름(high/mid/low)이 **아무 의미도 없었다**: 서브에이전트·매니저가 등급을
-    //  선언해도 전부 같은 어댑터 디폴트로 흘렀다. `nano` 는 빌트인이 모르므로 그대로 [].
-    return parseModelSpecList(builtinTierPool(s, cwd).join(","), cwd);
-  }
+  // ★등급 이름 — 같은 이름의 프로파일이 없으면 **기본 풀** (2026-10-22 정태님). 종전엔 빌트인의 그 등급(haiku 등)이라,
+  //  사용자가 high 하나만 적으면 화면엔 high 만 남는데 `low` 서브에이전트는 빌트인 haiku 로 돌았다(실측). 이제 «적힌 게
+  //  이긴다» 가 실행에도 그대로다 — `low` 를 따로 쓰고 싶으면 그 이름의 프로파일을 적는다.
+  if (isTierAlias(raw)) return defaultPool(cwd);
   // provider:model 직접 (티어 아님) — 단일 spec.
   const direct = parseModelSpec(raw);
   return direct !== null ? [direct] : [];
@@ -622,7 +619,13 @@ export const resolveModelChain = (
       .map((pool) => poolToSpecs(pool, cwd))
       .filter((pool) => pool.length > 0); // 빈/전부무효 풀은 체인에서 제거(다음 풀로 흐름).
   }
-  // 프로파일 아님 — 레거시 티어/직접 spec 단일 풀. (resolveTier 가 프로파일 재조회하나 무음.)
+  // ★등급 이름인데 그 프로파일이 없다 — **기본 프로파일의 체인**(그 .fallback 까지). 첫 풀은 메인 턴과 같은 판정이다:
+  //  기본 프로파일의 첫 풀이 안 풀리면 메인 턴처럼 기본 풀(빌트인)로 간다(`resolveTier` → `defaultPool`).
+  if (isTierAlias(raw)) {
+    const chain = resolveProfileChain(getDefaultProfileName(cwd), cwd).map((p) => poolToSpecs(p, cwd));
+    if (chain.length > 0 && chain[0]!.length > 0) return chain.filter((p) => p.length > 0);
+  }
+  // 프로파일 아님 — 등급 이름(기본 풀)/직접 spec 단일 풀. (resolveTier 가 프로파일 재조회하나 무음.)
   const pool = resolveTier(raw, cwd);
   return pool.length > 0 ? [pool] : [];
 };

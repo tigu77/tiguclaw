@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A widget panel.** Open it from the 🧩 button in the header, on any screen. On desktop it can sit next to the background panel, and you drag the handle above a widget to reorder.
 - **One-shot timers.** Ask "check the build in 10 minutes" and the assistant sets a timer at least a minute ahead. It fires once and then deletes itself, so it never piles up in your schedule list.
-- **Edit and Write cards can show the current file.** Press ⤢ to open the file as it is on disk now, below the changed snippet; when the snippet matches exactly one place, those lines are highlighted. Secret files (`.env`, `.git`, `.ssh`, `.aws`) never open.
+- **Edit and Write cards can show the current file.** Press ⤢ to open the file as it is on disk now, with syntax colors; when the change matches exactly one place, the removed (red) and added (green) lines are shown right there. Otherwise the changed snippet is shown separately above. Secret files (`.env`, `.git`, `.ssh`, `.aws`) never open.
 - **`tiguclaw repair` (Windows).** Gives your account rights on the scheduled task — and changes nothing else.
 
 ### Changed
@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A schedule missed while the daemon was off now runs once, late, after it starts.** Only the last run within 24 hours is made up; older ones are skipped.
 - **The home screen's widget area moved into the widget panel.** Widgets you placed show up there in the same order. The background button is now in the header on every screen, not only in chat.
 - **The «Background work» widget is now a compact view of the background panel.** It groups timers, managers/agents and shells by conversation, and clicking an item jumps to its card in the background panel. Each widget has its own right-click menu, where you can turn off just that widget.
+- **Setup no longer asks about models, and there is one default model profile.** With nothing configured, every task runs on the latest model of your signed-in providers (opus for Claude). To use other models, just ask tiguclaw — it saves them to `settings.json`, and what you saved wins. A tier with no profile of its own (such as `low`) uses the default profile. If you had only picked a default tier (such as mid) on the dashboard, it now runs on the single default.
 
 ### Fixed
 

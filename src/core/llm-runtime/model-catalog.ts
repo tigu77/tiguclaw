@@ -69,7 +69,7 @@ export interface ModelCatalog {
    */
   reasoningFloor?: Record<string, string>;
   /**
-   * 순서에 의미가 없는 provider 들 — `catalogTierModel` 이 등급을 주장하지 않는다.
+   * 순서에 의미가 없는 provider 들 — `catalogDefaultModel` 이 고르기를 주장하지 않는다.
    * ★**없음 = 순위 있음**으로 읽는다(옛 캐시 무회귀). 2026-08-31.
    */
   unranked?: string[];
@@ -174,20 +174,14 @@ export const catalogNote = (): string | null => {
 };
 
 /**
- * 카탈로그에서 provider·등급에 맞는 모델 하나. 없으면 undefined(호출자가 정적 표로 강등).
+ * 카탈로그에서 provider 의 빌트인 모델 하나. 없으면 undefined(호출자가 정적 표로 강등).
  *
- * ★anthropic 은 **패밀리 접두 + 최신순**으로 고른다 — 목록 첫 항목을 그냥 쓰면 다른 등급
- *  (예: fable)이 끼어든다. 손으로 관리하는 건 `opus`/`sonnet`/`haiku` 라는 **패밀리 이름**
- *  뿐이고, 그건 버전과 달리 안 늙는다.
- *
- * ★codex 는 사정이 다르다: `sol`·`terra`·`luna` 는 등급이 아니라 **형제**라서 high/mid 를
- *  가를 규칙이 없다. 그래서 `-mini`(명백한 소형)만 low 로 집고 나머지는 최신 하나를 공유한다.
- *  모르는 것을 아는 척 가르지 않는다.
+ * ★anthropic 은 **패밀리 접두 + 최신순**으로 고른다 — 목록 첫 항목을 그냥 쓰면 다른 패밀리
+ *  (예: fable)가 끼어든다. 손으로 관리하는 건 `opus` 라는 **패밀리 이름**뿐이고, 그건 버전과 달리 안 늙는다.
+ *  그래서 비용 등급이 조용히 오르지 않는다(opus→다음 opus).
+ * ★codex 는 최신순 목록의 첫 원소다(`sol`·`terra`·`luna` 는 등급이 아니라 형제다).
  */
-export const catalogTierModel = (
-  provider: string,
-  tier: "high" | "mid" | "low",
-): string | undefined => {
+export const catalogDefaultModel = (provider: string): string | undefined => {
   const c = fresh();
   const raw = c?.models[provider];
   if (raw === undefined || raw.length === 0) return undefined;
@@ -196,20 +190,12 @@ export const catalogTierModel = (
   //  들어갈 수 있는 값이 선택을 통과해 `codex-auto-review` 가 high 로 뽑혔다(회귀가 잡음).
   const list = raw.filter((m) => !m.startsWith("codex-auto-"));
   if (list.length === 0) return undefined;
-  // ★**순서에 의미가 없는 목록엔 등급을 주장하지 않는다** (2026-08-31). 아래 일반 경로는
+  // ★**순서에 의미가 없는 목록엔 고르기를 주장하지 않는다** (2026-08-31). 아래 일반 경로는
   //  *"첫 원소가 최상급"* 을 전제하는데 그건 최신순을 주는 조회에서만 참이다. 표준
   //  `/models` 를 붙이면서 실측으로 걸렸다 — 정품 openai 는 임베딩·TTS 까지 한 배열이라
-  //  `tier:high` 가 `text-embedding-…` 이 될 수 있었다. 이름은 알되 등급은 모른다고 말한다
-  //  (모르면 호출자가 정적 표로 강등한다 — 그게 옛 동작이다).
+  //  `text-embedding-…` 이 뽑힐 수 있었다. 모르면 호출자가 정적 표로 강등한다.
   if (provider !== "anthropic" && (c?.unranked ?? []).includes(provider)) return undefined;
-  if (provider === "anthropic") {
-    const family = tier === "high" ? "claude-opus" : tier === "mid" ? "claude-sonnet" : "claude-haiku";
-    return list.find((m) => m.startsWith(family));
-  }
-  if (tier === "low") {
-    const mini = list.find((m) => m.includes("-mini"));
-    if (mini !== undefined) return mini;
-  }
+  if (provider === "anthropic") return list.find((m) => m.startsWith("claude-opus"));
   return list[0];
 };
 
@@ -315,7 +301,7 @@ const codexModelsAt = async (
   }
   return { slugs, reasoning, reasoningFloor, toolSearch };
   // ★여기서 거르지 않는다 — 캐시는 백엔드가 말한 그대로 둔다(레코드 보존).
-  //  등급 후보에서 빼는 판단은 `catalogTierModel`(선택) 몫이다.
+  //  후보에서 빼는 판단은 `catalogDefaultModel`(선택) 몫이다.
 };
 
 /**
@@ -470,7 +456,7 @@ interface DiscoverResult {
   /**
    * ★**이 목록의 순서에 의미가 없다**(2026-08-31). 표준 `/models` 는 정렬을 약속하지 않고
    *  종류도 섞여 나온다(정품 openai 는 임베딩·TTS·이미지까지 한 배열이다). 그런데
-   *  `catalogTierModel` 의 일반 경로는 *"첫 원소가 최상급"* 을 전제한다 — 그건 **최신순을
+   *  `catalogDefaultModel` 의 일반 경로는 *"첫 원소가 최상급"* 을 전제한다 — 그건 **최신순을
    *  주는 조회**(codex)를 위해 쓰인 것이다.
    * ★없으면 순위 있음(기존 동작 보존) — 옛 캐시를 읽어도 회귀 0.
    */

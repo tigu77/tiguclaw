@@ -14,10 +14,11 @@
  *  적으면, 기본이 바뀔 때 같이 안 바뀌는 두 번째 진실 소스가 생긴다. 그래서 **폴백이
  *  실제로 도는지를 실행해서** 본다 — 소스에 그 단어가 있는지가 아니라.
  *
- * ★등급: ①폴백·기본 판정 = **실행**(실제 core 함수 + 임시 settings.json) ②시드 모양 =
- *  배선 린트(init.ts 는 import 시 readline 을 잡아 stdin 을 물므로 실행 불가).
+ * ★등급: 폴백·기본 판정 = **실행**(실제 core 함수 + 임시 settings.json).
+ *  init 은 2026-10-22 부터 프로파일을 시드하지 않는다(설치는 늘 자동) — 이 모양은 사용자가 직접 쓰거나
+ *  비서에게 시켜 쓴 settings.json 의 모양이고, «init 이 아무것도 안 쓴다» 는 `onboard-one-shot` 이 본다.
  */
-import { mkdtemp, writeFile, rm, readFile } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -38,7 +39,7 @@ export const check: RegressionCheck = {
 
     const dir = await mkdtemp(path.join(tmpdir(), "tiguclaw-seed-"));
     try {
-      // init 이 새로 까는 것과 같은 모양 — 셋뿐이고, fallback 은 아무 데도 없다.
+      // 사용자가 고정할 때 쓰는 모양 — 셋뿐이고, fallback 은 아무 데도 없다.
       await writeFile(
         path.join(dir, "settings.json"),
         JSON.stringify({
@@ -98,47 +99,6 @@ export const check: RegressionCheck = {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
 
-    // 시드 모양 — 위 실행 검사는 **내가 쓴 픽스처**를 보므로, init 이 진짜 그 모양을
-    // 까는지는 별도로 본다(픽스처와 실물이 갈리면 위 초록은 아무것도 안 지킨다).
-    const src = await readFile(new URL("../init.ts", import.meta.url), "utf8");
-    const seedBlock = src.slice(
-      src.indexOf("const buildSeedProfiles"),
-      src.indexOf("const seedModelProfiles"),
-    );
-    const three =
-      seedBlock !== "" &&
-      /\n  high: \{/.test(seedBlock) &&
-      /\n  mid: \{/.test(seedBlock) &&
-      /\n  low: \{/.test(seedBlock) &&
-      !/\n  default: \{/.test(seedBlock) &&
-      !/fallback:/.test(seedBlock);
-    out.push(
-      assert(
-        "★init 시드는 high/mid/low 셋뿐이고 손 fallback 이 없다",
-        three,
-        three ? "3개 · fallback 0" : "★`default` 프로파일이 돌아왔거나 fallback 을 손으로 적었다",
-      ),
-    );
-    const pointer = /seedModelProfiles\(buildSeedProfiles\(answers\), "high"\)/.test(src);
-    out.push(
-      assert(
-        "★init 이 기본 포인터를 함께 쓴다(키 순서에 기대지 않는다)",
-        pointer,
-        pointer ? 'models.default="high"' : "★포인터를 안 쓴다 — 기본이 키 순서에 달린다",
-      ),
-    );
-    // ★모델은 프로파일 한 곳에만 쓴다 (2026-09-29) — `.env` 에 REGION_A_MODELS·MODEL_TIER_* 를 같이 쓰면 같은 질문에 두 답이
-    //  생긴다(런타임은 이제 그 env 를 안 읽는다). 그리고 시드는 **파일 모양**으로 써야 읽힌다 — 메모리 모양(`{ spec }`)을
-    //  그대로 쓰면 프로파일이 통째로 무시됐다(2026-08-24~09-29, 수동 모드 설치의 모델이 .env 로 돌았다).
-    const oneSource = !/^REGION_A_MODELS=|^MODEL_TIER_/m.test(src) &&
-      /models\.profiles = Object\.fromEntries\(Object\.entries\(profiles\)\.map\(\(\[n, p\]\) => \[n, profileToSettingsJson\(p\)\]\)\);/.test(src);
-    out.push(
-      assert(
-        "★모델은 settings 프로파일에만 쓴다(.env 에 모델 줄 없음) · 시드는 파일 모양(profileToSettingsJson)으로",
-        oneSource,
-        oneSource ? "프로파일 한 곳 · 파일 모양" : "★.env 에 모델 줄이 있거나 시드가 메모리 모양이다",
-      ),
-    );
     return out;
   },
 };

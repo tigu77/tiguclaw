@@ -1,11 +1,12 @@
 /**
- * 회귀: **설정 파일이 없는(빌트인) 상태에서도 화면에 보이는 프로파일을 기본·세션 프로파일로 고를 수 있고, 실제로 그게 돈다**
- * (2026-10-14 — 정태님의 배지 색 신고와 같은 부류를 이어서 확인).
+ * 회귀: **설정 파일이 없는(빌트인) 상태의 프로파일은 `default` 하나이고, 화면이 말하는 것과 실제로 도는 것이 같다**
+ * (2026-10-14 배지 색 신고 부류 → 2026-10-22 정태님: «처음 아무것도 셋팅하지 않은 유저를 위한 것뿐이지»).
  *
- * 사고 셋(같은 뿌리 — «파일에 적힌 프로파일만» 으로 판정):
- *  ① 기본·세션 프로파일 지정 라우트가 `loadModelProfiles` 로 검사해 화면의 high/mid/low 를 «존재하지 않는 프로파일» 400.
- *  ② 세션 프로파일이 저장돼 있어도 라우터가 `resolveProfileChain`(파일만)으로 풀어 **조용히** 무시.
- *  ③ 화면은 빌트인이면 무조건 high 를 기본이라 표시 — 실행은 `models.default` 를 등급으로 따른다(말과 실행이 갈림).
+ * 지키는 것:
+ *  ① 빌트인 상태에서 화면의 프로파일(`default`)을 고를 수 있고, 없는 이름은 못 고른다(종전 사고: 파일에 적힌 것만 봐서 400).
+ *  ② 등급 이름(high/mid/low)은 **프로파일이 없으면 기본 풀**로 풀린다 — 빌트인 상태에서도, 사용자 프로파일이 생긴 뒤에도.
+ *     ★2026-10-22 사고: 사용자가 high 하나만 적자 화면엔 high 만 남는데 `low` 서브에이전트는 빌트인 haiku 로 돌았다.
+ *  ③ 세션에 남은 옛 이름은 고를 수 없는 이름이면 빈 풀(라우터가 기본으로) — 빌트인으로 새지 않는다.
  *
  * 등급: **실행** — 임시 홈(설정 파일 없음) + 실제 함수. 라우트·라우터 배선만 소스 확인.
  */
@@ -18,7 +19,7 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 export const check: RegressionCheck = {
   name: "builtin-profile-selection",
   guards:
-    "설정 파일 없는 빌트인 상태에서 화면의 high/mid/low 를 기본·세션 프로파일로 고르면 400 이고, 세션 프로파일은 저장돼도 조용히 무시되며, 화면이 실제와 다른 기본을 말하던 것",
+    "설정 파일 없는 빌트인 상태에서 화면의 프로파일을 고르면 400 이던 것 + 사용자가 프로파일 하나만 적자 화면엔 그것만 남는데 등급 이름(low 등)은 빌트인 모델로 돌던 것(화면과 실행이 갈림)",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
     const home = await mkdtemp(path.join(tmpdir(), "tiguclaw-bps-"));
@@ -34,36 +35,41 @@ export const check: RegressionCheck = {
       const { setDefaultProfile } = await import("../../core/settings.js");
       const specs = (xs: { provider?: string; adapter?: string; model: string }[]): string => xs.map((s) => `${s.provider ?? s.adapter}:${s.model}`).join(",");
 
+      const defSel = bp.isSelectableProfile("default", home);
       const midSel = bp.isSelectableProfile("mid", home);
       const nopeSel = bp.isSelectableProfile("nope", home);
+      const names = Object.keys(bp.resolveModelProfiles(home).profiles).join(",");
       out.push(
         assert(
-          "★★빌트인 상태에서 화면의 등급(mid)은 고를 수 있고, 없는 이름은 못 고른다",
-          midSel && !nopeSel && bp.resolveModelProfiles(home).builtin,
-          `mid=${String(midSel)} · nope=${String(nopeSel)}`,
+          "★★빌트인 상태의 프로파일은 `default` 하나이고 그것만 고를 수 있다(등급·없는 이름은 목록에 없다)",
+          names === "default" && defSel && !midSel && !nopeSel && bp.resolveModelProfiles(home).builtin,
+          `목록=${names} · default=${String(defSel)} · mid=${String(midSel)} · nope=${String(nopeSel)}`,
         ),
       );
 
-      const before = bp.effectiveDefaultProfileName(home);
-      setDefaultProfile("mid");
-      const after = bp.effectiveDefaultProfileName(home);
       const runPool = specs(rt.resolveModelSpecs(undefined, home));
-      const midPool = specs(rt.resolveTier("mid", home));
+      const tierPools = ["high", "mid", "low", "default"].map((t) => specs(rt.resolveTier(t, home)));
+      const chainLow = rt.resolveModelChain("low", home).map((p) => specs(p)).join(" | ");
+      const nanoPool = specs(rt.resolveTier("nano", home)); // ★nano 는 등급이 아니다(2026-10-22 «나노는 아예 빼기로») — 프로파일이 없으면 안 풀린다
       out.push(
         assert(
-          "★★기본을 mid 로 고르면 화면이 말하는 기본(mid)과 실제로 도는 풀(빌트인 mid)이 같다 — 여전히 빌트인",
-          before === "high" && after === "mid" && runPool !== "" && runPool === midPool && bp.resolveModelProfiles(home).builtin,
-          `전=${before} 후=${after} · 실행=${runPool} · mid=${midPool}`,
+          "★★빌트인 상태에서 등급 이름(default·high·mid·low)은 메인 턴과 같은 풀로 풀린다(별칭) — 체인도 그 한 풀 · nano 는 등급이 아니라 안 풀린다",
+          runPool !== "" && runPool === bp.builtinPool(home).join(",") && tierPools.every((p) => p === runPool) && chainLow === runPool && nanoPool === "",
+          `실행=${runPool} · 등급=${tierPools.join(" / ")} · low 체인=${chainLow} · nano=${nanoPool || "(안 풀림)"}`,
         ),
       );
 
-      const low = specs(rt.resolveTier("low", home));
-      const lowBuiltin = bp.builtinTierPool("low", home).join(",");
+      // 기본 포인터가 무엇이든(옛 빌트인 시절 mid 를 골라 둔 설치) 빌트인 상태의 기본은 `default` 하나다.
+      setDefaultProfile("mid");
+      const afterMid = bp.effectiveDefaultProfileName(home);
+      const runAfterMid = specs(rt.resolveModelSpecs(undefined, home));
+      setDefaultProfile("zzz-unknown");
+      const afterUnknown = bp.effectiveDefaultProfileName(home);
       out.push(
         assert(
-          "★세션 프로파일을 푸는 함수(`resolveTier`)가 빌트인 등급을 실제 풀로 푼다(종전엔 빈 체인 → 조용히 무시)",
-          low !== "" && low === lowBuiltin,
-          `low=${low} · 빌트인 low=${lowBuiltin}`,
+          "옛 포인터(mid·모르는 이름)가 남아 있어도 빌트인 상태의 기본 표시는 `default` 이고 실행 풀은 그대로다",
+          afterMid === "default" && afterUnknown === "default" && runAfterMid === runPool,
+          `mid→${afterMid} · zzz→${afterUnknown} · 실행=${runAfterMid}`,
         ),
       );
 
@@ -71,59 +77,67 @@ export const check: RegressionCheck = {
       // ★경로를 변수로 넘긴다 — 리터럴이면 `npm run build`(rootDir=src)가 plugins 를 끌어와 TS6059 로 깨진다(공개 CI 빌드).
       const routesUrl = new URL("../../../plugins/http-bridge/routes-settings.js", import.meta.url).href;
       const { handleGetModelProfiles } = (await import(routesUrl)) as { handleGetModelProfiles: (ctx: unknown) => Promise<void> };
-      const listed = async (): Promise<{ name: string; isDefault: boolean; description?: string }[]> => {
+      const listed = async (): Promise<{ name: string; isDefault: boolean }[]> => {
         let body = "";
         const res = { writeHead: () => res, end: (b: string) => { body = b; } };
         await handleGetModelProfiles({ req: {}, res, url: new URL("http://x/model-profiles") });
-        return (JSON.parse(body) as { profiles: { name: string; isDefault: boolean; description?: string }[] }).profiles;
+        return (JSON.parse(body) as { profiles: { name: string; isDefault: boolean }[] }).profiles;
       };
       const shown = await listed();
-      const shownDefault = shown.find((p) => p.isDefault)?.name;
-      const mainDesc = shown.filter((p) => (p.description ?? "").includes("메인 턴")).map((p) => p.name).join(",");
       out.push(
         assert(
-          "★★화면 목록(라우트 실행)이 기본으로 표시하는 것과 «메인 턴» 설명이 둘 다 실제 기본(mid)에 붙는다",
-          shownDefault === "mid" && mainDesc === "mid",
-          `isDefault=${String(shownDefault)} · «메인 턴»=${mainDesc}`,
-        ),
-      );
-      setDefaultProfile("zzz-unknown");
-      const normalized = bp.effectiveDefaultProfileName(home);
-      setDefaultProfile("mid");
-      out.push(
-        assert(
-          "모르는 기본 이름은 빌트인이 실제로 쓰는 high 로 정규화해 말한다(실행 `builtinTierFor` 와 같은 판정)",
-          normalized === "high",
-          `기본=zzz-unknown → 표시 ${normalized}`,
+          "★화면 목록(라우트 실행)도 `default` 하나를 기본으로 보여 준다",
+          shown.length === 1 && shown[0]!.name === "default" && shown[0]!.isDefault,
+          JSON.stringify(shown.map((p) => [p.name, p.isDefault])),
         ),
       );
       const sessMid = specs(rt.resolveSessionProfilePool("mid", home));
       out.push(
         assert(
-          "★빌트인 상태에서 세션 프로파일 mid 는 빌트인 mid 풀로 풀린다(라우터가 쓰는 함수)",
-          sessMid !== "" && sessMid === midPool,
-          `세션 mid=${sessMid}`,
+          "세션에 남은 옛 등급(mid)은 고를 수 없는 이름이라 빈 풀 — 라우터가 기본으로 보낸다",
+          sessMid === "",
+          `세션 mid → ${sessMid === "" ? "빈 풀(기본으로)" : sessMid}`,
         ),
       );
 
-      // 사용자 프로파일이 생기면 그것만 고를 수 있다 — 빌트인 등급 이름은 더 이상 목록에 없다.
-      await writeFile(getPaths().settings, JSON.stringify({ models: { default: "mine", profiles: { mine: { pool: ["anthropic:claude-sonnet-5"] } } } }), "utf8");
-      const mineSel = bp.isSelectableProfile("mine", home);
-      const staleMid = specs(rt.resolveSessionProfilePool("mid", home));
+      // ★사용자가 하나만 적으면 **그게 이긴다** — 화면도 실행도. 등급 이름은 그 기본 프로파일로 간다.
+      await writeFile(getPaths().settings, JSON.stringify({ models: { profiles: { high: { pool: ["anthropic:claude-opus-4-8"], fallback: "spare" }, spare: { pool: ["anthropic:claude-sonnet-5"] } } } }), "utf8");
+      const userNames = Object.keys(bp.resolveModelProfiles(home).profiles).join(",");
+      const userRun = specs(rt.resolveModelSpecs(undefined, home));
+      const userLow = specs(rt.resolveTier("low", home));
+      const userLowChain = rt.resolveModelChain("low", home).map((p) => specs(p)).join(" | ");
       out.push(
         assert(
-          "★★사용자 프로파일이 생기면 세션에 남은 옛 등급(mid)은 빌트인으로 새지 않고 기본으로 간다(사용자 설정이 통째로 이긴다 — 적대 검토 P3)",
-          staleMid === "",
-          `세션 mid → ${staleMid === "" ? "빈 풀(기본으로)" : staleMid}`,
+          "★★사용자가 high 하나만 적으면 메인 턴·`low` 등급 모두 그 모델이고 빌트인(haiku 등)으로 새지 않는다 — 체인은 그 프로파일의 폴백까지",
+          userNames === "high,spare" && userRun === "anthropic:claude-opus-4-8" && userLow === userRun &&
+            userLowChain === "anthropic:claude-opus-4-8 | anthropic:claude-sonnet-5",
+          `목록=${userNames} · 메인=${userRun} · low=${userLow} · low 체인=${userLowChain}`,
         ),
       );
+      // ★적어 둔 `low` 가 기본보다 이긴다 — 서브에이전트·매니저가 지나는 체인에서도(레드팀 10-22: 등급 판정을 프로파일 조회 앞으로 옮기는
+      //  변이가 살았다 — 위 사례는 사용자 프로파일 = 기본이라 두 결과가 같았다). 기본(main)과 다른 low 를 두고 체인 전체를 본다.
+      await writeFile(getPaths().settings, JSON.stringify({ models: { default: "main", profiles: {
+        main: { pool: ["anthropic:claude-opus-5"] }, low: { pool: ["anthropic:claude-haiku-4-5"], fallback: "spare" }, spare: { pool: ["anthropic:claude-sonnet-5"] },
+      } } }), "utf8");
+      const ownLowChain = rt.resolveModelChain("low", home).map((p) => specs(p)).join(" | ");
+      const ownLowTier = specs(rt.resolveTier("low", home));
+      out.push(
+        assert(
+          "★★사용자가 적은 `low` 는 기본보다 이긴다 — 체인(서브에이전트·매니저)은 그 프로파일과 폴백, 기본은 맨 끝",
+          ownLowChain === "anthropic:claude-haiku-4-5 | anthropic:claude-sonnet-5 | anthropic:claude-opus-5" && ownLowTier === "anthropic:claude-haiku-4-5",
+          `low 체인=${ownLowChain} · low=${ownLowTier}`,
+        ),
+      );
+      await writeFile(getPaths().settings, JSON.stringify({ models: { default: "mine", profiles: { mine: { pool: ["anthropic:claude-sonnet-5"] } } } }), "utf8");
+      const staleMid = specs(rt.resolveSessionProfilePool("mid", home));
+      const mineSel = bp.isSelectableProfile("mine", home);
       const lowSel = bp.isSelectableProfile("low", home);
       const def = bp.effectiveDefaultProfileName(home);
       out.push(
         assert(
-          "사용자 프로파일이 있으면 그 목록이 기준이다(빌트인 등급은 고를 수 없고 기본은 `models.default` 그대로)",
-          mineSel && !lowSel && def === "mine",
-          `mine=${String(mineSel)} · low=${String(lowSel)} · 기본=${def}`,
+          "사용자 프로파일이 있으면 그 목록이 기준이다(등급 이름은 고를 수 없고 세션의 옛 mid 는 빈 풀 · 기본은 `models.default` 그대로)",
+          mineSel && !lowSel && def === "mine" && staleMid === "",
+          `mine=${String(mineSel)} · low=${String(lowSel)} · 기본=${def} · 세션 mid=${staleMid === "" ? "빈 풀" : staleMid}`,
         ),
       );
 

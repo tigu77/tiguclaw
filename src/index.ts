@@ -100,7 +100,6 @@ import {
 import { resetThreadContext } from "./store/thread-reset.js";
 import {
   builtinModelProfiles,
-  builtinTierFor,
   effectiveDefaultProfileName,
 } from "./core/llm-runtime/builtin-profiles.js";
 import {
@@ -120,7 +119,6 @@ import {
   diagnoseModelProfiles,
   loadModelProviders,
   loadModelProfiles,
-  getDefaultProfileName,
 } from "./core/settings.js";
 import { renderModelProfiles } from "./core/entry/models-command.js";
 import { renderProviders } from "./core/entry/providers-command.js";
@@ -926,8 +924,8 @@ const handler: MessageHandler = async (msg) => {
       const poolSource = base.source === "profile"
         ? translate("srv.model.source.profile", { profile: base.profile ?? "" })
         : base.profileUnresolved !== undefined
-          ? translate("srv.model.source.builtinUnresolved", { tier: builtinTierFor(getDefaultProfileName()), profile: base.profileUnresolved })
-          : translate("srv.model.source.builtin", { tier: builtinTierFor(getDefaultProfileName()) }); // 실행(`resolveModelSpecs`)과 같은 판정 — 종전엔 high 고정
+          ? translate("srv.model.source.builtinUnresolved", { profile: base.profileUnresolved })
+          : translate("srv.model.source.builtin");
       const basePool = base.specs
         .map((s) => `${s.provider ?? s.adapter}:${s.model === "" ? translate("srv.model.adapterDefault") : s.model}`)
         .join(" → ") || translate("srv.model.poolNone");

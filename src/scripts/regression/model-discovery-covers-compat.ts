@@ -22,7 +22,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { catalogTierModel, __setCatalogForTest } from "../../core/llm-runtime/model-catalog.js";
+import { catalogDefaultModel, __setCatalogForTest } from "../../core/llm-runtime/model-catalog.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -61,8 +61,8 @@ export const check: RegressionCheck = {
     // ③ 동작 — 카탈로그를 세워 실제로 물어본다(네트워크 0).
     const prev = { anthropic: ["claude-opus-5"], zzcompat: ["text-embedding-3-small", "gpt-5.5"] };
     __setCatalogForTest({ fetchedAt: Date.now(), models: prev, unranked: ["zzcompat"] });
-    const unrankedHigh = catalogTierModel("zzcompat", "high");
-    const rankedHigh = catalogTierModel("anthropic", "high");
+    const unrankedHigh = catalogDefaultModel("zzcompat");
+    const rankedHigh = catalogDefaultModel("anthropic");
     __setCatalogForTest(null);
 
     out.push(

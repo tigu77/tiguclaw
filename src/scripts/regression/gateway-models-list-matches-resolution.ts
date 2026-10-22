@@ -26,7 +26,7 @@ export const check: RegressionCheck = {
       process.env.MODEL_TIER_NANO = "google:gemini-legacy-nano";
       // 프로파일 설치본 — 옛 env 는 가려진다.
       writeFileSync(settingsFile, JSON.stringify({ models: { default: "low", profiles: { low: { pool: ["anthropic:claude-haiku-4-5"] } } } }) + "\n");
-      const withProfiles = { ids: ids(), nano: resolveTier("nano").length };
+      const withProfiles = { ids: ids(), nano: resolveTier("nano").map((x) => `${x.provider ?? x.adapter}:${x.model}`).join(",") };
       // 첫 풀이 안 풀리는 프로파일(옮기지 않은 `ollama:…`) — 폴백이 있으면 그리로, 없으면 광고하지 않는다(적대 검토 P4-1).
       writeFileSync(settingsFile, JSON.stringify({ models: { default: "low", profiles: {
         low: { pool: ["anthropic:claude-haiku-4-5"] },
@@ -40,15 +40,19 @@ export const check: RegressionCheck = {
       const dead = { ids: ids(), local: resolveTier("local").length };
       // 옛 설치본(프로파일 없음) — env 가 그대로 쓰인다.
       writeFileSync(settingsFile, "{}\n");
-      const legacy = { ids: ids(), nano: resolveTier("nano").length };
+      const legacy = { ids: ids(), nanoEnv: resolveTier("nano").some((x) => x.model.includes("gemini-legacy")) };
       return [
-        assert("★프로파일 설치본: 요청이 못 푸는 `tier:nano` 를 광고하지 않는다", !withProfiles.ids.includes("tier:nano") && withProfiles.nano === 0 && withProfiles.ids.includes("tier:low"), withProfiles),
+        // ★2026-10-22: 프로파일이 없는 등급 이름은 **기본 풀의 별칭**이다 — 요청은 풀리되(기본으로) 따로 광고하지 않는다. 옛 env 는 여전히 안 읽는다.
+        // ★nano 는 등급이 아니다(2026-10-22 «나노는 아예 빼기로») — 프로파일이 없으면 광고도 해석도 안 한다(옛 env 도 안 읽는다).
+        assert("★프로파일 설치본: `tier:nano` 는 광고하지 않고 풀리지도 않는다(옛 env 도 안 읽음) · 기본의 별칭(`tier:default`)도 따로 광고하지 않는다",
+          !withProfiles.ids.includes("tier:nano") && !withProfiles.ids.includes("tier:default") && withProfiles.ids.includes("tier:low") &&
+            withProfiles.nano === "", withProfiles),
         assert("★광고한 `tier:*` 는 전부 요청하면 풀린다 — 첫 풀이 안 풀리는 프로파일은 광고하지 않는다(요청하면 게이트웨이 풀로 가므로)",
           everyAdvertisedResolves && !stale.ids.includes("tier:local") && !stale.ids.includes("tier:chained") && stale.local === 0 && stale.chained === 0,
           stale),
         assert("★아무 풀도 안 풀리는 프로파일은 광고하지 않는다", !dead.ids.includes("tier:local") && dead.local === 0, dead),
         // ★옛 `.env` 등급은 더 읽지 않는다(2026-09-29 — 부팅이 프로파일로 옮긴다). 프로파일이 없어도 env 의 nano 는 광고도 해석도 안 한다.
-        assert("반대 방향: 프로파일 없는 설치도 옛 env 등급(nano)을 광고·해석하지 않는다", !legacy.ids.includes("tier:nano") && legacy.nano === 0, legacy),
+        assert("반대 방향: 프로파일 없는 설치도 옛 env 등급(nano)을 광고·해석하지 않는다", !legacy.ids.includes("tier:nano") && !legacy.nanoEnv, legacy),
       ];
     } finally {
       if (prevNano === undefined) delete process.env.MODEL_TIER_NANO; else process.env.MODEL_TIER_NANO = prevNano;

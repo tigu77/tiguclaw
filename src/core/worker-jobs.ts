@@ -282,7 +282,7 @@ export interface WorkerJobRecord {
   detached: boolean;
   /** 서브에이전트 정의 이름(kind==='agent' 만) — 대시보드 라벨. */
   agentName?: string;
-  /** 서브에이전트 모델 티어(high/mid/low/nano 또는 provider:model). 관측용(대시보드·/agents). */
+  /** 서브에이전트 모델 티어(high/mid/low 또는 provider:model). 관측용(대시보드·/agents). */
   modelTier?: string;
   /** 사람이 읽는 짧은 이름 (완료 보고·상태 조회·로그). */
   label: string;
@@ -3516,7 +3516,7 @@ export interface StartWorkerJobInput {
    */
   cwd?: string;
   /**
-   * 매니저 모델 등급(high/mid/low/nano 또는 provider:model). run_in_background(tier=X) 가
+   * 매니저 모델 등급(high/mid/low 또는 provider:model). run_in_background(tier=X) 가
    * 채운다 — registerJob 이 레코드로 흘려 runner 가 resolveTier→specs 로 그 티어 풀 사용
    * (미지정 시 기본 모델). 서브에이전트 model 등급과 동일 경로. 대시보드 관측에도 실림.
    */

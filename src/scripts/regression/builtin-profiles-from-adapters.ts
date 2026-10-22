@@ -41,7 +41,7 @@ export const check: RegressionCheck = {
     "프로파일 미설정 설치가 인증하지도 않은 claude 로 흐르고 등급 이름이 아무 의미 없던 것 + claude 구독 사용자(키 없이 OAuth 토큰)가 인증 판정에서 조용히 빠지던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
-    const { builtinTierPool, builtinTierProviders, isRegisteredProvider } = await import(
+    const { builtinPool, builtinProviders, isRegisteredProvider } = await import(
       "../../core/llm-runtime/builtin-profiles.js"
     );
     const { resolveModelSpecs, resolveTier } = await import(
@@ -101,7 +101,7 @@ export const check: RegressionCheck = {
       //  빠지는 비대칭). 이것도 등록 **전에** 재야 한다 — 순서가 곧 판정이다.
       if (getAuthProvider("claude-subscription") === undefined) {
         only("CLAUDE_CODE_OAUTH_TOKEN");
-        const noShimSub = !claudeAuthAvailable() && builtinTierPool("high", empty).length === 0;
+        const noShimSub = !claudeAuthAvailable() && builtinPool(empty).length === 0;
         out.push(
           assert(
             "★★심이 없으면 구독 토큰이 있어도 claude 가 안 열린다 — Business 판이 구독을 뺄 수 있으려면 이 문이 있어야 한다(없는 상태가 안전한 상태)",
@@ -114,7 +114,7 @@ export const check: RegressionCheck = {
         only("ANTHROPIC_API_KEY");
         const keyStillWorks =
           claudeAuthAvailable() &&
-          builtinTierPool("high", empty).some((m) => m.startsWith("anthropic:"));
+          builtinPool(empty).some((m) => m.startsWith("anthropic:"));
         out.push(
           assert(
             "★★심이 없어도 **API 키 경로는 산다** — 구독을 빼는 것이 claude 를 빼는 것이면 안 된다(공식 API 는 118개이고 구독이 안 주는 상위 모델까지 있다)",
@@ -179,7 +179,7 @@ export const check: RegressionCheck = {
       // ★구독 사용자 — 키는 없고 OAuth 토큰만. 여기서 anthropic 이 빠지면 그 설치는
       //  claude 를 영영 못 쓴다(에러도 없이).
       only("CLAUDE_CODE_OAUTH_TOKEN");
-      const subPool = builtinTierPool("high", empty);
+      const subPool = builtinPool(empty);
       out.push(
         assert(
           "★claude 구독(키 없이 OAuth 토큰)도 인증으로 인정된다",
@@ -190,7 +190,7 @@ export const check: RegressionCheck = {
 
       // codex 만 인증 — claude 를 넣으면 안 된다(있지도 않은 인증을 때린다).
       only("OPENAI_CODEX_OAUTH_TOKEN");
-      const codexPool = builtinTierPool("high", empty);
+      const codexPool = builtinPool(empty);
       out.push(
         assert(
           "★codex 만 인증했으면 codex 만 담는다(미인증 provider 를 안 넣는다)",
@@ -201,7 +201,7 @@ export const check: RegressionCheck = {
 
       // 둘 다 인증 — 한 풀에 나란히(교차 provider 안전망이 기본으로 성립), anthropic 이 앞.
       only("ANTHROPIC_API_KEY", "OPENAI_CODEX_OAUTH_TOKEN");
-      const bothPool = builtinTierPool("high", empty);
+      const bothPool = builtinPool(empty);
       out.push(
         assert(
           "★둘 다 인증하면 한 풀에 교차 provider 로 담긴다(anthropic 먼저)",
@@ -212,34 +212,24 @@ export const check: RegressionCheck = {
         ),
       );
 
-      // 등급이 실제로 갈린다 — 셋이 같은 값이면 등급 이름이 다시 무의미해진다.
+      // ★빌트인은 **하나**다 (2026-10-22 정태님) — 등급 이름은 그 하나의 별칭이다(같은 이름의 프로파일이 없으면 기본 풀).
       only("ANTHROPIC_API_KEY");
-      const hi = builtinTierPool("high", empty);
-      const lo = builtinTierPool("low", empty);
-      out.push(
-        assert(
-          "★high 와 low 가 다른 모델이다(등급이 이름뿐이 아니다)",
-          hi.length > 0 && lo.length > 0 && hi[0] !== lo[0],
-          `high=${hi[0]} low=${lo[0]}`,
-        ),
-      );
-
-      // 메인 턴이 빌트인으로 흐른다 — 설정도 env 도 없을 때.
+      const hi = builtinPool(empty);
       const main = resolveModelSpecs(undefined, empty);
       out.push(
         assert(
-          "★설정·env 가 하나도 없으면 메인 턴이 빌트인 high 로 돈다",
-          main.length > 0 && main[0].model === hi[0].split(":")[1],
-          `메인=${main.map((s) => `${s.provider}:${s.model}`).join(",")}`,
+          "★설정·env 가 하나도 없으면 메인 턴이 빌트인 풀(최신 opus)로 돈다",
+          hi.length > 0 && main.length > 0 && main[0].model === hi[0].split(":")[1] && hi[0] === "anthropic:claude-opus-5",
+          `빌트인=${hi.join(",")} · 메인=${main.map((s) => `${s.provider}:${s.model}`).join(",")}`,
         ),
       );
 
-      // 등급 해석(서브에이전트·매니저) 도 빌트인으로.
+      // 등급 해석(서브에이전트·매니저)도 같은 풀 — 빌트인이 등급마다 다른 모델(haiku 등)을 고르지 않는다.
       const tier = resolveTier("low", empty);
       out.push(
         assert(
-          "★등급 이름(low)이 빌트인 풀로 해석된다",
-          tier.length > 0 && tier[0].model === lo[0].split(":")[1],
+          "★등급 이름(low)이 메인 턴과 같은 빌트인 풀로 해석된다(빌트인이 하나라 갈리지 않는다)",
+          tier.length > 0 && tier[0].model === hi[0].split(":")[1],
           `low=${tier.map((s) => s.model).join(",")}`,
         ),
       );
@@ -273,7 +263,7 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "인증이 없으면 빈 풀(기존 폴백 경로 보존)",
-          builtinTierPool("high", empty).length === 0,
+          builtinPool(empty).length === 0,
           "빈 풀",
         ),
       );
@@ -290,7 +280,7 @@ export const check: RegressionCheck = {
           codex: ["codex-auto-review", "gpt-9.9-sol", "gpt-9.9-mini"],
         },
       });
-      const live = builtinTierPool("high", empty);
+      const live = builtinPool(empty);
       out.push(
         assert(
           "★카탈로그가 정적 표를 이긴다(조회만 하고 안 쓰면 무의미)",
@@ -305,29 +295,20 @@ export const check: RegressionCheck = {
           `high=${live[0]}`,
         ),
       );
-      const noSpecial = JSON.stringify(builtinTierPool("high", empty));
+      const noSpecial = JSON.stringify(builtinPool(empty));
       out.push(
         assert(
-          "특수 목적 모델(codex-auto-*)은 등급 후보가 아니다",
+          "특수 목적 모델(codex-auto-*)은 빌트인 후보가 아니다",
           !noSpecial.includes("codex-auto"),
           noSpecial,
         ),
       );
-      const liveLow = builtinTierPool("low", empty);
-      out.push(
-        assert(
-          "codex low 는 -mini 를 집는다(형제 모델을 등급인 척 가르지 않는다)",
-          liveLow[1] === "codex:gpt-9.9-mini",
-          `low=${JSON.stringify(liveLow)}`,
-        ),
-      );
-
       // ★늙은 캐시는 안 쓴다 — 낡은 값을 최신인 척하면 정적 표보다 나쁘다.
       setCatalog({
         fetchedAt: Date.now() - 30 * 24 * 60 * 60 * 1000,
         models: { anthropic: ["claude-opus-9"] },
       });
-      const stale = builtinTierPool("high", empty);
+      const stale = builtinPool(empty);
       out.push(
         assert(
           "★한 달 된 캐시는 버리고 정적 표로 강등한다",
@@ -341,7 +322,7 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "카탈로그가 없으면 정적 표로 동작(네트워크 무관)",
-          builtinTierPool("high", empty)[0] === "anthropic:claude-opus-5",
+          builtinPool(empty)[0] === "anthropic:claude-opus-5",
           "정적 표",
         ),
       );
@@ -368,12 +349,12 @@ export const check: RegressionCheck = {
       setCatalog(null);
 
       // 표의 키가 실존 provider 인지 — 오타·삭제된 provider 가 조용히 남지 않게.
-      const bogus = builtinTierProviders().filter((p) => !isRegisteredProvider(p));
+      const bogus = builtinProviders().filter((p) => !isRegisteredProvider(p));
       out.push(
         assert(
           "빌트인 표의 provider 가 전부 실존한다",
           bogus.length === 0,
-          bogus.length === 0 ? builtinTierProviders().join(",") : `미지 ${bogus.join(",")}`,
+          bogus.length === 0 ? builtinProviders().join(",") : `미지 ${bogus.join(",")}`,
         ),
       );
     } finally {

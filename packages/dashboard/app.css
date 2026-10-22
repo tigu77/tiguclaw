@@ -995,10 +995,14 @@
       .fv-jump:hover, .fv-close:hover { color:var(--text); background:var(--card-hover); }
       .fv-frag { flex:none; max-height:30%; overflow:auto; padding:6px 10px; border-bottom:1px solid var(--border); }
       .fv-note { flex:none; padding:6px 12px; font-size:0.6875rem; color:var(--text-mute); border-bottom:1px solid var(--border); }
-      .fv-file { flex:1; min-height:0; overflow:auto; display:flex; align-items:flex-start; font-family:var(--font-mono); font-size:0.75rem; line-height:1.5; }
-      .fv-gutter { flex:none; margin:0; padding:8px 8px 8px 12px; text-align:right; color:var(--text-dim); user-select:none; border-right:1px solid var(--border); position:sticky; left:0; z-index:1; background:var(--bg); }
-      .fv-code { flex:1; min-width:0; margin:0; padding:8px 12px; white-space:pre; color:var(--text); }
-      .fv-hit { background:rgb(var(--accent-rgb) / .22); color:inherit; display:inline; }
+      .fv-file { flex:1; min-height:0; overflow:auto; padding:8px 0; font-family:var(--font-mono); font-size:0.75rem; line-height:1.5; }
+      /* 앞·뒤 구간(한 덩어리)과 바뀐 곳의 줄이 같은 칸에 선다 — 번호 칸 폭은 --fv-gw(가장 큰 번호의 자릿수), 코드 칸은 같은 여백. */
+      .fv-inner { display:inline-block; min-width:100%; vertical-align:top; }
+      .fv-seg, .fv-row { display:flex; }
+      .fv-gutter, .fv-no { flex:none; box-sizing:content-box; width:var(--fv-gw, 3ch); margin:0; padding:0 8px 0 12px; text-align:right; color:var(--text-dim); user-select:none; border-right:1px solid var(--border); position:sticky; left:0; z-index:1; background:var(--bg); white-space:pre; }
+      .fv-code, .fv-line { flex:1; margin:0; padding:0 12px; white-space:pre; color:var(--text); }
+      .fv-add .fv-line { background:rgb(var(--diff-add-rgb) / .15); box-shadow:inset 3px 0 0 var(--diff-add-op); }
+      .fv-del .fv-line { background:rgb(var(--diff-del-rgb) / .15); box-shadow:inset 3px 0 0 var(--diff-del-op); }
       @media (max-width: 900px) { .fv-back { padding:0; } .fv-box { width:100%; height:100%; border-radius:0; border:none; } .fv-frag { max-height:35%; } }
       .act-step.expanded .act-diff-body, .hist-tool.expanded .act-diff-body, .hist-step.expanded .act-diff-body, .bg-step.expanded .act-diff-body { display:block; }
       /* ExitPlanMode 계획 카드 — 항상 표시(.expanded 무관). 계획(마크다운)을 사용자가 바로 보게. */

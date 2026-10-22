@@ -63,11 +63,15 @@ Claude Code 스킬/에이전트는 프로젝트 `CLAUDE.md`(+ 하위 `**/CLAUDE.
 ## 4) 호환 주의 (거의 그대로, 예외만)
 - ★**에이전트 `model` 은 반드시 바꿔 적어라** — 여기가 두 포맷이 **안 같은** 유일한 칸이다.
   Claude Code 의 `model:` 은 **모델 이름**(opus·sonnet·haiku)이고 tiguclaw 의 `model:` 은
-  **프로파일 이름**(high·mid·low·nano)이다. 모르는 값은 **에러가 아니라 디폴트**로 조용히
-  떨어지므로, 그대로 복사하면 **등급 의도가 소리 없이 사라진다**(그 에이전트가 디폴트
-  모델로 돈다).
+  **프로파일 이름**(작동 컨텍스트 `## 모델 프로파일` 에 있는 것) 또는 `provider:model` 이다.
+  정의 파일의 모르는 값은 **에러가 아니라 기본 모델**로 조용히 떨어지므로, 그대로 복사하면
+  **등급 의도가 소리 없이 사라진다**.
 
       opus → high · sonnet → mid · haiku → low
+
+  ★이 표는 **의도 표기**다 — 모델 계열을 보장하지 않는다. `high`·`mid`·`low` 는 같은 이름의
+  프로파일이 없으면 **기본 프로파일**로 간다. 원래 계열(sonnet·haiku)을 지켜야 하면 그 모델을 담은
+  프로파일을 `settings.json` 에 적거나 `model: anthropic:claude-sonnet-5` 처럼 직접 적는다.
 - 에이전트/스킬 `tools`·`allowed-tools`: Claude Code 도구명(Read/Edit/Bash/Grep/Glob/WebFetch…)은
   tiguclaw file-ops 와 동일. tiguclaw 에 없는 도구(특정 MCP 등)는 tiguclaw 가 무시 → 그대로 두거나
   주석. **어댑터별 특수분기 금지**(#2) — 도구 목록은 의도만, 실제 가용은 런타임이 결정.

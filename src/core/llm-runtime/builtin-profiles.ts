@@ -8,7 +8,7 @@
  * 즉 **codex 만 인증한 사용자도 claude 로 흘렀고**, `high`/`mid`/`low` 는 아무 의미가 없었다
  * (`npm run init` 을 안 거친 설치·프로파일을 지운 경우가 전부 여기).
  *
- * 이제 그 자리에서 **지금 인증된 provider 들**로 세 등급을 만든다. 인증 판정은
+ * 이제 그 자리에서 **지금 인증된 provider 들**로 기본 프로파일 하나를 만든다. 인증 판정은
  * `providerAuthAvailable`(단일 정본)에 위임한다 — 여기서 env 를 다시 읽지 않는다.
  *
  * ★디스크에 쓰지 않는다(의도). 파일로 굳히면 그 순간 늙는다 — 나중에 codex 를 인증해도
@@ -20,45 +20,38 @@
  * `poolDiversityWarning` 이 권하던 안전망이 기본으로 성립한다. 순서 = 아래 ORDER.
  */
 import { providerAuthAvailable } from "./provider-availability.js";
-import { catalogTierModel } from "./model-catalog.js";
+import { catalogDefaultModel } from "./model-catalog.js";
 import { PROVIDER_REGISTRY } from "./provider-registry.js";
 import { getDefaultProfileName, loadModelProfiles, readBuiltinProfileColors, setBuiltinProfileColor, setProfileColor, isBadgeColor, type ModelProfile } from "../settings.js";
 
-/** 빌트인이 아는 세 등급. 사용자 프로파일 이름은 자유지만 빌트인은 이 셋뿐이다. */
-export const BUILTIN_TIERS = ["high", "mid", "low"] as const;
-export type BuiltinTier = (typeof BUILTIN_TIERS)[number];
-
-/** 프로파일이 없을 때의 기본 등급 — 메인 턴이 이걸 쓴다(사용자 결정 2026-08-13). */
-export const BUILTIN_DEFAULT_TIER: BuiltinTier = "high";
+/**
+ * 빌트인 프로파일 이름 — **하나뿐이다** (2026-10-22 정태님: «처음 아무것도 셋팅하지 않은 유저를 위한 것뿐이지»).
+ * ★종전엔 high/mid/low 셋이었다(2026-08-13). 그런데 사용자가 «high 만 이걸로» 라고 해서 하나를 적으면 사용자 설정이
+ *  통째로 이겨 화면엔 high 만 남고, 서브에이전트의 `low` 는 여전히 빌트인 haiku 로 돌았다(화면과 실행이 갈림, 실측).
+ *  빌트인을 하나로 두면 «바꾸면 settings.json 에 적히고 적힌 게 이긴다» 하나로 끝난다. 등급 이름(`low` 등)은
+ *  같은 이름의 프로파일이 없으면 기본으로 풀린다(`resolveTier`).
+ */
+export const BUILTIN_PROFILE = "default";
 
 /**
- * provider id → 등급별 모델. **`PROVIDER_REGISTRY` 의 키여야 한다**(회귀가 검사).
+ * provider id → 빌트인 모델. **`PROVIDER_REGISTRY` 의 키여야 한다**(회귀가 검사).
  *
  * ★없는 provider(ollama·google)는 **일부러 비운다** — 로컬/게이트웨이 모델 이름은 우리가
  *  알 수 없고, 모르는 걸 지어내면 "형식은 맞는데 실재하지 않는 ID" 가 되어 매 턴 실패한다.
  *  그런 provider 는 사용자가 `settings.json` 에 직접 적는 게 맞다.
  *
- * ★2026-08-13부터 이 표는 **바닥**이다 — `model-catalog.ts` 가 백엔드에 물어본 값이 있으면
- *  그게 먼저다. 표는 조회가 안 될 때(네트워크·미인증·구버전) 쓰인다.
+ * ★이 표는 **바닥**이다 — `model-catalog.ts` 가 백엔드에 물어본 값이 있으면 그게 먼저다(2026-08-13).
+ *  표는 조회가 안 될 때(네트워크·미인증·구버전) 쓰인다. 늙어도 사용자 설정이 이기고, `/models` 가
+ *  어디서 온 값인지 표시하며, 온보딩은 이 표를 디스크에 쓰지 않는다 — 늙은 값이 조용히 박히는 경로가 없게.
  *
- * ★이 표는 늙는다. 늙어도 사용자 설정이 이기고, `/models` 가 어디서 온 값인지 표시하며,
- *  온보딩(`npm run init`)이 같은 표를 보여주고 그 자리에서 고치게 한다 — 늙은 값이
- *  조용히 박히는 경로가 없게.
- *
- * ★확인 수준을 구분해 적는다: anthropic 3종은 공식 카탈로그로 **확인**했다(2026-08-13).
- *  `codex`/`openai` 의 `gpt-5.5` 는 2026-07-08부터 init 이 시드해 온 값을 **그대로 물려받은
- *  것**이고 내가 벤더 카탈로그로 확인한 값은 아니다 — codex 는 실사용 로그(`gpt-5.5` 102턴)가
- *  뒷받침하지만 정품 openai API 쪽은 미확인이다. 틀렸다면 그 provider 만 첫 턴에 모델 오류를
- *  내고 풀의 다음으로 넘어간다(조용한 오답이 아니라 시끄러운 실패 — 그래서 방치 가능).
+ * ★확인 수준: anthropic 은 공식 카탈로그로 **확인**했다(2026-08-13). `codex`/`openai` 의 `gpt-5.5` 는
+ *  2026-07-08부터 init 이 시드해 온 값을 물려받은 것이다 — 틀렸다면 그 provider 만 첫 턴에 모델 오류를
+ *  내고 풀의 다음으로 넘어간다(조용한 오답이 아니라 시끄러운 실패).
  */
-const PROVIDER_TIER_MODELS: Record<string, Record<BuiltinTier, string>> = {
-  anthropic: {
-    high: "claude-opus-5",
-    mid: "claude-sonnet-5",
-    low: "claude-haiku-4-5",
-  },
-  codex: { high: "gpt-5.5", mid: "gpt-5.5", low: "gpt-5.5" },
-  openai: { high: "gpt-5.5", mid: "gpt-5.5", low: "gpt-5.5" },
+const PROVIDER_DEFAULT_MODELS: Record<string, string> = {
+  anthropic: "claude-opus-5",
+  codex: "gpt-5.5",
+  openai: "gpt-5.5",
 };
 
 /**
@@ -68,73 +61,44 @@ const PROVIDER_TIER_MODELS: Record<string, Record<BuiltinTier, string>> = {
  */
 const ORDER = ["anthropic", "codex", "openai"] as const;
 
-/**
- * provider·등급 → 모델 이름(접두사 없음). **인증 여부를 보지 않는다** — 온보딩(`npm run init`)
- * 은 "지금 막 고른 provider" 를 물어야 하므로 아직 키가 없는 상태에서도 이름이 필요하다.
- * 런타임 조립(`builtinTierPool`)만 인증을 본다.
- */
-export const builtinTierModel = (
-  provider: string,
-  tier: BuiltinTier,
-): string | undefined => PROVIDER_TIER_MODELS[provider]?.[tier];
-
 /** 표의 키가 실제 provider 인지 — 회귀에서 검사(오타·삭제된 provider 방치 방지). */
-export const builtinTierProviders = (): string[] => Object.keys(PROVIDER_TIER_MODELS);
+export const builtinProviders = (): string[] => Object.keys(PROVIDER_DEFAULT_MODELS);
 export const isRegisteredProvider = (name: string): boolean =>
   Object.prototype.hasOwnProperty.call(PROVIDER_REGISTRY, name);
 
 /**
- * 한 등급의 raw 풀(`provider:model` 문자열들) — 인증된 provider 만, ORDER 순.
- * 인증된 게 없으면 `[]`(호출자가 기존 폴백으로 강등 — 회귀 0).
+ * 빌트인 raw 풀(`provider:model` 문자열들) — 인증된 provider 만, ORDER 순.
+ * 인증된 게 없으면 `[]`(호출자가 기존 폴백으로 강등).
  */
-export const builtinTierPool = (tier: string, cwd?: string): string[] => {
-  const t = tier.toLowerCase();
-  if (!(BUILTIN_TIERS as readonly string[]).includes(t)) return [];
+export const builtinPool = (cwd?: string): string[] => {
   const out: string[] = [];
   for (const provider of ORDER) {
-    const tiers = PROVIDER_TIER_MODELS[provider];
-    if (tiers === undefined) continue;
+    const model = PROVIDER_DEFAULT_MODELS[provider];
+    if (model === undefined) continue;
     if (!providerAuthAvailable(provider, cwd)) continue;
-    // ★백엔드에게 물어본 값이 있으면 그게 먼저다 (2026-08-13) — 아래 표는 조회가
-    //  안 될 때의 바닥이다. 표가 늙어도 조회가 되는 설치는 최신을 쓴다.
-    const live = catalogTierModel(provider, t as BuiltinTier);
-    out.push(`${provider}:${live ?? tiers[t as BuiltinTier]}`);
+    // ★백엔드에게 물어본 값이 있으면 그게 먼저다 (2026-08-13) — 표가 늙어도 조회가 되는 설치는 최신을 쓴다.
+    out.push(`${provider}:${catalogDefaultModel(provider) ?? model}`);
   }
   return out;
 };
 
 /**
- * 세 등급 전부 — `/models` 표시·프롬프트 인벤토리용. 인증된 provider 가 없으면 `{}`
+ * 빌트인 프로파일 — `/models` 표시·프롬프트 인벤토리용. 인증된 provider 가 없으면 `{}`
  * (보여줄 게 없으면 없다고 말한다 — 빈 풀을 있는 척하지 않는다).
  */
 export const builtinModelProfiles = (
   cwd?: string,
 ): Record<string, ModelProfile> => {
-  const out: Record<string, ModelProfile> = {};
-  // ★«메인 턴» 은 **지금 기본인 등급**에 붙인다 — 종전엔 high 고정이라, 기본을 mid 로 바꾸면 한 화면에 기본 표시(mid)와
-  //  «메인 턴» 설명(high)이 갈렸다(2026-10-14 적대 검토).
-  const mainTier = builtinTierFor(getDefaultProfileName(cwd));
-  const role: Record<BuiltinTier, string> = { high: "무거운 추론·분석", mid: "일반", low: "단순·대량" };
-  for (const tier of BUILTIN_TIERS) {
-    const pool = builtinTierPool(tier, cwd);
-    if (pool.length === 0) continue;
-    out[tier] = {
-      description:
-        tier === mainTier
-          ? "빌트인 기본 — 메인 턴 · 인증된 provider 로 자동 조립"
-          : `빌트인 — ${role[tier]} 작업`,
-      // 빌트인은 강도를 안 정한다 — 카탈로그 기본이 곧 벤더 설계값이다(오버라이드 0).
+  const pool = builtinPool(cwd);
+  if (pool.length === 0) return {};
+  // 빌트인은 강도를 안 정한다 — 카탈로그 기본이 곧 벤더 설계값이다(오버라이드 0).
+  return {
+    [BUILTIN_PROFILE]: {
+      description: "빌트인 기본 — 모든 작업 · 인증된 provider 의 최신 모델로 자동 조립",
       pool: pool.map((spec) => ({ spec })),
-    };
-  }
-  return out;
+    },
+  };
 };
-
-/** 등급 이름 정규화 — 빌트인이 모르는 이름이면 기본 등급으로 강등. */
-export const builtinTierFor = (name: string): BuiltinTier =>
-  (BUILTIN_TIERS as readonly string[]).includes(name.toLowerCase())
-    ? (name.toLowerCase() as BuiltinTier)
-    : BUILTIN_DEFAULT_TIER;
 
 /**
  * **지금 이 설치가 실제로 쓰는 프로파일** — 설정이 있으면 그것, 없으면 빌트인 조립.
@@ -180,11 +144,10 @@ export const isSelectableProfile = (name: string, cwd?: string): boolean =>
 
 /**
  * **실제로 쓰이는 기본 프로파일 이름** — 실행(`resolveModelSpecs`)과 같은 판정: 사용자 프로파일이 있으면
- * `models.default` 그대로, 빌트인이면 그 값을 등급으로 정규화(`builtinTierFor` — 미설정·모르는 이름은 high).
- * ★종전 화면은 빌트인이면 무조건 high 라고 표시해, `models.default: mid` 로 실제로는 mid 가 도는데 high 를 기본이라 말했다.
+ * `models.default` 가 가리키는 것(`getDefaultProfileName`), 빌트인이면 빌트인 하나(`BUILTIN_PROFILE`).
  */
 export const effectiveDefaultProfileName = (cwd?: string): string =>
-  resolveModelProfiles(cwd).builtin ? builtinTierFor(getDefaultProfileName(cwd)) : getDefaultProfileName(cwd);
+  resolveModelProfiles(cwd).builtin ? BUILTIN_PROFILE : getDefaultProfileName(cwd);
 
 /**
  * **지금 보이는 프로파일의 배지 색을 쓴다** — 사용자 프로파일이면 그 안에, 빌트인이면 빌트인 색 칸에
@@ -195,6 +158,6 @@ export const effectiveDefaultProfileName = (cwd?: string): string =>
 export const setResolvedProfileColor = (name: string, color: string | undefined): boolean => {
   if (color !== undefined && !isBadgeColor(color)) return false;
   if (Object.keys(loadModelProfiles()).length > 0) return setProfileColor(name, color);
-  if (!(BUILTIN_TIERS as readonly string[]).includes(name)) return false;
+  if (name !== BUILTIN_PROFILE) return false;
   return setBuiltinProfileColor(name, color);
 };

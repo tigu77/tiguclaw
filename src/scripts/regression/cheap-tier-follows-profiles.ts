@@ -6,8 +6,9 @@
  *  가리지만 `nano` 는 프로파일이 없어, 내부 단발 호출(WebFetch 요약·실패 회고)이 «가장 싼 등급» 을
  *  찾다 그 값으로 떨어졌다 — 9월 WebFetch 요약 127회, 거의 전부 30초 시한 초과·한 건은 중국어 답.
  *
- * 지키는 것(실제 함수, 격리 홈): ① 프로파일이 있고 `nano` 가 없으면 레거시 env 를 안 보고 `low`
- *  프로파일로 ② 프로파일이 하나도 없는 옛 설치본은 종전대로 env ③ `nano` 프로파일이 있으면 그것.
+ * 지키는 것(실제 함수, 격리 홈): 내부 단발 호출은 **`low` → 없으면 기본 풀** 이고 레거시 env 를 안 본다.
+ * ★2026-10-22 정태님 «나노는 아예 빼기로» — `nano` 우선 조회를 없앴다. 남아 있던 특례가 `nano` 를 기본 풀로 풀어
+ *  명시한 `low`(haiku)를 건너뛰고 기본(opus)을 골랐다(아스트라 P2 재현).
  */
 import { fileURLToPath } from "node:url";
 import { assert, spawnWithin, type RegressionCheck } from "./_framework.js";
@@ -36,14 +37,18 @@ export const check: RegressionCheck = {
     const has = (k: string, m: string) => Array.isArray(got[k]) && got[k]!.some((x) => x.includes(m));
     return [
       assert("자식이 결과를 냈다(없으면 아래는 공짜 초록)", line !== undefined, line ?? r.err.slice(-300)),
-      assert("★① 프로파일이 있고 nano 가 없으면 레거시 qwen 이 아니라 low 프로파일", has("profilesNoNano", "haiku") && !has("profilesNoNano", "qwen"), JSON.stringify(got.profilesNoNano)),
-      assert("② 프로파일이 없어도 옛 env(nano)는 안 쓴다 — 옮기는 건 부팅의 몫(2026-09-29)", !has("noProfiles", "qwen"), JSON.stringify(got.noProfiles)),
+      assert("★★① 기본 high(opus) + 명시 low(haiku) → 내부 선택은 low(기본으로 건너뛰지 않는다 — 아스트라 P2)",
+        has("explicitLow", "haiku") && !has("explicitLow", "opus"), JSON.stringify(got.explicitLow)),
+      assert("① 프로파일이 있고 nano 가 없으면 레거시 qwen 이 아니라 low 프로파일", has("profilesNoNano", "haiku") && !has("profilesNoNano", "qwen"), JSON.stringify(got.profilesNoNano)),
+      assert("② 프로파일이 없으면 기본 풀(메인 턴과 같음) — 옛 env(nano)는 안 쓴다(옮기는 건 부팅의 몫, 2026-09-29)",
+        !has("noProfiles", "qwen") && has("noProfiles", "opus") && JSON.stringify(got.noProfiles) === JSON.stringify(got.noProfilesDefault),
+        JSON.stringify({ cheap: got.noProfiles, main: got.noProfilesDefault })),
       assert("★실패 회고(classify-failure)도 같은 판단 함수를 쓴다(사본 없음)", cfUses && !cfCopy, `공용 사용=${cfUses} · 사본=${cfCopy}`),
       assert("★④ 프로파일 설치본은 `low`·`nano` 모두 옛 MODEL_TIER_* 를 안 쓴다(게이트웨이·서브에이전트가 지나는 resolveTier) · 내부 싼 호출도",
         !has("lowShadowed", "qwen") && !has("nanoShadowed", "qwen") && !has("cheapShadowed", "qwen"), JSON.stringify({ low: got.lowShadowed, nano: got.nanoShadowed, cheap: got.cheapShadowed })),
       assert("⑤ 프로파일이 없어도 옛 env(`low`)는 안 쓴다", !has("lowLegacy", "qwen-legacy-low"), JSON.stringify(got.lowLegacy)),
-      assert("★⑥ `nano` 프로파일이 안 풀리면 `low` 로 간다 — 기본(비싼) 프로파일로 건너뛰지 않는다", has("nanoUnresolved", "haiku") && !has("nanoUnresolved", "opus"), JSON.stringify(got.nanoUnresolved)),
-      assert("③ nano 프로파일을 만들면 그것을 쓴다(레거시 env 도 low 도 아님)", has("nanoProfile", "sonnet-5") && !has("nanoProfile", "qwen") && !has("nanoProfile", "haiku"), JSON.stringify(got.nanoProfile)),
+      assert("⑥ `low` 가 안 풀리면 undefined — 호출자가 일반 디폴트로 간다(종전 안전 폴백)", (got.lowUnresolved as unknown) === "undefined", JSON.stringify(got.lowUnresolved)),
+      assert("★③ `nano` 프로파일이 있어도 특례 없음 — 내부 선택은 low(nano 를 먼저 찾지 않는다)", has("nanoProfile", "haiku") && !has("nanoProfile", "sonnet-5"), JSON.stringify(got.nanoProfile)),
     ];
   },
 };

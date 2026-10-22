@@ -92,21 +92,21 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // init 이 자동 모드에서 **아무것도 안 쓰는가** — 쓰면 그 값에 고정돼 자동 최신이 죽는다.
+    // ★init 은 모델을 **아무 데도 쓰지 않는다** — 쓰면 그 값에 고정돼 자동 최신이 죽는다(2026-08-13). 설치 때 묻지도 않는다
+    //  (2026-10-22 정태님 — 로그인 전이라 옛 표밖에 못 보여주고, Enter 만 누른 «고정» 이 옛 모델에 묶였다. 고정은 연결된 뒤
+    //  비서에게 시킨다). 판정 = init 의 파일 쓰기가 전부 .env 이고, .env 틀에 모델 줄이 없다(런타임은 그 env 를 안 읽는다).
     const init = await readFile(new URL("../init.ts", import.meta.url), "utf8");
     const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const cli = await readFile(path.join(REPO, "src/cli.ts"), "utf8");
     const pkg = await readFile(path.join(REPO, "package.json"), "utf8");
+    const writes = [...init.matchAll(/writeFileSync\(\s*([A-Za-z_.]+)/g)].map((m) => m[1]);
     const writesNothing =
-      /if \(modelMode === "auto"\) \{/.test(init) &&
-      /seedModelProfiles\(buildSeedProfiles\(answers\), "high"\);/.test(init) &&
-      init.indexOf('if (modelMode === "auto") {') <
-        init.indexOf("seedModelProfiles(buildSeedProfiles(answers)");
+      writes.length > 0 && writes.every((w) => w === "ENV_PATH") && !/^REGION_A_MODELS=|^MODEL_TIER_/m.test(init);
     out.push(
       assert(
-        "★자동 모드는 프로파일을 시드하지 않는다(시드하면 자동 최신이 죽는다)",
+        "★init 은 모델을 쓰지 않는다(.env 만 쓰고 그 안에 모델 줄 없음 — 쓰면 자동 최신이 죽는다)",
         writesNothing,
-        writesNothing ? "auto 분기가 시드 앞" : "★자동인데도 시드한다 — 그 시점 값에 고정",
+        writesNothing ? `쓰기=${writes.join(",")}` : `★쓰기=${writes.join(",") || "(없음)"} — .env 밖에 쓰거나 모델 줄이 있다`,
       ),
     );
 

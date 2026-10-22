@@ -190,6 +190,7 @@ export const check: RegressionCheck = {
     const clock = makeClock();
     let hold: ((v: unknown) => void) | null = null;
     const opened: string[] = [];
+    let fileContent = "head\nconst x = 1;\ntail\n";
     const fetched: string[] = [];
     const dash = bootDashboard({
       clock, i18n: i18nForContext, upTo: "token-delta.js", allIds: true,
@@ -198,7 +199,7 @@ export const check: RegressionCheck = {
         if (url.startsWith("/api/file-view")) {
           fetched.push(url);
           if (hold !== null) await new Promise((r) => { hold = r; });
-          return jsonResponse({ content: "head\nconst x = 1;\ntail\n" });
+          return jsonResponse({ content: fileContent });
         }
         return jsonResponse({}, 404);
       },
@@ -209,14 +210,37 @@ export const check: RegressionCheck = {
     const buttons = block.querySelectorAll("button");
     const fvBtn = buttons.find((b: { className: string }) => b.className.includes("act-diff-fileview"));
     const openBtn = buttons.find((b: { className: string }) => !b.className.includes("act-diff-fileview"));
+    // 문법 색 — 진짜 hljs 대신 같은 계약(`highlight(text,{language}).value` = 이스케이프된 HTML)의 대역. 조각 카드와 같은 판별(`hlLangFromPath`)을 지나는지 본다.
+    const hlCalls: string[] = [];
+    dash.window.__hlCalls = hlCalls;
+    dash.run(`window.hljs = { highlight: (t, o) => { window.__hlCalls.push(o.language + ":" + t.length); return { value: '<span class="hljs-keyword">' + t.replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</span>" }; } }`);
     if (openBtn) dispatch(openBtn, makeEvent("click"));
     if (fvBtn) dispatch(fvBtn, makeEvent("click"));
     await clock.advance(50);
     await sleep(10);
-    const hit = doc.querySelectorAll(".fv-hit")[0];
     const note = doc.querySelectorAll(".fv-note")[0]?.textContent ?? "";
     const fragInModal = doc.querySelectorAll(".fv-frag .act-diff").length;
     const nestedFv = doc.querySelectorAll(".fv-frag .act-diff-fileview").length;
+    // 한 화면 — 앞(1) · 바뀐 곳(지운 줄 번호 없음 → 새 줄 2) · 뒤(3). 지운 줄은 기록의 글자, 새 줄은 지금 파일의 글자.
+    const rows = doc.querySelectorAll(".fv-change .fv-row").map((r: { className: string; querySelectorAll: (q: string) => { textContent: string }[] }) =>
+      [r.className.replace("fv-row ", ""), r.querySelectorAll(".fv-no")[0]?.textContent ?? "?", r.querySelectorAll(".fv-line")[0]?.textContent ?? "?"]);
+    const segs = doc.querySelectorAll(".fv-seg").map((g: { querySelectorAll: (q: string) => { textContent: string }[] }) =>
+      [g.querySelectorAll(".fv-gutter")[0]?.textContent ?? "", g.querySelectorAll(".fv-code")[0]?.textContent ?? ""]);
+    const colored = doc.querySelectorAll(".fv-file .hljs-keyword").length;
+    // 못 합치는 경우(지금 파일에 그 내용이 없다) — 조각을 위에 따로 남기고 본문엔 바뀐 곳을 그리지 않는다(위치를 지어내지 않는다).
+    dispatch(doc, makeEvent("keydown", { key: "Escape" }));
+    fileContent = "head\nsomething else\n";
+    if (fvBtn) dispatch(fvBtn, makeEvent("click"));
+    await clock.advance(50);
+    await sleep(10);
+    const miss = {
+      frag: doc.querySelectorAll(".fv-frag .act-diff").length,
+      change: doc.querySelectorAll(".fv-change").length,
+      segs: doc.querySelectorAll(".fv-seg .fv-gutter").map((g: { textContent: string }) => g.textContent),
+      note: doc.querySelectorAll(".fv-note")[0]?.textContent ?? "",
+    };
+    dispatch(doc, makeEvent("keydown", { key: "Escape" }));
+    fileContent = "head\nconst x = 1;\ntail\n";
     // 닫은 뒤 늦게 온 응답 — 그리지 않는다
     hold = () => {};
     if (fvBtn) dispatch(fvBtn, makeEvent("click"));
@@ -230,10 +254,26 @@ export const check: RegressionCheck = {
     await sleep(10);
     out.push(
       assert(
-        "★화면: ⤢ → 창에 **조각 카드 그대로**(창 안엔 ⤢ 다시 없음) + 지금 파일 · 일치한 줄을 강조하고 «지금 디스크 — 수정 직후와 다를 수 있음» 을 말한다 · `absPath` 로 읽는다",
-        fvBtn !== undefined && hit?.textContent === "const x = 1;" && fragInModal === 1 && nestedFv === 0 &&
+        "★★화면: ⤢ → **한 화면** — 지금 파일 안 그 자리에 바뀐 곳(지운 줄은 번호 없이·새 줄은 지금 파일의 번호로), 위 조각 카드는 따로 안 남는다 · «지금 디스크» 를 말한다 · `absPath` 로 읽는다 (2026-10-22 «한번에 그냥 보여주면»)",
+        fvBtn !== undefined && fragInModal === 0 && nestedFv === 0 &&
+          JSON.stringify(rows) === JSON.stringify([["fv-del", "", "const x = 0;"], ["fv-add", "2", "const x = 1;"]]) &&
+          JSON.stringify(segs) === JSON.stringify([["1", "head"], ["3", "tail"]]) &&
           note.includes("지금 디스크") && note.includes("2~2") && fetched[0] === "/api/file-view?path=" + encodeURIComponent("/proj/src/a.ts"),
-        JSON.stringify({ hasBtn: fvBtn !== undefined, hit: hit?.textContent, fragInModal, nestedFv, note, fetched }),
+        JSON.stringify({ hasBtn: fvBtn !== undefined, fragInModal, nestedFv, rows, segs, note, fetched: fetched[0] }),
+      ),
+    );
+    out.push(
+      assert(
+        "★지금 파일에 그 내용이 없으면 합치지 않는다 — 조각은 위에 따로, 본문은 파일 그대로(바뀐 곳 0) · 이유를 말한다",
+        miss.frag === 1 && miss.change === 0 && JSON.stringify(miss.segs) === JSON.stringify(["1\n2"]) && miss.note.includes("지금 디스크"),
+        JSON.stringify(miss),
+      ),
+    );
+    out.push(
+      assert(
+        "★지금 파일 본문에도 문법 색 — 앞·뒤 구간과 바뀐 곳 모두 조각 카드와 같은 판별(`hlLangFromPath`)로 칠한다 (2026-10-22 «전혀 일반 텍스트 형태로 나오네»)",
+        colored >= 4 && hlCalls.some((c) => c.startsWith("typescript:")),
+        JSON.stringify({ colored, hlCalls: hlCalls.slice(0, 8) }),
       ),
     );
     out.push(

@@ -8,7 +8,7 @@
  * ★인증도 다르다 — `/v1/*` 는 브리지 role 표가 아니라 **자기 게이트웨이 토큰**으로 가른다
  *  (그래서 role 표 밖인 것이 정당하다. 회귀 `bridge-role-table-complete` 가 그 예외를 지킨다).
  */
-import { LEGACY_TIERS, parseModelSpec, parseModelSpecList, resolveTier, specLabel } from "../../src/core/llm-runtime/index.js";
+import { parseModelSpec, parseModelSpecList, resolveTier, specLabel } from "../../src/core/llm-runtime/index.js";
 import type { ModelSpec } from "../../src/core/llm-runtime/index.js";
 import { loadGatewayConfig, loadModelProfiles } from "../../src/core/settings.js";
 
@@ -39,7 +39,7 @@ export const resolveGatewayRuntime = (): GatewayRuntime => {
   return { enabled, token, poolRaw, maxConcurrency };
 };
 
-// 요청 model → tiguclaw 스펙. `tier:high|mid|low` / `provider:model` / 그 외=기본 풀 폴백.
+// 요청 model → tiguclaw 스펙. `tier:<프로파일|등급>` / `provider:model` / 그 외=기본 풀 폴백.
 export const resolveGatewaySpecs = (model: unknown, poolRaw: string): ModelSpec[] => {
   const m = typeof model === "string" ? model.trim() : "";
   if (m.startsWith("tier:")) {
@@ -76,7 +76,9 @@ export const buildModelsListResponse = (poolRaw: string): {
   } catch {
     /* settings 파싱 실패 — 프로파일 스킵(부재 graceful) */
   }
-  for (const name of [...profileNames, ...LEGACY_TIERS]) {
+  // ★프로파일이 없는 등급 이름(`tier:low` 등)은 **기본 풀의 별칭**이라 광고하지 않는다(2026-10-22) — 다 광고하면 모델 다섯이
+  //  있는 것처럼 보이는데 전부 같은 풀이다. 설정이 없는 설치는 빌트인 하나를 `tier:default` 로 광고한다(화면 목록과 같은 이름).
+  for (const name of profileNames.length > 0 ? profileNames : ["default"]) {
     if (resolveTier(name).length > 0) add(`tier:${name}`, "tiguclaw");
   }
   // 3) 직접 풀 스펙 — settings gateway.models ?? env (resolveGatewaySpecs 폴백과 동일 소스).

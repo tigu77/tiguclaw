@@ -36,35 +36,35 @@ export const check: RegressionCheck = {
         existsSync(file) ? (JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>) : {};
 
       const before = resolveModelProfiles(home);
-      const set = setResolvedProfileColor("high", "#FF8800");
+      const set = setResolvedProfileColor("default", "#FF8800");
       const after = resolveModelProfiles(home);
       const root = await readRoot();
       const models = (root.models ?? {}) as Record<string, unknown>;
       out.push(
         assert(
-          "★★설정 파일이 없어도 빌트인 'high' 에 색이 들어가고 화면 목록에 그 색이 실린다",
-          before.builtin && set && after.profiles.high?.color === "#ff8800",
-          `빌트인=${String(before.builtin)} 저장=${String(set)} 색=${String(after.profiles.high?.color)}`,
+          "★★설정 파일이 없어도 빌트인 'default' 에 색이 들어가고 화면 목록에 그 색이 실린다",
+          before.builtin && set && after.profiles.default?.color === "#ff8800",
+          `빌트인=${String(before.builtin)} 저장=${String(set)} 색=${String(after.profiles.default?.color)}`,
         ),
       );
       out.push(
         assert(
           "★★색을 저장해도 **여전히 빌트인**이다 — `models.profiles` 를 만들지 않는다(만들면 자동 조립이 꺼진다)",
-          after.builtin && models.profiles === undefined && (models.builtinColors as Record<string, unknown> | undefined)?.high === "#ff8800",
+          after.builtin && models.profiles === undefined && (models.builtinColors as Record<string, unknown> | undefined)?.default === "#ff8800",
           JSON.stringify(models),
         ),
       );
-      const cleared = setResolvedProfileColor("high", undefined);
+      const cleared = setResolvedProfileColor("default", undefined);
       const rootCleared = await readRoot();
       out.push(
         assert(
           "지우면 기본색으로 돌아가고 빈 `models: {}` 를 남기지 않는다",
-          cleared && resolveModelProfiles(home).profiles.high?.color === undefined && rootCleared.models === undefined,
+          cleared && resolveModelProfiles(home).profiles.default?.color === undefined && rootCleared.models === undefined,
           JSON.stringify(rootCleared),
         ),
       );
       const badName = setResolvedProfileColor("nope", "#112233");
-      const badColor = setResolvedProfileColor("high", "red");
+      const badColor = setResolvedProfileColor("default", "red");
       out.push(
         assert(
           "빌트인에 없는 이름·틀린 형식은 거절한다(조용한 성공 금지)",
@@ -81,7 +81,7 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "사용자 프로파일이 있으면 색은 그 프로파일 안(`models.profiles.<name>.color`)에 — 빌트인 칸은 안 생긴다",
-          userSet && um.profiles?.mine?.color === "#00aa00" && um.builtinColors === undefined && !setResolvedProfileColor("high", "#123456"),
+          userSet && um.profiles?.mine?.color === "#00aa00" && um.builtinColors === undefined && !setResolvedProfileColor("default", "#123456"),
           JSON.stringify(um),
         ),
       );

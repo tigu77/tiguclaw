@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **On Windows, non-English text such as Korean was garbled in shell output.** Console programs such as `ping` and `dir` and cmd error output now display correctly.
 - **On Windows, PowerShell error messages were cut off mid-sentence.**
 
+### Security
+
+- **Dependencies with published security advisories were updated to fixed versions.** This covers the advisories for zod ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5) — memory exhaustion while validating oversized collections) and body-parser ([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828) — denial of service via trailing bytes after a compressed request body), both present in 0.75.0. Claude Agent SDK was also updated to 0.3.285 and the MCP SDK to 1.32.2.
+- **When automatically refreshing OAuth tokens for a remote MCP server, the refresh token and client information are not sent if the stored tokens or client information are recorded as belonging to a different authorization server.** In that case the server is marked as needing a new sign-in. Existing connections with no recorded authorization server still refresh without signing in again, and the authorization server that accepts the refresh is recorded.
+
 ## [0.75.0] - 2026-10-22
 
 ### Added

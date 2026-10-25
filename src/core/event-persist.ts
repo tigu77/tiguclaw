@@ -12,7 +12,7 @@
 import type { EventBus } from "./eventbus.js";
 import { insertEvent, pruneEvents } from "../store/events.js";
 import { pruneInternalThreads } from "../store/sessions.js";
-import { bindChannelMessages, recordChatMessage } from "../store/chat-log.js";
+import { bindChannelMessages, chatIdAtExactTs, recordChatMessage } from "../store/chat-log.js";
 import { isChatVisibleEvent } from "./chat-visible-events.js";
 import { replyPreviewFromPayload } from "./reply-preview.js";
 import { redactSecrets } from "./outbound-sanitize.js";
@@ -272,6 +272,27 @@ export const channelRefsField = (
     ? { channelRefs: { channel, address: ref.address, messageIds: [...ref.messageIds] } }
     : {};
 
+/**
+ * egress 사본의 **원본 행** — 사본 이벤트가 실어 온 원본 송신 좌표(`copyOf`: 대화·정확 시각)로 찾는다 (2026-10-25).
+ * ★같은 대화 화면 범위 · 정확히 같은 시각 · 비서 발화가 **한 건일 때만**(`chatIdAtExactTs`) — 가까운 다른 말을 원문으로 치지 않는다.
+ *  못 정하면 undefined(그 사본에 단 답글은 종전처럼 인용만 간다). 조회 실패는 던지지 않는다(배달은 이미 끝났다).
+ */
+const originalRowOfCopy = (v: unknown): number | undefined => {
+  if (v === null || typeof v !== "object") return undefined;
+  const c = v as { threadKey?: unknown; ts?: unknown };
+  if (typeof c.threadKey !== "string" || c.threadKey === "" || typeof c.ts !== "number" || !Number.isFinite(c.ts)) return undefined;
+  try {
+    const id = chatIdAtExactTs(c.threadKey, c.ts, "assistant");
+    if (id === undefined) {
+      console.warn(`event-persist: egress 사본의 원본 행을 하나로 정하지 못했습니다 — 이 사본에 단 답글은 인용만 갑니다 (thread=${c.threadKey} ts=${c.ts})`);
+    }
+    return id;
+  } catch (e) {
+    console.warn(`event-persist: egress 사본의 원본 행 조회 실패 — 이 사본에 단 답글은 인용만 갑니다: ${e instanceof Error ? e.message : String(e)} (thread=${c.threadKey} ts=${c.ts})`);
+    return undefined;
+  }
+};
+
 const startChatLogPersistence = (bus: EventBus): void => {
   bus.subscribe((event) => {
     // ★대화 가시 이벤트(선택지·통지 등)도 여기서 대화 기록에 남긴다 (2026-08-01).
@@ -334,10 +355,12 @@ const startChatLogPersistence = (bus: EventBus): void => {
       //  텔레그램으로도 나가면서 `chat_log` 에 두 줄이 됐다(원본 `dashboard:default` +
       //  사본 `tg:<id>`). 대화는 한 번 일어난 일이다 — 배달이 는다고 대화가 늘지 않는다.
       //  `ephemeral` 과 같은 자리에서 같은 방식으로 판정한다(적재를 막는 곳은 여기 하나).
-      if (payload.copyOfRecorded === true) return;
+      // ★사본이 원본 좌표(`copyOf`)를 실어 왔으면 **원본 행**에 사본의 채널 메시지 id 를 묶는다(2026-10-25) — 사본에 단 답글도 원문을 짚는다.
+      //  행 id 를 얻는 자리만 갈리고(사본 = 원본 행 · 그 밖 = 새로 적재한 행), 묶는 자리는 아래 하나다.
+      const isCopy = payload.copyOfRecorded === true;
       // 답글 표시(2026-10-23, `core/reply-preview.ts`) — 사용자 메시지에만. 새로고침·다른 기기에서도 카드 위 «↩ 원문» 이 뜬다.
       const replyTo = event.type === "channel.message.in" ? replyPreviewFromPayload(payload.replyTo) : undefined;
-      const chatId = recordChatMessage({
+      const chatId = isCopy ? originalRowOfCopy(payload.copyOf) : recordChatMessage({
         ts: event.ts, // ★event.ts 그대로 — 클라이언트 dedup 키.
         threadKey,
         channel,
@@ -364,7 +387,7 @@ const startChatLogPersistence = (bus: EventBus): void => {
           ? { turn: payload.turn as NonNullable<ChatLogEntry["turn"]> }
           : {}),
       });
-      // 채널 메시지 id → 이 행(답글 원문 정확 조회, 2026-10-19). 사본·휘발은 위에서 이미 빠졌다 — 사본에 단 답글은 인용만 간다.
+      // 채널 메시지 id → 이 행(답글 원문 정확 조회, 2026-10-19). 휘발은 위에서 빠졌고, 사본은 원본 행을 못 정했으면 chatId 가 없다(인용만).
       const refs = payload.channelRefs as { channel?: unknown; address?: unknown; messageIds?: unknown } | undefined;
       if (chatId !== undefined && refs !== undefined && typeof refs.channel === "string" && typeof refs.address === "string" && Array.isArray(refs.messageIds)) {
         bindChannelMessages(refs.channel, refs.address, refs.messageIds as (string | number)[], chatId, event.ts);

@@ -54,6 +54,12 @@ export interface OutboundInput {
    */
   copyOfRecorded?: boolean;
   /**
+   * 사본의 **원본 송신 이벤트 좌표**(대화·정확 시각, 2026-10-25) — `copyOfRecorded` 와 함께. 있으면 관측에 이 좌표와 실제로 보낸
+   * 채널 메시지 id 를 싣고, 적재(`event-persist`)가 그 좌표로 원본 행을 **한 건** 찾았을 때만 id 를 그 행에 묶는다 — 사본에 단 답글도
+   * 원문을 짚는다. 없으면 종전처럼 묶지 않는다(인용만). 원본 발행이 돌려준 값을 그대로 받는다(`publishReplyOut`).
+   */
+  copyOf?: { threadKey: string; ts: number };
+  /**
    * 관측(세션 귀속)용 threadKey — 배달 좌표(channel/target)와 **독립**. 세션을 아는 caller 가
    * 채운다(예: 스케줄·매니저·통지가 `dashboard:default` 등 세션 id 를 실어보냄). 미전달 시 현행
    * 물리 채널 키(`threadKeyForObservation`) 폴백 = 회귀 0. §D3 정체성/표시 2분리: 관측
@@ -106,8 +112,9 @@ const publishOut = (
   notice: boolean,
   copy = false,
   attachments?: readonly unknown[],
-  /** 실제로 보낸 채널 메시지 id — 적재가 이 행에 묶는다(사본은 적재 안 하므로 안 싣는다). */
+  /** 실제로 보낸 채널 메시지 id — 적재가 이 행에 묶는다. 사본은 원본 좌표(`copyOf`)가 있을 때만 싣는다(그 원본 행에 묶인다). */
   sentRef?: { address: string; messageIds: readonly (string | number)[] },
+  copyOf?: { threadKey: string; ts: number },
 ): void => {
   try {
     bus.publish({
@@ -125,7 +132,8 @@ const publishOut = (
         ...(copy ? { copyOfRecorded: true } : {}),
         // 관측 전용 — 물리 발송 경로엔 안 간다(위 주석).
         ...(attachments !== undefined && attachments.length > 0 ? { attachments } : {}),
-        ...(copy ? {} : channelRefsField(channel, sentRef)),
+        ...(copy && copyOf !== undefined ? { copyOf } : {}),
+        ...(copy && copyOf === undefined ? {} : channelRefsField(channel, sentRef)),
       },
     });
   } catch {
@@ -312,6 +320,7 @@ export const deliverOutbound = async (
       input.copyOfRecorded === true,
       verdict.kept,
       resolved !== null && sentIds.length > 0 ? { address: resolved, messageIds: sentIds } : undefined,
+      input.copyOf,
     );
   }
   return {

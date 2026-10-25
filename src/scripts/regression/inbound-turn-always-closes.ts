@@ -20,7 +20,9 @@
  * 등급: **동작**(발행 계약을 실행으로 확인) + **판정**(원시 호출 0).
  */
 import { readEntrySource } from "./_wiring.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
+import { getEventBus } from "../../core/eventbus.js";
+import { replyCommand } from "../../core/entry/reply-command.js";
 
 
 export const check: RegressionCheck = {
@@ -44,12 +46,20 @@ export const check: RegressionCheck = {
     const publishesOut = /type:\s*"channel\.message\.out"/.test(helperBody);
     const onlyOnOk = /if\s*\(!r\.ok\)\s*return r;/.test(helperBody);
 
-    // ④ 같은 계약의 형제 — `replyCommand` 도 out 을 낸다(이게 2026-07-10 의 처방이다).
-    const replyAt = src.indexOf("const replyCommand");
-    const replyEnd = replyAt < 0 ? -1 : src.indexOf("\n};", replyAt);
-    const replyPublishes =
-      replyAt >= 0 && replyEnd >= 0 &&
-      /type:\s*"channel\.message\.out"/.test(src.slice(replyAt, replyEnd));
+    // ④ 같은 계약의 형제 — `replyCommand` 도 out 을 낸다(이게 2026-07-10 의 처방이다). ★실행으로 잰다(2026-10-25) —
+    //  발행이 `publishReplyOut` 으로 옮겨 가 소스 모양으로는 못 본다. 진짜 버스에 실제로 무엇이 나오는지 센다.
+    assertIsolated();
+    const TK = "regr:always-closes-reply";
+    const outs: unknown[] = [];
+    const unsub = getEventBus().subscribe((e) => {
+      if (e.type === "channel.message.out" && (e.payload as { threadKey?: unknown })?.threadKey === TK) outs.push(e);
+    });
+    try {
+      await replyCommand({ reply: async () => undefined, channel: "cli", threadKey: TK }, "회귀 응답");
+    } finally {
+      unsub();
+    }
+    const replyPublishes = outs.length === 1;
 
     return [
       assert(

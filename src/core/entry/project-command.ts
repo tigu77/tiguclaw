@@ -54,7 +54,9 @@ export const handleProject = async (ctx: SlashCtx): Promise<void> => {
   const { msg, args, trimmed } = ctx;
   const ephemeral = isEphemeralCommandText(trimmed);
   const tk = msg.threadKey;
-  const say = (text: string): Promise<void> => replyCommand(msg, text, { ephemeral });
+  const say = async (text: string): Promise<void> => {
+    await replyCommand(msg, text, { ephemeral });
+  };
   const offer = (question: string, options: Option[], note?: string): Promise<void> =>
     offerOptions(msg, question, options, { ...(note === undefined ? {} : { note }), ephemeral });
   const { first: sub, rest } = splitFirstToken(args);

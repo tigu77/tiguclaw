@@ -175,7 +175,7 @@ export const bindChannelMessages = (channel: string, address: string, messageIds
 };
 
 /**
- * 채널 메시지 → 대화 기록 행 id(매핑이 없으면 undefined — 옛 메시지·매핑 이전·egress 사본).
+ * 채널 메시지 → 대화 기록 행 id(매핑이 없으면 undefined — 옛 메시지·매핑 이전·원본을 못 정한 egress 사본). 사본은 원본 행에 묶인다(2026-10-25).
  * ★던지지 않는다(적대 검토 10-19 P2) — 텔레그램 핸들러가 라우팅보다 **앞에서** 부른다. 여기서 던지면 답장 메시지 자체가 polling 오류 한 줄로
  *  조용히 유실된다. 실패는 로그로 남기고 «매핑 없음» 과 같게(인용만 간다) — 형제 `findSessionForOutboundMessage` 와 같은 규칙.
  */

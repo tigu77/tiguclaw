@@ -4,7 +4,7 @@
 //  읽어 굳혔고, 홈 .env 의 29개 키(WORKER_TIMEOUT_MS·MCP_CALL_TIMEOUT_MS·CODEX_* 등)가 **조용히 무시**됐다.
 //  회귀 `env-loads-before-any-read` 가 이 파일의 import 순서 그대로 모듈을 올려 «로드 전에 읽힌 키 0» 을 잰다.
 import "./core/load-env.js";
-import { EVENT_TEXT_MAX, replyCommand } from "./core/entry/reply-command.js";
+import { EVENT_TEXT_MAX, publishReplyOut, replyCommand, type OutCoords } from "./core/entry/reply-command.js";
 import { migrateLegacyModelEnv } from "./core/legacy-model-env.js";
 import { turnSpend } from "./core/llm-runtime/turn-spend.js";
 import {
@@ -773,6 +773,11 @@ const fanOutEgress = async (
   text: string,
   bus: EventBus,
   originThreadKey?: string,
+  /**
+   * 이 사본의 **원본 송신 이벤트 좌표**(2026-10-25) — 있으면 사본의 채널 메시지 id 가 그 원본 행에 묶여, 사본에 단 답글도 원문을 짚는다.
+   *  원본 발행이 돌려준 값을 그대로 넘긴다(`publishReplyOut`·`replyCommand`). 같은 글의 원본 행이 없는 사본(멈춤 안내)은 안 넘긴다.
+   */
+  copyOf?: OutCoords,
 ): Promise<void> => {
   // ★**어디서 온 사본인지 말해준다** (2026-08-28). 판정은 `egressSourcePrefix` 한 곳에 있고
   //  여기선 이름만 조회해 넘긴다. 기본 세션이면 빈 문자열이라 평소 사용은 무변화다.
@@ -798,6 +803,7 @@ const fanOutEgress = async (
         originThreadKey,
         // ★이 배달은 **이미 인입 채널에 기록된 말의 사본**이다 — 적재는 원본 한 줄만.
         copyOfRecorded: true,
+        ...(copyOf !== undefined ? { copyOf } : {}),
       });
     } catch (e) {
       console.error(
@@ -1361,34 +1367,31 @@ const handler: MessageHandler = async (msg) => {
     );
     // V1 단순+견고: route() 결과만 publish. 슬래시 응답 publish 는 V2
     // (msg.reply wrap 또는 분기별 명시 — 현 단계 회귀 위험 회피).
-    bus.publish({
-      type: "channel.message.out",
-      ts: Date.now(),
-      payload: {
-        channel: msg.channel,
-        threadKey: msg.threadKey,
-        text: out.text.slice(0, EVENT_TEXT_MAX),
-        ...channelRefsField(msg.channel, sentRef),
-        // 실제 응답 모델(2026-07-27) — chat_log 로 영속돼 새로고침 후에도 답변에 모델이 붙는다.
-        //  종전엔 활동 이벤트에만 있어, 활동이 다른 스레드(스케줄 등)에 속한 답변은 표시가 없었다.
-        ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
-        // 실제로 보낸 추론 강도·턴 비용(2026-09-29) — 답변 행에 같이 영속돼 새로고침·다른 기기에서도 같은 줄이 뜬다.
-        //  비용은 실시간 카드와 **같은 판정**(`turnSpend`)으로 고른다 — 두 벌이면 두 화면이 다른 수를 보인다.
-        ...(typeof out.reasoning === "string" && out.reasoning !== "" ? { reasoning: out.reasoning } : {}),
-        // 완료 턴 표식(2026-10-15) — 저장이 확인된 정상 답에만 있다. 화면 기록에 같이 남아 «여기까지로 갈라내기» 의 좌표가 된다.
-        //  ★끼워넣기 통로에 남은 입력이 있으면 싣지 않는다 — 그 입력은 다음 턴으로 가는데 화면엔 이 답보다 앞에 이미 있어,
-        //   이 답에서 갈라내면 가지 화면엔 보이고 모델은 모른다(2026-10-15 적대 검토 P2). 확인 못 하면 표식 없음.
-        ...(out.turn !== undefined && (steeringCh?.pending() ?? 0) === 0 ? { turn: out.turn } : {}),
-        ...((): Record<string, unknown> => {
-          const spend = turnSpend(out.usage);
-          if (spend === undefined) return {};
-          const missing = out.usage?.unreportedRequests;
-          return { spend: { ...spend, ...(typeof missing === "number" && missing > 0 ? { unreportedRequests: missing } : {}) } };
-        })(),
-      },
+    // 반환 = 이 송신 이벤트의 좌표 — egress 사본이 이 원본 행을 짚는다(2026-10-25).
+    const original = publishReplyOut(bus, {
+      channel: msg.channel,
+      threadKey: msg.threadKey,
+      text: out.text.slice(0, EVENT_TEXT_MAX),
+      ...channelRefsField(msg.channel, sentRef),
+      // 실제 응답 모델(2026-07-27) — chat_log 로 영속돼 새로고침 후에도 답변에 모델이 붙는다.
+      //  종전엔 활동 이벤트에만 있어, 활동이 다른 스레드(스케줄 등)에 속한 답변은 표시가 없었다.
+      ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
+      // 실제로 보낸 추론 강도·턴 비용(2026-09-29) — 답변 행에 같이 영속돼 새로고침·다른 기기에서도 같은 줄이 뜬다.
+      //  비용은 실시간 카드와 **같은 판정**(`turnSpend`)으로 고른다 — 두 벌이면 두 화면이 다른 수를 보인다.
+      ...(typeof out.reasoning === "string" && out.reasoning !== "" ? { reasoning: out.reasoning } : {}),
+      // 완료 턴 표식(2026-10-15) — 저장이 확인된 정상 답에만 있다. 화면 기록에 같이 남아 «여기까지로 갈라내기» 의 좌표가 된다.
+      //  ★끼워넣기 통로에 남은 입력이 있으면 싣지 않는다 — 그 입력은 다음 턴으로 가는데 화면엔 이 답보다 앞에 이미 있어,
+      //   이 답에서 갈라내면 가지 화면엔 보이고 모델은 모른다(2026-10-15 적대 검토 P2). 확인 못 하면 표식 없음.
+      ...(out.turn !== undefined && (steeringCh?.pending() ?? 0) === 0 ? { turn: out.turn } : {}),
+      ...((): Record<string, unknown> => {
+        const spend = turnSpend(out.usage);
+        if (spend === undefined) return {};
+        const missing = out.usage?.unreportedRequests;
+        return { spend: { ...spend, ...(typeof missing === "number" && missing > 0 ? { unreportedRequests: missing } : {}) } };
+      })(),
     });
     // egress fan-out — 해석해 둔 좌표로(위 턴 시작). 실패 경로도 같은 헬퍼를 쓴다.
-    await fanOutEgress(egressTargets, replyText, bus, msg.threadKey);
+    await fanOutEgress(egressTargets, replyText, bus, msg.threadKey, original);
     // 다음 메시지 제안 — 답을 보낸 **뒤** 발사하고 기다리지 않는다(턴을 늦추지 않는다).
     maybeSuggestNextMessage(msg, out.nextSuggestion);
   } catch (e) {
@@ -1409,8 +1412,8 @@ const handler: MessageHandler = async (msg) => {
     // 이 out 으로 꺼짐). 내부 토큰("모델 거부 아님") 노출 없이 깔끔히.
     if (e instanceof Error && e.name === "WorkerCancelledError") {
       // 실패 표식 — 완료 턴이 이어 하던 일이 중지되면 매니저 결과는 아직 안 전해졌다(raw 안전망이 대신 보낸다).
-      await replyCommand(msg, STOPPED_NOTICE(), { turnFailed: true });
-      await fanOutEgress(egressTargets, STOPPED_NOTICE(), bus, msg.threadKey);
+      const original = await replyCommand(msg, STOPPED_NOTICE(), { turnFailed: true });
+      await fanOutEgress(egressTargets, STOPPED_NOTICE(), bus, msg.threadKey, original);
       return;
     }
     // wall-clock 시간컷 제거(2026-06-23) 후 이 catch 는 어댑터/도구가 실제 던진 에러
@@ -1434,9 +1437,9 @@ const handler: MessageHandler = async (msg) => {
     // ★한도 자동 이어가기 (2026-10-23 §3.6) — 한도로 끝난 턴이면 재개를 걸고 «{when} 이어서 · 취소 길» 을 **같은 메시지**에(옵션 꺼짐·한도 아님 = 바이트 동일).
     //  위 두 `return`(사용자 중지·작업 취소)을 지난 뒤라 그 몫은 걸리지 않는다.
     const failText = withResumeNote(formatRegionAError(detail, errName), noteTurnLimitStop(e, msg));
-    await replyCommand(msg, failText, { turnFailed: true });
+    const original = await replyCommand(msg, failText, { turnFailed: true });
     // 성공 경로와 대칭 — 실패도 egress 로 나간다(유령 신호 방지, fanOutEgress 주석 참조). 인입 응답과 같은 글.
-    await fanOutEgress(egressTargets, failText, bus, msg.threadKey);
+    await fanOutEgress(egressTargets, failText, bus, msg.threadKey, original);
     // ★StopFailure 훅 — `Stop` 의 짝 (2026-09-08). `Stop` 은 위 `try` 안에 있어 **실패한
     //  턴에는 어떤 훅도 안 났다.** 그런데 훅으로 하려는 일 중 «턴이 실패했을 때 알려줘» 가
     //  가장 흔하다(실측 분모: 실패 130 / 1,594 턴 = 8.2%). 상류(Claude Code)에도 같은 이름의

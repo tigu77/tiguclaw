@@ -917,7 +917,7 @@ export default class TelegramChannel implements Channel {
       ).trim();
       const replyToText = repliedRaw.length === 0 ? undefined : repliedRaw;
       // 답글 대상(2026-10-19) — 원글 message_id 를 **대화 기록 행 id** 로 바꿔 싣는다(대화 기록을 쓸 때 묶어 둔 매핑).
-      //  매핑이 없으면(옛 메시지·늦게 간 청크·egress 사본) 싣지 않는다 — 인용만 간다. 시각으로 «가까운 메시지» 를 고르지 않는다.
+      //  매핑이 없으면(옛 메시지·늦게 간 청크·원본을 못 정한 egress 사본) 싣지 않는다 — 인용만 간다. 시각으로 «가까운 메시지» 를 고르지 않는다.
       //  ★좌표는 아래 라우팅이 세션을 정한 **뒤**, 그 세션에서 실제로 읽히는 행일 때만 싣는다(replyTargetInThread).
       const repliedMsg = ctx.message.reply_to_message;
       const repliedChatId =

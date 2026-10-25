@@ -136,7 +136,7 @@ const run = async (): Promise<Assertion[]> => {
     const { sourceHas } = await import("./_wiring.js");
     const has = await sourceHas("../../index.ts", [
       /fanOutEgress = async \(\s*\n?\s*targets[\s\S]{0,220}?originThreadKey\?: string,/,
-      /fanOutEgress\(egressTargets, replyText, bus, msg\.threadKey\)/,
+      /fanOutEgress\(egressTargets, replyText, bus, msg\.threadKey, original\)/,
     ]);
     out.push({
       name: "★egress fan-out 이 발원 세션을 싣는다(안 실으면 공통 세션으로 떨어진다)",

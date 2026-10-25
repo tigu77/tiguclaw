@@ -11,7 +11,8 @@
  *     좌표 없으면 종전 모양.
  *  ② 저장소 — 적재가 행 id 를 돌려준다 · `chatMessageById` 는 **그 대화 범위**만 · `chatIdAtExactTs` 는 정확히 같은 시각·발화자 **한 건**일 때만
  *     (둘이면·1ms 어긋나면 없음 — 추측하지 않는다) · 채널 메시지 id(여러 청크) → 같은 행.
- *  ③ ★적재 이음매(진짜 이벤트 버스 + 진짜 적재) — 송신 이벤트의 채널 메시지 id 가 그 행에 묶인다 · egress 사본은 안 묶인다.
+ *  ③ ★적재 이음매(진짜 이벤트 버스 + 진짜 적재) — 송신 이벤트의 채널 메시지 id 가 그 행에 묶인다 · 원본 좌표 없는 egress 사본은 안 묶인다 ·
+ *     ★원본 좌표(`copyOf`)를 실은 사본은 **원본 행**에 묶이고 사본 행은 여전히 안 생긴다(2026-10-25) · 좌표가 모호(같은 ms 둘)·다른 대화·없는 시각이면 안 묶인다.
  *  ④ 진짜 도구 `search_conversations(id)` — 전문 · 2만 자 넘으면 offset 으로 이어 읽기 · 다른 대화의 번호는 not_found · threadKey 없으면 거절 · query 경로 그대로.
  *  ⑤ 브리지 변환 — `{id}` 그대로 · `{ts}` 는 정확히 한 건일 때만 · 모양이 틀리거나 큰 수(1e20)여도 터지지 않고 없음.
  *  ⑥ 끼워넣기·재주입 — 메시지마다 **자기** 좌표.
@@ -69,12 +70,27 @@ export const check: RegressionCheck = {
     bus.publish({ type: "channel.message.out", ts: T + 100, payload: { channel: "telegram", threadKey: TK, text: "텔레그램으로 간 답", ...channelRefsField("telegram", { address: "888", messageIds: [201, 202] }) } });
     bus.publish({ type: "channel.message.in", ts: T + 200, payload: { channel: "telegram", threadKey: TK, text: "사용자가 보낸 말", ...channelRefsField("telegram", { address: "888", messageIds: [301] }) } });
     bus.publish({ type: "channel.message.out", ts: T + 300, payload: { channel: "telegram", threadKey: TK, text: "사본", copyOfRecorded: true, ...channelRefsField("telegram", { address: "888", messageIds: [401] }) } });
+    // 원본 좌표를 실은 사본 — 원본(T+400, 대시보드 답) 행에 묶인다 · 모호(T+5 둘)·다른 대화·없는 시각은 안 묶인다.
+    bus.publish({ type: "channel.message.out", ts: T + 400, payload: { channel: "http-bridge", threadKey: TK, text: "대시보드 원본 답" } });
+    const rowsBefore = (getDb().prepare(`SELECT COUNT(*) AS n FROM chat_log`).get() as { n: number }).n;
+    const copyPub = (ts: number, copyOf: unknown, mid: number): void =>
+      bus.publish({ type: "channel.message.out", ts, payload: { channel: "telegram", threadKey: "tg:888", text: "대시보드 원본 답", copyOfRecorded: true, copyOf, ...channelRefsField("telegram", { address: "888", messageIds: [mid, mid + 1] }) } });
+    copyPub(T + 450, { threadKey: TK, ts: T + 400 }, 501);
+    copyPub(T + 460, { threadKey: TK, ts: T + 5 }, 511);
+    copyPub(T + 470, { threadKey: "dashboard:regr-reply-other", ts: T + 400 }, 521);
+    copyPub(T + 480, { threadKey: TK, ts: T + 401 }, 531);
+    copyPub(T + 490, { threadKey: TK, ts: T + 1 }, 541); // 그 시각엔 사용자 말뿐 — 비서 원본이 아니면 묶지 않는다
+
+    const rowsAfter = (getDb().prepare(`SELECT COUNT(*) AS n FROM chat_log`).get() as { n: number }).n;
     await new Promise((r) => setTimeout(r, 30));
     const outRow = chatIdForChannelMessage("telegram", "888", 202);
     const outText = outRow === undefined ? undefined : chatMessageById(TK, outRow)?.text;
     const inRow = chatIdForChannelMessage("telegram", "888", 301);
     const inRole = inRow === undefined ? undefined : chatMessageById(TK, inRow)?.role;
     const copyRow = chatIdForChannelMessage("telegram", "888", 401);
+    const origRow = chatIdAtExactTs(TK, T + 400, "assistant");
+    const copyBound = [501, 502].map((m) => chatIdForChannelMessage("telegram", "888", m));
+    const copyRejected = [511, 521, 531, 541].map((m) => chatIdForChannelMessage("telegram", "888", m) ?? null);
 
     // ④ 진짜 도구
     type Reg = Record<string, { handler: (a: unknown, x?: unknown) => Promise<{ content: Array<{ text: string }> }> }>;
@@ -154,8 +170,11 @@ export const check: RegressionCheck = {
         byId?.text === longText && crossThread === undefined && exactTs === idA && offByOne === undefined && ambiguous === undefined,
         { byId: byId?.id, crossThread, exactTs, offByOne, ambiguous }),
       assert("채널 메시지 id 의 여러 청크가 같은 행을 가리킨다 · 매핑 없으면 없음", chunks.every((c) => c === idA) && unmapped === undefined, { chunks, unmapped }),
-      assert("★적재 이음매: 송신·수신 이벤트의 채널 메시지 id 가 그 행에 묶인다 · egress 사본은 안 묶인다",
+      assert("★적재 이음매: 송신·수신 이벤트의 채널 메시지 id 가 그 행에 묶인다 · 원본 좌표 없는 egress 사본은 안 묶인다",
         outText === "텔레그램으로 간 답" && inRole === "user" && copyRow === undefined, { outRow, outText, inRow, inRole, copyRow }),
+      assert("★원본 좌표를 실은 사본은 청크 전부가 원본 행에 묶이고 사본 행은 안 생긴다 · 모호·다른 대화·1ms 어긋남·사용자 말뿐인 시각은 안 묶인다",
+        origRow !== undefined && copyBound.every((c) => c === origRow) && rowsAfter === rowsBefore && copyRejected.every((c) => c === null),
+        { origRow, copyBound, copyRejected, rowsBefore, rowsAfter }),
       assert("★진짜 도구: id 로 전문 · 2만 자 넘으면 nextOffset 으로 이어 읽어 합치면 원문 그대로",
         p1.ok === true && typeof m1?.nextOffset === "number" && p2.ok === true && (m1.text ?? "") + (m2?.text ?? "") === longText && m2?.nextOffset === undefined,
         { len: m1?.length, part1: (m1?.text ?? "").length, next: m1?.nextOffset, part2: (m2?.text ?? "").length }),
@@ -169,7 +188,7 @@ export const check: RegressionCheck = {
       assert("배선: 대시보드 id/ts · 텔레그램 원글 id→행 id·인입 id · 핸들러·deliverOutbound 가 보낸 id 를 이벤트에",
         /replyToRef: reply\.ref/.test(reply) && /ds\.id/.test(reply) && /chatIdForChannelMessage\("telegram"/.test(tg) && /channelMessageRef: \{ address: chatId, messageIds: \[ctx\.message\.message_id\] \}/.test(tg) &&
           /const sentRef = await msg\.reply\(/.test(idx) && /channelRefsField\(msg\.channel, sentRef\)/.test(idx) && /channelRefsField\(msg\.channel, msg\.channelMessageRef\)/.test(idx) &&
-          /copy \? \{\} : channelRefsField\(channel, sentRef\)/.test(outb),
+          /copy && copyOf === undefined \? \{\} : channelRefsField\(channel, sentRef\)/.test(outb),
         "소스 모양"),
       assert("★그 대화에서 읽히는 행만 좌표로(다른 대화의 행은 없음 — not_found 안내 방지) · 브리지도 남의 대화 id 를 거른다 · 매핑 조회 실패가 던지지 않는다",
         inThread === idA && notInThread === undefined && bOther === undefined && !lookupThrew && lookupVal === null, { inThread, notInThread, bOther, lookupThrew, lookupVal }),

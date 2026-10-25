@@ -26,7 +26,7 @@ export const refuseWhileClosing = (isClosing: () => boolean, inner: MessageHandl
     `daemon: 종료 중 — 새 메시지를 받지 않음 channel=${msg.channel} thread=${msg.threadKey}${msg.synthetic === true ? " (합성)" : ""}`,
   );
   if (msg.synthetic === true) return Promise.resolve();
-  return replyCommand(msg, translate("srv.restart.refusedWhileClosing"));
+  return replyCommand(msg, translate("srv.restart.refusedWhileClosing")).then(() => undefined);
 };
 
 /**

@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **On macOS, when the daemon runs as a service, the pauses between screen-control inputs and `wait` took longer than requested.**
 - **On Windows, non-English text such as Korean was garbled in shell output.** Console programs such as `ping` and `dir` and cmd error output now display correctly.
 - **On Windows, PowerShell error messages were cut off mid-sentence.**
+- **When a dashboard answer was also sent to Telegram, replying to it in Telegram did not link to the original.** Clicking the reply preview in the dashboard now jumps to the original, and the assistant knows which message you replied to. This applies to answers received from this version on; replies to the notice shown after `/stop` are still not linked.
 
 ### Security
 

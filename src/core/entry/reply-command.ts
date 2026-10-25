@@ -7,10 +7,27 @@
  *  뒤집히면 다음 사람은 순환을 풀려고 **사본**을 만든다 — 그래서 함수가 여기로 왔다.
  * ★호출부(진입점 20곳)는 한 글자도 안 바뀐다 — import 만 늘었다.
  */
-import { getEventBus } from "../eventbus.js";
+import { getEventBus, type EventBus } from "../eventbus.js";
 
 /** 관측 이벤트에 싣는 본문 상한 — 진입점과 명령 응답이 **같은 값**을 써야 한다. */
 export const EVENT_TEXT_MAX = 50_000;
+
+/** 송신 이벤트의 좌표 — 대화 기록에 그 이벤트가 남긴 행을 «같은 대화 · 정확히 같은 시각» 으로 짚는 재료. */
+export interface OutCoords {
+  threadKey: string;
+  ts: number;
+}
+
+/**
+ * 송신 이벤트(`channel.message.out`)를 발행하고 **그 이벤트의 좌표**를 돌려준다 (2026-10-25).
+ * ★egress 사본이 원본 행을 짚는 좌표를 만드는 곳은 여기 하나다 — 시각을 한 번 만들어 발행과 반환에 같이 쓴다
+ *  (따로 `Date.now()` 를 부르면 1ms 어긋나 원본을 못 찾는다). 적재는 버스 구독자(`event-persist`)가 동기로 한다.
+ */
+export const publishReplyOut = (bus: EventBus, payload: { threadKey: string } & Record<string, unknown>): OutCoords => {
+  const ts = Date.now();
+  bus.publish({ type: "channel.message.out", ts, payload });
+  return { threadKey: payload.threadKey, ts };
+};
 
 /**
  * 슬래시 명령 응답 — 그 채널로 보내고 **대화 기록에도 남긴다**(관측 발행 → chat_log·대시보드).
@@ -27,26 +44,27 @@ export const EVENT_TEXT_MAX = 50_000;
  *  남는다**는 것이다(처음엔 `channelOnly` 로 지었다가 고쳤다).
  * ★남아야 할 것엔 절대 쓰지 마라 — 대화·결과 보고는 기록이 곧 가치다.
  */
+/**
+ * @returns 기록에 남는 응답이면 그 송신 이벤트의 좌표(egress 사본이 이 행을 원본으로 짚는다), 휘발·발행 실패면 undefined.
+ */
 export const replyCommand = async (
   msg: { reply: (t: string, o?: { turnFailed?: boolean }) => Promise<unknown>; channel: string; threadKey: string },
   text: string,
   opts?: { ephemeral?: boolean; turnFailed?: boolean },
-): Promise<void> => {
+): Promise<OutCoords | undefined> => {
   await Promise.resolve(opts?.turnFailed === true ? msg.reply(text, { turnFailed: true }) : msg.reply(text)).catch(() => {});
   try {
-    getEventBus().publish({
-      type: "channel.message.out",
-      ts: Date.now(),
-      payload: {
-        channel: msg.channel,
-        threadKey: msg.threadKey,
-        text: text.slice(0, EVENT_TEXT_MAX),
-        // 발행은 한다(라이브 화면엔 보인다) — 적재만 `event-persist` 가 건너뛴다.
-        ...(opts?.ephemeral === true ? { ephemeral: true } : {}),
-      },
+    const at = publishReplyOut(getEventBus(), {
+      channel: msg.channel,
+      threadKey: msg.threadKey,
+      text: text.slice(0, EVENT_TEXT_MAX),
+      // 발행은 한다(라이브 화면엔 보인다) — 적재만 `event-persist` 가 건너뛴다.
+      ...(opts?.ephemeral === true ? { ephemeral: true } : {}),
     });
+    return opts?.ephemeral === true ? undefined : at;
   } catch {
     /* 관측 발행 실패가 명령 응답을 무르지 않는다(원칙 3). */
+    return undefined;
   }
 };
 

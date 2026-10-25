@@ -61,6 +61,8 @@ interface SteerPayload {
   message?: string;
   outcome?: string;
   ts?: number;
+  fromJobId?: string;
+  fromLabel?: string;
 }
 interface JobCard {
   label: string;
@@ -169,6 +171,13 @@ export const check: RegressionCheck = {
     );
     const missedStep = missed.cards.get("j2")?.stepsEl.children[0];
 
+    // 소환자 작업(매니저)이 보낸 지시 — 보낸 쪽을 밝힌다(«지시 추가» 만이면 사용자가 보낸 것으로 읽힌다, 2026-10-25).
+    const fromMgr = renderSteers(
+      [{ jobId: "j3", label: "조사", message: "B만 봐", outcome: "delivered", ts: 400, fromJobId: "m1", fromLabel: "지휘" }],
+      ["j3"],
+    );
+    const fromStep = fromMgr.cards.get("j3")?.stepsEl.children[0];
+
     // 대상을 못 고른 시도(no-target) + 서버도 모르는 옛 jobId → 카드를 지어내지 않는다.
     const ghost = renderSteers([
       { message: "없는 매니저에", outcome: "no-target", ts: 300 }, // jobId 없음
@@ -218,6 +227,12 @@ export const check: RegressionCheck = {
         stepText(missedStep ?? mkEl()).includes("그건 빼고") &&
           stepText(missedStep ?? mkEl()).includes("막 끝나"),
         stepText(missedStep ?? mkEl()) || "(스텝 0)",
+      ),
+      assert(
+        "★소환자 작업이 보낸 지시는 보낸 쪽을 밝힌다(사용자 지시 라벨이 아니다)",
+        stepText(fromStep ?? mkEl()).includes("'지휘' 의 지시") && !stepText(fromStep ?? mkEl()).includes("지시 추가") &&
+          stepText(liveStep ?? mkEl()).includes("지시 추가"),
+        stepText(fromStep ?? mkEl()) || "(스텝 0)",
       ),
       assert(
         "★근거 없는 잡 카드를 지어내지 않는다(유령 0)",

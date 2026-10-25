@@ -86,6 +86,7 @@
   "bg.status.interrupted": "⏹ 종료됨(결과 미수신)",
   "bg.status.running": "🟡 진행 중",
   "bg.steer.add": "지시 추가",
+  "bg.steer.addFrom": "'{v}' 의 지시",
   "bg.steer.failed": "전달 실패 — 이미 종료되었거나 스티어 비활성",
   "bg.steer.justFinished": "매니저가 막 끝나 반영 안 됨",
   "bg.steer.notFound": "대상 매니저를 찾지 못함",

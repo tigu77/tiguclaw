@@ -1670,7 +1670,9 @@
         const icon = document.createElement("span");
         icon.className = "bg-step-icon"; icon.textContent = "💬";
         const lab = document.createElement("span");
-        lab.className = "bg-step-label bg-steer"; lab.textContent = i18n("bg.steer.add");
+        // 소환자 작업(매니저)이 보낸 지시면 보낸 쪽을 밝힌다 — «지시 추가» 만 있으면 사용자가 보낸 것으로 읽힌다(2026-10-25).
+        lab.className = "bg-step-label bg-steer";
+        lab.textContent = p.fromJobId ? i18n("bg.steer.addFrom", { v: p.fromLabel || p.fromJobId }) : i18n("bg.steer.add");
         line.appendChild(icon); line.appendChild(lab);
         if (p.message) {
           const d = document.createElement("span");

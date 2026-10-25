@@ -52,6 +52,7 @@ import {
   type WorkerJobRecord,
   listLiveChildJobs,
   findTargetableJob,
+  getJob,
   resolveOwnerThreadKey,
   jobBelongsToSession,
   WORKER_STEERING_ENABLED,
@@ -178,6 +179,8 @@ export const runWorkerJob = (
     let outcome: WorkerOutcome;
     /** 매니저가 끝나는 순간 도착해 반영 못 한 지시(원문). 완료 통지 뒤 소유 세션에 알린다. */
     let pendingSteerNotice: string[] = [];
+    /** 같은 창에 도착한 소환자 작업의 지시 — 사용자 것이 아니다(`partitionSteering().summonerMessages`). */
+    let pendingSummonerSteers: SteeringInput[] = [];
     try {
       const { runRegionA, resolveModelChain } =
         __runForTest === undefined
@@ -508,15 +511,20 @@ export const runWorkerJob = (
         //  들어오는데, 그걸 "방금 보내신 지시" 로 되읽어주면 사용자는 자기가 안 보낸 문장을
         //  자기 것으로 통보받는다. 자식 결과는 위 거두기 루프가 소비하고, 거기서 놓친
         //  잔여는 완료 보고에 이미 담긴다(소환자가 거둔다는 계약).
-        const leftover = partitionSteering(current.drain()).userMessages;
+        const parts = partitionSteering(current.drain());
+        const leftover = parts.userMessages;
         // 지역 참조가 다른 객체면 그쪽 잔여도 함께 회수한다(교체 순간 갇힌 것).
         if (current !== steerCh) {
           steerCh.close();
-          leftover.push(...partitionSteering(steerCh.drain()).userMessages);
+          const old = partitionSteering(steerCh.drain());
+          leftover.push(...old.userMessages);
+          parts.summonerMessages.push(...old.summonerMessages);
         }
         if (leftover.length > 0) {
           pendingSteerNotice = leftover.map((m: SteeringInput) => m.raw).filter((t: string) => t !== "");
         }
+        // 소환자 작업이 보낸 지시는 사용자 통지가 아니라 보낸 작업에게(판단은 onWorkerComplete 한 곳).
+        pendingSummonerSteers = parts.summonerMessages;
       }
     }
 
@@ -526,7 +534,7 @@ export const runWorkerJob = (
     // 막지 않는다(매니저 격리 유지).
     // ★늦게 온 지시도 넘긴다 — 싣거나 통지하는 판단은 onWorkerComplete 한 곳이다(2026-10-02).
     try {
-      await onWorkerComplete(job.jobId, outcome, pendingSteerNotice);
+      await onWorkerComplete(job.jobId, outcome, pendingSteerNotice, pendingSummonerSteers);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(
@@ -829,77 +837,7 @@ export const createWorkerMcpServer = (
         .describe("대상 자식 작업의 label. 이 대화 안에서 우선 식별."),
       job_id: z.string().optional().describe("대상 자식 작업의 jobId. label로 찾지 못하면 사용하며, 정확한 ID는 대화 범위 밖에서도 조회."),
     },
-    async (args) => {
-      try {
-        if (
-          (args.label === undefined || args.label === "") &&
-          (args.job_id === undefined || args.job_id === "")
-        ) {
-          return errText("label 또는 job_id 중 하나로 대상 작업을 지정하세요.");
-        }
-        const scope = resolveOwnerThreadKey(parentInput.threadKey);
-        let target = findTargetableJob({
-          ...(args.label !== undefined ? { label: args.label } : {}),
-          ...(args.job_id !== undefined ? { jobId: args.job_id } : {}),
-          scope,
-        });
-        if (
-          target === undefined &&
-          args.label !== undefined &&
-          args.label !== "" &&
-          scope !== ""
-        ) {
-          // 다른 대화에 같은 이름이 있으면 조용히 넘기지 말고 사실을 알린다.
-          const elsewhere = findTargetableJob({ label: args.label });
-          if (elsewhere !== undefined) {
-            // 거절도 관측면에 남긴다 — 사용자 입장에선 "보냈는데 안 갔다"라 유실과 같다.
-            publishSteerAttempt({
-              jobId: elsewhere.jobId,
-              label: args.label,
-              message: args.message,
-              outcome: "other-session",
-            });
-            return okText(
-              `'${args.label}' 작업은 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
-            );
-          }
-        }
-        if (target === undefined) {
-          // ★가장 흔한 유실이 여기다 — "스티어했는데 이미 끝난 작업이었다". steerJob 에
-          //  도달하지 못하는 경로라 여기서 직접 발행해야 사후에 셀 수 있다(ADR 2026-08-03 §4).
-          publishSteerAttempt({
-            ...(args.job_id !== undefined && args.job_id !== "" ? { jobId: args.job_id } : {}),
-            ...(args.label !== undefined && args.label !== "" ? { label: args.label } : {}),
-            message: args.message,
-            outcome: "no-target",
-          });
-          return okText(
-            `지정하신 작업을 찾지 못했어요(이미 끝났거나 이름이 다를 수 있습니다). list_workers 로 확인해 주세요. 지시는 전달되지 않았습니다.`,
-          );
-        }
-        const now = Date.now();
-        const outcome = steerJob(target.jobId, {
-          text: `[사용자 추가 지시] ${args.message}\n\n하던 작업을 이어가되 위 지시를 반영하세요.`,
-          raw: args.message,
-          ts: now,
-        });
-        if (outcome === "delivered") {
-          return okText(
-            `'${target.label}' 작업에 지시를 전달했어요. 작업의 다음 판단 시점에 반영됩니다(지금 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤).`,
-          );
-        }
-        if (outcome === "closed") {
-          return okText(
-            `'${target.label}' 작업이 방금 끝나서 지시가 반영되지 않았어요. 결과를 보고 필요하면 다시 시켜주세요.`,
-          );
-        }
-        return okText(
-          `'${target.label}' 작업에 지시를 전달할 수 없었어요(작업 스티어 비활성 또는 이미 종료). 지시는 반영되지 않았습니다.`,
-        );
-      } catch (e) {
-        return errText(e instanceof Error ? e.message : String(e));
-      }
-    },
+    async (args) => steerChildJob(parentInput, args),
   );
 
   const cancelWorker = tool(
@@ -1004,4 +942,133 @@ export const createWorkerMcpServer = (
     version: "1.0.0",
     tools: onDemand([runInBackground, listWorkers, listAllWorkers, steerWorker, cancelWorker], ["list_all_workers"]),
   });
+};
+
+/**
+ * `steer_worker` 의 판단 — 메인(`workers` 서버)과 매니저(`agents` 서버) 두 도구가 이 **한 함수**를 부른다 (2026-10-25).
+ *
+ * ★원칙 한 문장: **소환자는 자기가 띄운, 지금 돌고 있는 직속 자식에게 지시를 얹을 수 있다.** 호출자는 이 턴의 좌표
+ *  (`parentInput.threadKey` — 런타임이 만든 턴 입력이지 모델 인자가 아니다)이고, 직속 자식은 그 좌표에서 띄운 잡이다
+ *  (`findTargetableJob({childOf})`). 출처 표시·실행 중·detached·스티어 활성·다음 판단 시점 반영은 이 관계에 붙는
+ *  기존 전달 조건이다 — 역할을 묻지 않는다(서브에이전트는 자식을 못 띄우니 같은 판정에서 대상이 빈다).
+ * ★호출자가 **세션**(메인)이면 종전 규약 그대로다 — 이 대화 소속 전부(손자 포함) · 정확한 job_id 는 대화 밖도 · 다른 대화
+ *  동명 안내. 공통 원칙보다 넓은데, 맞추면 메인 능력이 줄어서 이번엔 바꾸지 않았다(결정 문서
+ *  `2026-10-25-summoner-steers-direct-child.md` §4 — 맞출지는 사용자 결정).
+ */
+export const steerChildJob = async (
+  parentInput: Pick<RegionASdkInput, "threadKey">,
+  args: { message: string; label?: string; job_id?: string },
+): Promise<ReturnType<typeof okText> | ReturnType<typeof errText>> => {
+  try {
+    if (
+      (args.label === undefined || args.label === "") &&
+      (args.job_id === undefined || args.job_id === "")
+    ) {
+      return errText("label 또는 job_id 중 하나로 대상 작업을 지정하세요.");
+    }
+    const now = Date.now();
+    let target: WorkerJobRecord | undefined;
+    let msg: SteeringInput;
+    const callerJobId = parentJobIdOf(parentInput.threadKey);
+    if (callerJobId !== undefined) {
+      // ── 호출자가 **작업**(매니저) — 직속 자식만. 넓히지 않고, 남의 작업 존재도 흘리지 않는다 ──
+      const caller = getJob(callerJobId);
+      if (caller === undefined || caller.status !== "running") {
+        return okText("이 작업은 이미 끝나 지시를 전달하지 않았습니다.");
+      }
+      target = findTargetableJob({
+        ...(args.label !== undefined ? { label: args.label } : {}),
+        ...(args.job_id !== undefined ? { jobId: args.job_id } : {}),
+        childOf: parentInput.threadKey,
+      });
+      if (target === undefined) {
+        // 거절도 관측면에 — 단 대상 jobId 는 싣지 않는다(남의 카드에 스텝을 그리지 않는다). 요청 id 는 로그에.
+        publishSteerAttempt({
+          ...(args.label !== undefined && args.label !== "" ? { label: args.label } : {}),
+          message: args.message,
+          outcome: "no-target",
+          from: callerJobId,
+        });
+        console.warn(
+          `[steer] '${caller.label}'(${callerJobId}) 의 지시 — 실행 중인 직속 자식에서 대상을 못 찾음 ` +
+            `(label=${args.label ?? "-"} job_id=${args.job_id ?? "-"}) · 전달 0`,
+        );
+        return okText(
+          `당신이 띄운 실행 중인 작업 중에서 '${args.label || args.job_id}' 를 찾지 못했어요(이미 끝났거나 당신이 띄운 작업이 아닙니다 — 지시는 직속 자식에게만 전달됩니다). 지시는 전달되지 않았습니다.`,
+        );
+      }
+      // ★사용자 지시로 포장하지 않는다 — 보낸 쪽을 밝힌다(승인 위조 방지). 늦게 도착하면 `from` 이 보낸 작업에게 돌려보낸다.
+      msg = {
+        text:
+          `[소환자 '${caller.label}' 의 추가 지시] ${args.message}\n\n` +
+          `하던 작업을 이어가되 위 지시를 반영하세요. 이 지시는 사용자가 아니라 당신을 띄운 매니저가 보낸 것입니다.`,
+        raw: args.message,
+        ts: now,
+        from: callerJobId,
+      };
+    } else {
+      // ── 호출자가 **세션**(메인) — 종전 규약 그대로(위 주석) ──
+      const scope = resolveOwnerThreadKey(parentInput.threadKey);
+      target = findTargetableJob({
+        ...(args.label !== undefined ? { label: args.label } : {}),
+        ...(args.job_id !== undefined ? { jobId: args.job_id } : {}),
+        scope,
+      });
+      if (
+        target === undefined &&
+        args.label !== undefined &&
+        args.label !== "" &&
+        scope !== ""
+      ) {
+        // 다른 대화에 같은 이름이 있으면 조용히 넘기지 말고 사실을 알린다.
+        const elsewhere = findTargetableJob({ label: args.label });
+        if (elsewhere !== undefined) {
+          // 거절도 관측면에 남긴다 — 사용자 입장에선 "보냈는데 안 갔다"라 유실과 같다.
+          publishSteerAttempt({
+            jobId: elsewhere.jobId,
+            label: args.label,
+            message: args.message,
+            outcome: "other-session",
+          });
+          return okText(
+            `'${args.label}' 작업은 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
+          );
+        }
+      }
+      if (target === undefined) {
+        // ★가장 흔한 유실이 여기다 — "스티어했는데 이미 끝난 작업이었다". steerJob 에
+        //  도달하지 못하는 경로라 여기서 직접 발행해야 사후에 셀 수 있다(ADR 2026-08-03 §4).
+        publishSteerAttempt({
+          ...(args.job_id !== undefined && args.job_id !== "" ? { jobId: args.job_id } : {}),
+          ...(args.label !== undefined && args.label !== "" ? { label: args.label } : {}),
+          message: args.message,
+          outcome: "no-target",
+        });
+        return okText(
+          `지정하신 작업을 찾지 못했어요(이미 끝났거나 이름이 다를 수 있습니다). list_workers 로 확인해 주세요. 지시는 전달되지 않았습니다.`,
+        );
+      }
+      msg = {
+        text: `[사용자 추가 지시] ${args.message}\n\n하던 작업을 이어가되 위 지시를 반영하세요.`,
+        raw: args.message,
+        ts: now,
+      };
+    }
+    const outcome = steerJob(target.jobId, msg);
+    if (outcome === "delivered") {
+      return okText(
+        `'${target.label}' 작업에 지시를 전달했어요. 작업의 다음 판단 시점에 반영됩니다(지금 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤).`,
+      );
+    }
+    if (outcome === "closed") {
+      return okText(
+        `'${target.label}' 작업이 방금 끝나서 지시가 반영되지 않았어요. 결과를 보고 필요하면 다시 시켜주세요.`,
+      );
+    }
+    return okText(
+      `'${target.label}' 작업에 지시를 전달할 수 없었어요(작업 스티어 비활성 또는 이미 종료). 지시는 반영되지 않았습니다.`,
+    );
+  } catch (e) {
+    return errText(e instanceof Error ? e.message : String(e));
+  }
 };

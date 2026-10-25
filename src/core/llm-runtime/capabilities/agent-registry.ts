@@ -31,7 +31,7 @@ import { coreMcpServer } from "./_core-server.js";
 import { tierDescription, unresolvableTierText } from "./tier-description.js";
 import { getEventBus } from "../../eventbus.js";
 import { DAEMON_SUBAGENT_TOOL } from "../subagent-tools.js";
-import type { SteeringChannel } from "../../steering.js";
+import type { SteeringChannel, SteeringInput } from "../../steering.js";
 import type { WorkerOutcome } from "../../worker-jobs.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -51,6 +51,7 @@ import {
 import { appRoot, getPaths, projectScope, projectScopeLegacy } from "../../paths.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 import { onDemand } from "../tool-load-policy.js";
+import { reaches, turnKindOf } from "../capability-reach.js";
 
 export interface Agent {
   /** frontmatter `name` (우선) 또는 파일 basename (확장자 제외). */
@@ -412,7 +413,7 @@ export const startDetachedAgent = (o: {
       asFiniteTimeoutMs,
       failureOutcome,
     } = await import("../../worker-jobs.js");
-    const { createSteeringChannel } = await import("../../steering.js");
+    const { createSteeringChannel, partitionSteering } = await import("../../steering.js");
 
     // ★서브에도 스티어 채널 (ADR §2). 오래 도는 게 기본이 되면 개입 수단이 있어야 한다.
     //  `setSteerChannel` 은 jobId 기준이라 kind 를 안 본다 — 매니저용으로 만든 배관이
@@ -427,6 +428,8 @@ export const startDetachedAgent = (o: {
     let unsubTools: () => void = () => {};
     /** 서브가 끝나는 순간 도착해 반영 못 한 지시(원문). 결과 보고 뒤에 정직 통지. */
     let pendingSteerNotice: string[] = [];
+    /** 같은 창에 도착한 소환자 작업의 지시 — 보낸 작업에게 돌려준다(`onWorkerComplete`). */
+    let pendingSummonerSteers: SteeringInput[] = [];
     try {
       const inject = o.__runForTest;
       const { runRegionA, resolveModelChain } = inject
@@ -516,17 +519,17 @@ export const startDetachedAgent = (o: {
         const current = getSteerChannel(o.jobId) ?? steerCh;
         clearSteerChannel(o.jobId);
         current.close();
-        pendingSteerNotice = current
-          .drain()
-          .map((m) => m.raw)
-          .filter((t) => t !== "");
+        // ★출처로 가른다 (2026-10-25) — 소환자(매니저)가 보낸 지시를 «방금 보내신 지시» 로 사용자에게 돌리지 않는다.
+        //  분류는 매니저 러너와 같은 함수 한 곳(`partitionSteering`), 결정은 `onWorkerComplete` 한 곳.
+        const leftover = [...current.drain()];
         // 지역 참조가 다른 객체면 그쪽 잔여도 함께 회수한다(교체 순간 갇힌 것).
         if (current !== steerCh) {
           steerCh.close();
-          pendingSteerNotice.push(
-            ...steerCh.drain().map((m) => m.raw).filter((t) => t !== ""),
-          );
+          leftover.push(...steerCh.drain());
         }
+        const parts = partitionSteering(leftover);
+        pendingSteerNotice = parts.userMessages.map((m) => m.raw).filter((t) => t !== "");
+        pendingSummonerSteers = parts.summonerMessages;
       }
     }
 
@@ -559,7 +562,7 @@ export const startDetachedAgent = (o: {
     // 결과를 소환자에게 — 매니저면 그 턴의 steering 큐, 세션이면 새 턴(deliverToSummoner).
     // ★늦게 온 지시도 넘긴다 — 싣거나 통지하는 판단은 onWorkerComplete 한 곳이다(2026-10-02).
     try {
-      await onWorkerComplete(o.jobId, outcome, pendingSteerNotice);
+      await onWorkerComplete(o.jobId, outcome, pendingSteerNotice, pendingSummonerSteers);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(
@@ -1031,9 +1034,31 @@ export const createSpawnAgentMcpServer = (
     },
   );
 
+  /**
+   * **소환자는 직속 자식에게 지시할 수 있다** (2026-10-25 사용자) — 띄우고(`spawn_agent`)·거두는(`wait_for_worker`) 이 자리에서
+   * 지시도 한다(띄울 수 있으면 지시할 수 있어야 한다 — 위 `wait_for_worker` 를 여기 둔 이유와 같다).
+   * ★판단은 `steerChildJob` 한 곳(메인 `workers` 의 `steer_worker` 와 같은 함수). 여기 다른 것은 **설명**뿐이다.
+   * ★메인은 `workers` 서버에 이미 같은 도구가 있다 — `workers` 를 받는 턴엔 두 번 싣지 않는다(메인 도구 목록 불변).
+   *  서브에이전트는 이 서버 자체가 없다(`REACH.agents="manager"`).
+   */
+  const steerChildTool = tool(
+    "steer_worker",
+    "**당신이 `spawn_agent` 로 띄워 지금 실행 중인 작업(직속 자식)에 추가 지시를 전달합니다.** 직속 자식이 아닌 작업(형제·부모·다른 작업이 띄운 것)에는 어떤 식별자로도 전달되지 않습니다. 반영은 그 작업의 **다음 판단 시점**입니다 — 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤입니다. 자식은 이 지시를 사용자 지시가 아니라 «소환자(당신)의 지시» 로 받습니다. 이미 끝난 작업에는 전달되지 않으며 결과로 알려드립니다. ★`wait_for_worker` 로 기다리는 동안엔 당신이 판단할 수 없습니다 — 도중에 방향을 바꿀 수 있어야 하면 `timeout_seconds` 를 짧게 주고 돌아와 이 도구를 쓰세요.",
+    {
+      message: z.string().min(1).describe("자식 작업에 전달할 지시."),
+      label: z.string().optional().describe("대상 작업의 label — 당신이 띄운 작업 안에서만 찾습니다."),
+      job_id: z.string().optional().describe("대상 작업의 jobId(spawn_agent 가 돌려준 값) — 당신이 띄운 작업만 됩니다."),
+    },
+    // lazy import — 이 파일의 다른 경로와 같은 이유(capabilities → worker 쪽 순환·부작용 회피).
+    async (args) => (await import("./worker-registry.js")).steerChildJob(parentInput, args),
+  );
+
   return coreMcpServer({
     name: "agents",
     version: "1.1.0",
-    tools: onDemand([spawnTool, waitForWorker, readWorkerResult, findAgentsTool], ["find_agents"]),
+    tools: onDemand(
+      [spawnTool, waitForWorker, readWorkerResult, findAgentsTool, ...(reaches("workers", turnKindOf(parentInput)) ? [] : [steerChildTool])],
+      ["find_agents"],
+    ),
   });
 };

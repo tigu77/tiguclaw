@@ -86,6 +86,7 @@
   "bg.status.interrupted": "⏹ Ended (no result received)",
   "bg.status.running": "🟡 Running",
   "bg.steer.add": "Add instruction",
+  "bg.steer.addFrom": "Instruction from '{v}'",
   "bg.steer.failed": "Delivery failed — already ended, or steering is off",
   "bg.steer.justFinished": "The manager just finished, so it wasn't applied",
   "bg.steer.notFound": "Target manager not found",

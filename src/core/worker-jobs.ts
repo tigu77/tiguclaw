@@ -1574,24 +1574,31 @@ export const resolveOwnerThreadKey = (
  *  (변이 검사에서 그대로 생존했다).
  *
  * @param scope 소환자 세션 — 지정 시 그 세션 소속만. `""` = 전역(다른 세션 확인용).
+ * @param childOf 소환자의 턴 좌표 — 지정 시 **그 소환자의 직속 자식**만(label·job_id 둘 다). 잡의 실행 좌표가 곧
+ *  부모 기록이라(`parentJobIdOf`) «직속 자식» 은 `threadKey === childOf` 다(2026-10-25 «소환자는 직속 자식에게 지시할 수 있다»).
+ *  못 찾으면 넓히지 않는다 — 아래 job_id 의 전역 조회도 이 관계 안에서만.
  */
 export const findTargetableJob = (q: {
   label?: string;
   jobId?: string;
   scope?: string;
+  childOf?: string;
 }): WorkerJobRecord | undefined => {
-  const running = listJobs({
-    runningOnly: true,
-    ...(q.scope !== undefined && q.scope !== "" ? { ownerThreadKey: q.scope } : {}),
-  });
+  // 후보 — 직속 자식(`childOf`)이면 그 관계만, 아니면 세션 범위(`scope`).
   // ★`detached` 로 고른다(`kind === "worker"` 아님). 근거는 "독립 백그라운드 잡인가" 이고,
   //  백그라운드 서브에이전트가 바로 그것이다 — 부모 턴이 없으니 직접 멈춰야 한다.
   //  awaited 서브는 제외가 맞다: 진행 중인 대화를 멈추는 게 그쪽의 정상 경로다.
+  const running = listJobs({
+    runningOnly: true,
+    ...(q.childOf === undefined && q.scope !== undefined && q.scope !== "" ? { ownerThreadKey: q.scope } : {}),
+  }).filter((j) => j.detached && (q.childOf === undefined || j.threadKey === q.childOf));
   if (q.label !== undefined && q.label !== "") {
-    const byLabel = running.find((j) => j.detached && j.label === q.label);
+    const byLabel = running.find((j) => j.label === q.label);
     if (byLabel !== undefined) return byLabel;
   }
   if (q.jobId !== undefined && q.jobId !== "") {
+    // 직속 자식으로 고르는 중이면 job_id 도 그 관계 안에서만(넓히지 않는다).
+    if (q.childOf !== undefined) return running.find((j) => j.jobId === q.jobId);
     // job_id 는 사용자가 카드에서 직접 집은 정확한 좌표 — 세션 밖이라도 존중한다
     // (label 과 달리 오인 여지가 없다). 그래서 scope 필터를 안 탄 전역 조회를 쓴다.
     const j = jobs.get(q.jobId);
@@ -2221,6 +2228,8 @@ export const publishSteerAttempt = (info: {
   jobId?: string;
   /** 호출부가 지목에 쓴 이름. 생략 시 잡 레코드의 label 로 채운다. */
   label?: string;
+  /** 보낸 소환자 작업(`SteeringInput.from`) — 비면 사용자(메인 비서가 옮긴 말). */
+  from?: string;
 }): void => {
   try {
     const job = info.jobId !== undefined && info.jobId !== "" ? getJob(info.jobId) : undefined;
@@ -2231,6 +2240,7 @@ export const publishSteerAttempt = (info: {
         jobId: info.jobId ?? "",
         label: info.label ?? job?.label ?? "",
         outcome: info.outcome,
+        ...(info.from !== undefined ? { fromJobId: info.from, fromLabel: getJob(info.from)?.label ?? "" } : {}),
         // 지시 원문 — 길이 컷(이벤트/버퍼 바운드, worker.* 의 task/result 컷과 동형).
         message: info.message.slice(0, 500),
         ...(job !== undefined
@@ -2302,7 +2312,7 @@ export const steerJob = (
       if (ev !== undefined) ev.lastActivityAt = Date.now();
     }
   }
-  publishSteerAttempt({ jobId, message: msg.raw, outcome });
+  publishSteerAttempt({ jobId, message: msg.raw, outcome, ...(msg.from !== undefined ? { from: msg.from } : {}) });
   return outcome;
 };
 
@@ -3505,10 +3515,33 @@ export const onWorkerComplete = async (
   jobId: string,
   outcome: WorkerOutcome,
   lateUserMessages: readonly string[] = [],
+  /** 작업자가 끝나 반영 못 한 **소환자 작업의** 지시(`partitionSteering().summonerMessages`) — 사용자 것이 아니다. */
+  lateSummonerMessages: readonly SteeringInput[] = [],
 ): Promise<void> => {
+  returnUnappliedToSummoner(jobId, lateSummonerMessages);
   const carried = await deliverCompletion(jobId, outcome, lateUserMessages);
   if (carried === "parked") return; // 늦은 지시는 보류를 닫는 쪽이 같은 규칙(`afterRoute`)으로 정한다.
   await afterRoute(jobs.get(jobId), carried, lateUserMessages);
+};
+
+/**
+ * 소환자 작업이 보낸 지시를 작업자가 못 읽고 끝났으면 **보낸 작업에게** 돌려준다 (2026-10-25). 완료 배달 전, 동기.
+ * ★`source:"job"` 이다 — 보낸 매니저도 못 읽고 끝나면 그 러너가 `job` 잔여를 사용자 통지에서 빼므로 «방금 보내신 지시» 로
+ *  둔갑하지 않는다. 보낸 작업이 이미 끝나 안 닿아도 로그만 — 사용자가 보낸 말이 아니므로 사용자에게 돌리지도, 다시 반송하지도 않는다.
+ */
+const returnUnappliedToSummoner = (jobId: string, msgs: readonly SteeringInput[]): void => {
+  const label = jobs.get(jobId)?.label ?? jobId;
+  for (const from of new Set(msgs.map((m) => m.from).filter((f): f is string => f !== undefined))) {
+    const lines = msgs.filter((m) => m.from === from).map((m) => `· ${m.raw}`).join("\n");
+    const text =
+      `[작업 '${label}'(job_id ${jobId}) 이 끝나 당신이 보낸 지시가 반영되지 않았습니다 — 사용자 지시가 아닙니다]\n${lines}\n` +
+      `필요하면 그 작업의 결과를 보고 다시 시키거나 직접 하세요.`;
+    const r = steerJob(from, { text, raw: text, ts: Date.now(), source: "job" }, { resetStallClock: false });
+    console[r === "delivered" ? "log" : "warn"](
+      `worker-jobs: '${label}'(${jobId}) 가 반영 못 한 소환자 지시 ${String(msgs.filter((m) => m.from === from).length)}건을 ` +
+        `보낸 작업 ${from} 에게 돌려줌 — ${r}${r === "delivered" ? "" : "(보낸 작업도 끝남 — 사용자에게 돌리지 않는다)"}`,
+    );
+  }
 };
 
 /** 완료 배달 뒤 늦은 지시 — 메인 완료 턴에 실렸으면(carried) 끝, 아니면 소유자에게 따로 알린다(한 곳에서 정한다). */

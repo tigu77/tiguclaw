@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Messages you send as a reply show the start of the original message above the card.** Clicking it jumps to the original. This applies to replies sent from this version on.
 - **The details above the message box fold away in one tap.** Tap ▾ at the right of the tag row to hide tags, projects, the reply target, attachments and background indicators; small badges for what is hidden stay on the top line. Tap them or ▴ to unfold. It starts unfolded, and your choice is remembered in that browser. On phones the working indicator sits on the top line above the message box.
 - **Work stopped by a subscription usage limit can resume automatically in the same conversation once the limit resets (off by default).** Turn it on or off in the dashboard under **Settings → Resume after usage limits** (the same value as `"limitResume": { "enabled": true }` in `settings.json`). Pick-ups already scheduled still run after you turn it off. The stop message says when it will resume, and you can cancel it with `/stop` or from the background panel.
+- **Managers can send extra instructions to the subagents they started while those are still running.** Only the manager's own running subagents receive them, and they arrive marked as the manager's instruction, not yours. The background panel shows them as «Instruction from 'manager name'».
 
 ### Changed
 

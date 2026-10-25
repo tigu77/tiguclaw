@@ -63,6 +63,12 @@ export interface SteeringInput {
    *  먼저 반영돼야 하므로 출처로 재정렬하지 않는다.
    */
   source?: "user" | "job";
+  /**
+   * 이 지시를 **보낸 소환자 작업**의 jobId (2026-10-25). 비면 사용자(메인 비서가 옮긴 말).
+   * ★소환자는 직속 자식에게 지시할 수 있다 — 매니저가 띄운 자식에 `steer_worker` 를 쓰면 여기 매니저 id 가 실린다.
+   *  자식이 읽기 전에 끝나면 이 지시는 «방금 보내신 지시» 로 사용자에게 가면 안 되고 보낸 작업에게 돌아간다(`partitionSteering`).
+   */
+  from?: string;
 }
 
 /**
@@ -74,17 +80,21 @@ export interface SteeringInput {
  *    되읽어주면 사용자는 **자기가 안 보낸 문장**을 자기 것으로 통보받는다.
  *
  * 미지정은 `user` 로 본다 — 이 필드가 생기기 전 호출부가 전부 사용자 개입이었다.
+ * ★셋째 묶음 `summonerMessages` (2026-10-25) — 소환자 **작업**이 보낸 지시(`from`). 사용자 지시가 아니므로 턴 끝 잔여 통지에
+ *  섞으면 사용자는 매니저가 쓴 글을 «방금 보내신 지시» 로 받는다. 받는 곳은 보낸 작업이다(`onWorkerComplete`).
  */
 export const partitionSteering = (
   msgs: readonly SteeringInput[],
-): { jobResults: SteeringInput[]; userMessages: SteeringInput[] } => {
+): { jobResults: SteeringInput[]; userMessages: SteeringInput[]; summonerMessages: SteeringInput[] } => {
   const jobResults: SteeringInput[] = [];
   const userMessages: SteeringInput[] = [];
+  const summonerMessages: SteeringInput[] = [];
   for (const m of msgs) {
     if (m.source === "job") jobResults.push(m);
+    else if (m.from !== undefined) summonerMessages.push(m);
     else userMessages.push(m);
   }
-  return { jobResults, userMessages };
+  return { jobResults, userMessages, summonerMessages };
 };
 
 /**

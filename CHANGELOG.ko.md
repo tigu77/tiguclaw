@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.76.0] - 2026-10-25
+
 ### Added
 
 - **백그라운드 셸에 설명이 보입니다.** 비서가 셸을 띄우며 적은 설명이 «백그라운드 작업» 위젯 항목과 백그라운드 패널 셸 카드 맨 위에 나옵니다. 명령·폴더·시간·출력 표시는 그대로입니다.
@@ -2680,7 +2682,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...HEAD
+[0.76.0]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...v0.75.0
 [0.74.0]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...v0.74.0
 [0.73.1]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...v0.73.1

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.76.0] - 2026-10-25
+
 ### Added
 
 - **Background shells show their description.** The description the assistant gives when it starts a shell appears in the Background work widget and at the top of the shell card in the background panel. The command, folder, time and output are shown as before.
@@ -1130,7 +1132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...HEAD
+[0.76.0]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...v0.75.0
 [0.74.0]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...v0.74.0
 [0.73.1]: https://github.com/tigu77/tiguclaw/compare/v0.73.0...v0.73.1

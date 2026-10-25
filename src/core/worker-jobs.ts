@@ -3518,14 +3518,20 @@ export const onWorkerComplete = async (
   /** 작업자가 끝나 반영 못 한 **소환자 작업의** 지시(`partitionSteering().summonerMessages`) — 사용자 것이 아니다. */
   lateSummonerMessages: readonly SteeringInput[] = [],
 ): Promise<void> => {
-  returnUnappliedToSummoner(jobId, lateSummonerMessages);
-  const carried = await deliverCompletion(jobId, outcome, lateUserMessages);
+  let carried: boolean | "parked";
+  try {
+    carried = await deliverCompletion(jobId, outcome, lateUserMessages);
+  } finally {
+    // ★반송은 결과 배달 **뒤** — 거두기 대기 중인 매니저는 결과함과 지시를 경주시키므로, 반송이 먼저 닿으면 결과 없는 턴을 한 번
+    //  돈다(실패 분기는 결과를 `await import` 뒤에 넣는다 — 독립 검토 10-25 · 회귀 ⑥). 결과 배달이 던져도 반송은 한다.
+    returnUnappliedToSummoner(jobId, lateSummonerMessages);
+  }
   if (carried === "parked") return; // 늦은 지시는 보류를 닫는 쪽이 같은 규칙(`afterRoute`)으로 정한다.
   await afterRoute(jobs.get(jobId), carried, lateUserMessages);
 };
 
 /**
- * 소환자 작업이 보낸 지시를 작업자가 못 읽고 끝났으면 **보낸 작업에게** 돌려준다 (2026-10-25). 완료 배달 전, 동기.
+ * 소환자 작업이 보낸 지시를 작업자가 못 읽고 끝났으면 **보낸 작업에게** 돌려준다 (2026-10-25). 완료 배달 **뒤**, 동기(`onWorkerComplete`).
  * ★`source:"job"` 이다 — 보낸 매니저도 못 읽고 끝나면 그 러너가 `job` 잔여를 사용자 통지에서 빼므로 «방금 보내신 지시» 로
  *  둔갑하지 않는다. 보낸 작업이 이미 끝나 안 닿아도 로그만 — 사용자가 보낸 말이 아니므로 사용자에게 돌리지도, 다시 반송하지도 않는다.
  */
@@ -3536,7 +3542,9 @@ const returnUnappliedToSummoner = (jobId: string, msgs: readonly SteeringInput[]
     const text =
       `[작업 '${label}'(job_id ${jobId}) 이 끝나 당신이 보낸 지시가 반영되지 않았습니다 — 사용자 지시가 아닙니다]\n${lines}\n` +
       `필요하면 그 작업의 결과를 보고 다시 시키거나 직접 하세요.`;
-    const r = steerJob(from, { text, raw: text, ts: Date.now(), source: "job" }, { resetStallClock: false });
+    // `from` = 돌려보낸 작업 — 없으면 관측(`worker.steered`)이 사용자 지시로 그려졌다(대시보드 «지시 추가» · 독립 검토 10-25).
+    //  분류는 `source:"job"` 이 먼저라 결과 묶음 그대로다(`partitionSteering`) — 다시 반송되지 않는다.
+    const r = steerJob(from, { text, raw: text, ts: Date.now(), source: "job", from: jobId }, { resetStallClock: false });
     console[r === "delivered" ? "log" : "warn"](
       `worker-jobs: '${label}'(${jobId}) 가 반영 못 한 소환자 지시 ${String(msgs.filter((m) => m.from === from).length)}건을 ` +
         `보낸 작업 ${from} 에게 돌려줌 — ${r}${r === "delivered" ? "" : "(보낸 작업도 끝남 — 사용자에게 돌리지 않는다)"}`,

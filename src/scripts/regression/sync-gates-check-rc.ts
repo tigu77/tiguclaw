@@ -31,11 +31,10 @@ import { skip } from "./_framework.js";
  */
 import { readFile, stat } from "node:fs/promises";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
-import { blockContaining, runSyncBlock, sectionBlock } from "./_sync-blocks.js";
+import { blockContaining, execRc, exitCodeOf, runSyncBlock, sectionBlock } from "./_sync-blocks.js";
 
 const REPO = new URL("../../../", import.meta.url);
 
@@ -47,12 +46,7 @@ const bashBlocks = (md: string): string[] => {
   return out;
 };
 
-const sh = (script: string): Promise<{ rc: number; out: string }> =>
-  new Promise((res) => {
-    execFile("/bin/zsh", ["-c", script], { timeout: 20_000 }, (err, so, se) =>
-      res({ rc: err === null ? 0 : ((err as { code?: number }).code ?? 1), out: `${so}${se}` }),
-    );
-  });
+const sh = (script: string): Promise<{ rc: number; out: string }> => execRc("/bin/zsh", ["-c", script], { timeout: 20_000 }, "헬퍼 실행");
 
 export const check: RegressionCheck = {
   name: "sync-gates-check-rc",
@@ -193,6 +187,12 @@ export const check: RegressionCheck = {
       const s6synced = await runSyncBlock(repoRoot, s6, {}, { STUB_NOTHING_STAGED: "0" });
       const s6unpushed = await runSyncBlock(repoRoot, s6, {}, { STUB_NOTHING_STAGED: "0", STUB_REMOTE_DEV: "f".repeat(40) });
       const s6noRemote = await runSyncBlock(repoRoot, s6, { lsRemote: 2 }, { STUB_NOTHING_STAGED: "0" });
+      // 릴리스인데 새로 실을 것이 없다(평소 싱크로 dev 에 이미 올렸다) — 그 HEAD 로 업데이트 경로를 재야 한다(10-25 독립 검토).
+      const headSha = "c".repeat(40);
+      const relSynced = { ...rel, STUB_NOTHING_STAGED: "0", STUB_HEAD: headSha, STUB_REMOTE_DEV: headSha };
+      const s6relSynced = await runSyncBlock(repoRoot, s6, {}, relSynced);
+      const s6relSyncedUpd = await runSyncBlock(repoRoot, s6, { update: 7 }, relSynced);
+      const updateCalls = (r: { calls: string[] }): string[] => r.calls.filter((c) => /^bash \S*check-public-update\.sh /.test(c));
       const r5ok = await runSyncBlock(repoRoot, r5);
       const r5ci = await runSyncBlock(repoRoot, r5, { ci: 7 });
       const s7ok = await runSyncBlock(repoRoot, s7);
@@ -215,8 +215,9 @@ export const check: RegressionCheck = {
           s6push.rc !== 0 && !/SYNC_SHA=/.test(s6push.out), `rc=${s6push.rc}`),
         assert("★§6 commit 이 실패하면 push 하지 않고 비영 — SYNC_SHA 도 안 낸다",
           s6commit.rc !== 0 && pushes(s6commit, "refs/heads/") === 0 && !/SYNC_SHA=/.test(s6commit.out), `rc=${s6commit.rc} · push ${pushes(s6commit, "refs/heads/")}`),
-        assert("§6 바꿀 것 없음 + HEAD = 원격 dev — «최신 상태» 로 0 · commit·push 없음",
-          s6synced.rc === 0 && /최신 상태/.test(s6synced.out) && pushes(s6synced, "refs/heads/") === 0 && !s6synced.calls.some((c) => / commit /.test(c)),
+        assert("§6 바꿀 것 없음 + HEAD = 원격 dev(평소 싱크) — «최신 상태» 로 0 · commit·push·업데이트 검사 없음",
+          s6synced.rc === 0 && /최신 상태/.test(s6synced.out) && pushes(s6synced, "refs/heads/") === 0 && !s6synced.calls.some((c) => / commit /.test(c)) &&
+            updateCalls(s6synced).length === 0,
           `rc=${s6synced.rc} · ${s6synced.out.trim().split("\n").slice(-1)[0]?.slice(0, 80) ?? ""}`),
         assert("★§6 바꿀 것 없음인데 HEAD ≠ 원격 dev(미전송 커밋) — «최신 상태» 가 아니라 비영",
           s6unpushed.rc !== 0 && !/최신 상태/.test(s6unpushed.out) && pushes(s6unpushed, "refs/heads/") === 0,
@@ -225,6 +226,13 @@ export const check: RegressionCheck = {
           s6noRemote.rc !== 0 && !/최신 상태/.test(s6noRemote.out) && pushes(s6noRemote, "refs/heads/") === 0 &&
             !s6noRemote.calls.some((c) => / commit /.test(c)) && !/SYNC_SHA=/.test(s6noRemote.out),
           `rc=${s6noRemote.rc} · ${s6noRemote.out.trim().split("\n").slice(-1)[0]?.slice(0, 80) ?? ""}`),
+        assert("★§6 릴리스인데 바꿀 것 없음(HEAD = 원격 dev) — 그 HEAD 로 업데이트 경로 검사 1회 뒤 0 · SYNC_SHA=HEAD · commit·push 없음",
+          s6relSynced.rc === 0 && updateCalls(s6relSynced).length === 1 && updateCalls(s6relSynced)[0]!.includes(` ${headSha} `) &&
+            s6relSynced.out.includes(`SYNC_SHA=${headSha}`) && pushes(s6relSynced, "refs/heads/") === 0 && !s6relSynced.calls.some((c) => / commit /.test(c)),
+          `rc=${s6relSynced.rc} · 검사 ${JSON.stringify(updateCalls(s6relSynced))} · ${s6relSynced.out.trim().split("\n").slice(-1)[0]?.slice(0, 80) ?? ""}`),
+        assert("★§6 릴리스인데 바꿀 것 없음 + 업데이트 검사 실패 — 비영 · SYNC_SHA 없음 · push 없음",
+          s6relSyncedUpd.rc !== 0 && !/SYNC_SHA=/.test(s6relSyncedUpd.out) && pushes(s6relSyncedUpd, "refs/heads/") === 0,
+          `rc=${s6relSyncedUpd.rc} · ${s6relSyncedUpd.out.trim().split("\n").slice(-1)[0]?.slice(0, 80) ?? ""}`),
         assert("R5 정상 — CI 확인 뒤 main 으로 한 번 push · 0", r5ok.rc === 0 && pushes(r5ok, "refs/heads/main") === 1, `rc=${r5ok.rc} · push ${pushes(r5ok, "refs/heads/main")}`),
         assert("★R5 CI 확인이 실패하면 main 에 push 하지 않고 비영", r5ci.rc !== 0 && pushes(r5ci, "refs/heads/main") === 0, `rc=${r5ci.rc} · push ${pushes(r5ci, "refs/heads/main")}`),
         assert("§7 설치 정상 — 0 · «설치 검증 완료»", s7ok.rc === 0 && done(s7ok), `rc=${s7ok.rc} · ${s7ok.out.trim().split("\n").slice(-1)[0]?.slice(0, 100) ?? ""}`),
@@ -236,6 +244,37 @@ export const check: RegressionCheck = {
         assert("★§7 부팅 검사가 실패하면 비영", s7bBoot.rc !== 0, `rc=${s7bBoot.rc}`),
       );
     }
+    // ── ④ 하네스가 rc 를 **지어내지 않는다** — 시한 초과·실행 실패를 -1·1 로 바꿔 돌려주면 «실패하면 비영» 이 멈춘 게이트에도 초록이다(10-25 독립 검토).
+    //  (Windows 는 위 ②에서 이미 돌아갔다 — 여기는 POSIX 만 온다.)
+    const hung = await runSyncBlock(new URL(".", REPO).pathname, "sleep 5", {}, {}, 300).then(
+      (r) => `resolved rc=${r.rc}`,
+      (e: unknown) => `rejected:${String((e as Error)?.message ?? e).slice(0, 60)}`,
+    );
+    const spawnFail = (() => {
+      try {
+        return `rc=${exitCodeOf(Object.assign(new Error("spawn"), { code: "ENOENT" }), "없는 명령")}`;
+      } catch (e) {
+        return `threw:${String((e as Error).message).slice(0, 40)}`;
+      }
+    })();
+    // 실행·판정의 한 곳(`execRc` — 헬퍼 `sh`·lock 도구 `run`·블록 모두 이것만 부른다)을 직접: 시한 초과 · 없는 실행 파일.
+    const rejectOf = (p: Promise<{ rc: number }>): Promise<string> =>
+      p.then((r) => `resolved rc=${r.rc}`, (e: unknown) => `rejected:${String((e as Error)?.message ?? e).slice(0, 60)}`);
+    const execHung = await rejectOf(execRc("/bin/zsh", ["-c", "sleep 5"], { timeout: 300 }, "시한 시험"));
+    const execMissing = await rejectOf(execRc("/nonexistent/tiguclaw-regression-bin", [], { timeout: 5_000 }, "없는 실행 파일"));
+    const execNonzero = await rejectOf(execRc("/bin/zsh", ["-c", "exit 7"], { timeout: 5_000 }, "비영 시험"));
+    out.push(assert("★싱크 블록이 시한을 넘기거나 실행 자체가 실패하면 rc 를 내지 않고 거절한다(비영 판정으로 삼키지 않는다)",
+      hung.startsWith("rejected:") && spawnFail.startsWith("threw:"), JSON.stringify({ hung, spawnFail })),
+      assert("★실행 한 곳(execRc) — 시한 초과·없는 실행 파일은 거절 · 진짜 비영은 그 rc 그대로",
+        execHung.startsWith("rejected:") && execMissing.startsWith("rejected:") && execNonzero === "resolved rc=7",
+        JSON.stringify({ execHung, execMissing, execNonzero })),
+    );
+    // 래퍼가 판정을 따로 들지 않는다 — 두 래퍼가 `execRc` 만 부르는지(«숫자 아니면 -1·1» 이 되살아나면 위 단언이 그 자리를 못 본다).
+    const lockSrc = await readFile(new URL("src/scripts/regression/public-lock-matches-dev.ts", REPO), "utf8");
+    const selfSrc = await readFile(new URL("src/scripts/regression/sync-gates-check-rc.ts", REPO), "utf8");
+    const wrapperOk = (src: string, name: string): boolean => new RegExp(`const ${name} = \\([^)]*\\)[^=]*=>\\s*execRc\\(`).test(src) && !/\bexecFile\(/.test(src);
+    out.push(assert("래퍼(`sh`·`run`)는 실행·판정을 `execRc` 한 곳에 맡기고 `execFile` 을 직접 부르지 않는다",
+      wrapperOk(selfSrc, "sh") && wrapperOk(lockSrc, "run"), JSON.stringify({ sh: wrapperOk(selfSrc, "sh"), run: wrapperOk(lockSrc, "run") })));
     return out;
   },
 };

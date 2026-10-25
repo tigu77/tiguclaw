@@ -7,10 +7,44 @@
  * 헬퍼(`_workspace/sync-gate.sh`)는 **진짜**를 쓴다 — 그것이 판정의 일부다.
  * ★POSIX 전용(zsh) — Windows 에선 호출부가 건너뛴다.
  */
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileException, type ExecFileOptions } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+/**
+ * `execFile` 결과의 종료 코드. ★시한 초과(신호로 죽음)·spawn 실패(문자열 코드)는 «비영» 이 아니라 **던진다** — 호출부의 «실패하면 비영»
+ *  단언이 `rc !== 0` 만 보므로, 숫자가 아닌 끝을 -1·1 로 바꿔 돌려주면 **게이트가 멈춰도 초록**이었다(독립 검토 10-25).
+ */
+export const exitCodeOf = (err: ExecFileException | null, what: string): number => {
+  if (err === null) return 0;
+  if (typeof err.code === "number") return err.code;
+  throw new Error(`${what} — 종료 코드 없이 끝났다(${err.killed === true ? "시한 초과" : "실행 실패"} · ${String(err.code ?? err.signal ?? "?")}). 판정하지 않는다`);
+};
+
+/**
+ * 명령 하나를 돌려 `{ rc, out }` — 싱크 게이트 회귀의 실행·판정은 **여기 한 곳**이다(블록·헬퍼·lock 도구 모두). 숫자 아닌 끝은 거절한다
+ *  (`exitCodeOf`). `onDone` 은 판정 전에 출력으로 뒷정리할 때(결과와 무관하게 한 번).
+ *  ★한 곳인 이유: 세 래퍼가 각자 «숫자 아니면 -1·1» 을 들고 있었고, 하나를 고쳐도 나머지가 그대로였다(10-25 GPT 검토).
+ */
+export const execRc = (
+  file: string,
+  args: readonly string[],
+  opts: ExecFileOptions,
+  what: string,
+  onDone?: (out: string) => void,
+): Promise<{ rc: number; out: string }> =>
+  new Promise((res, rej) => {
+    execFile(file, [...args], { ...opts, encoding: "utf8" }, (err, so, se) => {
+      const out = `${String(so)}${String(se)}`;
+      try {
+        onDone?.(out);
+        res({ rc: exitCodeOf(err, what), out });
+      } catch (e) {
+        rej(e);
+      }
+    });
+  });
 
 /** `### <heading>` 절(다음 `### `·`## ` 전까지) 안의 `nth` 번째 bash 블록. 못 찾으면 undefined(호출부가 실패로 단언한다). */
 export const sectionBlock = (md: string, heading: string, nth = 0): string | undefined => {
@@ -79,12 +113,14 @@ git() {
 /**
  * 블록 하나를 격리된 가짜 DEV·PUB 로 돌린다. 반환 = rc · 출력 · 스텁 호출 기록(한 줄 = 한 호출).
  * `env` 로 SYNC_MODE·T 등 블록이 요구하는 값을 더 준다(DEV·PUB·SYNC_SHA·UPDATE_FROM_TAG 는 기본으로 채운다).
+ * ★시한을 넘기거나 셸을 못 띄우면 rc 를 지어내지 않고 **거절한다**(`exitCodeOf`).
  */
-export const runSyncBlock = (
+export const runSyncBlock = async (
   repoRoot: string,
   block: string,
   fail: SyncStubFail = {},
   env: Record<string, string> = {},
+  timeoutMs = 30_000,
 ): Promise<{ rc: number; out: string; calls: string[] }> => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "tiguclaw-regression-syncblock-"));
   const dev = path.join(tmp, "dev");
@@ -108,15 +144,13 @@ export const runSyncBlock = (
     ...Object.fromEntries(Object.entries(fail).map(([k, v]) => [`F_${k}`, String(v)])),
     ...env,
   };
-  return new Promise((res) => {
-    execFile("/bin/zsh", [script], { env: vars, timeout: 30_000 }, (err, so, se) => {
-      const out = `${so}${se}`;
-      const calls = readFileSync(log, "utf8").split("\n").filter((l) => l !== "");
-      // §7 설치 블록은 자기 임시 경로를 만든다 — 이 실행이 만든 것만 지운다.
-      const made = /검증 경로: (\/tmp\/tiguclaw-cleanroom\.[A-Za-z0-9]+)/.exec(out)?.[1];
-      if (made !== undefined) rmSync(made, { recursive: true, force: true });
-      rmSync(tmp, { recursive: true, force: true });
-      res({ rc: err === null ? 0 : typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : -1, out, calls });
-    });
+  let calls: string[] = [];
+  const r = await execRc("/bin/zsh", [script], { env: vars, timeout: timeoutMs }, "싱크 블록", (out) => {
+    calls = readFileSync(log, "utf8").split("\n").filter((l) => l !== "");
+    // §7 설치 블록은 자기 임시 경로를 만든다 — 이 실행이 만든 것만 지운다.
+    const made = /검증 경로: (\/tmp\/tiguclaw-cleanroom\.[A-Za-z0-9]+)/.exec(out)?.[1];
+    if (made !== undefined) rmSync(made, { recursive: true, force: true });
+    rmSync(tmp, { recursive: true, force: true });
   });
+  return { ...r, calls };
 };

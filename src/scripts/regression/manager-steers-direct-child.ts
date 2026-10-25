@@ -11,7 +11,7 @@
  *  ④ 메인 규약은 종전 그대로(공통 원칙보다 넓다 — 손자·다른 대화 job_id·동명 안내. 바꾸지 않았다).
  *  ⑤ 늦게 도착 — 자식이 못 읽고 끝나면(성공·실패 · 교체된 옛 채널 잔여 포함) 보낸 매니저에게 돌아가고, 매니저도 못 읽고 끝나도
  *     사용자 통지로 둔갑하지 않는다.
- *  ⑥ 순서 — 반송은 완료 배달보다 먼저다(매니저가 완료를 받는 순간 이미 큐에 있다).
+ *  ⑥ 순서 — 거두기 대기 중인 매니저의 첫 깨움이 자식 결과를 갖는다(반송은 결과 뒤 · 같은 깨움) — 성공·실패·취소.
  *
  * 등급: 동작 검사(실제 핸들러·채널·러너·완료 출구, 모델 호출 0). 전역 핸들러를 거므로 자식 프로세스.
  */
@@ -86,17 +86,38 @@ export const check: RegressionCheck = {
         const v = d[k] as R;
         const how = { late: "그대로", lateRotated: "교체된 채널 — 옛 채널 잔여까지", lateFailed: "자식이 실패로 끝남" }[k];
         return assert(
-          `⑤ ★늦게 도착(${how}) — 자식이 못 읽고 끝나면 보낸 매니저에게 반송 1(점검 시계는 안 민다) · 매니저도 못 읽고 끝나도 사용자에게 0`,
+          `⑤ ★늦게 도착(${how}) — 자식이 못 읽고 끝나면 보낸 매니저에게 반송 1(점검 시계는 안 민다 · 돌려보낸 작업이 실려 사용자 지시로 안 그려진다) · 매니저도 못 읽고 끝나도 사용자에게 0`,
           v.pStatus === "done" && v.cStatus === (k === "lateFailed" ? "failed" : "done") && show(v.bounce) === show(["delivered"]) && v.bouncedLate === true &&
+            v.bounceFromChild === true &&
             v.userLateNotices === 0 && v.managerTextToUser === 0 && v.anchorKept === true &&
             (k === "lateRotated" ? v.rotated === true && v.bouncedEarly === true : v.rotated === false),
           show(v),
         );
       }),
       assert(
-        "⑥ ★순서 — 매니저가 자식 완료를 받는 순간 반송이 이미 그 매니저 큐에 있다(반송은 완료 배달보다 먼저)",
-        d.order?.bounceQueuedAtCompletion === 1 && d.order?.completions === 1 && d.order?.bounced === 1,
-        show(d.order),
+        "⑤ 매니저가 반송을 못 읽고 끝나면 «버림» 이 로그에 남는다(반송 쪽 «delivered» 만으로 전달로 읽히지 않게) — 늦게 도착 세 경우",
+        (r.out.match(/가 끝나 읽지 못한 작업 쪽 글 1건\(반송 등\)을 버림/g) ?? []).length >= 3,
+        `버림 로그 ${String((r.out.match(/읽지 못한 작업 쪽 글/g) ?? []).length)}줄`,
+      ),
+      ...(["ok", "fail", "cancel"] as const).map((how) => {
+        const v = d.reap?.[how] as R | undefined;
+        const name = { ok: "성공", fail: "실패", cancel: "취소" }[how];
+        return assert(
+          `⑥ ★순서(${name}) — 거두기 대기 중 자식이 소환자 지시를 못 읽고 끝나면 매니저의 **첫 깨움**이 그 결과를 갖고 있고, 반송도 그 깨움에 있다`,
+          v?.firstHasResult === true && v?.bounceInFirst === true && v?.cStatus === { ok: "done", fail: "failed", cancel: "cancelled" }[how],
+          show(v),
+        );
+      }),
+      assert(
+        "⑦ ★반송 보존 — 합류가 결과를 선점(보류)해도 · 결과 배달이 던져도 보낸 매니저에게 1건(돌려보낸 작업 실림)",
+        d.keep?.claimed === true && d.keep?.parked === 1 && d.keep?.threw === true && d.keep?.thrown === 1,
+        show(d.keep),
+      ),
+      assert(
+        "⑦ ★매니저 옛 채널(어댑터가 쥔 사이 교체 → 옛 채널에 되돌림)에 남은 반송도 «버림» 로그 1건 · 사용자 통지 0 · 재반송 0",
+        d.keep?.rotatedOld === true && d.keep?.oldRebounce === 0 && d.keep?.oldToUser === 0 &&
+          /'지휘옛채널'\([^)]+\) 가 끝나 읽지 못한 작업 쪽 글 1건/.test(r.out),
+        show({ keep: d.keep, log: (r.out.match(/'지휘옛채널'[^\n]*/) ?? [""])[0].slice(0, 120) }),
       ),
       assert(
         "⑤ 대조 — 사용자(메인)의 늦은 지시는 종전대로 사용자에게 «이미 끝난 뒤» 통지 1 · 매니저 글은 섞이지 않는다",

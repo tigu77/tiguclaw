@@ -519,6 +519,14 @@ export const runWorkerJob = (
           const old = partitionSteering(steerCh.drain());
           leftover.push(...old.userMessages);
           parts.summonerMessages.push(...old.summonerMessages);
+          parts.jobResults.push(...old.jobResults);
+        }
+        // 작업 쪽 글(자식이 돌려보낸 반송)은 사용자에게 돌리지 않는다 — 다만 버린다는 사실은 남긴다. 반송 쪽 로그는 «delivered» 라
+        //  이 줄이 없으면 로그만으로 «전달됐다» 로 읽힌다(독립 검토 10-25).
+        if (parts.jobResults.length > 0) {
+          console.log(
+            `worker-registry: '${job.label}'(${job.jobId}) 가 끝나 읽지 못한 작업 쪽 글 ${String(parts.jobResults.length)}건(반송 등)을 버림 — 사용자 지시가 아니라 통지하지 않음`,
+          );
         }
         if (leftover.length > 0) {
           pendingSteerNotice = leftover.map((m: SteeringInput) => m.raw).filter((t: string) => t !== "");

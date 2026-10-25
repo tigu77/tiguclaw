@@ -13,25 +13,19 @@
  *  불리고 실패하면 블록이 비영으로 끝나는지 본다(GPT 검토 10-25 — «어딘가에 있다» 만 세면 한쪽을 지워도 초록이었다).
  * ★`.claude/` 한 벌만 읽는다 — `.tiguclaw/` 미러와의 동일성은 `shipped-asset-self-contained` 가 지킨다.
  */
-import { execFile } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, skip, type Assertion, type RegressionCheck } from "./_framework.js";
-import { runSyncBlock, sectionBlock } from "./_sync-blocks.js";
+import { execRc, runSyncBlock, sectionBlock } from "./_sync-blocks.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const TOOL = path.join(REPO, "_workspace", "check-public-lock.mjs");
 const SKILL = path.join(REPO, ".claude", "skills", "sync-public", "SKILL.md");
 
 type Json = Record<string, any>;
-const run = (dev: string, pub: string): Promise<{ rc: number; out: string }> =>
-  new Promise((res) => {
-    execFile(process.execPath, [TOOL, dev, pub], { timeout: 20_000 }, (err, so, se) =>
-      res({ rc: err === null ? 0 : typeof (err as { code?: unknown }).code === "number" ? (err as { code: number }).code : -1, out: `${so}${se}` }),
-    );
-  });
+const run = (dev: string, pub: string): Promise<{ rc: number; out: string }> => execRc(process.execPath, [TOOL, dev, pub], { timeout: 20_000 }, "lock 대조 도구");
 const bashBlocks = (md: string): string => [...md.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1] ?? "").join("\n");
 
 export const check: RegressionCheck = {

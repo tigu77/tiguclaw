@@ -403,13 +403,20 @@ const startRefresh = (k: McpOAuthKey, fetchFn: typeof fetch | undefined): Promis
       //  없을 때: SDK 1.32 가 로그인 때 찍은 `issuer` 를 첫 자체 갱신이 지웠고(전체 교체 저장), 탐색이 다른 서버를 가리켜도 그대로 보냈다(GPT 검토 10-25).
       const issuer = String(info.authorizationServerUrl);
       if (boundElsewhere(rec.tokens.issuer, issuer) || boundElsewhere(rec.client.issuer, issuer)) {
+        // 만료 전이면 그 액세스 토큰은 그대로 쓴다 — refresh 가 없는 위 분기와 같은 규칙(SDK 전송도 액세스 토큰은 발급 서버를 안 보고 401 까지 쓴다).
+        //  ★없을 때: 갱신 창(만료 `REFRESH_SKEW_MS` 전)에 들어서는 순간 잘 되던 연결을 먼저 끊었다(독립 검토 10-25).
+        if (stillValid() !== undefined) return stillValid();
         forceRefresh.delete(h);
         if (gen0 === genOf(k)) await markMcpLoginNeeded(k, gen0);
         console.warn(`mcp-oauth: '${k.name}' 저장된 인증이 다른 인가 서버에 묶여 있어 갱신하지 않음 — 다시 로그인이 필요합니다.`);
         return undefined;
       }
       const provider = providerFor(rec, {});
-      const resource = await selectResourceURL(k.url, provider, info.resourceMetadata);
+      // ★자원 지시자는 로그인(SDK `auth()`)과 **같은 규칙**으로 — 메타데이터의 `resource` 문자열을 그대로 보낸다(SDK `authInternal` 의 `resource` 선택).
+      //  `selectResourceURL` 의 `URL` 을 넘기면 SDK 가 `.href` 로 보내 경로 없는 자원(`https://host`)에 끝 `/` 가 붙고, 문자 그대로 비교하는 인가
+      //  서버가 갱신만 invalid_target 으로 거절해 만료마다 다시 로그인했다(독립 검토 10-25 · SDK 1.32 로 올린 b62f7da3 이 만든 어긋남). 회귀 ⑭ 가 대조한다.
+      const selected = await selectResourceURL(k.url, provider, info.resourceMetadata);
+      const resource = selected !== undefined && info.resourceMetadata !== undefined && provider.validateResourceURL === undefined ? info.resourceMetadata.resource : selected;
       const fresh = await refreshAuthorization(info.authorizationServerUrl, {
         metadata: info.authorizationServerMetadata,
         clientInformation: rec.client,

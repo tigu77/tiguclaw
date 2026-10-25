@@ -40,7 +40,16 @@ export const startFakeOAuthMcp = async () => {
       access: new Set<string>(),
       refresh: new Set<string>(),
       issued: [] as string[],
+      /** 보호 자원 메타데이터의 `resource` — 없으면 `${origin}/mcp`. origin 만 있는 자원(`http://host:port`)으로 바꿔 직렬화 차이를 본다. */
+      resource: undefined as string | undefined,
+      /** 받은 `resource` 파라미터 — 인가 요청·토큰 요청(grant 별). 인가 서버는 RFC 8707 자원 지시자를 **문자 그대로** 비교한다(다르면 invalid_target). */
+      resourceSeen: [] as Array<{ at: "authorize" | "authorization_code" | "refresh_token"; resource: string | null }>,
+      /** 토큰 요청 파라미터 중 비밀이 아닌 것(grant·client·resource·scope) — 우리 갱신과 SDK `auth()` 갱신을 대조한다. */
+      tokenRequests: [] as Array<Record<string, string>>,
     };
+    const advertised = (): string => as.resource ?? `${origin}/mcp`;
+    /** 자원 지시자가 왔으면 광고한 값과 문자 그대로 같아야 한다(끝 `/` 하나도 다르면 거절). */
+    const targetOk = (r: string | null): boolean => r === null || r === advertised();
     const issue = (clientId: string): { access_token: string; refresh_token?: string; token_type: string; expires_in: number } => {
       const a = `at-${randomBytes(12).toString("hex")}`;
       as.access.add(a);
@@ -57,7 +66,7 @@ export const startFakeOAuthMcp = async () => {
     const http = createServer(async (req, res) => {
       const u = new URL(req.url ?? "/", origin);
       if (u.pathname.startsWith("/.well-known/oauth-protected-resource")) {
-        const send = () => json(res, 200, { resource: `${origin}/mcp`, authorization_servers: [origin] });
+        const send = () => json(res, 200, { resource: advertised(), authorization_servers: [origin] });
         if (as.holdDiscovery) {
           as.heldDiscovery.push(send);
           return;
@@ -82,6 +91,8 @@ export const startFakeOAuthMcp = async () => {
         const clientId = u.searchParams.get("client_id") ?? "";
         const redirectUri = u.searchParams.get("redirect_uri") ?? "";
         if (!(as.clients.get(clientId) ?? []).includes(redirectUri)) return json(res, 400, { error: "invalid_request" });
+        as.resourceSeen.push({ at: "authorize", resource: u.searchParams.get("resource") });
+        if (!targetOk(u.searchParams.get("resource"))) return json(res, 400, { error: "invalid_target" });
         const code = `code-${randomBytes(12).toString("hex")}`;
         as.issued.push(code);
         as.codes.set(code, { challenge: u.searchParams.get("code_challenge") ?? "", clientId, redirectUri });
@@ -93,6 +104,10 @@ export const startFakeOAuthMcp = async () => {
       }
       if (u.pathname === "/token" && req.method === "POST") {
         const p = new URLSearchParams(await readBody(req));
+        const g = p.get("grant_type");
+        if (g === "authorization_code" || g === "refresh_token") as.resourceSeen.push({ at: g, resource: p.get("resource") });
+        as.tokenRequests.push(Object.fromEntries([...p].filter(([k]) => !["code", "code_verifier", "refresh_token"].includes(k))));
+        if (!targetOk(p.get("resource"))) return json(res, 400, { error: "invalid_target" });
         if (p.get("grant_type") === "authorization_code") {
           const c = as.codes.get(p.get("code") ?? "");
           as.codes.delete(p.get("code") ?? "");

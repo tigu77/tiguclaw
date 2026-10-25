@@ -9,7 +9,8 @@
  *  ④ 만료 임박 → 동시 요청 5개에 갱신 **1회**(회전형 refresh 경합 없음) · 갱신 거절(invalid_grant) → «로그인 필요» · 일시 실패(서버 오류) → 안 만료된 토큰 유지
  *  ⑤ 서버 제거 → 로컬 기록 삭제 · 제거 뒤 늦게 온 완료는 «stale» 로 버림(인증이 되살아나지 않는다)
  *  ⑥ code·state·verifier·access·refresh 토큰이 로그에 안 남는다
- *  ⑬ 발급 서버 표식(`issuer`) — 갱신 뒤에도 유지 · 옛 기록은 갱신 후 묶임 · 다른 인가 서버에 묶인 것은 refresh 를 안 보낸다
+ *  ⑬ 발급 서버 표식(`issuer`) — 갱신 뒤에도 유지 · 옛 기록은 갱신 후 묶임 · 다른 인가 서버에 묶인 것은 refresh 를 안 보낸다(만료 전 토큰은 그대로)
+ *  ⑭ 자원 지시자 — 경로 없는 자원에서 로그인·갱신의 resource 가 같다 · 같은 기록으로 우리 갱신과 SDK `auth()` 갱신 요청이 같다
  * 등급: **실행**(격리 홈 · 같은 프로세스의 실제 HTTP 서버들). 실서비스 로그인은 하지 않는다.
  */
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -296,20 +297,67 @@ export const check: RegressionCheck = {
         gLegacy !== undefined && as.access.has(gLegacy) && as.refreshCalls - rs1 === 1 && sameAs(afterLegacy?.tokens?.issuer) && sameAs(afterLegacy?.client?.issuer) &&
           (await oauth.mcpOAuthStatus(key)) === "authorized",
         JSON.stringify({ token: gLegacy !== undefined, refreshes: as.refreshCalls - rs1, after: [afterLegacy?.tokens?.issuer ?? null, afterLegacy?.client?.issuer ?? null] })));
-      // 다른 인가 서버에 찍힌 토큰 / 클라이언트 — 이 서버에 refresh 를 **보내지 않고** «로그인 필요».
-      const elsewhereRuns: Array<{ which: string; posted: number; status: string; token: boolean }> = [];
+      // 다른 인가 서버에 찍힌 토큰 / 클라이언트 — 이 서버에 refresh 를 **보내지 않는다**. 만료 전이면 그 액세스 토큰을 그대로 쓰고(refresh 없는 분기와
+      //  같은 규칙 · SDK 전송도 액세스 토큰은 발급 서버를 안 보고 401 까지 쓴다), 만료됐으면 «로그인 필요».
+      //  ★없을 때: 아직 유효한 토큰도 갱신 창(만료 5분 전)에 들어서는 순간 버려 잘 되던 연결이 먼저 끊겼다(독립 검토 10-25).
+      const elsewhereRuns: Array<{ which: string; expired: boolean; posted: number; status: string; token: boolean }> = [];
       for (const which of ["tokens", "client"] as const) {
-        await loginFresh(key);
-        const e = recOf(key)!;
-        e.r[which].issuer = "http://127.0.0.1:1/";
-        writeFileSync(e.f, JSON.stringify(e.r));
-        const rs2 = as.refreshCalls;
-        const t = await oauth.mcpAccessToken(key);
-        elsewhereRuns.push({ which, posted: as.refreshCalls - rs2, status: await oauth.mcpOAuthStatus(key), token: t !== undefined });
+        for (const expired of [false, true]) {
+          await loginFresh(key);
+          const e = recOf(key)!;
+          e.r[which].issuer = "http://127.0.0.1:1/";
+          if (expired) e.r.expiresAt = Date.now() - 1000;
+          writeFileSync(e.f, JSON.stringify(e.r));
+          const rs2 = as.refreshCalls;
+          const t = await oauth.mcpAccessToken(key);
+          elsewhereRuns.push({ which, expired, posted: as.refreshCalls - rs2, status: await oauth.mcpOAuthStatus(key), token: t !== undefined && as.access.has(t) });
+        }
       }
       as.expiresIn = 3600;
-      out.push(assert("★⑬ 다른 인가 서버에 묶인 토큰·클라이언트 — refresh 요청 0건 · «로그인 필요»",
-        elsewhereRuns.length === 2 && elsewhereRuns.every((x) => x.posted === 0 && x.status === "login-needed" && !x.token), JSON.stringify(elsewhereRuns)));
+      out.push(assert("★⑬ 다른 인가 서버에 묶인 토큰·클라이언트 — refresh 요청 0건 · 만료 전이면 그 토큰을 그대로(상태 유지) · 만료됐으면 «로그인 필요»",
+        elsewhereRuns.length === 4 && elsewhereRuns.every((x) => x.posted === 0 && (x.expired ? x.status === "login-needed" && !x.token : x.status === "authorized" && x.token)),
+        JSON.stringify(elsewhereRuns)));
+
+      // ⑭ 자원 지시자(RFC 8707) — 경로 없는 자원(`http://host:port`)에서 로그인과 우리 갱신이 **같은 문자열**을 보낸다. 인가 서버는 문자 그대로 비교한다.
+      //  ★없을 때: SDK 1.32 `auth()` 는 메타데이터 문자열을 그대로, 우리 갱신은 `selectResourceURL` 의 `URL.href`(끝 `/` 붙음)를 보내 invalid_target
+      //  → 토큰이 만료될 때마다 다시 로그인(독립 검토 10-25 — SDK 를 1.32 로 올린 b62f7da3 이 만든 어긋남).
+      as.resource = origin;
+      as.expiresIn = 60;
+      const seen0 = as.resourceSeen.length;
+      await loginFresh(key);
+      const tr0 = as.tokenRequests.length;
+      const rTok = await oauth.mcpAccessToken(key);
+      const ours = as.tokenRequests.slice(tr0).filter((r) => r.grant_type === "refresh_token");
+      const seen = as.resourceSeen.slice(seen0);
+      const rStatus = await oauth.mcpOAuthStatus(key);
+      out.push(assert("★⑭ 경로 없는 자원 — 인가 요청·코드 교환·우리 갱신의 resource 가 모두 메타데이터 문자열 그대로 · 갱신 성공(로그인 필요 아님)",
+        seen.map((x) => x.at).join(",") === "authorize,authorization_code,refresh_token" && seen.every((x) => x.resource === origin) &&
+          rTok !== undefined && as.access.has(rTok) && rStatus === "authorized",
+        JSON.stringify({ seen, token: rTok !== undefined, rStatus })));
+      // 같은 기록으로 SDK `auth()` 가 갱신하면 보내는 요청과 우리 갱신 요청이 같다 — SDK 를 올릴 때 다음 어긋남을 여기서 잡는다(우리 갱신은 `auth()` 의 일부를 옮겨 적었다).
+      const { auth: sdkAuth } = await import("@modelcontextprotocol/sdk/client/auth.js");
+      const cur = recOf(key)!.r;
+      const tr1 = as.tokenRequests.length;
+      const sdkResult = await sdkAuth({
+        redirectUrl,
+        clientMetadata: { redirect_uris: [redirectUrl] },
+        clientInformation: () => cur.client,
+        saveClientInformation: () => undefined,
+        tokens: () => cur.tokens,
+        saveTokens: () => undefined,
+        redirectToAuthorization: () => undefined,
+        saveCodeVerifier: () => undefined,
+        codeVerifier: () => "",
+        discoveryState: () => cur.discovery,
+        saveDiscoveryState: () => undefined,
+      }, { serverUrl: url }).catch((e: unknown) => `rejected:${String((e as Error)?.message ?? e).slice(0, 80)}`);
+      const viaSdk = as.tokenRequests.slice(tr1);
+      const canon = (r: Record<string, string> | undefined): string => JSON.stringify(Object.entries(r ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+      out.push(assert("★⑭ 같은 기록 — 우리 갱신 요청과 SDK auth() 갱신 요청의 파라미터(grant·client·resource)가 같다",
+        sdkResult === "AUTHORIZED" && ours.length === 1 && viaSdk.length === 1 && canon(ours[0]) === canon(viaSdk[0]),
+        JSON.stringify({ sdkResult, ours, viaSdk })));
+      as.resource = undefined;
+      as.expiresIn = 3600;
 
       // ⑤b 로그인 **준비 중**(인가 서버 탐색을 기다리는 동안 — 기록도 시도도 아직 없다) 삭제 → 늦게 돌아온 준비가 아무것도 남기지 않는다(아스트라 10-19).
       //  대기점은 가짜 서버가 탐색 응답을 붙잡는 것(고정 sleep 아님).

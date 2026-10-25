@@ -127,6 +127,8 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
   // 답글 대상(2026-10-19) — 대화 기록 행 id. 이력 말풍선은 id 를 준다. 아직 id 를 못 받은 실시간 말풍선은 시각(대화 기록과 **같은**
   //  이벤트 시각)을 주고, 여기서 **정확히 같은 시각·발화자가 한 건일 때만** id 로 바꾼다(추측하지 않는다). 모양이 다르면 버린다(인용만).
   const replyToRef = resolveReplyToRef(replyToText, body.replyToRef, threadKey);
+  // 답글 대상 말풍선의 화면 시각(2026-10-23) — 카드 위 «↩ 원문» 이동 좌표일 뿐(모델 무관). 판단은 `core/reply-preview.ts` 가 한다.
+  const replyToAt = replyToText !== "" && typeof body.replyToAt === "number" && Number.isFinite(body.replyToAt) ? body.replyToAt : undefined;
   // 큐-취소 correlationId(ADR 2026-07-15) — 클라(대시보드)가 전송 순간 만든 상관 id.
   // 실제 사용자 인바운드(POST /messages)만 실린다 — 이 값을 큐 항목 식별 키로 전달해
   // 대기 중(미시작) 항목을 나중에 POST /cancel-queued 로 지목 취소 가능. 미부여 = 익명
@@ -179,6 +181,7 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
     receivedAt: Date.now(),
     ...(replyToText !== "" ? { replyToText } : {}),
     ...(replyToRef !== undefined ? { replyToRef } : {}),
+    ...(replyToAt !== undefined ? { replyToAt } : {}),
     ...(correlationId !== "" ? { correlationId } : {}),
     ...(egressChannels.length > 0 ? { egressChannels } : {}),
     // ★`noEgress: true` 면 이 답을 다른 채널로 복사하지 않는다 — 프로그램이 띄우는 턴

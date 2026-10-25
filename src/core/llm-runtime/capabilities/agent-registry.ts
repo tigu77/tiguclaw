@@ -875,20 +875,29 @@ export const createSpawnAgentMcpServer = (
         .optional()
         .describe("이만큼 지나면 아직 도는 것은 «진행 중» 으로 보고하고 돌아옵니다(작업은 계속 됩니다). 미지정이면 1분입니다. 안 끝났으면 다시 부르면 이어서 기다립니다."),
     },
-    async (args) => {
+    async (args, extra) => {
       try {
         // lazy import — capabilities → worker-jobs circular 회피(이 파일의 다른 경로와 동형).
         // ★`SUBAGENT_TIMEOUT_MS` 를 **안 쓴다** — 그건 «자식을 죽이는 시계» 이고 기본이
         //  `Infinity` 다(2026-09-03 P-A 실측). 여기는 «부모가 기다리는 시계» 라 유한해야 한다.
-        const { awaitJobOutcome, claimJobJoin, releaseJobJoin, JOIN_WAIT_TIMEOUT_MS } =
+        const { awaitJobOutcome, claimJobJoin, releaseJobJoin, JOIN_WAIT_TIMEOUT_MS, jobLimitResumeLine } =
           await import("../../worker-jobs.js");
         const capMs =
           args.timeout_seconds !== undefined && Number.isFinite(args.timeout_seconds)
             ? Math.max(1000, Math.round(args.timeout_seconds * 1000))
             : JOIN_WAIT_TIMEOUT_MS;
+        // ★이 대기의 취소 신호 — 턴(`/stop`·턴 시한·잡 취소, 어댑터가 클로저로 넘긴 `parentInput`)과 도구 호출 자체(`extra.signal`,
+        //  있는 SDK 만). codex 는 callTool 에 신호가 없어 앞쪽이 유일하다(file-ops Bash 와 같은 조합). 취소된 대기는 보고를 막지 못한다.
+        const signals = [parentInput.abortSignal, (extra as { signal?: AbortSignal } | undefined)?.signal].filter(
+          (x): x is AbortSignal => x !== undefined,
+        );
         // ★선점을 **기다리기 전에** 전부 건다 — 하나씩 기다리며 걸면 그 사이에 끝난 자식이
         //  재주입으로 새어 나가 이중 보고가 된다.
-        for (const id of args.job_ids) claimJobJoin(id);
+        // ★2026-10-23 — 권리는 **이 작업의 직속 소환자**일 때만 생기고(좌표는 호출 문맥, 인자 아님) 이 호출의 토큰으로 든다.
+        //  소환자가 아니어도 기다려 결과를 받는 건 된다(관찰) — 그 작업의 소환자 보고는 그대로 나간다(외부 GPT 검토 P1·P2).
+        const claims = args.job_ids.map((id) => claimJobJoin(id, parentInput.threadKey, signals));
+        const handed = new Set<string>(); // 응답에 «최종 상태» 로 실은 작업 — 그것만 «넘겨받음» 이다.
+        let returned = false;
         const deadline = Date.now() + capMs;
         // ★**자식별로 조립한다** (2026-09-14). 종전엔 본문을 그대로 이어 붙였고, 어댑터
         //  진입 cap 이 **묶음 전체**에 걸려 가운데 자식이 통째로 사라졌다(실측: 18,169자 →
@@ -898,7 +907,8 @@ export const createSpawnAgentMcpServer = (
         try {
         for (const id of args.job_ids) {
           const left = Math.max(0, deadline - Date.now());
-          const job = await awaitJobOutcome(id, left);
+          const job = await awaitJobOutcome(id, left, undefined, signals);
+          if (job !== undefined && job.status !== "running") handed.add(id);
           if (job === undefined) {
             entries.push({ jobId: id, label: "(알 수 없음)", status: "그런 작업이 없습니다(이미 정리됐거나 잘못된 id).", body: "" });
           } else if (job.status === "running") {
@@ -908,16 +918,22 @@ export const createSpawnAgentMcpServer = (
           } else if (job.status === "cancelled") {
             entries.push({ jobId: id, label: job.label, status: "🚫 취소됨", body: "" });
           } else {
-            entries.push({ jobId: id, label: job.label, status: `🔴 실패 — ${job.error ?? "(원인 미상)"}`, body: "" });
+            // 한도로 멈춰 재개를 걸었으면(또는 상한이면) raw 통지와 **같은 칸**의 한 줄을 붙인다(2026-10-23 §3.8).
+            entries.push({ jobId: id, label: job.label, status: `🔴 실패 — ${job.error ?? "(원인 미상)"}${jobLimitResumeLine(job)}`, body: "" });
           }
         }
-        return okText(packJoinResponse(entries));
+        // 취소된 대기는 결과를 넘기지 않는다 — 받는 턴이 이미 죽었다. 보류된 결과는 아래 해제가 소환자 보고로 보낸다.
+        if (signals.some((s) => s.aborted)) {
+          return { content: [{ type: "text" as const, text: "wait_for_worker 취소됨 — 기다리기를 멈췄습니다. 끝난 작업의 결과는 소환자 보고로 갑니다." }], isError: true };
+        }
+        const text = packJoinResponse(entries);
+        returned = true; // 위 취소 확인부터 여기까지 동기 구간이라 그 사이에 취소가 끼지 못한다.
+        return okText(text);
         } finally {
-          // ★★**어떤 경로로 끝나든 선점을 푼다** (2026-09-03 P-B). 정상·예외·부모 턴 중단
-          //  모두 여기를 지난다. 안 풀면 나중에 자식이 끝나도 «합류가 받아갔다» 고 보고
-          //  배달이 생략돼 **결과가 조용히 사라진다** — 이 집합은 결과를 잃지 않는 쪽으로
-          //  실패해야 한다. 이미 받은 것은 `awaitJobOutcome` 이 먼저 풀었으므로 무해(멱등).
-          for (const id of args.job_ids) releaseJobJoin(id);
+          // ★★**어떤 경로로 끝나든 이 호출의 권리를 푼다** (2026-09-03 P-B · 2026-10-23 자기 권리만). 정상·예외·취소 모두
+          //  여기를 지난다. 결과를 살아 있는 채로 넘긴 작업만 «넘겨받음» — 나머지(취소·예외·시한 «진행 중»)는 보류된 배달이
+          //  소환자 보고로 간다. 이 집합은 결과를 잃지 않는 쪽으로 실패해야 한다.
+          claims.forEach((c, i) => releaseJobJoin(c, { handedOff: returned && handed.has(args.job_ids[i]!) }));
         }
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);

@@ -9,6 +9,7 @@
  *  ② `${VAR}` 는 읽을 때 데몬 환경으로 바뀐다 · 없는 변수면 그 서버만 건너뛴다(반쪽 헤더로 보내지 않는다 — 서버에 요청 0)
  *  ③ Claude 경로(설정을 SDK 에 그대로 넘김)가 받는 모양 = `type:"http"` + 바뀐 헤더 · 파일엔 `${VAR}` 그대로(비밀이 되써지지 않는다)
  *  ④ `add_mcp_server` — url 이면 기본 http · transport:"sse" 면 sse · headers 저장 · 목록 표시는 헤더 **이름만**
+ *  ⑦ 리다이렉트 — 같은 출처는 따라가 붙고, 다른 출처는 안 따라간다(목적지에 요청 0)
  *
  * 등급: **실행**(격리 홈 · 같은 프로세스의 실제 HTTP 서버).
  */
@@ -49,8 +50,20 @@ export const check: RegressionCheck = {
     const transports = new Map<string, InstanceType<typeof StreamableHTTPServerTransport>>();
     let requests = 0;
     let rejected = 0;
+    // ⑦ 다른 출처 리다이렉트의 목적지 — 무엇이든 오면 적어 둔다(와선 안 된다).
+    const crossSeen: Array<{ method?: string; auth?: string; secret?: string; body: number }> = [];
+    const dest = createServer(async (req, res) => {
+      let b = "";
+      for await (const c of req) b += String(c);
+      crossSeen.push({ method: req.method, auth: req.headers.authorization, secret: req.headers["x-regr-secret"] as string | undefined, body: b.length });
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((r) => dest.listen(0, "127.0.0.1", () => r()));
+    const destPort = (dest.address() as { port: number }).port;
     const http = createServer(async (req, res) => {
       requests += 1;
+      if (req.url?.startsWith("/same")) return void res.writeHead(307, { location: "/mcp" }).end();
+      if (req.url?.startsWith("/cross")) return void res.writeHead(307, { location: `http://127.0.0.1:${destPort}/mcp` }).end();
       if (req.headers.authorization !== `Bearer ${TOKEN}`) {
         rejected += 1;
         res.writeHead(401).end("unauthorized");
@@ -174,12 +187,32 @@ export const check: RegressionCheck = {
       out.push(assert("⑥ 건너뛴 서버만 있어도 목록에 보이고 · 설정이 비거나 파일이 없어지면 표시도 사라진다",
         onlySkipped.includes("onlymissing") && !onlySkipped.includes("없습니다") && afterEmpty.length === 0 && beforeGone === 1 && afterGone.length === 0,
         JSON.stringify({ onlySkipped: onlySkipped.slice(0, 120), afterEmpty: afterEmpty.length, beforeGone, afterGone: afterGone.length })));
+
+      // ⑦ 리다이렉트 경계 — 원격 전송은 **같은 출처** 리다이렉트만 따라간다(MCP SDK 1.32 기본 `redirectPolicy: 'same-origin'`).
+      //  우리 진입점(브리지 연결)에서 양쪽을 잰다. ★없을 때: SDK 를 올려 경계가 바뀌었는데, 넓혀도(토큰·헤더가 다른 서버로) 좁혀도
+      //  (같은 출처 이전이 끊김) 원격 MCP 회귀가 전부 초록이었다(GPT 검토 10-25).
+      const hopHeaders = { Authorization: `Bearer ${TOKEN}`, "X-Regr-Secret": "regr-redirect-secret" };
+      writeFileSync(file, JSON.stringify({ mcpServers: {
+        samehop: { type: "http", url: `http://127.0.0.1:${port}/same`, headers: hopHeaders },
+        crosshop: { type: "http", url: `http://127.0.0.1:${port}/cross`, headers: hopHeaders },
+      } }));
+      await ext.closeAllExternalMcp();
+      const hops = await ext.getConnectedExternalMcpBridges();
+      const hopNames = hops.map((b) => b.name).sort();
+      const sameHop = hops.find((b) => b.name === "samehop");
+      const sameCalled = sameHop === undefined ? "" : JSON.stringify(await sameHop.callTool("echo", { text: "hop" }));
+      for (const b of hops) await b.close();
+      out.push(assert("★⑦ 같은 출처 307 은 따라가 붙고 원격 도구까지 부른다(인증 헤더 유지)",
+        hopNames.includes("samehop") && sameCalled.includes("REMOTE:hop"), JSON.stringify({ hopNames, sameCalled: sameCalled.slice(0, 60) })));
+      out.push(assert("★⑦ 다른 출처 307 은 따라가지 않는다 — 붙지 않고, 그 목적지엔 요청·헤더·본문이 하나도 안 간다",
+        !hopNames.includes("crosshop") && crossSeen.length === 0, JSON.stringify({ hopNames, crossSeen })));
     } finally {
       await ext.closeAllExternalMcp();
       if (prev === undefined) rmSync(file, { force: true });
       else writeFileSync(file, prev);
       delete process.env.REGR_REMOTE_MCP_TOKEN;
       await new Promise<void>((r) => http.close(() => r()));
+      await new Promise<void>((r) => dest.close(() => r()));
     }
     return out;
   },

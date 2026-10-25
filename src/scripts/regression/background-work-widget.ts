@@ -5,7 +5,7 @@
  * 지키는 것:
  *  ① 위젯: 묶음은 패널과 같은 셋·같은 순서(타이머 → 매니저/에이전트 → 셸) · 0개 묶음은 안 그린다 · 진행 중만 · 상한 없음 ·
  *     대화(탭)별(가장 오래 돈 것이 있는 대화부터) · 머리 줄로 접고 펴며 보는 사람별로 기억 · 누르면 `ctx.reveal({kind,id})` ·
- *     메뉴(패널 열기·모두 접기/펼치기) · 셋 다 비면 한 줄
+ *     메뉴(패널 열기·모두 접기/펼치기) · 셋 다 빈 목록이면 «없음» 한 줄, 하나라도 아직 안 왔으면(`null`) «불러오는 중»
  *  ② 패널: «그 카드로» 가 **가린 축만 푼다** — 다른 대화 → 범위 «전체 대화», 끝난 잡 → 필터 «완료», 접힌 묶음 → 펼침,
  *     못 찾으면 알림. 잡·셸·타이머가 같은 판정을 탄다
  *  ③ 잡 목록: **진행 중은 50개 상한 밖**(끝난 이벤트가 쌓여도 오래 도는 잡이 안 밀린다 — 아스트라 10-21)
@@ -29,12 +29,19 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const WIDGET = readFileSync(path.join(REPO, "plugins/running-work/web/widget.js"), "utf8");
 const KO = JSON.parse(readFileSync(path.join(REPO, "plugins/running-work/web/locales/ko.json"), "utf8")) as Record<string, string>;
 
-/** 플러그인 위젯 하나를 가짜 `ctx` 로 마운트한다 — 구독·이동·메뉴를 손으로 잡는다. */
-const mountWidget = (ls?: Map<string, string>, opts: { writeFails?: boolean } = {}) => {
+/**
+ * 플러그인 위젯 하나를 가짜 `ctx` 로 마운트한다 — 구독·이동·메뉴를 손으로 잡는다.
+ * ★`view` — 저장해 둔 보기(2026-10-23 세션별 보기 추가). 이 파일의 ①은 **종류별 보기**의 계약이라 기본값 `"kind"` 로 심는다.
+ *  `null` 이면 아무것도 안 심는다(기본 보기 = 세션별을 본다 — background-panel-ux 검사).
+ */
+export const mountWidget = (ls?: Map<string, string>, opts: { writeFails?: boolean; view?: "kind" | "session" | null; sessionName?: (tk: string) => string } = {}) => {
   const clk = makeClock();
   const { document, window, ctx } = makeDomContext({ setInterval: clk.setInterval, clearInterval: clk.clearInterval, setTimeout: clk.setTimeout, clearTimeout: clk.clearTimeout });
-  if (ls) ctx.localStorage = { getItem: (k: string) => ls.get(k) ?? null, setItem: (k: string, v: string) => void ls.set(k, String(v)), removeItem: (k: string) => void ls.delete(k) };
-  if (opts.writeFails) ctx.localStorage = { getItem: () => null, setItem: () => { throw new Error("QuotaExceededError"); }, removeItem: () => {} };
+  const view = opts.view === undefined ? "kind" : opts.view;
+  const store = ls ?? new Map<string, string>();
+  if (view !== null && !store.has("rw.view.v1")) store.set("rw.view.v1", view);
+  ctx.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, String(v)), removeItem: (k: string) => void store.delete(k) };
+  if (opts.writeFails) ctx.localStorage = { getItem: (k: string) => (k === "rw.view.v1" ? view : null), setItem: () => { throw new Error("QuotaExceededError"); }, removeItem: () => {} };
   let builder: any = null;
   window.tiguWidgets = { register: (_id: string, b: any) => { builder = b; return true; } };
   vm.createContext(ctx);
@@ -51,12 +58,12 @@ const mountWidget = (ls?: Map<string, string>, opts: { writeFails?: boolean } = 
     resource: (name: string) => ({ subscribe: (fn: (v: unknown) => void) => { subs.set(name, fn); return () => {}; } }),
     reveal: (t: unknown) => reveals.push(t),
     menu: (p: typeof menu) => { menu = p; },
-    sessionName: (tk: string) => (tk === "dashboard:a" ? "에이" : tk === "dashboard:b" ? "비" : ""),
+    sessionName: opts.sessionName ?? ((tk: string) => (tk === "dashboard:a" ? "에이" : tk === "dashboard:b" ? "비" : "")),
     t: (k: string, p?: Record<string, unknown>) => (KO[k] ?? k).replace(/\{(\w+)\}/g, (m, x) => (p && p[x] !== undefined ? String(p[x]) : m)),
   });
   const push = (name: string, v: unknown): void => subs.get(name)?.(v);
   const text = (sel: string): string[] => root.querySelectorAll(sel).map((e: any) => String(e.textContent));
-  return { root, push, text, reveals, menu: () => (menu ? menu() : []), subs, disposers };
+  return { root, push, text, reveals, menu: () => (menu ? menu() : []), subs, disposers, store, clk };
 };
 
 export const check: RegressionCheck = {
@@ -147,7 +154,7 @@ export const check: RegressionCheck = {
     const wfHead = { rows: wf.text(".rw-row").length, aria: aria() };
     wf.root.querySelectorAll(".rw-head")[0]?.click();
     const wfReopen = { rows: wf.text(".rw-row").length, aria: aria() };
-    wf.menu()[1]?.run();
+    wf.menu()[2]?.run(); // [0] 패널 열기 · [1] 보기 전환 · [2] 모두 접기
     const wfMenu = { rows: wf.text(".rw-row").length, aria: aria() };
     out.push(
       assert(
@@ -159,27 +166,54 @@ export const check: RegressionCheck = {
     );
     // 메뉴
     const m1 = w.menu().map((x) => x.label);
-    w.menu()[1]?.run();
+    w.menu()[2]?.run();
     const afterCollapse = w.text(".rw-row").length;
     const m2 = w.menu().map((x) => x.label);
     w.menu()[0]?.run();
     out.push(
       assert(
-        "메뉴 = «백그라운드 패널 열기»(reveal panel) + «모두 접기» → 접은 뒤엔 «모두 펼치기»",
-        JSON.stringify(m1) === JSON.stringify([KO["menu.openPanel"], KO["menu.collapseAll"]]) &&
-          afterCollapse === 0 && m2[1] === KO["menu.expandAll"] &&
+        "메뉴(종류별 보기) = «백그라운드 패널 열기»(reveal panel) + «세션별로 보기 (지금: 종류별)» + «모두 접기» → 접은 뒤엔 «모두 펼치기»",
+        JSON.stringify(m1) === JSON.stringify([KO["menu.openPanel"], KO["menu.viewSession"], KO["menu.collapseAll"]]) &&
+          afterCollapse === 0 && m2[2] === KO["menu.expandAll"] &&
           JSON.stringify(w.reveals[w.reveals.length - 1]) === JSON.stringify({ kind: "panel" }),
         { m1, m2, afterCollapse },
       ),
     );
+    // ★«모름» 과 «없음» 은 다르다(10-23) — 첫 응답 전에 «없음» 이 잠깐 떴다. 셋 중 하나라도 아직 안 왔으면(`null` — 화면 소유 리소스는
+    //  패널이 처음 받기 전에도 `null` 을 준다) «불러오는 중», 셋 다 빈 목록이 와야 «없음».
     const w4 = mountWidget();
+    const w4Before = w4.text(".rw-idle");
     w4.push("running-work", []);
     w4.push("bg-shells", null);
+    const w4Partial = w4.text(".rw-idle");
+    w4.push("bg-shells", []);
+    const w4NoTimers = w4.text(".rw-idle"); // 타이머만 아직 모름
+    w4.push("bg-timers", []);
+    const w4All = w4.text(".rw-idle");
+    const w4b = mountWidget(); // 잡만 아직 모름(셸·타이머는 빈 목록)
+    w4b.push("bg-shells", []);
+    w4b.push("bg-timers", []);
+    const w4NoJobs = w4b.text(".rw-idle");
+    const w4c = mountWidget(); // 셸만 아직 모름
+    w4c.push("running-work", []);
+    w4c.push("bg-timers", []);
+    const w4NoShells = w4c.text(".rw-idle");
     out.push(
       assert(
-        "셋 다 비면 한 줄(빈 상자는 «고장인가» 로 읽힌다) · 1분마다 다시 그리는 타이머는 치울 때 풀린다",
-        JSON.stringify(w4.text(".rw-idle")) === JSON.stringify([KO.idle]) && w4.disposers.length === 1,
-        { idle: w4.text(".rw-idle"), disposers: w4.disposers.length },
+        "★★첫 응답 전 = «불러오는 중» · 일부만 왔거나 화면 소유 리소스가 아직 `null` 이어도 «불러오는 중» · 셋 다 빈 목록이 와야 «없음» 한 줄(빈 상자는 «고장인가» 로 읽힌다) · 1분마다 다시 그리는 타이머는 치울 때 풀린다",
+        [w4Before, w4Partial, w4NoTimers, w4NoJobs, w4NoShells].every((x) => JSON.stringify(x) === JSON.stringify([KO.loading])) &&
+          JSON.stringify(w4All) === JSON.stringify([KO.idle]) && typeof KO.loading === "string" && KO.loading !== KO.idle && w4.disposers.length === 1,
+        { w4Before, w4Partial, w4NoTimers, w4NoJobs, w4NoShells, w4All, disposers: w4.disposers.length },
+      ),
+    );
+    // 아직 모르는 리소스가 있어도 **아는 항목은 그린다**(셋이 다 올 때까지 기다리지 않는다 — 셋은 따로 온다)
+    const w5 = mountWidget();
+    w5.push("running-work", [{ jobId: "k1", label: "먼저 온 잡", status: "running", kind: "worker", startedAt: now - 60000, ownerThreadKey: "dashboard:a" }]);
+    out.push(
+      assert(
+        "셸·타이머를 아직 몰라도 먼저 온 잡은 바로 보인다 — «불러오는 중» 으로 가리지 않는다",
+        JSON.stringify(w5.text(".rw-label")) === JSON.stringify(["먼저 온 잡"]) && w5.text(".rw-idle").length === 0,
+        { labels: w5.text(".rw-label"), idle: w5.text(".rw-idle") },
       ),
     );
 
@@ -237,7 +271,7 @@ export const check: RegressionCheck = {
     await clock.advance(30);
     const shellScope = R(`bgSessionScope`);
     const shellCard = R(`(() => { const c = document.querySelector('#bg-shells-list .shell-card[data-shell-id="sh1"]'); return c ? c.classList.contains("bg-flash") : null; })()`);
-    const shellOpen = R(`shellRegistry.get("sh1").expanded`);
+    const shellOpen = R(`shellRegistry.get("sh1").expanded`); // ★위젯 경로는 펼치지 않는다(사용자 10-23)
     // ★셸 목록은 출력이 올 때마다 통째로 다시 그린다 — 강조가 노드에만 붙어 있으면 바로 사라졌다(헤드리스 10-21). 다시 그려도 남는다.
     R(`renderShellsView()`);
     const shellFlashAfterRerender = R(`(() => { const c = document.querySelector('#bg-shells-list .shell-card[data-shell-id="sh1"]'); return c ? c.classList.contains("bg-flash") : null; })()`);
@@ -276,8 +310,8 @@ export const check: RegressionCheck = {
     );
     out.push(
       assert(
-        "★셸·타이머도 같은 판정 — 다른 대화 것이라 가려져 있던 카드가 범위를 풀고 강조된다 · 셸은 펼친다(타이머엔 펼칠 상세가 없다)",
-        shellHiddenBefore === true && shellScope === "all" && shellCard === true && shellOpen === true && shellFlashAfterRerender === true &&
+        "★셸·타이머도 같은 판정 — 다른 대화 것이라 가려져 있던 카드가 범위를 풀고 강조된다 · 셸은 **펼치지 않는다**(10-23 — 카드 맨 위를 보이고 펼침은 사용자가)",
+        shellHiddenBefore === true && shellScope === "all" && shellCard === true && shellOpen === false && shellFlashAfterRerender === true &&
           timerHiddenBefore === true && timerFlash === true && timerFlashGone === false,
         { shellHiddenBefore, shellScope, shellCard, shellOpen, shellFlashAfterRerender, timerHiddenBefore, timerFlash, timerFlashGone },
       ),
@@ -371,7 +405,8 @@ export const check: RegressionCheck = {
     S(`widgetPanel.open()`);
     await c3.advance(50);
     const seamRows = S(`[...document.querySelectorAll("#wg-list .rw-row")].length`);
-    const seamSession = S(`[...document.querySelectorAll('#wg-list .wg-item[data-id="w1"] .rw-session')].map((e) => e.textContent)`);
+    // (진짜 저장소 — 기본 보기 = 세션별: 대화 이름은 머리 줄 제목이다)
+    const seamSession = S(`[...document.querySelectorAll('#wg-list .wg-item[data-id="w1"] .rw-sess .rw-title')].map((e) => e.textContent)`);
     const numsAfter = S(`localStorage.getItem(SESSION_NUM_LS)`);
     out.push(
       assert(
@@ -412,8 +447,8 @@ export const check: RegressionCheck = {
     const bgOpened = S(`document.body.classList.contains("bg-open")`);
     out.push(
       assert(
-        "★★이음매: 위젯 패널 우클릭 = 그 칸 위젯의 항목(패널 열기·모두 접기) + «이 위젯 끄기» · 끄기는 **그 항목 id 하나**(`{id}` — 종류 단위면 같은 종류가 전부 꺼진다)이고 끈 뒤 목록을 다시 받아 그 위젯이 사라진다 · 누른 그 항목이 실행된다",
-        JSON.stringify(menuLabels) === JSON.stringify(["menu.openPanel", "menu.collapseAll", i18nForContext("wg.menu.off")]) &&
+        "★★이음매: 위젯 패널 우클릭 = 그 칸 위젯의 항목(패널 열기·보기 전환·모두 접기) + «이 위젯 끄기» · 끄기는 **그 항목 id 하나**(`{id}` — 종류 단위면 같은 종류가 전부 꺼진다)이고 끈 뒤 목록을 다시 받아 그 위젯이 사라진다 · 누른 그 항목이 실행된다",
+        JSON.stringify(menuLabels) === JSON.stringify(["menu.openPanel", "menu.viewKind", "menu.collapseAll", i18nForContext("wg.menu.off")]) &&
           JSON.stringify(posts) === JSON.stringify([{ id: "w2" }]) && JSON.stringify(afterOff) === JSON.stringify(["w1"]) &&
           rowsAfterCollapse === 0 && bgOpened === true,
         { menuLabels, posts, afterOff, rowsAfterCollapse, bgOpened },
@@ -465,18 +500,50 @@ export const check: RegressionCheck = {
     const numsLate0 = L(`localStorage.getItem(SESSION_NUM_LS)`);
     L(`widgetPanel.open()`);
     await c4.advance(50);
-    const lateBefore = L(`[...document.querySelectorAll("#wg-list .rw-session")].map((e) => e.textContent)`);
+    const lateBefore = L(`[...document.querySelectorAll("#wg-list .rw-sess .rw-title")].map((e) => e.textContent)`);
     const numsLate1 = L(`localStorage.getItem(SESSION_NUM_LS)`);
     sessionsBody = { sessions: [{ threadKey: "dashboard:late", displayName: "늦은 대화" }] };
     L(`refreshSessionPreviews()`);
     await c4.advance(50);
-    const lateAfter = L(`[...document.querySelectorAll("#wg-list .rw-session")].map((e) => e.textContent)`);
+    const lateAfter = L(`[...document.querySelectorAll("#wg-list .rw-sess .rw-title")].map((e) => e.textContent)`);
     out.push(
       assert(
         "★★이름이 늦게 와도 위젯이 바로 다시 그린다(1분 틱을 기다리지 않는다) · 이름을 모르는 동안 «미상» 이고 탭 번호를 새로 매기지 않는다",
         JSON.stringify(lateBefore) === JSON.stringify(["session.unknown"]) && numsLate0 === numsLate1 &&
           JSON.stringify(lateAfter) === JSON.stringify(["늦은 대화"]),
         { lateBefore, lateAfter, numsLate0, numsLate1 },
+      ),
+    );
+
+    // ── ⑨ 셸 첫 조회 전 — 패널을 다시 그려도(범위 전환) 위젯이 받는 셸 목록은 «아직 모름»(null)이다(적대 검토 10-23 B-P3: 위젯은 null 을
+    //  «불러오는 중» 으로 그리는데, 생산 쪽이 다시 그릴 때마다 빈 목록을 내 조회가 오기 전에 «없음» 이 됐다). 조회가 오면 그 값 그대로.
+    const c5 = makeClock();
+    let shellsCalls = 0;
+    const seedDash = bootDashboard({
+      clock: c5,
+      i18n: i18nForContext,
+      upTo: "tabs.js",
+      allIds: true,
+      // 첫 조회는 못 받는다(404 — 목록 없음), 다시 맞추기(`resyncShells`)에서야 빈 목록이 온다.
+      fetch: async (url: string) => {
+        if (url.startsWith("/api/shells")) return ++shellsCalls === 1 ? jsonResponse({}, 404) : jsonResponse({ shells: [] });
+        return jsonResponse({}, 404);
+      },
+    });
+    await c5.advance(20);
+    const SD = (code: string): any => seedDash.run(code);
+    const shellsNow = `(() => { const st = window.resourceStore.resource("bg-shells").state(); return st === null ? "null" : JSON.stringify(st.data); })()`;
+    SD(`setBgSessionScope("all"); renderShellsView();`);
+    await c5.advance(20);
+    const beforeSeed = SD(shellsNow);
+    SD(`window.resyncShells()`);
+    await c5.advance(20);
+    const afterSeed = SD(shellsNow);
+    out.push(
+      assert(
+        "★★셸 목록을 아직 못 받았으면(첫 조회 실패) 패널을 다시 그려도(범위 전환) 위젯 셸 목록은 «아직 모름»(null) — 목록이 빈 채로 오면 그때 빈 목록",
+        shellsCalls === 2 && beforeSeed === "null" && afterSeed === "[]",
+        { shellsCalls, beforeSeed, afterSeed },
       ),
     );
 

@@ -123,11 +123,100 @@
       // 높이가 변해도 ResizeObserver 가 추종. (데스크탑은 이 변수를 안 써 무해.) +8 여유.
       const insetChat = document.getElementById("chat");
       if (insetChat && typeof ResizeObserver === "function") {
+        let lastInsetH = null;
+        const insetMq = window.matchMedia("(max-width: 900px)");
         const applyInset = () => {
-          document.documentElement.style.setProperty("--chat-inset", (insetChat.offsetHeight + 8) + "px");
+          const h = insetChat.offsetHeight;
+          document.documentElement.style.setProperty("--chat-inset", (h + 8) + "px");
+          // ★바닥을 따라가던 중이면 바닥을 다시 잡는다 (2026-10-24, 입력 정보 접기 구현 중 실측). 입력창이 커지면 문서의
+          //  스크롤 최대치만 늘고 scrollTop 은 그대로라 마지막 메시지가 그만큼 입력창 밑으로 들어갔다 — 헤드리스 390폭: 펼치기
+          //  +64px → 28px 가림, 백그라운드 알약 +38px → 2px(그동안은 메시지 아래 여백 36px 가 가려 줬다). 모바일만(데스크톱은
+          //  #stream 이 스크롤 상자라 그쪽 ResizeObserver 가 이미 잡는다) · 높이가 **바뀔 때만**(첫 측정은 판정 재료가 없다).
+          //  «따라가는 중인가» 는 virtualization.js 한 곳(`vtPinBottom` → `pinsBottom`)이 정한다 — 위로 올려 읽는 중이면 그대로 둔다.
+          const changed = lastInsetH !== null && h !== lastInsetH;
+          lastInsetH = h;
+          if (changed && insetMq.matches && typeof vtPinBottom === "function") vtPinBottom();
         };
         new ResizeObserver(applyInset).observe(insetChat);
         applyInset();
+      }
+
+      // ── 입력창 위 정보 한 번에 접기 (2026-10-24 사용자 — docs/decisions/2026-10-24-mobile-composer-info-collapse.md) ──
+      // 태그·프로젝트·답글·첨부·백그라운드/셸 알약을 토글 한 번으로 숨긴다 — **모든 폭**(§12 «데스크탑이든 어디든 다같이»).
+      // ★숨기기만 한다 — 각 줄은 자기 모듈이 계속 그리고(답글·첨부·연결은 그대로 실려 간다), 펼치면 최신이 보인다. 접힘은
+      // **사용자 탭만** 바꾼다(갱신·폭 전환이 펼치거나 접지 않는다) — 예외 하나: 데스크톱에서 사용자가 새로 지정한 답글·붙인 첨부는
+      // 화면만 펼친다(아래 `composerInfoAdded`, §13). 처음 상태는 펼침(비서 채택 기본, 결정 문서 §7).
+      // 기기 화면 취향이라 이 브라우저에만 둔다. 숨김·배치는 CSS 가 하고, 화면엔 화살표만 — 이름은 아래 aria-label·title.
+      const infoChat = document.getElementById("chat");
+      const infoToggle = document.getElementById("chat-info-toggle");
+      if (infoChat && infoToggle) {
+        const INFO_KEY = "tgchat_info_collapsed";
+        const infoBadgesEl = infoToggle.querySelector(".cit-badges");
+        const infoEl = (id) => document.getElementById(id);
+        const infoShown = (id) => { const e = infoEl(id); return e !== null && !e.hidden; };
+        const infoCount = (id, sel) => { const e = infoEl(id); return e === null ? 0 : e.querySelectorAll(sel).length; };
+        // 배지 = 묶음 DOM 에서 파생한다(모듈마다 카운터를 심지 않는다). [보이는 글, 읽어 줄 글].
+        // ★태그는 세지 않는다 — 태그 «선택» 은 입력창 글자이고 입력창은 늘 보인다(칩으로 세면 칩 없는 태그를 못 센다, 설계 R1).
+        // ★알약은 «있음» 만 — 알약 글자(건수)는 관측 밖이라 숫자를 실으면 낡는다.
+        const infoBadges = () => {
+          const out = [];
+          const p = infoCount("chat-projects", ".ctx-linked");
+          if (p > 0) out.push(["📁 " + p, i18n("chat.info.badge.projects", { n: p })]);
+          if (infoShown("chat-reply")) out.push(["↩", i18n("chat.info.badge.reply")]);
+          const a = infoCount("chat-attach", ".att-chip");
+          if (a > 0) out.push(["📎 " + a, i18n("chat.info.badge.attach", { n: a })]);
+          if (infoShown("chat-bg-active")) out.push(["🔄", i18n("chat.info.badge.bg")]);
+          if (infoShown("chat-shell-active")) out.push(["🖥️", i18n("chat.info.badge.shell")]);
+          return out;
+        };
+        let infoSig = null;
+        const paintInfo = () => {
+          const collapsed = infoChat.classList.contains("info-collapsed");
+          const badges = collapsed ? infoBadges() : []; // 배지는 «숨은 것» 의 요약이다 — 펼친 동안엔 원래 줄이 보인다.
+          const label = [i18n(collapsed ? "chat.info.expand" : "chat.info.collapse"), ...badges.map((b) => b[1])].join(", ");
+          const sig = label + "|" + badges.map((b) => b[0]).join("|");
+          if (sig === infoSig) return; // 같으면 안 쓴다 — 셸 알약은 1초마다 hidden 을 다시 대입한다(값이 같아도 관측이 깬다).
+          infoSig = sig;
+          infoBadgesEl.replaceChildren(...badges.map((b) => {
+            const s = document.createElement("span");
+            s.className = "cit-badge";
+            s.textContent = b[0];
+            return s;
+          }));
+          infoToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+          infoToggle.setAttribute("aria-label", label);
+          infoToggle.title = label;
+        };
+        const setInfoCollapsed = (on) => {
+          infoChat.classList.toggle("info-collapsed", on);
+          try { localStorage.setItem(INFO_KEY, on ? "1" : "0"); } catch {}
+          paintInfo();
+        };
+        let savedCollapsed = false;
+        try { savedCollapsed = localStorage.getItem(INFO_KEY) === "1"; } catch {}
+        infoChat.classList.toggle("info-collapsed", savedCollapsed);
+        // 누를 때 입력창 포커스(=폰 키보드)를 빼앗지 않는다. 키보드 조작(Enter·Space)은 mousedown 이 없어 그대로 클릭이 된다.
+        infoToggle.addEventListener("mousedown", (e) => e.preventDefault());
+        infoToggle.addEventListener("click", () => setInfoCollapsed(!infoChat.classList.contains("info-collapsed")));
+        // 사용자가 **방금** 답글 대상을 지정하거나 첨부를 붙였다(reply.js `startReply` · chat-send.js `addFiles` 가 알린다 — 복원·첫 렌더·
+        //  제거는 알리지 않는다). 데스크톱(>900px)에서 접혀 있으면 펼친다 — 배지만 생기면 무엇에 답하고 무엇을 붙였는지 모르는 채 보낸다
+        //  (결정 문서 §13). ★표시만 편다 — 저장값은 사용자 탭만 바꾼다(다시 접으면 그대로 접히고, 새로 고치면 저장한 대로).
+        //  모바일은 종전대로 펴지 않는다 — 접기는 가상 키보드가 뜬 좁은 화면의 채팅 높이를 벌려고 있고, 답글·첨부 다음엔 대개 바로 입력(키보드)한다.
+        //  펼치면 답글 줄만이 아니라 숨긴 줄 전부가 돌아온다. 확인은 입력창 바로 위 요약 줄의 배지(↩·📎)가 한다.
+        const infoMobileMq = window.matchMedia("(max-width: 900px)");
+        window.composerInfoAdded = () => {
+          if (infoMobileMq.matches) return;
+          infoChat.classList.remove("info-collapsed"); // 이미 펼쳐져 있으면 아무것도 안 바뀐다(paintInfo 도 같은 글이면 안 쓴다).
+          paintInfo(); // 답글이 이미 떠 있던 채 대상을 바꾸면 hidden 이 안 바뀌어 배지 관측이 깨지 않는다 — 여기서 직접 칠한다.
+        };
+        // 관측은 배지가 읽는 자리에만 — #chat 전체를 보면 1초마다 다시 쓰는 진행 표시와 토글 자신까지 걸린다(설계 §2-3).
+        const infoMo = new MutationObserver(paintInfo);
+        for (const id of ["chat-projects", "chat-attach"]) { const e = infoEl(id); if (e) infoMo.observe(e, { childList: true }); }
+        for (const id of ["chat-reply", "chat-bg-active", "chat-shell-active"]) {
+          const e = infoEl(id);
+          if (e) infoMo.observe(e, { attributes: true, attributeFilter: ["hidden"] });
+        }
+        paintInfo();
       }
 
       // ── fixed 세션 탭 높이 → --tabs-inset (모바일 채팅, 2026-09-25) — 탭을 고정했으니 문서 위쪽에

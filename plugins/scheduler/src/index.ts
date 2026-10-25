@@ -478,10 +478,15 @@ const runInOrigin = async (input: Parameters<RunnerDeps["runClaude"]>[0], origin
       if (latest === undefined) return "deleted";
       if (!latest.enabled) return "disabled";
       if (latest.originThreadKey !== origin) return "moved";
+      // ★줄에서 기다리는 사이 예정 시각이 **미래로 바뀌었다**(2026-10-23 한도 자동 이어가기 §3.9-a) — 옛 차례로 돌지 않는다. 실행기가 새 시각에 다시 건다.
+      //  «미래» 만 보면 안 된다 — 미래 타이머의 «지금 실행»(`run_schedule`)도 같은 문을 지나는데, 시각이 그대로면 미뤄진 게 아니다(GPT 검토 R1).
+      if (isTimer(latest) && latest.runAt !== null && latest.runAt > Date.now() && latest.runAt !== input.slot?.firedRunAt) return "rescheduled";
+      // 이 실행이 실제로 쓴 행 상태 — 실행기가 정산 기준으로 읽는다(반환값이 아니라 실행기가 만든 칸: 핸들러가 던져도 남는다).
+      if (input.slot !== undefined) input.slot.turnRunAt = latest.runAt;
       return { text: latest.prompt, dest: { channel: latest.destChannel, target: latest.destTarget } };
     },
   });
-  if ("skipped" in r) return { text: "", skipped: r.skipped as "deleted" | "disabled" | "moved" | "origin-gone" | "not-run" };
+  if ("skipped" in r) return { text: "", skipped: r.skipped as "deleted" | "disabled" | "moved" | "origin-gone" | "not-run" | "rescheduled" };
   return { text: "", inOrigin: r };
 };
 

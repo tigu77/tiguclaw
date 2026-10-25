@@ -286,6 +286,16 @@
                 const xb = el.querySelector(".queued-cancel"); if (xb) xb.remove();
                 el.dataset.ts = String(ev.ts);
                 delete el.dataset.clock; // 이제 서버 시계 — 순서 판정에 다시 든다(virtualization vtNewestTs).
+                // ★확정 카드의 답글 표시는 **서버 값이 정본**이다 (2026-10-23 출시 후 결함, Codex 발견). 낙관 카드는 보내는 순간의
+                //  `{ text, ts }` 만 알아(원문 행 id·완료 턴 id 없음) 같은 시각 메시지가 둘이면 원문을 못 골랐고, 새로고침하면 서버 값으로
+                //  다시 그려져 멀쩡했다 — 정하는 곳이 둘(화면·서버)이던 이음매다. 서버가 확인한 값이 있으면 그걸로 바꾸고, 없으면 보낸 순간의 것을 둔다.
+                const serverReply = ev.payload && ev.payload.replyTo ? buildReplyRef(ev.payload.replyTo) : null;
+                if (serverReply) {
+                  const prev = el.querySelector(".reply-ref");
+                  const body = el.querySelector(".chat-message");
+                  if (prev) prev.replaceWith(serverReply);
+                  else if (body && body.parentNode === el) el.insertBefore(serverReply, body);
+                }
                 renderedMsgKeys.add(msgKey(ev.ts, "user"));
                 return;
               }

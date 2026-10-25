@@ -59,12 +59,25 @@ import {
   runUserPromptSubmitHooks,
   setHookObserver,
 } from "./core/entry/hook-runner.js";
+import { awaitWhileStarting, requestStopStarting } from "./core/entry/turn-starting.js";
+import {
+  cancelLimitResume,
+  claimLimitResume,
+  noteTurnLimitStop,
+  releaseLimitResume,
+  resetLimitResumeArms,
+  resetLimitResumeClaims,
+  setLimitResumeRuntime,
+  turnSessionOf,
+  withResumeNote,
+} from "./core/limit-resume.js";
 import { loadPlugins } from "./core/plugins/loader.js";
 import { seedDefaultHomeWidgets } from "./core/home-widgets.js";
 import {
   bundledPluginNames,
   initPluginManager,
   listAvailableHomeWidgets,
+  listLivePlugins,
   trackPlugin,
 } from "./core/plugins/manager.js";
 import { channelPluginName, wirePlugin } from "./core/plugins/wire.js";
@@ -130,6 +143,8 @@ import {
 import { initFileLogging, logFatal } from "./core/logging.js";
 import { acquireHomeLock } from "./store/home-lock.js";
 import { channelRefsField, startEventPersistence } from "./core/event-persist.js";
+import { replyPreviewOf } from "./core/reply-preview.js";
+import { chatRowCoords } from "./store/chat-log.js";
 import {
   enqueueThreadTurn,
   registerWorkerHandler,
@@ -366,6 +381,10 @@ try {
 // 죽은 백엔드를 다시 두드렸다(실측 07-27: 부팅 22회 ↔ 429 22건). initStore 직후 = DB 준비된
 // 가장 이른 지점. 실패해도 빈 상태로 진행(종전 동작).
 restoreCooldowns();
+// 한도 자동 이어가기 (2026-10-23) — 끊긴 재개 턴의 «넘겨받음» 표시를 풀고(플러그인 시작 전 = 시작된 재개 턴이 있을 수 없다),
+//  «스케줄러가 떠 있나» 를 꽂는다(안 떠 있으면 걸지 않는다 — 걸어도 안 운다).
+resetLimitResumeClaims();
+setLimitResumeRuntime({ schedulerLive: () => listLivePlugins().some((p) => p.name === "scheduler" && p.wired.includes("trigger")) });
 
 // ★구독 인증은 **번들 플러그인**이 등록한다 (2026-09-01) — 여기엔 없다.
 //  종전엔 `auth-providers.ts` 를 optional dynamic import 하는 코어 배선이었는데, 그러면
@@ -682,6 +701,9 @@ const publishInboundEcho = (
     attachments?: IncomingMessage["attachments"];
     correlationId?: string;
     channelMessageRef?: IncomingMessage["channelMessageRef"];
+    replyToText?: string;
+    replyToRef?: IncomingMessage["replyToRef"];
+    replyToAt?: number;
   },
   /** `ephemeral: true` = 발행은 하되 **적재는 안 한다**(event-persist 가 판정). */
   opts?: { ephemeral?: boolean },
@@ -714,6 +736,7 @@ const publishInboundEcho = (
     });
     return;
   }
+  const replyTo = replyPreviewOf(msg, (id) => chatRowCoords(msg.threadKey, id));
   bus.publish({
     type: "channel.message.in",
     ts: Date.now(),
@@ -723,6 +746,8 @@ const publishInboundEcho = (
       text: msg.text.slice(0, EVENT_TEXT_MAX),
       // 채널 메시지 id(텔레그램 등) — 적재가 이 행에 묶어, 나중에 이 메시지에 단 답글이 원문을 정확히 짚는다(2026-10-19).
       ...channelRefsField(msg.channel, msg.channelMessageRef),
+      // 답글 표시(2026-10-23) — 카드 위 «↩ 원문 앞부분» 의 재료. 화면과 대화 기록(`chat_log.data.replyTo`)에만 간다(모델 무관).
+      ...(replyTo !== undefined ? { replyTo } : {}),
       // 휘발성 표식 — 발행은 그대로(버블 승격·진행 표시 살아있음), 적재만 안 한다.
       ...(opts?.ephemeral === true ? { ephemeral: true } : {}),
       ...(inAttachments.length > 0 ? { attachments: inAttachments } : {}),
@@ -799,6 +824,20 @@ const maybeSuggestNextMessage = (
       `next-message-suggestion 실패(무해): ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+};
+
+/** 이 턴의 답을 «함께 보낼» 좌표 — 서버 설정 ∪ 메시지가 실어온 것(보내는 쪽이 `noEgress` 로 끌 수 있다). 근거는 핸들러의 egress 주석. */
+const resolveTurnEgress = async (msg: IncomingMessage): ReturnType<typeof resolveEgressTargets> => {
+  const egressFromSettings = msg.noEgress === true ? [] : readEgressChannels();
+  const egressUnion =
+    msg.noEgress === true
+      ? []
+      : [...new Set([...(msg.egressChannels ?? []), ...egressFromSettings])];
+  return resolveEgressTargets({ ...msg, egressChannels: egressUnion }, {
+    getOutbound: getChannelOutbound,
+    getSessionMeta: (threadKey) =>
+      getSessionChannelMeta(SESSION_STORAGE_CHANNEL, threadKey),
+  });
 };
 
 const handler: MessageHandler = async (msg) => {
@@ -1147,12 +1186,22 @@ const handler: MessageHandler = async (msg) => {
   // V7.4.a — UserPromptSubmit 훅 (데몬에서 강제, 채널 입구 단일 지점 = LLM-agnostic).
   // 슬래시 확장 후의 실효 prompt 기준. exit 2 → 차단, exit 0 stdout → 컨텍스트 prepend.
   // hook 0개면 오버헤드 0. hook 실패는 격리 (데몬 생존, 원칙 3).
-  const hookOut = await runUserPromptSubmitHooks({
-    prompt: effectiveText,
-    cwd: process.cwd(),
-    channel: msg.channel,
-    threadKey: msg.threadKey,
-  });
+  // ★훅을 기다리는 동안에도 `/stop` 이 이 턴에 닿는다 (2026-10-23, 설계 2026-10-22-limit-auto-resume §3.10) — 종전엔 훅 뒤에야 «진행 중» 으로
+  //  등록돼, 그 사이 `/stop` 은 «진행 중 없음» 으로 답하고 턴은 그대로 모델을 불렀다. 훅 뒤 등록까지는 await 가 없다(끼어들 틈 없음).
+  const { value: hookOut, stopped: stoppedWhileStarting } = await awaitWhileStarting(msg.threadKey, () =>
+    runUserPromptSubmitHooks({
+      prompt: effectiveText,
+      cwd: process.cwd(),
+      channel: msg.channel,
+      threadKey: msg.threadKey,
+    }),
+  );
+  // 멈춤 요청이 **훅 차단 판정보다 먼저**다 — 사용자가 먼저 멈췄으니 차단 안내도 안 나간다. 등록된 턴의 `/stop` 과 같은 출구:
+  //  egress 에 «멈춤» · 실패 표식 없음 · 모델 호출 0(`/stop` 답은 `/stop` 이 이미 냈다).
+  if (stoppedWhileStarting) {
+    await fanOutEgress(await resolveTurnEgress(msg), STOPPED_NOTICE(), bus, msg.threadKey);
+    return;
+  }
   if (hookOut.block) {
     // 실패 표식 — 완료 턴이 차단되면 결과가 전해지지 않았다(raw 안전망이 대신 보낸다).
     await replyCommand(msg, translate("srv.turn.hookBlocked", { reason: hookOut.blockReason ?? "" }), { turnFailed: true });
@@ -1205,16 +1254,7 @@ const handler: MessageHandler = async (msg) => {
   //  ★자동 판정(이름·접두사로 «기계 세션» 을 가려내기)은 **하지 않는다**: 그건 손목록이고,
   //   무엇보다 스케줄 실패 알림처럼 **정말 가야 하는 것**을 조용히 막을 수 있다.
   //   보내는 쪽이 자기 의도를 안다.
-  const egressFromSettings = msg.noEgress === true ? [] : readEgressChannels();
-  const egressUnion =
-    msg.noEgress === true
-      ? []
-      : [...new Set([...(msg.egressChannels ?? []), ...egressFromSettings])];
-  const egressTargets = await resolveEgressTargets({ ...msg, egressChannels: egressUnion }, {
-    getOutbound: getChannelOutbound,
-    getSessionMeta: (threadKey) =>
-      getSessionChannelMeta(SESSION_STORAGE_CHANNEL, threadKey),
-  });
+  const egressTargets = await resolveTurnEgress(msg);
   const activityReleases = egressTargets
     // 좌표를 못 푼 채널은 표시하지 않는다 — 어디에 띄울지 모르는데 띄울 수 없다.
     .filter((t) => t.outbound.signalActivity !== undefined && t.target !== null)
@@ -1391,9 +1431,12 @@ const handler: MessageHandler = async (msg) => {
     // 대시보드 채팅에 보인다. (성공 경로는 923+929 에서 이미 발행하므로 중복 없음 — 상호배타.)
     // ★실패 표식 — 매니저 완료 턴이 이 오류 안내를 «결과 전달» 로 세지 않게(raw 안전망이 결과를 대신 보낸다).
     const errName = e instanceof Error && e.name !== "Error" ? e.name : undefined;
-    await replyCommand(msg, formatRegionAError(detail, errName), { turnFailed: true });
-    // 성공 경로와 대칭 — 실패도 egress 로 나간다(유령 신호 방지, fanOutEgress 주석 참조).
-    await fanOutEgress(egressTargets, formatRegionAError(detail, errName), bus, msg.threadKey);
+    // ★한도 자동 이어가기 (2026-10-23 §3.6) — 한도로 끝난 턴이면 재개를 걸고 «{when} 이어서 · 취소 길» 을 **같은 메시지**에(옵션 꺼짐·한도 아님 = 바이트 동일).
+    //  위 두 `return`(사용자 중지·작업 취소)을 지난 뒤라 그 몫은 걸리지 않는다.
+    const failText = withResumeNote(formatRegionAError(detail, errName), noteTurnLimitStop(e, msg));
+    await replyCommand(msg, failText, { turnFailed: true });
+    // 성공 경로와 대칭 — 실패도 egress 로 나간다(유령 신호 방지, fanOutEgress 주석 참조). 인입 응답과 같은 글.
+    await fanOutEgress(egressTargets, failText, bus, msg.threadKey);
     // ★StopFailure 훅 — `Stop` 의 짝 (2026-09-08). `Stop` 은 위 `try` 안에 있어 **실패한
     //  턴에는 어떤 훅도 안 났다.** 그런데 훅으로 하려는 일 중 «턴이 실패했을 때 알려줘» 가
     //  가장 흔하다(실측 분모: 실패 130 / 1,594 턴 = 8.2%). 상류(Claude Code)에도 같은 이름의
@@ -1603,6 +1646,8 @@ const inboundLine = (msg: IncomingMessage, route: InboundRoute): string =>
 let shuttingDown = false;
 
 const queueHandler: MessageHandler = (msg) => {
+  // 사람이 쓴 메시지 — 한도 자동 재개 횟수를 처음부터(2026-10-23 §3.4). 표가 비면 PK 조회 한 번.
+  if (msg.synthetic !== true) resetLimitResumeArms(turnSessionOf(msg));
   // 아웃오브밴드 /restart — enqueueThreadTurn 직렬 큐를 건너뛰고 즉시 재시작.
   // 멈춘 턴(앞 턴 미완)이 있어도 큐 무관하게 프로세스를 죽여 respawn. /restart 는 프로세스를
   // 종료하므로 인플라이트 턴과 race 없음(다른 상태변경 명령 /clear 등은 in-band 유지).
@@ -1705,6 +1750,12 @@ const queueHandler: MessageHandler = (msg) => {
     console.log(inboundLine(msg, "command"));
     publishInboundEcho(msg);
     void (async (): Promise<void> => {
+      // ★한도 자동 이어가기 (2026-10-23 §3.10, 사용자 결정 ⑤) — `/stop` 은 그 대화의 **대기 중** 재개도 지운다. 세 갈래 모두 답 끝에 한 줄(같은 메시지).
+      const resumeCancelled = cancelLimitResume(turnSessionOf(msg));
+      const withCancel = (text: string): string =>
+        resumeCancelled === undefined
+          ? text
+          : `${text}\n${translate("srv.limitResume.cancelledByStop", { when: formatResetAt(Math.max(0, resumeCancelled.wakeAt - Date.now())) })}`;
       const entry = inflightTurns.get(msg.threadKey);
       if (entry !== undefined && !entry.ac.signal.aborted) {
         entry.ac.abort(new UserCancelledError());
@@ -1714,7 +1765,7 @@ const queueHandler: MessageHandler = (msg) => {
         //  ★서브에이전트는 2026-09-03 부터 항상 비동기라 턴에 묶인 하위 작업이 따로 없다(Claude SDK 내장 Task 만 턴과 함께 멈춘다).
         const runs = await stopProjectRuns(msg.threadKey);
         const text = stopReplyText(continuingJobs(msg.threadKey), entry.steered ?? 0);
-        await replyCommand(msg, runs > 0 ? `${text}\n${translate("srv.project.runsStopped", { n: runs })}` : text).catch(() => {});
+        await replyCommand(msg, withCancel(runs > 0 ? `${text}\n${translate("srv.project.runsStopped", { n: runs })}` : text)).catch(() => {});
       } else if (activeExternalTurn(msg.threadKey) !== undefined) {
         // ★핸들러를 우회한 턴(파일감시·스케줄)도 이 대화의 진행 중 턴이다 (2026-10-14 적대 검토 P2). 그 턴들이 스레드 줄에 서면서
         //  같은 대화의 사용자 메시지가 그 뒤에서 기다리게 됐는데, `/stop` 은 핸들러 턴만 봐서 «진행 중 없음» 이라 답했다 — 막힘을
@@ -1722,14 +1773,20 @@ const queueHandler: MessageHandler = (msg) => {
         activeExternalTurn(msg.threadKey)?.ac.abort(new UserCancelledError());
         const runs = await stopProjectRuns(msg.threadKey);
         const text = stopReplyText(continuingJobs(msg.threadKey), 0);
-        await replyCommand(msg, runs > 0 ? `${text}\n${translate("srv.project.runsStopped", { n: runs })}` : text).catch(() => {});
+        await replyCommand(msg, withCancel(runs > 0 ? `${text}\n${translate("srv.project.runsStopped", { n: runs })}` : text)).catch(() => {});
+      } else if (requestStopStarting(msg.threadKey)) {
+        // ★훅을 기다리는 «시작 중» 턴 (2026-10-23 §3.10) — 아직 등록 전이라 위 두 갈래가 못 본다. 멈춤을 요청하면 훅이 끝나는 대로 모델 없이 끝난다.
+        //  답은 진행 중 턴과 같다(사용자에겐 같은 일이다).
+        const runs = await stopProjectRuns(msg.threadKey);
+        const text = stopReplyText(continuingJobs(msg.threadKey), 0);
+        await replyCommand(msg, withCancel(runs > 0 ? `${text}\n${translate("srv.project.runsStopped", { n: runs })}` : text)).catch(() => {});
       } else {
         // 비서 턴은 없어도 이 대화에서 띄운 실행형 커맨드(`run:`)가 돌고 있을 수 있다 — 그것도 `/stop` 의 대상이다.
         //  계속 도는 백그라운드 작업이 있으면 «진행 중 없음» 대신 그 사실을 말한다(턴이 없을 뿐 일은 돌고 있다).
         const runs = await stopProjectRuns(msg.threadKey);
         const jobsLeft = continuingJobs(msg.threadKey);
         const idle = jobsLeft > 0 ? stopReplyIdleWithJobs(jobsLeft) : translate("srv.stop.idle");
-        await replyCommand(msg, runs > 0 ? translate("srv.project.runsStopped", { n: runs }) : idle).catch(() => {});
+        await replyCommand(msg, withCancel(runs > 0 ? translate("srv.project.runsStopped", { n: runs }) : idle)).catch(() => {});
       }
     })();
     return Promise.resolve();
@@ -1805,6 +1862,13 @@ const queueHandler: MessageHandler = (msg) => {
       if (skip !== null) {
         console.log(`${inboundLine(msg, "skipped")} — ${skip}`);
         return Promise.resolve();
+      }
+      // ★재개 턴이 **실제로 시작됐다** — `beforeTurn` 이 그 순간의 목록을 글에 박은 바로 다음, 같은 동기 구간(한도 자동 이어가기 §3.4 «울렸다» 의 정의).
+      //  끝나면(무엇으로 끝나든) 그 턴이 맡은 세대를 내려놓는다 — 안 그러면 끝난 항목이 재시작 때 대기로 돌아온다.
+      if (msg.triggerRun?.kind === "schedule") {
+        const run = { id: msg.triggerRun.id, session: turnSessionOf(msg) };
+        claimLimitResume(run.id, run.session);
+        return handler(msg).finally(() => releaseLimitResume(run.id, run.session));
       }
       return handler(msg);
     },

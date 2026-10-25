@@ -44,6 +44,7 @@
  *  - dep 추가 0 (node builtin child_process/fs/os/path).
  */
 import { spawn } from "node:child_process";
+import { createShellOutputDecoder } from "../shell-output-decoder.js";
 import { existsSync } from "node:fs";
 import { loadSettingsLayersWithSource } from "../settings.js";
 import { isTrustedProjectDir } from "../project-trust.js";
@@ -290,11 +291,16 @@ const runShellHook = (
     let stdout = "";
     let stderr = "";
     const CAP = 1024 * 1024; // 1MB
+    // 스트림별 디코더 — Windows 의 `cmd /c` 훅이 쓰는 OEM 코드 페이지 출력(한글 차단 사유 등)을 줄마다 가른다(`shell-output-decoder.ts`).
+    const outDec = createShellOutputDecoder();
+    const errDec = createShellOutputDecoder();
     child.stdout.on("data", (d: Buffer) => {
-      if (stdout.length < CAP) stdout += d.toString();
+      const t = outDec.write(d);
+      if (stdout.length < CAP) stdout += t;
     });
     child.stderr.on("data", (d: Buffer) => {
-      if (stderr.length < CAP) stderr += d.toString();
+      const t = errDec.write(d);
+      if (stderr.length < CAP) stderr += t;
     });
     // ★하드 백스톱 (2026-07-28) — `close` 는 프로세스 종료 **+ stdio 스트림 close** 를 모두
     //  요구한다. 훅 명령이 손자를 백그라운드로 남기면(`tail -f log &` 류) 그 손자가 stdout
@@ -303,11 +309,14 @@ const runShellHook = (
     //  그 턴이 조용히 멈춘다(`/stop` 도 훅 경로엔 전파되지 않아 못 푼다).
     //  → 종료 신호가 안 와도 반드시 풀리게 한다. 이미 resolve 됐으면 no-op(멱등).
     let settled = false;
-    const done = (r: { stdout: string; stderr: string; code: number }): void => {
+    // close·error·백스톱이 모두 여기로 모인다 — 잡아 둔 미완 줄을 확정한 뒤 낸다.
+    const done = (code: number): void => {
       if (settled) return;
       settled = true;
       clearTimeout(backstop);
-      resolve(r);
+      { const t = outDec.end(); if (stdout.length < CAP) stdout += t; }
+      { const t = errDec.end(); if (stderr.length < CAP) stderr += t; }
+      resolve({ stdout, stderr, code });
     };
     const backstop = setTimeout(() => {
       try {
@@ -318,16 +327,16 @@ const runShellHook = (
       console.warn(
         `[hook] 명령이 ${timeoutMs}ms + 여유 안에 끝나지 않아 강제 종료했습니다(백스톱): ${command.slice(0, 80)}`,
       );
-      done({ stdout, stderr, code: -1 });
+      done(-1);
     }, timeoutMs + HOOK_BACKSTOP_GRACE_MS);
     backstop.unref?.();
 
     child.on("close", (code) => {
-      done({ stdout, stderr, code: code ?? 0 });
+      done(code ?? 0);
     });
     child.on("error", () => {
       // spawn 실패 (sh 부재 등) — 에러 격리 (데몬 보호).
-      done({ stdout, stderr, code: -1 });
+      done(-1);
     });
     // ★stdio 스트림 에러를 **반드시** 받는다 (2026-08-19, CI 리눅스가 잡음).
     //  훅이 stdin 을 안 읽고 즉시 끝나면(`exit 0`·`sleep N &` 처럼 sh 가 바로 반환) 파이프가

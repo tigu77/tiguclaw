@@ -20,8 +20,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { assert, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, loadPluginModule, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
 
 interface WinModule {
   selfCheck: () => Promise<
@@ -287,6 +288,47 @@ export const check: RegressionCheck = {
         cscMsg.slice(0, 160),
       ),
     );
+
+    // ★★**조작 스크립트의 시한은 흘리는 이벤트로 정한다 — 제품 발사와 자가 점검이 같은 자리에서**(2026-10-23).
+    //  자가 점검만 고정 8초였을 때, 이벤트 수백 개의 빈 연습이 제품 `post` 라면 받았을 시한보다 짧은 시한에 죽었다(집 Windows 전체 회귀
+    //  «dry 에서 실패: 8000ms 초과», 기준·최종 양쪽). 실행부는 Windows 에서만 돌지만 **자식에게 넘기는 옵션**은 어느 OS 에서든 볼 수 있다 —
+    //  별도 프로세스에서 `execFile` 을 가짜로 바꿔(입력 0) 제품 `post`·`selfCheck` 가 실제로 넘긴 시한·`TIGUCLAW_DRY`·이벤트를 받는다.
+    //  ★기준 시한은 이벤트를 안 받는 유휴 스크립트가 받은 값이다(상수를 여기 다시 적지 않는다). 부모 환경엔 `TIGUCLAW_DRY=1` 을 켜 둔다.
+    {
+      const { postTimeoutMs } = await loadPluginModule<{ postTimeoutMs: (events: never, baseMs: number) => number }>("../../../plugins/computer-use/src/control.ts");
+      const child = await spawnWithin(60_000, "win.ts 자식 옵션", ["--import", "tsx", fileURLToPath(new URL("./_win-exec-options-child.ts", import.meta.url))], { env: { ...process.env } });
+      const line = child.out.split(/\r?\n/).find((l) => l.startsWith("WIN_EXEC "));
+      type Run = { timeout: number; dry: string; events?: string };
+      const got = line === undefined ? null : (JSON.parse(line.slice(9)) as { postRuns: Run[]; checkRuns: Run[] });
+      const base = got?.checkRuns.find((r) => r.events === undefined)?.timeout;
+      const ruled = (r: Run): boolean => base !== undefined && r.events !== undefined && r.timeout === postTimeoutMs(JSON.parse(r.events) as never, base);
+      const control = got?.checkRuns.filter((r) => r.events !== undefined) ?? [];
+      const dry = control.filter((r) => r.dry === "1");
+      const longest = dry.reduce((m, r) => Math.max(m, (JSON.parse(r.events!) as unknown[]).length), 0);
+      out.push(
+        assert(
+          "★★조작 스크립트의 시한은 흘리는 이벤트로 정한다 — 제품 `post`(5초 `wait` 열)와 `selfCheck` 의 빈 배열·빈 연습·탐침이 전부 `postTimeoutMs(그 이벤트)` 를 **자식에게 실제로** 넘긴다(빈 연습만 고정 시한이면 제품은 되는 열이 점검에서 죽는다)",
+          got !== null && got.postRuns.length === 1 && ruled(got.postRuns[0]!) && control.length === 3 && control.every(ruled) &&
+            longest > 100 && dry.some((r) => r.timeout > base!),
+          got === null ? { stderr: child.err.slice(-400), timedOut: child.timedOut } : { base, post: got.postRuns.map((r) => r.timeout), check: control.map((r) => ({ timeout: r.timeout, n: (JSON.parse(r.events!) as unknown[]).length })) },
+        ),
+      );
+      out.push(
+        assert(
+          "★★부모 환경에 `TIGUCLAW_DRY=1` 이 켜져 있어도 실제 조작은 `0`, 빈 연습·탐침은 `1`, 입력 0 컴파일 점검은 `0` 으로 넘어간다",
+          got !== null && got.postRuns[0]?.dry === "0" && control.map((r) => r.dry).join() === "0,1,1",
+          got === null ? "자식 실패" : { post: got.postRuns.map((r) => r.dry), check: control.map((r) => r.dry) },
+        ),
+      );
+      const src = await fs.readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../plugins/computer-use/src/win.ts"), "utf8");
+      out.push(
+        assert(
+          "실행부 루프의 입력 사이 최소 간격은 12ms 그대로다(맥에선 시간으로 못 재므로 원문으로)",
+          /"\s*Start-Sleep -Milliseconds 12",/.test(src),
+          "Start-Sleep -Milliseconds 12",
+        ),
+      );
+    }
 
     // ── ② 실행부는 **Windows 에서만** 돌린다 ──────────────────────────────────
     if (process.platform !== "win32") {

@@ -70,7 +70,10 @@ export interface ChatLogEntry {
    * 프런트가 이 값으로 **라이브와 같은 렌더러**를 고른다 — 문구를 서버가 다시 짓지 않는다.
    */
   kind?: string;
-  /** 그 이벤트의 원본 payload. kind 가 있을 때만. */
+  /**
+   * kind 행 = 그 이벤트의 원본 payload. 일반 사용자 메시지 행 = `{ replyTo }`(답글 표시, `core/reply-preview.ts` — 2026-10-23) 만.
+   *  화면 재료다 — 모델에 가는 경로(검색·인용·재주입)는 이 칸을 읽지 않는다.
+   */
   data?: Record<string, unknown>;
   /**
    * 완료 턴 표식(`store/turn-marks.ts`) — 저장이 확인된 정상 답에만. 기록엔 전부 남기고, 조회는 화면이 쓰는 `turnId` 만 돌려준다
@@ -640,6 +643,21 @@ export const chatMessageById = (
     .get(id, ...scope.params) as { id: number; ts: number; thread_key: string; role: string; text: string } | undefined;
   if (row === undefined) return undefined;
   return { id: row.id, ts: row.ts, threadKey: row.thread_key, role: row.role === "assistant" ? "assistant" : "user", text: row.text };
+};
+
+/**
+ * 답글 표시의 **화면 이동 좌표**(2026-10-23, `core/reply-preview.ts`) — 그 대화 화면 범위의 행일 때만 시각과 완료 턴 id.
+ *  턴 id 는 도구를 쓴 턴의 답처럼 화면에 행 id·행 시각 없이 그려지는 말풍선(`data-turn`)을 정확히 짚는 재료다. 모델 경로는 이걸 안 읽는다.
+ */
+export const chatRowCoords = (threadKey: string, id: number): { ts: number; turnId?: string } | undefined => {
+  if (!Number.isInteger(id)) return undefined;
+  const scope = screenScope(threadKey);
+  const row = getDb()
+    .prepare(`SELECT ts, turn FROM chat_log WHERE id = ? AND (${scope.sql})`)
+    .get(id, ...scope.params) as { ts: number; turn: string | null } | undefined;
+  if (row === undefined) return undefined;
+  const turnId = parseTurnMark(row.turn)?.id;
+  return { ts: row.ts, ...(turnId !== undefined ? { turnId } : {}) };
 };
 
 /**

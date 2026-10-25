@@ -3,14 +3,15 @@
       // 입력창 위 인용 칩. 전송 시 그 원문을 replyToText 로 POST → 브리지가 IncomingMessage.replyToText
       // 로 실어 route 직전 인용 주입(telegram reply_to 와 동형·LLM-agnostic, 신규 백엔드 0).
       const chatReplyEl = document.getElementById("chat-reply");
-      let replyingTo = null; // { text, label, ref? }
+      let replyingTo = null; // { text, label, ref?, at? }
       const clearReply = () => {
         replyingTo = null;
         if (chatReplyEl) { chatReplyEl.hidden = true; chatReplyEl.textContent = ""; }
       };
       // ref = 답글 대상(2026-10-19) — 이력 말풍선은 대화 기록 행 id(`data-id`), 아직 id 가 없는 실시간 말풍선은 정확한 시각(`data-ts`,
       //  대화 기록과 같은 이벤트 시각 — 브리지가 같은 시각·발화자가 한 건일 때만 id 로 바꾼다). 둘 다 없으면 비운다 — 인용만 간다.
-      const startReply = (text, label, ref) => {
+      // at = 그 말풍선의 화면 시각(`data-ts`) — 보낸 메시지 카드 위 «↩ 원문» 을 눌렀을 때 옮겨 갈 좌표(행 id 가 없는 말풍선도, 2026-10-23).
+      const startReply = (text, label, ref, at) => {
         const t = String(text || "").trim();
         if (t === "" || !chatReplyEl) return;
         // ★원문을 **자르지 않는다** — 길이는 코어 한 곳(`reply-quote.ts` — 앞·끝을 남긴다)이 정한다. 여기서 앞 1,500자만 남기면 긴 답의
@@ -18,6 +19,7 @@
         replyingTo = {
           text: t, label: label || i18n("common.message"),
           ...(ref ? { ref } : {}),
+          ...(typeof at === "number" && Number.isFinite(at) ? { at } : {}),
         };
         chatReplyEl.textContent = "";
         const lb = document.createElement("span"); lb.className = "cr-label"; lb.textContent = "↩ " + replyingTo.label;
@@ -26,6 +28,8 @@
         x.addEventListener("click", clearReply);
         chatReplyEl.appendChild(lb); chatReplyEl.appendChild(tx); chatReplyEl.appendChild(x);
         chatReplyEl.hidden = false;
+        // 새로 지정한 답글 대상은 입력 정보가 접혀 있어도 보여야 한다 — 펼칠지는 접기 쪽(mobile-nav.js)이 정한다.
+        if (typeof window.composerInfoAdded === "function") window.composerInfoAdded();
         // 답글은 "이제 쓰겠다" 는 명시적 행동 — 포커스가 가는 게 맞다(util.js 정책 참조).
         focusChatInput({ userIntendsToType: true });
       };
@@ -116,9 +120,11 @@
             const ts = tsAttr ? Number(tsAttr) : NaN;
             return Number.isFinite(ts) ? { ts, ...(role ? { role } : {}) } : null;
           })(),
+          // 그 말풍선의 화면 시각 — 답글 카드의 «↩ 원문» 이동 좌표(위 replyRef 와 달리 행으로 바꾸지 않는다).
+          at: tsAttr ? Number(tsAttr) : NaN,
         };
       };
-      registerBuiltinHandler("message.reply", (ctx) => { startReply(ctx.text, ctx.label, ctx.replyRef); });
+      registerBuiltinHandler("message.reply", (ctx) => { startReply(ctx.text, ctx.label, ctx.replyRef, ctx.at); });
       registerBuiltinHandler("message.copy", async (ctx) => {
         if (!navigator.clipboard) return;
         // 마크다운 원문 우선 — 없으면(사용자 메시지 등 평문) 렌더된 글 그대로.
@@ -233,7 +239,11 @@
         const busy = activeTurns.has(activeThreadKey);
         const hasAtt = !!(attachments && attachments.length);
         if ((busy || hasAtt) && (text || hasAtt)) {
-          queueOptimisticBubble(text, { attachments: hasAtt ? attachments : null, queued: busy, cid: correlationId });
+          queueOptimisticBubble(text, {
+            attachments: hasAtt ? attachments : null, queued: busy, cid: correlationId,
+            // 답글 표시 — 서버가 만들 값과 같은 모양(`{ text, ts? }`). 앞부분 자르기는 화면이 한 줄로 줄여 보여 준다.
+            ...(reply && reply.text ? { replyTo: { text: reply.text, ...(typeof reply.at === "number" ? { ts: reply.at } : {}) } } : {}),
+          });
         }
         setChatWorking(true);
         const t0 = Date.now();
@@ -248,6 +258,7 @@
               ...(attachments && attachments.length ? { attachments } : {}),
               ...(reply && reply.text ? { replyToText: reply.text } : {}),
               ...(reply && reply.text && reply.ref ? { replyToRef: reply.ref } : {}),
+              ...(reply && reply.text && typeof reply.at === "number" ? { replyToAt: reply.at } : {}),
               // egress fan-out(ADR 2026-07-16 §D4 Phase B2) — 컴포저 체크박스가 "이 답도 함께
               // 보낼" 추가 채널을 골랐을 때만 배열로 실음(인입 응답은 백엔드가 항상 유지). 빈
               // 배열/미체크 = 미전송(회귀 0). getEgressChannels 는 egress-selector.js 가 정의.

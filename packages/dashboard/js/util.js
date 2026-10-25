@@ -357,6 +357,15 @@
         const h = Math.floor(m / 60), rm = m % 60;
         return h + "h " + rm + "m";
       };
+      /**
+       * 잡 카드의 경과(ms) — **끝났으면 끝 시각까지**, 아니면 `now` 까지 (2026-10-23 «완료 시간 고정»). 끝 시각(`endTs`)은
+       *  `background-drawer.js` `handleWorkerEvent` 한 곳이 정한다. 드로어·에이전트 뷰·프로젝트 상세(`buildAgentCard`)가 같이 쓴다 —
+       *  종전엔 `buildAgentCard` 가 끝난 카드도 `now − 시작` 이라 다시 그릴 때마다 자랐다.
+       */
+      const jobElapsedMs = (e, now) => {
+        const end = e && e.status !== "running" && typeof e.endTs === "number" ? e.endTs : now;
+        return end - ((e && e.startTs) || end);
+      };
 
       // 입력창(chat-input) 자동 포커스 = 중앙 정책 한 곳.
       //

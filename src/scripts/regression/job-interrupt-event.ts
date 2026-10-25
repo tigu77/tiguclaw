@@ -21,13 +21,14 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     assertIsolated();
     const jobId = "regr-interrupt-1";
+    const STARTED = Date.now() - 60_000;
     getDb()
       .prepare(
         `INSERT INTO worker_jobs (job_id, label, thread_key, channel, channel_user_id,
                                   status, started_at, kind)
          VALUES (?, ?, ?, ?, ?, 'running', ?, 'agent')`,
       )
-      .run(jobId, "회귀-중단-검사", "dashboard:regr", "dashboard", "regr", Date.now() - 60_000);
+      .run(jobId, "회귀-중단-검사", "dashboard:regr", "dashboard", "regr", STARTED);
 
     const seen: Array<{ type: string; payload: Record<string, unknown> }> = [];
     const unsub = getEventBus().subscribe((e: { type: string; payload?: unknown }) => {
@@ -57,6 +58,11 @@ export const check: RegressionCheck = {
         "이벤트 타입이 worker.interrupted",
         ev?.type === "worker.interrupted",
         String(ev?.type),
+      ),
+      assert(
+        "★시작 시각은 싣고(화면 경과 기준) 끝 시각은 **안 싣는다** — 데몬이 죽은 사이 언제 멈췄는지 모른다(복구 시각을 끝 시각처럼 지어내지 않는다, 2026-10-23)",
+        (ev?.payload as { startedAt?: unknown } | undefined)?.startedAt === STARTED && !("finishedAt" in ((ev?.payload ?? {}) as object)),
+        JSON.stringify({ startedAt: (ev?.payload as { startedAt?: unknown } | undefined)?.startedAt, finishedAt: (ev?.payload as { finishedAt?: unknown } | undefined)?.finishedAt }),
       ),
       assert(
         "payload.status 가 interrupted — 클라이언트가 카드를 닫는 근거",

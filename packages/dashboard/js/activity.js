@@ -460,6 +460,8 @@
       setInterval(fetchProjects, 30000);
       fetchModelProfiles();
       setInterval(fetchModelProfiles, 30000);
+      fetchPluginCount();
+      setInterval(fetchPluginCount, 30000);
 
       // 앱 버전 — /api/health(bridge)의 version 을 헤더 부제에 1회 반영(하드코딩 stale 방지).
       // ★같은 응답의 `active_turn_threads` 로 **진행 중 턴을 복원**한다 (2026-08-09 사용자 신고).

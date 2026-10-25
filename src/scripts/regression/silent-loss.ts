@@ -286,11 +286,11 @@ export const check: RegressionCheck = {
       const stopBlock = /if \(msg\.text\.trim\(\) === "\/stop"\) \{[\s\S]*?\n  \}/.exec(idx)?.[0] ?? "";
       out.push(
         assert(
-          "★/stop 은 잡을 끊지 않고, 계속 도는 작업 수를 답에 싣는다(턴 있음·외부 턴·턴 없음 세 갈래 모두)",
+          "★/stop 은 잡을 끊지 않고, 계속 도는 작업 수를 답에 싣는다(턴 있음·외부 턴·시작 중(훅 대기)·턴 없음 네 갈래 모두)",
           stopBlock !== "" && !/cancelJobsForThread|cancelJob\(|cancelDescendants/.test(stopBlock) &&
             // 외부 턴(파일감시·스케줄) 갈래도 실제로 끊는다 — 사용자 중지 신호로(실행기가 «실패 아님» 으로 가른다)
             /activeExternalTurn\(msg\.threadKey\)\?\.ac\.abort\(new UserCancelledError\(\)\)/.test(stopBlock) &&
-            (stopBlock.match(/continuingJobs\(msg\.threadKey\)/g) ?? []).length === 3,
+            (stopBlock.match(/continuingJobs\(msg\.threadKey\)/g) ?? []).length === 4,
           { 블록: stopBlock.length, 끊기호출: /cancelJobs/.test(stopBlock), 알림: (stopBlock.match(/continuingJobs\(msg\.threadKey\)/g) ?? []).length },
         ),
       );

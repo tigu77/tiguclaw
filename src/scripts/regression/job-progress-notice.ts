@@ -296,6 +296,9 @@ export const check: RegressionCheck = {
       // 무활동 분기 **전에** 알림을 한 번 보내 둔다 — 그래야 «알림 시각» 이월을 잴 수 있다(둘 다 없음이면 같아 보인다).
       wj.__checkinTickForTest(st.t0 + 61 * MIN);
       await settle();
+      // 알림 뒤 성공한 파일 쓰기 하나 — 무활동 분기를 건너도 다음 알림까지 남아야 한다(이월)
+      getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: st.key, kind: "tool", label: "Write", seq: 77 } } as never);
+      getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: st.key, kind: "tool", label: "Write", seq: 77, phase: "end" } } as never);
       const evBefore = wj.__checkinEvidenceForTest(st.id);
       sent.length = 0;
       reinjected.length = 0;
@@ -342,8 +345,178 @@ export const check: RegressionCheck = {
       const internalCall = /internal:\s*true/.test(sumBody) && /leanMemory:\s*true/.test(sumBody) && /toolPolicy:\s*\{\s*mode:\s*"none"\s*\}/.test(sumBody);
       const wired = jp.getRegisteredProgressSummarizer === undefined ? false : realSummarizer !== undefined;
 
+      // ⑲ 산출물이 있는데 «진행 없음» — 운영 인스턴스 10-23 실사례 모양 그대로: 할 일은 시작 직후 한 번(0/7)뿐, 두 번째 주기에 커밋 1·파일 쓰기 2가
+      //  있었는데 그 사이 Bash 24·BashOutput 15·Grep 7 이 쌓여 커밋 호출은 최근 행동 40개 밖으로 밀리고(그리고 명령 줄은 120자에서 잘려 «git commit» 이 안 보인다),
+      //  요약 입력엔 낡은 «할 일 0/7» 만 «지금» 처럼 남았다 → 요약이 «실질적 진행 없음·0/7 그대로». 활동 시각은 실제 시계라 이 구간만 시계를 주입한다.
+      const realNow = Date.now;
+      let fakeNow = 0;
+      wj.__resetJobsForTest();
+      const lk = fresh("잠금대기");
+      const at = (min: number, fn: () => void): void => {
+        fakeNow = lk.t0 + min * MIN;
+        Date.now = () => fakeNow;
+        try { fn(); } finally { Date.now = realNow; }
+      };
+      let lseq = 500;
+      const call = (label: string, detail?: string, output?: Record<string, unknown>): void => {
+        lseq += 1;
+        const s = lseq;
+        getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: lk.key, kind: "tool", label, seq: s, ...(detail !== undefined ? { detail } : {}) } } as never);
+        getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: lk.key, kind: "tool", label, seq: s, phase: "end", ...(output !== undefined ? { output } : {}) } } as never);
+      };
+      at(3, () => getEventBus().publish({ type: "todo.update", ts: Date.now(), payload: { threadKey: lk.key, todos: Array.from({ length: 7 }, (_, i) => ({ content: `단계 ${i + 1}`, status: "pending" })) } } as never));
+      at(10, () => call("Read", "path=src/a.ts"));
+      sent.length = 0;
+      summarizerImpl = async () => "요약: 코드를 읽는 중입니다.";
+      const promptsBefore1 = prompts.length;
+      wj.__checkinTickForTest(lk.t0 + 61 * MIN); // 알림 1 — 할 일은 이 구간에 적힌 것(낡지 않음)
+      await settle();
+      const lkPrompt1 = prompts.slice(promptsBefore1).pop() ?? "";
+      // 경계 — 갱신 시각 == 구간 시작이면 신선하다(요약 입력에 남는다), 그보다 1ms 앞이면 낡았다(안 실린다)
+      const pAt = (todosAt: number): string => jp.buildProgressPrompt({
+        label: "x", task: "x", elapsedMs: 0, actions: [], todos: [{ content: "신선", status: "in_progress" }], language: "한국어",
+        now: 5000, lastActivityAt: 5000, inFlight: [], errors: 0, todosAt, since: 1000,
+      });
+      // 커밋 — 셋이 다 있어야 센다(git commit 명령 + 출력의 요약 줄 + 오류 아님). 진짜 셋(둘째는 커밋 뒤 명령이 실패 — 커밋은 됐다 · 전역 옵션 -C·-c):
+      at(70, () => call("Bash", "command=git add src/x.ts && git commit -m \"작업 3\"", { text: "[main a1b2c3d] 작업 3\n 2 files changed, 10 insertions(+)\n\nexit code: 0" }));
+      at(70.2, () => call("Bash", "command=git -C ../repo commit -m \"작업 4\" && npm test", { text: "[dev 0f1e2d3] 작업 4\n 1 file changed\nnpm ERR! Test failed\n\nexit code: 1" }));
+      at(70.3, () => call("Bash", "command=git -c user.name=x commit -m \"작업 5\"", { text: "[main 4444444] 작업 5" }));
+      // 아닌 것(GPT R1 재현 모양): 실패(종료 1 · 오류 플래그 없음) · 요약 줄 모양을 찍는 조회 · 명령 줄이 잘려 «git commit» 이 안 보임 · 오류 플래그
+      at(70.4, () => call("Bash", "command=git commit --dry-run", { text: "stdout:\nOn branch main\nnothing to commit\n\nexit code: 1" }));
+      at(70.5, () => call("Bash", "command=git log -1 --format='[main %h] %s'", { text: "[main a1b2c3d] 작업 3\n\nexit code: 0" }));
+      at(70.55, () => call("Bash", "command=git log -1 --format='[main %h] git commit'", { text: "[main 8a9f9c4] git commit\n\nexit code: 0" })); // 인용 안의 «git commit»(GPT R2)
+      at(70.57, () => call("Bash", "command=npm test, description=run tests before git commit", { text: "[main 1111111] x" })); // 설명 글의 «git commit»
+      at(70.58, () => call("Bash", "command=echo \"done; git commit later\"", { text: "[main 2222222] y" })); // 따옴표 안의 «; git commit»
+      at(70.59, () => call("Bash", "command=git -C commit log -1 --format='[main %h] %s'", { text: "[main 54eff33] fixture" })); // 옵션 값 «commit»(GPT R3)
+      at(70.6, () => call("Bash", "command=jj commit -m x", { text: "[main 3333333] x" })); // git 이 아닌 도구의 commit
+      at(70.6, () => call("Bash", `command=cd /Users/someone/${"very-long-directory/".repeat(8)}repo && git add . && git commit -m x`.slice(0, 160), { text: "[main 9a8b7c6] x" }));
+      at(70.7, () => call("Bash", "command=git commit -m x", { text: "Error: nothing to commit", isError: true }));
+      // 파일 쓰기: 성공 둘(접두 붙은 MCP 이름표 포함) · 실패 하나는 안 센다
+      at(71, () => call("Write", "path=src/x.ts"));
+      at(72, () => call("mcp__file-ops__Edit", "path=src/y.ts"));
+      at(72.5, () => call("Edit", "path=src/z.ts", { text: "Error: old_string not found", isError: true }));
+      for (let i = 0; i < 24; i += 1) at(73 + i, () => call("Bash", `command=git status --short # ${i}`));
+      for (let i = 0; i < 15; i += 1) at(97 + i, () => call("BashOutput", "bash_id=bash_lock"));
+      for (let i = 0; i < 7; i += 1) at(112 + i, () => call("Grep", "pattern=lock"));
+      const promptsBefore2 = prompts.length;
+      summarizerImpl = async () => "요약: 실질적 구현 진행 없음, 할 일 0/7 그대로입니다.";
+      wj.__checkinTickForTest(lk.t0 + 121 * MIN); // 알림 2 — 커밋 1·쓰기 2가 있었던 구간
+      await settle();
+      const lkPrompt = prompts.slice(promptsBefore2).pop() ?? "";
+      const lkNotice = sent.filter((t) => t.startsWith("⏳")).pop() ?? "";
+      // 알림 3 — 그 뒤 산출이 없으면 사실 줄도 없다(센 것은 알림마다 비운다 — 같은 커밋을 다음 알림에 또 세지 않는다)
+      at(125, () => call("Read", "path=src/z.ts"));
+      wj.__checkinTickForTest(lk.t0 + 181 * MIN);
+      await settle();
+      const lkNotice3 = sent.filter((t) => t.startsWith("⏳")).pop() ?? "";
+
+      // ⑲‴ 경계 — 알림 전에 시작해 알림 뒤 성공한 커밋도 다음 알림에 든다(시작 행동이 없는 구간이어도 — GPT R1: 빈 알림 판정에 걸려 버려졌다)
+      wj.__resetJobsForTest();
+      const bd = fresh("경계커밋");
+      const bseq = 900;
+      at(10, () => getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: bd.key, kind: "tool", label: "Bash", seq: bseq, detail: "command=git commit -m y" } } as never));
+      wj.__checkinTickForTest(bd.t0 + 61 * MIN); // 알림 1 — 진행 중 도구(아직 커밋 전)
+      await settle();
+      at(70, () => getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: bd.key, kind: "tool", label: "Bash", seq: bseq, phase: "end", output: { text: "[main 1234567] y" } } } as never));
+      sent.length = 0;
+      wj.__checkinTickForTest(bd.t0 + 121 * MIN); // 알림 2 — 그 커밋이 실려야
+      await settle();
+      const boundaryCommit = sent.filter((t) => t.startsWith("⏳"));
+
+      // ⑳ 비율은 부정이 아니다(2026-10-23 재조정) — 산출이 있는 구간에서 «3/4 통과» 요약은 버려지고 «4건 중 3건 통과» 는 남던 갈림(실모델 근사: haiku·luna).
+      //  버려도 기계 요약이 같은 «3/4» 를 싣는다. 사례 둘: A = 낡은 할 일 0/7 + 커밋 3·쓰기 2(운영 인스턴스 실사례) · B = 신선한 할 일 3/4 + 도구 출력 «3/4 통과».
+      const cA = {
+        jobId: "ca", name: "A", task: "x", elapsedMs: 121 * MIN, language: "한국어", now: 121 * MIN, lastActivityAt: 118 * MIN, inFlight: [], errors: 0,
+        actions: [{ at: 115 * MIN, tool: "Grep", detail: "pattern=lock" }], todos: Array.from({ length: 7 }, (_, i) => ({ content: `단계 ${i + 1}`, status: "pending" })),
+        outputs: { writes: 2, commits: 3 }, todosAt: 3 * MIN, since: 61 * MIN,
+      };
+      const cB = {
+        ...cA, jobId: "cb", name: "B", lastActivityAt: 90 * MIN, outputs: { writes: 1, commits: 1 }, todosAt: 92 * MIN,
+        actions: [{ at: 90 * MIN, tool: "Bash", detail: "command=node verify.mjs  # 결과: 3/4 통과, 1건 시한 초과" }],
+        todos: [{ content: "원인 재현", status: "completed" }, { content: "수정", status: "completed" }, { content: "회귀 추가", status: "completed" }, { content: "검증", status: "in_progress", activeForm: "검증하는 중" }],
+      };
+      const composeWith = async (input: typeof cA, text: string): Promise<{ text: string; summarized: boolean } | null> => {
+        summarizerImpl = async () => text;
+        return jp.composeProgressNotice(input as never);
+      };
+      const keptCases: Array<[typeof cA, string]> = [
+        [cB, "job-progress.ts를 수정하고 회귀 검증 및 커밋을 완료했습니다. 검증 결과 3/4 통과했으나 1건이 시한 초과 오류가 있으며, 한동안 새 활동이 없습니다."],
+        [cB, "`verify.mjs` 결과는 4건 중 3건 통과, 1건 시한 초과였습니다."],
+        [cA, "10/23 일정 문서를 고친 뒤 lock 패턴을 찾고 있습니다."],
+        // ⑳'' «그대로»·«unchanged» 가 진척이 아니라 «기존 동작 유지» 를 말하는 정상 설명(2026-10-23 릴리스 검토 P3 — 쓰기 1·커밋 0 그대로 재현)
+        [{ ...cA, jobId: "ck", outputs: { writes: 1, commits: 0 } }, "기존 기능은 그대로 유지하면서 취소 시 완료 보고가 누락되는 오류를 수정했습니다."],
+        [{ ...cA, jobId: "ck", outputs: { writes: 1, commits: 0 } }, "The public API is unchanged; cancellation now delivers the completion report."],
+        [{ ...cA, jobId: "ck", outputs: { writes: 1, commits: 0 } }, "할 일 목록은 그대로 두고 회귀 검사를 추가했습니다."],
+        // ⑳''' 상태·status 는 진척 주어가 아니다 · 비율은 쉼표 너머를 안 본다(GPT R1 결함 2 + 형제)
+        [{ ...cA, jobId: "ck", outputs: { writes: 1, commits: 0 } }, "The HTTP status is unchanged; cancellation now delivers the completion report."],
+        [{ ...cA, jobId: "ck", outputs: { writes: 1, commits: 0 } }, "HTTP 상태 코드는 그대로 유지되고, 취소 시 완료 보고가 나가도록 고쳤습니다."],
+        [{ ...cA, jobId: "ck", outputs: { writes: 1, commits: 0 } }, "3/4 tests pass, API unchanged otherwise."],
+        [{ ...cA, jobId: "ck", outputs: { writes: 1, commits: 0 } }, "The completion report has remained unchanged; added a retry test."],
+      ];
+      // 커밋 없이 파일 쓰기만 있는 구간도 산출이다(변이 사냥 E: 가드를 «커밋 있을 때만» 으로 좁혀도 초록이었다 — 버림 사례가 전부 커밋 3이었다)
+      const cW = { ...cA, jobId: "cw", outputs: { writes: 1, commits: 0 } };
+      const droppedCases: Array<[typeof cA, string]> = [
+        [cW, "요약: 실질적 구현 진행 없음, 할 일 0/7 그대로입니다."],
+        [cA, "요약: 실질적 구현 진행 없음, 할 일 0/7 그대로입니다."],
+        [cA, "같은 대기 작업을 반복 중이며 새로운 진전이 보이지 않습니다."],
+        [cA, "Still at 0/7 — searching for lock."],
+        [cA, "No real progress; waiting on bash_lock."],
+        // ⑳'' 진척을 가리키는 «그대로»·«unchanged» 는 «진행 없음» 없이 단독으로 와도 여전히 버린다(P3 를 좁히며 지킬 계약)
+        [cA, "할 일 0/7 그대로입니다. lock 패턴을 찾는 중입니다."],
+        [cA, "Progress unchanged — to-dos still 0/7."],
+        [cA, "To-do list unchanged at 0/7."],
+        [cA, "Remains unchanged at 0/7 after the lock wait."],
+        // ⑳''' 진척 주어면 «그대로 유지·남아» 도 정체다 · completion 바로 뒤 unchanged 도(GPT R1 결함 1)
+        [cA, "진행률은 0/7 그대로 유지되고 있습니다."],
+        [cA, "진척은 그대로 남아 있습니다."],
+        [cA, "Completion remains unchanged — waiting on bash_lock."],
+        [cA, "Completion has remained unchanged — waiting on bash_lock."], // GPT R2 — 완료형도
+      ];
+      const kept: Array<{ t: string; r: { text: string; summarized: boolean } | null }> = [];
+      for (const [i, t] of keptCases) kept.push({ t, r: await composeWith(i, t) });
+      const dropped: Array<{ t: string; r: { text: string; summarized: boolean } | null }> = [];
+      for (const [i, t] of droppedCases) dropped.push({ t, r: await composeWith(i, t) });
+
       const errLine = (t: string | undefined): boolean => /오류로 끝났습니다|ended in an error/.test(t ?? "");
+      const todoNowLine = (p: string): string => p.split("\n").find((l) => /^(할 일|To-dos) \d+\/\d+/.test(l)) ?? "";
       return [
+        assert(
+          "★★⑲ 산출물(커밋·파일 쓰기)은 하네스가 센 사실로 알림에 붙고(커밋 호출이 최근 행동 40개 밖이어도), 그와 부딪히는 요약(«진행 없음·0/7 그대로»)은 버려 기계 요약(낡은 할 일엔 «마지막 갱신»)이 나간다 · 커밋은 `git commit` 실행(명령 머리 — 인용·설명 글 제외)+요약 줄+오류 아님일 때만(드라이런·`git log` 요약 줄 모양·인용 안 «git commit»·잘린 명령 줄·오류는 안 셈, 커밋 뒤 명령의 실패는 셈) · 실패한 쓰기 안 셈",
+          /커밋 3건|commits 3\b/.test(lkNotice) && /파일 쓰기 2건|file writes 2\b/.test(lkNotice) && errLine(lkNotice) &&
+            !/진행 없음|그대로/.test(lkNotice) && /마지막 갱신|last updated/.test(lkNotice),
+          lkNotice.split("\n"),
+        ),
+        assert(
+          "★★⑳ 산출이 있는 구간에서 비율(«3/4 통과»·«4건 중 3건»·날짜 «10/23»)만 담은 요약은 그대로 나간다(비율은 부정이 아니다) · 산출 사실 줄도 붙는다 · ⑳'' «기존 기능은 그대로 유지하면서 …수정»·«The public API is unchanged; …»·«할 일 목록은 그대로 두고» 같은 정상 설명도 나간다(P3)",
+          kept.every(({ t, r }) => r !== null && r.summarized && r.text.includes(t) && /결과물|file writes/.test(r.text)),
+          kept.map(({ r }) => ({ summarized: r?.summarized, text: r?.text.split("\n") })),
+        ),
+        assert(
+          "★★⑳' 산출 사실과 부딪히는 요약(«진행 없음·0/7 그대로»·«진전이 보이지 않»·«still at 0/7»·«no real progress» · ⑳'' 진척 주어에 붙은 «0/7 그대로»·«Progress unchanged»·«unchanged at 0/7» 단독)은 여전히 버려 기계 요약 — 커밋 없이 파일 쓰기만 있어도 · 낡은 할 일엔 «마지막 갱신» · 산출 사실 줄",
+          dropped.every(({ t, r }) => r !== null && !r.summarized && !r.text.includes(t) && /마지막 갱신|last updated/.test(r.text) && /결과물|file writes/.test(r.text)) &&
+            /파일 쓰기 1건|file writes 1\b/.test(dropped[0]?.r?.text ?? "") && /커밋 3건|commits 3\b/.test(dropped[1]?.r?.text ?? ""),
+          dropped.map(({ r }) => ({ summarized: r?.summarized, text: r?.text.split("\n") })),
+        ),
+        assert(
+          "★⑲⁗ 신선한 할 일(그 구간에 갱신됨)은 요약 입력에 그대로 남는다 — 갱신 시각 == 구간 시작도 신선 · 1ms 앞이면 낡음",
+          /^(할 일|To-dos) 0\/7/m.test(lkPrompt1) && /신선/.test(pAt(1000)) && !/신선/.test(pAt(999)),
+          { 첫알림할일: todoNowLine(lkPrompt1), 같음: /신선/.test(pAt(1000)), 앞: /신선/.test(pAt(999)) },
+        ),
+        assert(
+          "★⑲‴ 알림 전에 시작해 알림 뒤 성공한 커밋도 다음 알림에 «커밋 1» 로 든다(그 구간에 시작 행동이 없어도)",
+          boundaryCommit.length === 1 && /커밋 1건|commits 1\b/.test(boundaryCommit[0] ?? ""),
+          boundaryCommit.map((t) => t.split("\n")),
+        ),
+        assert(
+          "⑲'' 다음 알림은 그 뒤 산출만 센다 — 산출이 없으면 사실 줄이 없다(같은 커밋을 두 번 세지 않는다)",
+          lkNotice3 !== lkNotice && lkNotice3.startsWith("⏳") && !/결과물|Since the last update: file writes/.test(lkNotice3),
+          lkNotice3.split("\n"),
+        ),
+        assert(
+          "★⑲' 요약 입력에도 그 사실이 실리고, 그 구간에 갱신 없는 할 일(0/7)은 요약 입력에 안 실린다(지금 상태처럼 쓰지 못하게)",
+          /커밋 3건/.test(lkPrompt) && /파일 쓰기 2건/.test(lkPrompt) && todoNowLine(lkPrompt) === "" && !/0\/7/.test(lkPrompt),
+          { 할일줄: todoNowLine(lkPrompt), 사실줄: lkPrompt.split("\n").filter((l) => /커밋|파일 쓰기/.test(l)) },
+        ),
         assert(
           "★⑮ 알림 전에 시작해 알림 뒤 실패한 호출도 다음 알림에 든다 · 다음 주기엔 두 번 안 센다",
           boundary.length === 3 && !errLine(boundary[0]) && errLine(boundary[1]) && !errLine(boundary[2]),
@@ -374,9 +547,10 @@ export const check: RegressionCheck = {
           anchorNotice[0]?.split("\n"),
         ),
         assert(
-          "★⑪ 무활동 2시간을 넘긴 잡엔 점검만 나가고 진행 알림은 없다 · 그 분기에서도 최근 행동·할 일·표식·알림 시각이 이월된다",
+          "★⑪ 무활동 2시간을 넘긴 잡엔 점검만 나가고 진행 알림은 없다 · 그 분기에서도 최근 행동·할 일(갱신 시각 포함)·산출 수·표식·알림 시각이 이월된다",
           staleProgress === 0 && staleCheckin > 0 && evBefore !== undefined && evAfter !== undefined &&
             evAfter.recent === evBefore.recent && evAfter.todos === 2 && evAfter.activeSinceProgress === evBefore.activeSinceProgress &&
+            evBefore.todosAt !== undefined && evAfter.todosAt === evBefore.todosAt && evBefore.outputs === "1/0" && evAfter.outputs === "1/0" &&
             evBefore.lastProgressAt !== undefined && evAfter.lastProgressAt === evBefore.lastProgressAt,
           { 진행알림: staleProgress, 점검: staleCheckin, 전: evBefore, 후: evAfter },
         ),

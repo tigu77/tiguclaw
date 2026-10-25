@@ -84,7 +84,7 @@ window.tiguWidgets.register("hello/card", {
 registered data routes from plugin: hello (greeting)
 ```
 
-그리고 `/api/plugin-data/hello/greeting?who=정태` 로 값이 나옵니다.
+그리고 `/api/plugin-data/hello/greeting?who=Alex` 로 값이 나옵니다.
 
 > **위젯을 위젯 패널에 두려면** 비서에게 말하면 됩니다 — *"hello 카드를 위젯 패널 맨 위에 둬"*.
 > 위젯 패널은 어느 화면에서나 오른쪽 위 🧩 버튼으로 엽니다. 순서는 위젯 위의 손잡이를 끌어 바꿀 수도 있습니다.

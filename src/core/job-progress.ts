@@ -56,6 +56,65 @@ export const actionsSince = (list: readonly ProgressAction[], since: number): Pr
 
 type Todo = { content: string; status: string; activeForm?: string };
 
+/**
+ * **실제 산출** — 직전 알림 이후 끝까지 성공한 파일 쓰기·커밋 수(2026-10-23, 운영 인스턴스 실사례). 하네스가 종료 이벤트에서 센다
+ *  (최근 행동 40개 표본 밖·잘린 명령 줄과 무관). 요약이 «진행 없음» 이라 해도 이 줄은 하네스가 붙인다 — 오류 건수와 같은 자리.
+ */
+export interface ProgressOutputs {
+  writes: number;
+  commits: number;
+}
+
+/** 파일을 바꾸는 도구인가 — 이름표의 MCP 접두(`mcp__<서버>__`)는 떼고 본다(claude 의 MCP 이름표 모양). */
+export const isFileWriteTool = (label: string): boolean =>
+  /^(Write|Edit|MultiEdit|NotebookEdit|apply_patch)$/.test(label.replace(/^mcp__[^_]+(?:_[^_]+)*__/, ""));
+
+/**
+ * 그 호출이 만든 **커밋 수** — 셋이 다 있어야 센다(GPT R1: 문자열 하나로 세면 `git commit --dry-run`(종료 1)·`git log --format='[main %h] %s'`·
+ *  `git show HEAD:commit.md` 가 커밋이 됐다): ①명령 줄이 `git … commit` 하위 명령(`git -C 경로 commit`·`git -c k=v commit` 포함) ②출력에 git 이
+ *  커밋마다 내는 요약 줄 `[브랜치 abc1234] 제목`(번역되지 않는 모양 — 드라이런·실패한 커밋은 이 줄을 안 낸다) ③오류로 끝나지 않음(호출부가 오류
+ *  플래그를 본다). 종료 코드는 안 본다 — `git commit … && npm test` 처럼 커밋 뒤 명령이 실패해도 커밋은 됐다(요약 줄이 그 증거다).
+ *  명령 줄이 잘려 «git commit» 이 안 보이거나 출력 미리보기가 잘려 요약 줄이 없으면 **안 센다**(모르면 세지 않는다).
+ */
+/**
+ * 명령 줄이 `git … commit` 을 **실행**하나 — 따옴표 안(인수·메시지)은 지우고, `&&`·`||`·`;`·`|`·줄바꿈으로 나눈 각 명령의 **머리**에서만 찾는다
+ *  (GPT R2: `git log -1 --format='[main %h] git commit'` 이 커밋으로 셌다). 확실히 못 읽는 모양은 세지 않는다.
+ */
+const runsGitCommit = (detail: string): boolean => {
+  const cmd = detail.replace(/^\s*(?:command|cmd)=/, "").replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''");
+  // 값을 다음 토큰으로 받는 git 전역 옵션 — 그 값(예: `-C commit`)을 하위 명령으로 읽지 않는다(GPT R3).
+  const TAKES_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--exec-path"]);
+  return cmd.split(/&&|\|\||[;|\n]/).some((part) => {
+    const t = part.trim().split(/\s+/);
+    if (!/^(?:.*[\\/])?git(?:\.exe)?$/i.test(t[0] ?? "")) return false;
+    let i = 1;
+    while (i < t.length && t[i]!.startsWith("-")) i += TAKES_VALUE.has(t[i]!) ? 2 : 1;
+    return t[i] === "commit";
+  });
+};
+
+export const commitsMade = (detail: string | undefined, text: string | undefined): number => {
+  if (typeof detail !== "string" || typeof text !== "string") return 0;
+  if (!runsGitCommit(detail)) return 0;
+  return (text.match(/^\[[^\]\s]+(?: \(root-commit\))? [0-9a-f]{7,40}\] /gm) ?? []).length;
+};
+
+/**
+ * 요약이 **진척을 부정하는가** — 하네스가 센 산출(쓰기·커밋)이 있는데 요약이 «진행 없음·그대로» 를 말하면 그 요약을 버린다(2026-10-23,
+ *  GPT R1: 사실 줄을 덧붙여도 «실질적 구현 진행 없음, 할 일 0/7 그대로» 가 그대로 나갔다). 요약은 모델 글이라 사실과 부딪히면 하네스가 이긴다.
+ * ★**비율(N/M) 자체는 부정이 아니다**(2026-10-23 재조정). 낡은 할 일은 요약 입력에 안 실리므로(`buildProgressPrompt`) 요약의 비율은 기록
+ *  (신선한 할 일·도구 출력 «3/4 통과»)에서 온 것이고, 버려도 기계 요약이 같은 비율을 다시 싣는다 — 그래서 «3/4 통과» 는 버려지고 «4건 중 3건
+ *  통과» 는 남던 갈림만 생겼다. 버리는 근거는 산출 사실과 **부딪히는 말**(진행 없음·그대로·unchanged·still at)뿐이다.
+ * ★**«그대로»·«unchanged» 는 진척을 가리킬 때만**(2026-10-23 릴리스 검토 P3). 낱말 하나로 버리면 «기존 기능은 그대로 유지하면서 …를 수정했습니다»·
+ *  «The public API is unchanged; …» 같은 정상 설명까지 버렸다. 그래서 **진척 주어**(진행·진척·진전·할 일·비율 / progress·completion·to-do·비율)에
+ *  붙은 것만 센다. ★주어가 진척이면 «그대로 유지·남아» 도 정체다(GPT R1 — «진행률은 0/7 그대로 유지» 를 놓쳤다). 빼는 건 일부러 손대지 않았다는
+ *  «그대로 두/둔» 뿐. ★«상태·status» 는 진척 주어가 아니다(«HTTP 상태는 그대로»·«The HTTP status is unchanged» 는 정상 설명 — 진행 상태는 «진행» 이
+ *  잡는다). «completion» 은 바로 뒤 동사·조동사만 거친다(«has remained» 포함 — GPT R2; «completion report is unchanged» 는 보고 형식 얘기다). 비율은 쉼표 너머를 보지 않는다(«3/4 pass, API
+ *  unchanged»). 남는 한계: 진척 낱말이 우연히 앞에 오면(«진행 표시는 그대로 유지하며 …수정») 여전히 버린다 — 버려도 기계 요약이 나간다.
+ */
+export const summaryDeniesProgress = (text: string): boolean =>
+  /(진행|진척|진전|구현|변화|변경)[^\n.。]{0,12}?(없|않)|(\d+\s*\/\s*\d+|진행|진척|진전|할 일)[^\n.。,;]{0,12}?그대로(?!\s*(?:두|둔))|no (?:real |actual |meaningful |substantive )?progress|(?:hasn't|has not|haven't|have not) (?:made|changed|progressed)|(?:progress|to-?dos?|\d+\s*\/\s*\d+)[^\n.;,]{0,20}?\bunchanged|\bcompletion(?:\s+rate)?\s+(?:(?:is|was|has|had|been|remains|remained|stays|stayed|still)\s+)*unchanged|\bunchanged (?:at|since)\b|still at \d/i.test(text);
+
 /** 아직 끝나지 않은 도구 — 점검 증거의 `inFlight`. */
 export interface InFlightTool {
   tool: string;
@@ -68,16 +127,26 @@ export interface InFlightTool {
  */
 export const PROGRESS_QUIET_MS = 10 * 60_000;
 
-const todoLine = (todos: readonly Todo[] | undefined): string | undefined => {
+/**
+ * 할 일 줄 — ★**그 구간에 갱신되지 않았으면 낡았다고 적는다**(2026-10-23, 운영 인스턴스 실사례). 종전엔 시작 직후 한 번 적힌 «0/7» 이
+ *  세 시간 뒤 알림에도 «지금» 처럼 실려, 커밋이 셋 있었는데 요약이 «할 일 0/7 그대로 · 진행 없음» 이라 했다.
+ * @param stale `{ at, now }` — 마지막 갱신 시각이 이 알림 구간의 시작보다 앞이면 준다.
+ */
+const todoLine = (todos: readonly Todo[] | undefined, stale?: { at: number; now: number }): string | undefined => {
   if (todos === undefined || todos.length === 0) return undefined;
   const done = todos.filter((t) => t.status === "completed").length;
   const now = todos.find((t) => t.status === "in_progress");
-  return translate("srv.job.progress.todos", {
-    done,
-    total: todos.length,
-    now: now !== undefined ? (now.activeForm ?? now.content) : "—",
-  });
+  const params = { done, total: todos.length, now: now !== undefined ? (now.activeForm ?? now.content) : "—" };
+  return stale === undefined
+    ? translate("srv.job.progress.todos", params)
+    : translate("srv.job.progress.todosStale", { ...params, ago: formatDuration(Math.max(0, stale.now - stale.at)) });
 };
+/** 그 구간에 할 일 갱신이 없었나 — `since` = 이 알림 구간의 시작(직전 알림·없으면 잡 시작). 갱신 시각을 모르면 낡았다고 하지 않는다. */
+const staleOf = (todosAt: number | undefined, since: number, now: number): { at: number; now: number } | undefined =>
+  todosAt !== undefined && todosAt < since ? { at: todosAt, now } : undefined;
+/** 산출 사실 줄 — 0이면 없다. */
+const outputsLine = (o: ProgressOutputs | undefined): string | undefined =>
+  o !== undefined && o.writes + o.commits > 0 ? translate("srv.job.progress.outputs", { writes: o.writes, commits: o.commits }) : undefined;
 
 /** 사람이 읽는 행동 한 줄 — `도구 대상`. */
 const actionText = (a: ProgressAction): string => (a.detail !== undefined && a.detail !== "" ? `${a.tool} ${a.detail}` : a.tool);
@@ -85,11 +154,11 @@ const actionText = (a: ProgressAction): string => (a.detail !== undefined && a.d
 /**
  * LLM 없이 만드는 진행 문단 — 요약이 실패하거나 요약기가 없을 때. 기록에 있는 것만 싣는다.
  */
-export const mechanicalProgress = (p: { actions: readonly ProgressAction[]; todos?: readonly Todo[] }): string => {
+export const mechanicalProgress = (p: { actions: readonly ProgressAction[]; todos?: readonly Todo[]; todosStale?: { at: number; now: number } }): string => {
   const recent = p.actions.slice(-3).map(actionText).join(" · ");
   // 행동이 없으면 그 줄을 안 싣는다 — 진행 중인 도구만 있는 알림에 «최근 행동 0건 · 마지막: —» 가 다시 나왔다(2026-10-14 재검토 P1).
   const lines = p.actions.length === 0 ? [] : [translate("srv.job.progress.mechanical", { count: p.actions.length, recent })];
-  const t = todoLine(p.todos);
+  const t = todoLine(p.todos, p.todosStale);
   if (t !== undefined) lines.push(t);
   return lines.join("\n");
 };
@@ -106,14 +175,22 @@ export const buildProgressPrompt = (p: {
   lastActivityAt: number;
   inFlight: readonly InFlightTool[];
   errors: number;
+  /** 직전 알림 이후 성공한 파일 쓰기·커밋(하네스가 센 값). */
+  outputs?: ProgressOutputs;
+  /** 할 일의 마지막 갱신 시각 · 이 구간의 시작 — 그 구간에 갱신이 없으면 할 일 줄에 «마지막 갱신» 을 붙인다. */
+  todosAt?: number;
+  since?: number;
 }): string => {
   const ago = (at: number): string => formatDurationKo(Math.max(0, p.now - at));
   const lines = p.actions.map((a) => `- (${ago(a.at)} 전) ${actionText(a)}${a.error === true ? "  [오류]" : ""}`);
-  const t = todoLine(p.todos);
+  // ★낡은 할 일은 요약 입력에 **안 싣는다**(2026-10-23) — 실으면 «0/7 그대로» 를 지금 상태처럼 쓴다. 사람에겐 기계 요약이 «마지막 갱신» 을 붙여 보인다.
+  const t = p.since !== undefined && staleOf(p.todosAt, p.since, p.now) !== undefined ? undefined : todoLine(p.todos);
+  const out = p.outputs !== undefined && p.outputs.writes + p.outputs.commits > 0 ? p.outputs : undefined;
   return [
     "아래는 백그라운드에서 돌고 있는 작업의 최근 도구 기록이다. 사용자에게 보낼 진행 상황을 2~3줄로 써라.",
     "규칙: 기록에 있는 것만 말한다. 결과·성공을 지어내지 않는다. 앞으로 할 일을 약속하지 않는다. [오류] 가 있으면 숨기지 말고 말한다.",
     "같은 행동이 반복되면 «같은 일을 반복하고 있다» 고, 최근에 활동이 없으면 «한동안 새 활동이 없다» 고 사실대로 말한다. 머리말·인사 없이 본문만.",
+    "진척 여부·완료율·할 일 진행률은 평가하지 않는다 — 그건 하네스가 따로 붙인다. 무엇을 하고 있는지만 말한다.",
     `언어: ${p.language}`,
     "",
     `작업 이름: ${p.label}`,
@@ -121,6 +198,7 @@ export const buildProgressPrompt = (p: {
     `경과: ${formatDurationKo(p.elapsedMs)}`,
     `마지막 활동: ${ago(p.lastActivityAt)} 전`,
     ...(p.errors > 0 ? [`직전 보고 이후 오류로 끝난 도구 호출: ${String(p.errors)}건`] : []),
+    ...(out !== undefined ? [`결과물(직전 보고 이후, 하네스가 센 값): 파일 쓰기 ${String(out.writes)}건 · 커밋 ${String(out.commits)}건`] : []),
     ...(p.inFlight.length > 0 ? [`아직 끝나지 않은 도구: ${p.inFlight.map((f) => `${f.tool}(${ago(f.at)}째)`).join(", ")}`] : []),
     ...(t !== undefined ? [t] : []),
     "최근 기록(오래된 것부터):",
@@ -158,9 +236,17 @@ export const composeProgressNotice = async (p: {
   now: number;
   lastActivityAt: number;
   inFlight: readonly InFlightTool[];
+  /** 직전 알림 이후 성공한 파일 쓰기·커밋 — 종료 이벤트에서 센 값(목록 밖으로 밀린 것도 든다). */
+  outputs?: ProgressOutputs;
+  /** 할 일의 마지막 갱신 시각 · 이 알림 구간의 시작(직전 알림, 없으면 잡 시작). */
+  todosAt?: number;
+  since?: number;
 }): Promise<{ text: string; summarized: boolean } | null> => {
   // 말할 사실이 없으면 보내지 않는다 — 글만 쓰는 잡에 «최근 행동 0건» 빈 알림이 나갔다(2026-10-14 적대 검토 P1).
-  if (p.actions.length === 0 && p.inFlight.length === 0 && p.errors === 0) return null;
+  // ★산출도 말할 사실이다 — 알림 전에 시작해 알림 뒤 끝난 커밋은 이 구간의 시작 행동이 없어 빈 알림 판정에 걸려, 센 값이 버려졌다(GPT R1).
+  const hasOutputs = p.outputs !== undefined && p.outputs.writes + p.outputs.commits > 0;
+  if (p.actions.length === 0 && p.inFlight.length === 0 && p.errors === 0 && !hasOutputs) return null;
+  const todosStale = p.since === undefined ? undefined : staleOf(p.todosAt, p.since, p.now);
   let body: string | undefined;
   if (summarizer !== undefined && p.actions.length > 0) {
     try {
@@ -168,11 +254,15 @@ export const composeProgressNotice = async (p: {
         buildProgressPrompt({
           label: p.name, task: p.task, elapsedMs: p.elapsedMs, actions: p.actions, todos: p.todos, language: p.language,
           now: p.now, lastActivityAt: p.lastActivityAt, inFlight: p.inFlight, errors: p.errors,
+          ...(p.outputs !== undefined ? { outputs: p.outputs } : {}),
+          ...(p.todosAt !== undefined ? { todosAt: p.todosAt } : {}),
+          ...(p.since !== undefined ? { since: p.since } : {}),
         }),
         { jobId: p.jobId },
       );
       const trimmed = out?.trim();
-      if (trimmed !== undefined && trimmed !== "") body = trimmed.slice(0, 600);
+      // 산출이 있는데 진척을 부정하는 요약은 버린다 — 기계 요약(기록에 있는 것만)이 대신 나간다.
+      if (trimmed !== undefined && trimmed !== "" && !(hasOutputs && summaryDeniesProgress(trimmed))) body = trimmed.slice(0, 600);
     } catch {
       body = undefined;
     }
@@ -180,7 +270,7 @@ export const composeProgressNotice = async (p: {
   const summarized = body !== undefined;
   const lines = [
     translate("srv.job.progress.header", { name: p.name, elapsed: formatDuration(p.elapsedMs) }),
-    body ?? mechanicalProgress({ actions: p.actions, todos: p.todos }),
+    body ?? mechanicalProgress({ actions: p.actions, todos: p.todos, ...(todosStale !== undefined ? { todosStale } : {}) }),
   ].filter((l) => l !== "");
   // ★사실 줄은 요약과 별개로 하네스가 붙인다 — 요약은 모델 글이라 정체를 «순조롭다» 로 쓸 수 있다.
   if (p.inFlight.length > 0) {
@@ -192,5 +282,8 @@ export const composeProgressNotice = async (p: {
   }
   // ★분모를 섞지 않는다 — 오류 수는 «직전 알림 이후 전체 호출» 범위, 최근 행동 목록은 40개 표본이다.
   if (p.errors > 0) lines.push(translate("srv.job.progress.errors", { errors: p.errors }));
+  // ★산출도 하네스가 붙인다 — 요약이 «진행 없음» 이라 해도 커밋·파일 쓰기가 있었다는 사실은 남는다(2026-10-23).
+  const o = outputsLine(p.outputs);
+  if (o !== undefined) lines.push(o);
   return { text: lines.join("\n"), summarized };
 };

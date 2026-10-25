@@ -63,6 +63,9 @@
           }
         }
         div.appendChild(head);
+        // 답글 표시 — 사용자 메시지에만(이력은 `data.replyTo`, 낙관 버블도 같은 칸으로 넘긴다). 본문(`.chat-message`) **밖**에 둔다 —
+        //  복사·답글 인용이 본문 글을 읽으므로 안에 넣으면 «↩ …» 가 섞인다.
+        if (!isOut) { const rr = buildReplyRef(entry.data && entry.data.replyTo); if (rr) div.appendChild(rr); }
         const msg = document.createElement("div");
         msg.className = "chat-message";
         setChatBody(msg, entry.text, isOut); // 비서=마크다운, 사용자=평문.
@@ -200,6 +203,56 @@
           wrap.appendChild(cell);
         });
         return wrap;
+      };
+
+      /**
+       * 답글 원문을 **정확히** 고른다 — 행 id(`data-id`) → 완료 턴 id(`data-turn`) → 같은 시각(`data-ts`) 순. 항목 안쪽 말풍선까지 본다
+       *  (실시간 턴 묶음 안의 답 말풍선). 가까운 다른 메시지를 원문으로 치지 않는다(R1).
+       * ★시각은 가장 약한 증거다(R2) — **다른 행 id 를 가진** 노드는 시각이 같아도 원문이 아니고, 시각만 같은 후보가 둘 이상이면
+       *  어느 것인지 모르므로 고르지 않는다(null). 확인된 행 id·턴 id 가 시각보다 먼저다.
+       * `strongOnly` = 행 id·턴 id 일치만(시각 폴백 없음) — 아직 다 안 당긴 범위에서 «찾았다» 를 판정할 때(R3, `jumpToMessageTs`).
+       */
+      const replyTargetPick = (rt) => (items, strongOnly) => {
+        const id = rt && Number.isInteger(rt.id) ? String(rt.id) : null;
+        const turn = rt && typeof rt.turn === "string" && rt.turn !== "" ? rt.turn : null;
+        const ts = rt && typeof rt.ts === "number" && Number.isFinite(rt.ts) ? String(rt.ts) : null;
+        const nodesOf = (node, k) =>
+          [node, ...(node.querySelectorAll ? node.querySelectorAll("[data-" + k + "]") : [])].filter((n) => n.dataset && n.dataset[k] !== undefined);
+        const find = (k, v, ok) => items.filter((it) => it && it.node && nodesOf(it.node, k).some((n) => n.dataset[k] === v && ok(n)));
+        if (id !== null) { const hit = find("id", id, () => true); if (hit.length > 0) return hit[0]; }
+        if (turn !== null) { const hit = find("turn", turn, () => true); if (hit.length > 0) return hit[0]; }
+        if (strongOnly === true) return null;
+        if (ts !== null) {
+          const hit = find("ts", ts, (n) => id === null || n.dataset.id === undefined || n.dataset.id === id);
+          if (hit.length === 1) return hit[0];
+        }
+        return null;
+      };
+      /**
+       * 답글 표시 줄 `↩ 원문 앞부분…` (2026-10-23) — 이력·실시간·낙관 버블 **세 생성 지점이 이 함수 하나**를 쓴다.
+       *  재료는 서버가 만든 `{ text, ts? }`(`core/reply-preview.ts`). 글은 **텍스트로만** 넣는다(마크다운·HTML 해석 없음).
+       *  `ts` 가 있으면 누르면 그 메시지로 옮긴다 — 검색 결과 이동과 같은 길(`jumpToMessageTs`)에 정확 선택(`replyTargetPick`)을 얹어서. 못 찾으면 **말한다**.
+       *  `ts` 가 없으면(원문 위치를 모르는 텔레그램 답글 등) 앞부분만 보인다.
+       */
+      const buildReplyRef = (rt) => {
+        const text = rt && typeof rt.text === "string" ? rt.text.replace(/\s+/g, " ").trim() : "";
+        if (text === "") return null;
+        const ts = rt && typeof rt.ts === "number" && Number.isFinite(rt.ts) && rt.ts > 0 ? rt.ts : null;
+        const el = document.createElement(ts !== null ? "button" : "div");
+        el.className = ts !== null ? "reply-ref reply-ref-jump" : "reply-ref";
+        const mark = document.createElement("span"); mark.className = "rr-mark"; mark.textContent = "↩";
+        const tx = document.createElement("span"); tx.className = "rr-text"; tx.textContent = text;
+        el.appendChild(mark); el.appendChild(tx);
+        el.title = ts !== null ? i18n("reply.ref.jump") : text;
+        if (ts !== null) {
+          el.type = "button";
+          el.addEventListener("click", async (e) => {
+            e.stopPropagation(); // 카드 접기·메뉴와 분리.
+            const r = typeof window.jumpToMessageTs === "function" ? await window.jumpToMessageTs(ts, replyTargetPick(rt)) : "not-found";
+            if (r !== "ok" && r !== "switched") renderLocalChat("info", i18n("reply.ref.notFound"));
+          });
+        }
+        return el;
       };
 
       // 메시지 유닛 → element(+dedup 키 등록). 이미 렌더됐으면 null(SSE/다른 페이지 중복 방지).
@@ -661,15 +714,23 @@
        */
       const JUMP_PAGE = 200;
       const JUMP_MAX_PAGES = 10;
-      window.jumpToMessageTs = async (ts) => {
+      // ★**그 시점까지 먼저 당기고, 그다음 찾는다** (2026-10-23 R1 검토 — 헤드리스 재현). 종전엔 당기기 **전에** 한 번, 페이지마다 한 번
+      //  «60초 안 가장 가까운 것» 을 찾아 거기서 끝냈다 — 대상이 아직 안 그려졌는데 경계 근처에 이미 그려진 다른 메시지가 있으면 그 메시지에
+      //  내려앉고 «도착» 했다. 이미 그려진 범위면(`oldestLoadedTs <= ts`) 아래 고리는 바로 빠지므로 종전과 같다.
+      // `pick` = 정확한 대상 선택(`vtScrollToTs` 주석) — 답글 원문 이동이 준다.
+      window.jumpToMessageTs = async (ts, pick) => {
         if (typeof ts !== "number" || !Number.isFinite(ts)) return "bad-ts";
         const myToken = switchToken;
-        if (window.vtScrollToTs && (await window.vtScrollToTs(ts))) return "ok";
+        // 이미 그 시점보다 과거까지 로드됨. ★정확 선택이 있고 경계가 **같은 시각**이면 아직 덜 왔을 수 있다 — 같은 시각 행은 `(ts, id)` 커서로
+        //  페이지가 갈린다(R2: 원문 #7 이 다음 페이지에 있는데 #8 에서 멈췄다). 그때는 **강한 일치**(행 id·턴 id)가 보일 때까지 더 당긴다 —
+        //  시각 일치로는 멈추지 않는다(R3: 같은 시각의 다른 카드에서 멈췄다). 선택 함수 없이 부르면 종전 `<=` 와 같다.
+        const covered = () =>
+          oldestLoadedTs < ts || (oldestLoadedTs === ts && (typeof pick !== "function" || pick(vtItems, true) !== null));
         for (let i = 0; i < JUMP_MAX_PAGES; i++) {
           // 점프 도중 사용자가 다른 탭으로 갔다 — 그 탭에 이 세션 페이지를 붙이지 않는다.
           if (!sameLoadToken(myToken)) return "switched";
           if (reachedOldest || oldestLoadedTs === null) break;
-          if (oldestLoadedTs <= ts) break; // 이미 그 시점보다 과거까지 로드됨.
+          if (covered()) break;
           let entries = [];
           try {
             const r = await fetch(
@@ -690,9 +751,11 @@
             console.warn("jump history load failed:", err && err.message ? err.message : err);
             break;
           }
-          if (window.vtScrollToTs && (await window.vtScrollToTs(ts))) return "ok";
         }
-        return window.vtScrollToTs && (await window.vtScrollToTs(ts)) ? "ok" : "not-found";
+        // ★끝까지 못 덮었으면(실패·페이지 상한) 시각 폴백으로 확정하지 않는다 — 덜 본 범위에 같은 시각의 진짜 원문이 있을 수 있다(R3).
+        const sure = reachedOldest || oldestLoadedTs === null || covered();
+        const finalPick = typeof pick === "function" && !sure ? (items) => pick(items, true) : pick;
+        return window.vtScrollToTs && (await window.vtScrollToTs(ts, finalPick)) ? "ok" : "not-found";
       };
 
       // SSE 연결 *전에* 과거 이력을 await 로드해 채팅 흐름을 복원한다. 비어있으면 chat-empty

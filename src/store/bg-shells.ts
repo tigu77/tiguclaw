@@ -27,6 +27,8 @@ export interface BgShellRecord {
   exitCode: number | null;
   /** 부팅 reaper 신원검증용 스냅샷(ps lstart+command 또는 spawn 시각 폴백). 미보유=undefined. */
   startedLabel?: string;
+  /** Bash `description` — 재시작 뒤 리퍼 통지에 싣는 이름(2026-10-23). 옛 행·`run:` 셸은 undefined. */
+  description?: string;
 }
 
 interface DbRow {
@@ -40,6 +42,7 @@ interface DbRow {
   finished_at: number | null;
   exit_code: number | null;
   started_label: string | null;
+  description: string | null;
 }
 
 const toRecord = (r: DbRow): BgShellRecord => ({
@@ -57,6 +60,7 @@ const toRecord = (r: DbRow): BgShellRecord => ({
   finishedAt: r.finished_at,
   exitCode: r.exit_code,
   startedLabel: r.started_label ?? undefined,
+  ...(typeof r.description === "string" && r.description !== "" ? { description: r.description } : {}),
 });
 
 /** launchBgShell 등록 시 INSERT(멱등 REPLACE) — status는 항상 'running'으로 시작. */
@@ -68,12 +72,13 @@ export const insertBgShell = (row: {
   cwd: string;
   startedAt: number;
   startedLabel?: string;
+  description?: string;
 }): void => {
   getDb()
     .prepare(
       `INSERT OR REPLACE INTO bg_shells
-         (bash_id, pid, pgid, command, cwd, status, started_at, finished_at, exit_code, started_label)
-       VALUES (@bashId, @pid, @pgid, @command, @cwd, 'running', @startedAt, NULL, NULL, @startedLabel)`,
+         (bash_id, pid, pgid, command, cwd, status, started_at, finished_at, exit_code, started_label, description)
+       VALUES (@bashId, @pid, @pgid, @command, @cwd, 'running', @startedAt, NULL, NULL, @startedLabel, @description)`,
     )
     .run({
       bashId: row.bashId,
@@ -83,6 +88,7 @@ export const insertBgShell = (row: {
       cwd: row.cwd,
       startedAt: row.startedAt,
       startedLabel: row.startedLabel ?? null,
+      description: row.description ?? null,
     });
 };
 
@@ -127,7 +133,7 @@ export const listRunningBgShells = (): BgShellRecord[] =>
   (
     getDb()
       .prepare(
-        `SELECT bash_id, pid, pgid, command, cwd, status, started_at, finished_at, exit_code, started_label
+        `SELECT bash_id, pid, pgid, command, cwd, status, started_at, finished_at, exit_code, started_label, description
            FROM bg_shells WHERE status = 'running' ORDER BY started_at ASC`,
       )
       .all() as DbRow[]

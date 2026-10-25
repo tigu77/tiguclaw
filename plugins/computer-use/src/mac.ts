@@ -316,7 +316,7 @@ export const idleSeconds = async (): Promise<number | null> => {
  * ★**한 글자는 유니코드로 쏜다** — 키코드 표에 없는 글자(한글 등)도 그대로 들어간다.
  *  표는 **단축키를 위해서만** 있다(유니코드 주입은 단축키로 해석되지 않는다).
  */
-const POST_SCRIPT = [
+export const POST_SCRIPT = [
   "ObjC.import('CoreGraphics');",
   "ObjC.import('AppKit');",  // NSPasteboard
   // ★★**세션 탭(1)으로 쏜다 — HID 탭(0)이 아니다** (2026-09-17 실기에서 잡혔다).
@@ -346,6 +346,18 @@ const POST_SCRIPT = [
   "ObjC.import('Foundation');",
   "var OUT = $.NSFileHandle.fileHandleWithStandardOutput;",
   "function emit(o){ OUT.writeData($(JSON.stringify(o) + '\\n').dataUsingEncoding($.NSUTF8StringEncoding)); }",
+  // ★★**기다림은 «최소 s 초» 를 단조시계로 지킨다 — `delay(s)` 한 번에 맡기지 않는다** (2026-10-23).
+  //  launchd 데몬의 자식(개발 인스턴스·서비스 설치본)에선 `delay(s)` 가 **약 8.6배** 늘어났다:
+  //  `delay(0.012)` 실측 103ms · `delay(0.001)` 6.8ms · `delay(0.05)` 197ms · `delay(1)` 1.52초.
+  //  그래서 키 112개 빈 연습이 11초가 돼 자기 시한(`postTimeoutMs`)에 죽었고, 사용자가 준
+  //  `wait` 도 1.5배 길어졌다(쓴 시간이 거짓이 된다). Foundation sleep·QoS·NSActivity 로는 안 풀렸다
+  //  (원인 정책은 미확정 — 타이머 지연 허용 가설).
+  //  ★그래서 기한을 정하고 그때까지 **짧게 자며** 시계를 본다 — `delay(0)` 회전이 아니라 잔다.
+  //   실측(같은 데몬 자식): 12ms 간격 112회 11.6초 → 1.75초(깨움 261회) · `wait` 1초 → 1.001초.
+  //  ★간격은 **최소값**이다(앱이 이벤트를 소화할 틈) — 줄이거나 없애는 게 아니라 늘어나지 않게 한다.
+  "var PI = $.NSProcessInfo.processInfo;",
+  "function pause(s){ var until = PI.systemUptime + s; while (PI.systemUptime < until) { delay(0.001); } }",
+  "var T0 = PI.systemUptime;",
   // ★**전면 창 — 자식 «안» 에서 본다**(계약 1). 실측 0.10ms/회. 따로 띄우면 64ms 라
   //  «매 step 마다» 가 아예 불가능해진다.
   //  ★★맥은 **앱 단위**다(`localizedName:pid`). 같은 앱의 **다른 창**으로 옮겨간 것은 못
@@ -431,13 +443,13 @@ const POST_SCRIPT = [
   "  pb.setStringForType($(text), $.NSPasteboardTypeString);",
   // ★되돌리기는 finally — 쏘다 던져도 사용자 클립보드에 비서가 친 글(비밀번호일 수 있다)을 남기지 않는다.
   "  try {",
-  "    delay(0.05);",
+  "    pause(0.05);",
   "    var d = $.CGEventCreateKeyboardEvent($(), 9, true);",   // v
   "    $.CGEventSetFlags(d, 0x100000 | flags());",
-  "    post(d); delay(0.03);",
+  "    post(d); pause(0.03);",
   "    var u = $.CGEventCreateKeyboardEvent($(), 9, false);",
   "    $.CGEventSetFlags(u, 0x100000 | flags());",
-  "    post(u); delay(0.25);",
+  "    post(u); pause(0.25);",
   "  } finally {",
   "    pb.clearContents;",
   "    if (prevStr !== null) pb.setStringForType($(prevStr), $.NSPasteboardTypeString);",
@@ -446,9 +458,9 @@ const POST_SCRIPT = [
   "var BTN = {left:{d:1,u:2,b:0,drag:6}, right:{d:3,u:4,b:1,drag:7}, middle:{d:25,u:26,b:2,drag:27}};",
   "for (var i = 0; i < evs.length; i++) {",
   "  var e = evs[i];",
-  // ★입력이 아닌 원소는 **`delay(0.012)` 를 안 태운다** — 64개 열이면 0.77초가 그냥 샌다.
+  // ★입력이 아닌 원소는 **간격(`pause(0.012)`)을 안 태운다** — 64개 열이면 0.77초가 그냥 샌다.
   "  if (e.t === 'mark') { CUR = e.i; emit({step: e.i}); continue; }",
-  "  if (e.t === 'wait') { delay(e.ms / 1000); continue; }",
+  "  if (e.t === 'wait') { pause(e.ms / 1000); continue; }",
   "  if (e.t === 'guard') {",
   "    var f = frontNow();",
   // ★**모르면 멈춘다** — «같다» 로 읽으면 가드가 조용히 사라진다(§15-27 계약 1).
@@ -489,10 +501,10 @@ const POST_SCRIPT = [
   //  `guard` 를 맥에만 넣었고, Windows 에서는 가드가 없는 채로 돌 뻔했다. 조용한 스킵이
   //  «한쪽만 고친 수정» 을 **안 보이게** 만드는 기제다.
   "  else { throw new Error('알 수 없는 입력 원소: ' + String(e.t)); }",
-  "  delay(0.012);",  // 앱이 이벤트를 소화할 틈 — 너무 빠르면 흘린다
+  "  pause(0.012);",  // 앱이 이벤트를 소화할 **최소** 틈 — 너무 빠르면 흘린다
   "}",
   "if (STOP) { emit(STOP); }",
-  "JSON.stringify({items: evs.length, fired: FIRED, stopped: STOP})",
+  "JSON.stringify({items: evs.length, fired: FIRED, stopped: STOP, ms: Math.round((PI.systemUptime - T0) * 1000)})",
 ].join("\n");
 
 export const post = async (
@@ -539,7 +551,7 @@ export const post = async (
  * ★`win.ts` 의 `DRY_EVENTS` 와 **같은 목록**이다. 두 플랫폼이 같은 계약을 진다면 그것을
  *  재는 표본도 같아야 한다 — 표본이 갈리면 «양쪽 다 초록» 이 서로 다른 뜻이 된다.
  */
-const DRY_EVENTS: readonly LowEvent[] = [
+export const DRY_EVENTS: readonly LowEvent[] = [
   { t: "mousemove", x: 0, y: 0 },
   { t: "mousedown", x: 0, y: 0, button: "left", count: 1 },
   { t: "mousedrag", x: 1, y: 1, button: "left" },
@@ -575,29 +587,44 @@ const DRY_EVENTS: readonly LowEvent[] = [
  *  못 잡는다(§15-15 의 교훈).
  */
 export const selfCheck = async (): Promise<
-  | { ok: true; dryFired: number; dryStopped: boolean }
+  | { ok: true; dryFired: number; dryStopped: boolean; dryMs: number }
   | { ok: false; where: "dry"; detail: string }
 > => {
-  const dry = await jxa(POST_SCRIPT, {
-    TIGUCLAW_DRY: "1",
-    TIGUCLAW_EVENTS: JSON.stringify(DRY_EVENTS),
-  });
+  const dry = await dryPost(DRY_EVENTS);
   if (!dry.ok) return { ok: false, where: "dry", detail: dry.detail };
   // ★빈 연습이면 **한 번도 안 쏴야** 한다 — 그 숫자가 이름의 뜻을 지킨다.
+  // ★**가드가 실제로 멈췄나** — 일부러 어긋나는 `front` 를 줬으므로 반드시 멈춰야 한다.
+  return { ok: true, dryFired: dry.fired, dryStopped: dry.stopped, dryMs: dry.ms };
+};
+
+/**
+ * **빈 연습 한 번** — 제품 스크립트(`POST_SCRIPT`)에 이벤트를 흘리고 최종 줄을 읽는다(입력·클립보드 0).
+ * ★`ms` = 루프가 실제로 쓴 시간(자식 안 단조시계 · 기동 제외). 최소 간격·`wait` 길이·시한 예산을 회귀가 이 값으로 잰다.
+ *  못 읽으면 -1(판정 불가로 읽게 한다).
+ */
+export const dryPost = async (
+  events: readonly LowEvent[],
+): Promise<{ ok: true; fired: number; stopped: boolean; ms: number } | { ok: false; detail: string }> => {
+  const dry = await jxa(POST_SCRIPT, {
+    TIGUCLAW_DRY: "1",
+    TIGUCLAW_EVENTS: JSON.stringify(events),
+  });
+  if (!dry.ok) return { ok: false, detail: dry.detail };
   try {
     // ★최종 산출은 **마지막 줄**이다 — 앞은 진행(`mark`)과 멈춤(`stopped`)이다.
     const v = JSON.parse(dry.out.trim().split("\n").pop() ?? "") as {
       fired?: number;
       stopped?: unknown;
+      ms?: number;
     };
     return {
       ok: true,
-      dryFired: typeof v.fired === "number" ? v.fired : -1,
-      // ★**가드가 실제로 멈췄나** — 일부러 어긋나는 `front` 를 줬으므로 반드시 멈춰야 한다.
-      dryStopped: v.stopped !== null && v.stopped !== undefined,
+      fired: typeof v.fired === "number" ? v.fired : -1,
+      stopped: v.stopped !== null && v.stopped !== undefined,
+      ms: typeof v.ms === "number" ? v.ms : -1,
     };
   } catch {
-    return { ok: true, dryFired: -1, dryStopped: false };
+    return { ok: true, fired: -1, stopped: false, ms: -1 };
   }
 };
 

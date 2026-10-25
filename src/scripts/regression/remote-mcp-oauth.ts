@@ -9,9 +9,10 @@
  *  ④ 만료 임박 → 동시 요청 5개에 갱신 **1회**(회전형 refresh 경합 없음) · 갱신 거절(invalid_grant) → «로그인 필요» · 일시 실패(서버 오류) → 안 만료된 토큰 유지
  *  ⑤ 서버 제거 → 로컬 기록 삭제 · 제거 뒤 늦게 온 완료는 «stale» 로 버림(인증이 되살아나지 않는다)
  *  ⑥ code·state·verifier·access·refresh 토큰이 로그에 안 남는다
+ *  ⑬ 발급 서버 표식(`issuer`) — 갱신 뒤에도 유지 · 옛 기록은 갱신 후 묶임 · 다른 인가 서버에 묶인 것은 refresh 를 안 보낸다
  * 등급: **실행**(격리 홈 · 같은 프로세스의 실제 HTTP 서버들). 실서비스 로그인은 하지 않는다.
  */
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 import { startFakeOAuthMcp } from "./_fake-oauth-server.js";
@@ -258,6 +259,57 @@ export const check: RegressionCheck = {
       as.noRefresh = false;
       out.push(assert("⑫ refresh 없는 공급자 — 옛 토큰의 늦은 401 은 무시 · 지금 토큰의 401 은 «로그인 필요»(갱신할 길이 없다)",
         n1 !== n2 && statusOldLate === "authorized" && statusCurrent === "login-needed", JSON.stringify({ statusOldLate, statusCurrent })));
+
+      // ⑬ 발급 서버 묶음(`issuer`) — SDK 1.32 가 로그인 때 토큰·클라이언트에 찍는 표식을 **우리 갱신**도 지키고 쓴다(GPT 검토 10-25).
+      //  ★없을 때: 첫 자체 갱신이 토큰 표식을 지웠고(전체 교체 저장), 다른 인가 서버에 찍힌 refresh 토큰도 그대로 보낼 수 있었다.
+      const recOf = (k: { name: string; url: string }): { f: string; r: Record<string, any> } | undefined => {
+        const dir = path.join(getPaths().home, "mcp-oauth");
+        for (const n of existsSync(dir) ? readdirSync(dir) : []) {
+          if (!n.endsWith(".json")) continue;
+          const f = path.join(dir, n);
+          const r = JSON.parse(readFileSync(f, "utf8")) as Record<string, any>;
+          if (r.name === k.name && r.url === k.url) return { f, r };
+        }
+        return undefined;
+      };
+      const sameAs = (v: unknown): boolean => typeof v === "string" && new URL(v).href === new URL(origin).href;
+      as.expiresIn = 60; // 읽을 때마다 갱신하게
+      await loginFresh(key);
+      const stamped = recOf(key)?.r;
+      const rs0 = as.refreshCalls;
+      const g1 = await oauth.mcpAccessToken(key);
+      const g2 = await oauth.mcpAccessToken(key);
+      const afterTwo = recOf(key)?.r;
+      out.push(assert("★⑬ 로그인이 찍은 발급 서버 표식이 갱신 두 번 뒤에도 토큰·클라이언트에 남는다",
+        sameAs(stamped?.tokens?.issuer) && sameAs(stamped?.client?.issuer) && as.refreshCalls - rs0 === 2 && g1 !== g2 && g2 !== undefined &&
+          sameAs(afterTwo?.tokens?.issuer) && sameAs(afterTwo?.client?.issuer),
+        JSON.stringify({ login: [stamped?.tokens?.issuer, stamped?.client?.issuer], refreshes: as.refreshCalls - rs0, after: [afterTwo?.tokens?.issuer ?? null, afterTwo?.client?.issuer ?? null] })));
+      // 옛 판이 저장한 기록(표식 없음) — 그대로 갱신되고, 받아 준 이 서버로 묶인다.
+      const legacy = recOf(key)!;
+      delete legacy.r.tokens.issuer;
+      delete legacy.r.client.issuer;
+      writeFileSync(legacy.f, JSON.stringify(legacy.r));
+      const rs1 = as.refreshCalls;
+      const gLegacy = await oauth.mcpAccessToken(key);
+      const afterLegacy = recOf(key)?.r;
+      out.push(assert("★⑬ 표식 없는 옛 기록 — 갱신이 되고(로그인 필요 아님) 그 뒤 토큰·클라이언트가 이 서버로 묶인다",
+        gLegacy !== undefined && as.access.has(gLegacy) && as.refreshCalls - rs1 === 1 && sameAs(afterLegacy?.tokens?.issuer) && sameAs(afterLegacy?.client?.issuer) &&
+          (await oauth.mcpOAuthStatus(key)) === "authorized",
+        JSON.stringify({ token: gLegacy !== undefined, refreshes: as.refreshCalls - rs1, after: [afterLegacy?.tokens?.issuer ?? null, afterLegacy?.client?.issuer ?? null] })));
+      // 다른 인가 서버에 찍힌 토큰 / 클라이언트 — 이 서버에 refresh 를 **보내지 않고** «로그인 필요».
+      const elsewhereRuns: Array<{ which: string; posted: number; status: string; token: boolean }> = [];
+      for (const which of ["tokens", "client"] as const) {
+        await loginFresh(key);
+        const e = recOf(key)!;
+        e.r[which].issuer = "http://127.0.0.1:1/";
+        writeFileSync(e.f, JSON.stringify(e.r));
+        const rs2 = as.refreshCalls;
+        const t = await oauth.mcpAccessToken(key);
+        elsewhereRuns.push({ which, posted: as.refreshCalls - rs2, status: await oauth.mcpOAuthStatus(key), token: t !== undefined });
+      }
+      as.expiresIn = 3600;
+      out.push(assert("★⑬ 다른 인가 서버에 묶인 토큰·클라이언트 — refresh 요청 0건 · «로그인 필요»",
+        elsewhereRuns.length === 2 && elsewhereRuns.every((x) => x.posted === 0 && x.status === "login-needed" && !x.token), JSON.stringify(elsewhereRuns)));
 
       // ⑤b 로그인 **준비 중**(인가 서버 탐색을 기다리는 동안 — 기록도 시도도 아직 없다) 삭제 → 늦게 돌아온 준비가 아무것도 남기지 않는다(아스트라 10-19).
       //  대기점은 가짜 서버가 탐색 응답을 붙잡는 것(고정 sleep 아님).

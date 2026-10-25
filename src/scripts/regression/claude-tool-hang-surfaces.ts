@@ -114,8 +114,12 @@ export const check: RegressionCheck = {
         `도구멈춤=${sweepHang} · 429=${sweepLimit}`,
       ),
       assert(
-        "★메인 턴 오류 안내가 오류 이름을 받는다(두 호출 다) · turn_error 가 이름을 싣는다 — 문자열만 보면 도구 이름으로 «한도» 안내",
-        formatCalls.length >= 2 && formatCalls.every((c) => /detail, errName\)/.test(c)) &&
+        "★메인 턴 오류 안내가 오류 이름을 받는다(인입 응답·egress 둘 다 — 한 글을 같이 쓰면 그 한 호출) · turn_error 가 이름을 싣는다 — 문자열만 보면 도구 이름으로 «한도» 안내",
+        formatCalls.length >= 1 && formatCalls.every((c) => /detail, errName\)/.test(c)) &&
+          // 2026-10-23 한도 자동 이어가기 — 두 출구가 같은 글(`failText`)을 쓴다. 그러면 호출은 하나고, 둘 다 그 글을 받아야 한다.
+          (formatCalls.length >= 2 ||
+            (/const failText = withResumeNote\(formatRegionAError\(detail, errName\)/.test(idx) &&
+              /replyCommand\(msg, failText,/.test(idx) && /fanOutEgress\(egressTargets, failText,/.test(idx))) &&
           /const isLimit = failureKind\(d, errorName\) === "limit"/.test(idx) && /errorName: e\.name/.test(runtimeSrc),
         `호출 ${formatCalls.join(" · ")}`,
       ),

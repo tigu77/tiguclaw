@@ -87,7 +87,10 @@ export const check: RegressionCheck = {
     const entry = await readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../index.ts"), "utf8");
     // 완료 턴이 결과를 못 전한 채 끝나는 진입점 응답 셋 — 오류·작업 카드 중지(🛑)·훅 차단 — 이 전부 실패 표식을 단다
     const failReplies = [
-      entry.match(/replyCommand\(msg, formatRegionAError\(detail(?:, errName)?\)[^;]*;/)?.[0] ?? "(오류 응답 없음)",
+      // 오류 안내는 한도 재개 줄을 붙인 한 글(`failText`)로 나간다(2026-10-23) — 그 글이 `formatRegionAError` 에서 온 것도 같이 본다.
+      (/const failText = withResumeNote\(formatRegionAError\(detail, errName\)/.test(entry)
+        ? entry.match(/replyCommand\(msg, failText[^;]*;/)?.[0]
+        : entry.match(/replyCommand\(msg, formatRegionAError\(detail(?:, errName)?\)[^;]*;/)?.[0]) ?? "(오류 응답 없음)",
       entry.match(/replyCommand\(msg, STOPPED_NOTICE[^;]*;/)?.[0] ?? "(🛑 응답 없음)",
       entry.match(/replyCommand\(msg, translate\("srv\.turn\.hookBlocked"[^;]*;/)?.[0] ?? "(훅 차단 응답 없음)",
     ];

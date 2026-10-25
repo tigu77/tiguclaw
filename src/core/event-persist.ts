@@ -14,6 +14,7 @@ import { insertEvent, pruneEvents } from "../store/events.js";
 import { pruneInternalThreads } from "../store/sessions.js";
 import { bindChannelMessages, recordChatMessage } from "../store/chat-log.js";
 import { isChatVisibleEvent } from "./chat-visible-events.js";
+import { replyPreviewFromPayload } from "./reply-preview.js";
 import { redactSecrets } from "./outbound-sanitize.js";
 import type { ChatAttachmentMeta, ChatLogEntry } from "../store/chat-log.js";
 
@@ -334,6 +335,8 @@ const startChatLogPersistence = (bus: EventBus): void => {
       //  사본 `tg:<id>`). 대화는 한 번 일어난 일이다 — 배달이 는다고 대화가 늘지 않는다.
       //  `ephemeral` 과 같은 자리에서 같은 방식으로 판정한다(적재를 막는 곳은 여기 하나).
       if (payload.copyOfRecorded === true) return;
+      // 답글 표시(2026-10-23, `core/reply-preview.ts`) — 사용자 메시지에만. 새로고침·다른 기기에서도 카드 위 «↩ 원문» 이 뜬다.
+      const replyTo = event.type === "channel.message.in" ? replyPreviewFromPayload(payload.replyTo) : undefined;
       const chatId = recordChatMessage({
         ts: event.ts, // ★event.ts 그대로 — 클라이언트 dedup 키.
         threadKey,
@@ -344,6 +347,7 @@ const startChatLogPersistence = (bus: EventBus): void => {
         // 시스템 통지 표식 승계 — 새로고침 후에도 비서 발화와 구분되게. 라이브만 구분되면
         // 같은 데이터가 경로마다 달라진다(모델 표시에서 겪은 함정과 동형).
         ...(payload.notice === true ? { notice: true } : {}),
+        ...(replyTo !== undefined ? { data: { replyTo } } : {}),
         // 실제 응답 모델 — 있으면 함께 영속(새로고침 후 표시). 없으면 키 생략(거짓값 금지).
         ...(typeof payload.model === "string" && payload.model !== ""
           ? { model: payload.model }

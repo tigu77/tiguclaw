@@ -22,19 +22,36 @@
  */
 import { assert, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
 
+type LowEvent = { t: string; ms?: number };
+
 interface MacModule {
   selfCheck: () => Promise<
-    | { ok: true; dryFired: number; dryStopped: boolean }
+    | { ok: true; dryFired: number; dryStopped: boolean; dryMs: number }
     | { ok: false; where: "dry"; detail: string }
   >;
+  DRY_EVENTS: readonly LowEvent[];
+  POST_SCRIPT: string;
+  dryPost: (events: readonly LowEvent[]) => Promise<{ ok: true; fired: number; stopped: boolean; ms: number } | { ok: false; detail: string }>;
 }
+
+interface ControlModule {
+  postTimeoutMs: (events: readonly LowEvent[], baseMs: number) => number;
+}
+
+/** 실행부 간격 — `POST_SCRIPT` 의 `pause(0.012)` 와 같은 값이어야 한다(이 값이 «최소» 다). */
+const GAP_MS = 12;
+/** `wait` 표본 길이와 허용 초과분 — `pause` 는 1ms 씩 자며 기한을 보므로 초과는 한 번 깨는 몫(데몬 자식 실측 ~7ms)이다. */
+const WAIT_SAMPLE_MS = 300;
+const WAIT_SLACK_MS = 60;
 
 export const check: RegressionCheck = {
   name: "computer-use-mac-executor-runs",
   guards:
     "mac 조작 실행부(JXA)가 아예 안 도는데 순수부 회귀가 전부 초록이던 것 · " +
     "«쏜 횟수»(fired)가 루프 밖에서 «받은 항목 수» 를 세어, 한 번도 안 쐈는데 같은 수를 내고 " +
-    "그 수가 사용자 로그에 「N번 쏨」으로 적히던 것",
+    "그 수가 사용자 로그에 「N번 쏨」으로 적히던 것 · " +
+    "launchd 데몬 자식에서 `delay()` 가 ~8.6배 늘어나 빈 연습이 자기 시한에 죽던 것(2026-10-23) · " +
+    "입력 사이 최소 간격이 사라지는 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
 
@@ -49,8 +66,11 @@ export const check: RegressionCheck = {
       return out;
     }
 
-    const { selfCheck } = await loadPluginModule<MacModule>(
+    const { selfCheck, DRY_EVENTS, POST_SCRIPT, dryPost } = await loadPluginModule<MacModule>(
       "../../../plugins/computer-use/src/mac.ts",
+    );
+    const { postTimeoutMs } = await loadPluginModule<ControlModule>(
+      "../../../plugins/computer-use/src/control.ts",
     );
     const r = await selfCheck();
 
@@ -87,6 +107,56 @@ export const check: RegressionCheck = {
         "★★빈 연습의 **어긋난 가드에서 실제로 멈춘다** — 「넣었다」와 「돈다」는 다르다",
         r.ok && r.dryStopped,
         r.ok ? `dryStopped=${String(r.dryStopped)}` : "실행부 실패로 판정 불가",
+      ),
+    );
+
+    // ★★**입력 사이 최소 간격이 지켜진다** (2026-10-23). 간격을 «늘어나지 않게» 고치다가
+    //  **없애 버리면** 시한은 초록인데 앱이 이벤트를 흘린다 — 그래서 아래(상한)와 짝으로 둔다.
+    //  입력 원소(mark·wait·guard 제외)마다 최소 12ms 이므로 루프는 그 합 이상이어야 한다.
+    const inputs = DRY_EVENTS.filter((e) => e.t !== "mark" && e.t !== "wait" && e.t !== "guard").length;
+    const floorMs = inputs * GAP_MS;
+    out.push(
+      assert(
+        "★★빈 연습 루프가 **입력마다 최소 간격**을 지킨다 — 간격을 없애면 앱이 이벤트를 흘린다",
+        r.ok && r.dryMs >= floorMs,
+        r.ok ? `dryMs=${String(r.dryMs)} · 하한 ${String(floorMs)}ms (입력 ${String(inputs)} × ${String(GAP_MS)}ms)` : "실행부 실패로 판정 불가",
+      ),
+    );
+
+    // ★★**쓴 시간이 시한 예산 안이다** — `postTimeoutMs` 가 원소마다 주는 몫(기동분 base 제외)이
+    //  실제 루프를 덮어야 진짜 열이 중간에 죽지 않는다(죽으면 붙여넣기 도중 클립보드를 못 되돌린다).
+    //  ★데몬 자식에서 `delay(0.012)` 가 103ms 로 늘던 판은 여기서(그리고 위 시한에서) 빨강이다.
+    const budgetMs = postTimeoutMs(DRY_EVENTS, 0);
+    out.push(
+      assert(
+        "★★빈 연습 루프가 **`postTimeoutMs` 의 원소 몫 안에서** 끝난다 — 대기가 늘어나면 시한이 거짓이 된다",
+        r.ok && r.dryMs >= 0 && r.dryMs <= budgetMs,
+        r.ok ? `dryMs=${String(r.dryMs)} · 예산 ${String(budgetMs)}ms(base 제외)` : "실행부 실패로 판정 불가",
+      ),
+    );
+
+    // ★★**사용자 `wait` 는 준 시간만큼 — 늘지도 줄지도 않는다** (GPT R1-A1). 위 루프 단언은 1ms 표본이라 `wait` 를
+    //  옛 `delay` 로 되돌려도 전체 허용 범위에 묻혔다. 입력 없는 `wait` 하나를 따로 잰다(데몬 자식에서 옛 `delay(0.3)` ≈ 0.45초).
+    const w = await dryPost([{ t: "wait", ms: WAIT_SAMPLE_MS }]);
+    const w0 = await dryPost([{ t: "wait", ms: 0 }]);
+    out.push(
+      assert(
+        `★★\`wait ${String(WAIT_SAMPLE_MS)}ms\` 가 실제로 ${String(WAIT_SAMPLE_MS)}~${String(WAIT_SAMPLE_MS + WAIT_SLACK_MS)}ms · \`wait 0\` 은 즉시 — 쓴 시간이 거짓이 되지 않는다`,
+        w.ok && w.ms >= WAIT_SAMPLE_MS && w.ms <= WAIT_SAMPLE_MS + WAIT_SLACK_MS && w0.ok && w0.ms >= 0 && w0.ms <= WAIT_SLACK_MS,
+        { wait: w.ok ? w.ms : w.detail.slice(0, 80), wait0: w0.ok ? w0.ms : w0.detail.slice(0, 80) },
+      ),
+    );
+
+    // ★★**대기는 `pause` 한 곳으로만** (GPT R1-A1). 붙여넣기 대기 셋은 빈 연습이 클립보드를 안 건드리려고 **그 앞에서
+    //  돌아오므로** 시간으로 잴 수 없다 — 그래서 스크립트 원문에서 `delay(` 가 `pause` 의 몸통 한 곳뿐인지 본다.
+    //  하나라도 `delay(s)` 로 되돌아가면 데몬 자식에서 그 대기가 다시 늘어난다.
+    const delays = POST_SCRIPT.match(/\bdelay\(/g)?.length ?? 0;
+    const inPause = /function pause\(s\)\{[^\n]*\bdelay\(0\.001\)/.test(POST_SCRIPT);
+    out.push(
+      assert(
+        "★★실행 스크립트의 대기는 전부 `pause`(단조시계 기한) — 날 `delay(` 는 `pause` 몸통 한 곳뿐이다",
+        delays === 1 && inPause,
+        { delays, inPause },
       ),
     );
 

@@ -381,7 +381,7 @@ export const check: RegressionCheck = {
       ),
     );
     const idx = stripComments(readSourceSync("src/index.ts"));
-    const wired = /enqueueThreadTurn\(\s*msg\.threadKey,\s*\(\) => \{\s*const skip = msg\.beforeTurn\?\.\(\) \?\? null;\s*if \(skip !== null\) \{[\s\S]{0,300}?return Promise\.resolve\(\);\s*\}\s*return handler\(msg\);/.test(idx);
+    const wired = /enqueueThreadTurn\(\s*msg\.threadKey,\s*\(\) => \{\s*const skip = msg\.beforeTurn\?\.\(\) \?\? null;\s*if \(skip !== null\) \{[\s\S]{0,300}?return Promise\.resolve\(\);\s*\}\s*(?:if \(msg\.triggerRun\?\.kind === "schedule"\) \{[\s\S]{0,400}?claimLimitResume\([\s\S]{0,200}?return handler\(msg\)\.finally\([\s\S]{0,120}?\}\s*)?return handler\(msg\);/.test(idx);
     const router = stripComments(readSourceSync("src/core/router.ts"));
     out.push(
       assert(

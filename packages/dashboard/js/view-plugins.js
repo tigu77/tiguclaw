@@ -209,12 +209,34 @@ function formatUsageLine(usage, now) {
         return fact.value.split(",").map((v) => v.trim()).filter((v) => v !== "");
       };
 
+      /** 메뉴의 플러그인 수 — 쓰는 자리는 여기 하나(목록 화면·부팅 갱신이 같이 부른다). */
+      const setPluginNavCount = (n) => {
+        const nav = document.getElementById("nav-plugin-count");
+        if (nav) nav.textContent = String(n);
+      };
+
+      /**
+       * 부팅·주기 갱신용 — 목록만 받아 메뉴 수를 맞춘다(다른 메뉴처럼 화면을 안 열어도).
+       * ★2026-10-22 사용자 «메뉴에서 플러그인 개수가 0» — 08-28 메뉴를 만들 때 HTML 에 0 을 박고 채우는 코드를 안 달아 늘 0 이었다.
+       */
+      const fetchPluginCount = async () => {
+        try {
+          const r = await fetch("/api/plugins", { cache: "no-store" });
+          if (!r.ok) return;
+          const d = await r.json();
+          if (Array.isArray(d.items)) setPluginNavCount(d.items.length);
+        } catch {
+          /* 다음 주기에 다시 */
+        }
+      };
+
       const fetchPlugins = async () => {
         try {
           const r = await fetch("/api/plugins", { cache: "no-store" });
           if (!r.ok) throw new Error("HTTP " + r.status);
           const d = await r.json();
           pluginsState.items = Array.isArray(d.items) ? d.items : [];
+          setPluginNavCount(pluginsState.items.length);
           pluginsState.meta = d;
           // 인증 상태는 별 라우트다(레지스트리가 정본) — 같은 새로고침에 함께 읽는다.
           await fetchAuthProviders();

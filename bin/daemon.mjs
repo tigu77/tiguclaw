@@ -1203,9 +1203,27 @@ export const psErrorText = (r) => {
   if (!/^#< CLIXML/.test(raw)) return (raw || "no output").slice(0, 300);
   // 오류 본문만 — PowerShell 은 부속 줄(«At line:…»·소스 인용·`+ CategoryInfo`)을 같은 `Error` 조각으로 잇따라 낸다. 그건 진단에 군더더기다(computer-use 와 같은 모양 판정).
   const NOISE = /^(\+|위치 줄:|At line:|At [A-Za-z]:\\)/;
-  const parts = [...raw.matchAll(/<S S="Error">([^<]*)<\/S>/g)].map((m) => (m[1] ?? "").replace(/_x000D__x000A_/g, " ").trim()).filter((x) => x !== "" && !NOISE.test(x));
-  // ★첫 조각만 — 긴 부속 줄은 여러 조각으로 잘려 와서(실기: «…dTask], CimException») 앞머리 거르기로는 꼬리가 남는다. 첫 조각이 오류 문장이다.
-  return ((parts[0] ?? "").replace(/\s+/g, " ").trim() || "no error text").slice(0, 300);
+  // ★조각이 아니라 **줄**로 본다(2026-10-23 Windows 검증 기기 실측 — 레드팀 10-22 P-2). 긴 오류 문장은 콘솔 폭에서 접혀 여러 조각으로 오고,
+  //  **접힌 자리에도 줄 끝(`_x000D__x000A_`)이 붙는다**(폭 118: «…tiguclaw-p2-xxx…» / «…xxx' beca» / «use it does not exist.»). 종전엔
+  //  첫 조각만 써서 문장이 중간에서 잘렸다. 줄 끝 표식만으로는 접힘과 진짜 줄바꿈이 구분되지 않는다 — 접힌 줄은 **폭을 꽉 채운다**.
+  const lines = [...raw.matchAll(/<S S="Error">([^<]*)<\/S>/g)].map((m) => m[1] ?? "").join("").split("_x000D__x000A_");
+  // 폭 = 가장 긴 줄 — 단 **그 길이에 닿은 줄이 둘 이상**일 때만 접힘의 증거로 친다(GPT R1). 하나뿐이면 그냥 가장 긴 줄이라, 거기서
+  //  붙이면 진짜 줄바꿈으로 나뉜 두 문장이 공백 없이 붙는다. 증거가 없으면 공백으로 잇는다(글자를 잃지도 붙이지도 않는 쪽).
+  const width = Math.max(0, ...lines.map((l) => l.length));
+  const wrapped = width > 0 && lines.filter((l) => l.length === width).length >= 2;
+  // 오류 문장 = 부속 줄·빈 줄로 끝나는 첫 덩어리. 문장 **앞**의 부속 줄은 건너뛴다(종전 필터와 같다 — GPT R1: 거기서 멈추면 «no error text»).
+  /** @type {string[]} */
+  const msg = [];
+  for (const l of lines) {
+    const t = l.trim();
+    if (NOISE.test(t) || t === "") {
+      if (msg.length > 0) break;
+      continue;
+    }
+    msg.push(l);
+  }
+  const text = msg.map((l, i) => (i < msg.length - 1 && wrapped && l.length === width ? l : l + " ")).join("");
+  return (text.replace(/\s+/g, " ").trim() || "no error text").slice(0, 300);
 };
 
 /**

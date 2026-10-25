@@ -497,6 +497,8 @@
         head.appendChild(tsEl); head.appendChild(tyEl);
         { const chb = buildChannelBadge(payload.channel); if (chb) head.appendChild(chb); } // 텔레그램 등 원격 채널 경유 표시.
         div.appendChild(head);
+        // 답글 표시 — 이력 버블과 같은 빌더(`buildReplyRef`, history-render.js). 사용자 메시지에만.
+        if (!isOut) { const rr = buildReplyRef(payload.replyTo); if (rr) div.appendChild(rr); }
         const msg = document.createElement("div");
         msg.className = "chat-message";
         // 봇 출력(비서)만 마크다운, 사용자 입력(나)은 평문 유지.

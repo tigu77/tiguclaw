@@ -48,10 +48,15 @@ export interface RunnerDeps {
     triggerRun?: TriggerRun;
     /** 만든 대화 — 있으면 파사드가 그 대화의 줄에 넣는다(`runTriggerInSession`, 감시와 같은 문). null·없음 = 전용 세션. */
     originThreadKey?: string | null;
+    /**
+     * 실행기가 발화마다 만든 칸 — 파사드가 차례에서 **실제로 쓴 행의 `runAt`** 을 적는다(2026-10-23 §3.9-b). 정산하는 모든 자리가 이 칸을 읽는다
+     *  (반환값에 실으면 핸들러가 던질 때 사라진다). 비면 발화 시점 값.
+     */
+    slot?: { firedRunAt: number | null; turnRunAt?: number | null };
   }) => Promise<{
     text: string;
-    /** 만든 대화 실행이 차례에서 건너뛰었다 — 지워짐·꺼짐·처리 자리 바뀜·대화 없음. */
-    skipped?: "deleted" | "disabled" | "moved" | "origin-gone" | "not-run";
+    /** 만든 대화 실행이 차례에서 건너뛰었다 — 지워짐·꺼짐·처리 자리 바뀜·대화 없음·예정 시각이 미래로 바뀜. */
+    skipped?: "deleted" | "disabled" | "moved" | "origin-gone" | "not-run" | "rescheduled";
     /** 만든 대화에서 처리됐다 — 답은 이미 목적지로 나갔다(여기서 다시 보내지 않는다). */
     inOrigin?: { replied: number; failed?: string; dest?: { channel: string; target: string | null } };
   }>;
@@ -215,6 +220,16 @@ export const runScheduleFiring = async (
     deps.recordFiring(schedule.id, r);
     settle = r.ok ? "done" : "failed";
   };
+  // ★타이머가 **실행 도중 바뀌었나** (2026-10-23 한도 자동 이어가기 §3.9-b) — 지워졌거나 `runAt` 이 이 실행이 쓴 값과 다르면 그 행은 바꾼 쪽 몫이다.
+  //  기준값 = 차례에서 실제로 쓴 `runAt`(파사드가 칸에 적는다), 턴이 안 돌았으면 발화 시점 값. 실행기는 «이게 무슨 타이머인가» 를 모른다.
+  const firedRunAt = schedule.runAt;
+  const slot: { firedRunAt: number | null; turnRunAt?: number | null } = { firedRunAt };
+  const changedDuringRun = (): boolean => {
+    if (!once) return false;
+    const cur = getSchedule(schedule.id);
+    if (cur === undefined) return true;
+    return cur.runAt !== (slot.turnRunAt !== undefined ? slot.turnRunAt : firedRunAt);
+  };
   const triggerRun: TriggerRun = {
     kind: "schedule",
     id: schedule.id,
@@ -309,6 +324,7 @@ export const runScheduleFiring = async (
           triggerRun,
           notifyDest: { channel: fresh.destChannel, target: fresh.destTarget },
           originThreadKey: origin,
+          slot,
         });
         if (out.skipped === "moved") {
           refire = true;
@@ -327,8 +343,18 @@ export const runScheduleFiring = async (
           console.log(`${tag} 차례가 오기 전에 끝남(데몬 종료 중) — 기록하지 않음`);
           return;
         }
+        if (out.skipped === "rescheduled") {
+          // 기록하지 않는다(«안 돎» — 지워짐·꺼짐과 같은 갈래). 새 시각에 다시 거는 것은 아래 finally(«실행 도중 바뀜»)가 한다.
+          console.log(`${tag} 줄에서 기다리는 사이 예정 시각이 뒤로 밀림 — 이번 차례엔 돌지 않고 새 시각에 다시 건다`);
+          return;
+        }
         if (out.skipped !== undefined) {
           console.log(`${tag} 줄에서 기다리는 사이 ${out.skipped === "deleted" ? "지워짐" : "꺼짐"} — 발화하지 않음`);
+          return;
+        }
+        // 실행 도중 바뀐 타이머는 정산하지 않는다 — 실패 기록·`scheduler.error`·성공 기록·`scheduler.fired` 전부(§3.9-b). 다시 걸기는 finally.
+        if (changedDuringRun()) {
+          console.log(`${tag} 실행 도중 타이머가 바뀌거나 지워짐 — 결과를 정산하지 않는다(바꾼 쪽 몫)`);
           return;
         }
         // 기록·로그의 목적지 = 그 실행이 **실제로 쓴** 값(차례에서 확정) — 넣기 전 스냅샷(`fresh`)은 그새 바뀌었을 수 있다(아스트라 재검토 10-20).
@@ -344,6 +370,10 @@ export const runScheduleFiring = async (
         record({ ok: true });
         bus.publish({ type: "scheduler.fired", ts: Date.now(), payload: { scheduleId: schedule.id, destChannel: used.channel, destTarget: used.target, ok: true } });
       } catch (e) {
+        if (changedDuringRun()) {
+          console.log(`${tag} 실행 도중 타이머가 바뀌거나 지워짐 — 결과를 정산하지 않는다(바꾼 쪽 몫)`);
+          return;
+        }
         if (isUserCancelled(e)) {
           console.log(`${tag} 사용자 중지(/stop) — 실패로 기록하지 않음`);
           settle = "done"; // 멈춘 타이머는 끝난 것이다(남기면 다음 부팅에 다시 운다)
@@ -540,6 +570,13 @@ export const runScheduleFiring = async (
           deps.recordFiring(schedule.id, { ok: false, error: translate("srv.schedule.movedAgain") });
           updateSchedule(schedule.id, { enabled: false });
         } catch { /* 다음 부팅에 다시 본다 */ }
+      }
+    } else if (once && changedDuringRun()) {
+      // ★실행 도중 바뀐 타이머 — 지우지도 끄지도 않는다. 남아 있고 켜져 있으면 **다시 건다**: 실행 중에 새 시각이 와 «합침» 으로 건너뛰어졌어도 잃지 않는다.
+      const cur = getSchedule(schedule.id);
+      console.log(`[scheduler:${schedule.id}] 타이머 '${schedule.label}' 실행 도중 ${cur === undefined ? "지워짐" : "바뀜"} — 정산하지 않음${cur !== undefined && cur.enabled ? " · 새 시각에 다시 건다" : ""}`);
+      if (cur !== undefined && cur.enabled) {
+        try { bus.publish({ type: "scheduler.toggle", ts: Date.now(), payload: { id: schedule.id, action: "enable" } }); } catch { /* 다음 부팅에 다시 걸린다 */ }
       }
     } else if (once && settle !== null) {
       // 지우기·끄기 실패가 실행 결과를 바꾸지 않는다.

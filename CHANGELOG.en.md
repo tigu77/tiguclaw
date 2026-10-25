@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Background shells show their description.** The description the assistant gives when it starts a shell appears in the Background work widget and at the top of the shell card in the background panel. The command, folder, time and output are shown as before.
+- **Managers and agents in the Background work widget show their elapsed time.**
+- **Messages you send as a reply show the start of the original message above the card.** Clicking it jumps to the original. This applies to replies sent from this version on.
+- **The details above the message box fold away in one tap.** Tap ▾ at the right of the tag row to hide tags, projects, the reply target, attachments and background indicators; small badges for what is hidden stay on the top line. Tap them or ▴ to unfold. It starts unfolded, and your choice is remembered in that browser. On phones the working indicator sits on the top line above the message box.
+- **Work stopped by a subscription usage limit can resume automatically in the same conversation once the limit resets (off by default).** Turn it on or off in the dashboard under **Settings → Resume after usage limits** (the same value as `"limitResume": { "enabled": true }` in `settings.json`). Pick-ups already scheduled still run after you turn it off. The stop message says when it will resume, and you can cancel it with `/stop` or from the background panel.
+
+### Changed
+
+- **The Background work widget groups items by conversation by default.** You can switch to grouping by type from the widget menu, and your choice is remembered.
+- **Clicking a widget item scrolls the background panel to the top of that card.** The card is not expanded or collapsed, and later updates no longer pull the scroll position away.
+- **Background job progress updates now include the number of file writes and commits since the last update.**
+- **The reply line now sits right above the message box.** Background and shell indicators share one row above it.
+
+### Fixed
+
+- **The plugin count in the dashboard menu always showed 0.**
+- **A manager's completion report did not reach the conversation that started it when another manager was waiting for it.**
+- **A manager that the assistant started while handling a completion report could not send files to the dashboard conversation.**
+- **Elapsed time on finished job and shell cards kept growing.** It now stops at the time they finished.
+- **Finished manager and agent cards kept showing the last tool they had been running.**
+- **The Background work widget said nothing was running while its lists were still loading.**
+- **On phones, the last message could slip under the message box when the area above the box grew while you were following the bottom of the chat.**
+- **Progress updates summarized a job as making no progress when it actually had.**
+- **A profile with only one model still said it would switch to another model automatically when that model hit its limit.**
+- **`/stop` sent while a `UserPromptSubmit` hook was running replied that nothing was running and did not stop the turn.**
+- **Re-running `tiguclaw init` on an existing home said "Models = auto" even though it had not touched the model settings.**
+- **On macOS, when the daemon runs as a service, the pauses between screen-control inputs and `wait` took longer than requested.**
+- **On Windows, non-English text such as Korean was garbled in shell output.** Console programs such as `ping` and `dir` and cmd error output now display correctly.
+- **On Windows, PowerShell error messages were cut off mid-sentence.**
+
 ## [0.75.0] - 2026-10-22
 
 ### Added

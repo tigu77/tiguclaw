@@ -87,14 +87,38 @@
         killable: !!(p && p.killable === false) ? false : true,
       });
 
+      /**
+       * 서버가 준 **사실만** 패치에 싣는다 (2026-10-23) — 숫자 시작·끝 시각, 비지 않은 설명(Bash `description`).
+       *  ★없는 값이 이미 받은 값을 지우지 않는다: 같은 셸의 통지가 설명·시각을 실은 것과 안 실은 것(리퍼 stale·`run:`·옛 페이로드)으로
+       *   섞여 오는데, `Object.assign` 에 그냥 얹으면 뒤에 온 빈 값이 지웠다. 시작 시각을 안 실으면 빈 화면에 종료 통지 하나로 생긴
+       *   카드가 **받은 시각**을 시작으로 써 `끝 − 시작` 이 음수(→ 0s)가 됐다(GPT 설계 검토 10-23).
+       */
+      const shellFactPatch = (p) => {
+        const out = {};
+        if (typeof p.startedAt === "number") out.startedAt = p.startedAt;
+        if (typeof p.finishedAt === "number") out.endedAt = p.finishedAt;
+        if (typeof p.description === "string" && p.description !== "") out.description = p.description;
+        return out;
+      };
+      /** 끝났는데 끝 시각을 모르면(옛 페이로드·리퍼 stale) **처음 끝난 걸 본 때**로 멈춘다 — 잡 카드와 같은 규칙. 뒤에 온 서버 값은 `shellFactPatch` 가 덮는다. */
+      const settleShellEnd = (e) => {
+        if (e && e.status !== "running" && typeof e.endedAt !== "number") e.endedAt = Date.now();
+      };
+      /** 셸 카드 경과 — 끝났으면 끝 시각까지(«완료 시간 고정», 10-23 — 종전엔 다시 그릴 때마다 자랐다). */
+      const shellElapsedMs = (e, now) => {
+        const end = e.status !== "running" && typeof e.endedAt === "number" ? e.endedAt : now;
+        return end - (e.startedAt || end);
+      };
+
       const handleShellStarted = (p, ts) => {
         if (!p || !p.shellId) return;
         const own = normalizeShellOwner(p);
         const e = upsertShellEntry(p.shellId, {
           command: p.command || "", cwd: p.cwd || "", status: "running",
-          startedAt: p.startedAt || ts || Date.now(), threadKey: p.threadKey || "", exitCode: null,
+          threadKey: p.threadKey || "", exitCode: null,
           ownerTk: typeof p.ownerThreadKey === "string" ? p.ownerThreadKey : "", // 서버 환원 원 세션.
           owner: own.owner, killable: own.killable,
+          ...shellFactPatch(p),
         });
         capShellRegistry();
         if (!e.visible) {
@@ -122,7 +146,9 @@
           exitCode: p.exitCode != null ? p.exitCode : null, threadKey: p.threadKey || "",
           ownerTk: typeof p.ownerThreadKey === "string" ? p.ownerThreadKey : "", // 서버 환원 원 세션.
           owner: own.owner, killable: own.killable,
+          ...shellFactPatch(p),
         });
+        settleShellEnd(e);
         e.visible = true; // 이미 결론난 상태라 더 이상 깜빡임 리스크 없음(ADR §5 취지).
         e.killRequested = false;
         stopShellTailPoll(p.shellId); // 폴링 중이면 다음 tick 에 status 재확인해 멈추지만, 즉시도 정지.
@@ -243,6 +269,14 @@
         if (typeof entry.flashUntil === "number" && entry.flashUntil > Date.now()) card.classList.add("bg-flash");
         card.dataset.shellId = entry.shellId;
         const top = document.createElement("div"); top.className = "agent-card-top";
+        // ★설명(Bash `description`)이 있을 때만 맨 윗줄 첫 칸에 이름 (2026-10-23) — 나머지 줄(명령·폴더·경과·종료 코드·꼬리·토글·Kill)은
+        //  그대로다(사용자: «기존 표시는 그대로 두고 라벨만 보완»). 없으면 지금 카드와 DOM 이 같다.
+        if (typeof entry.description === "string" && entry.description !== "") {
+          const label = document.createElement("span"); label.className = "shell-card-label";
+          label.textContent = entry.description;
+          label.title = entry.description;
+          top.appendChild(label);
+        }
         const kind = document.createElement("span"); kind.className = "agent-card-kind";
         kind.textContent = i18n("shell.badge");
         top.appendChild(kind);
@@ -290,7 +324,7 @@
         //  죽는다**(콘솔에 실제로 2건 찍혔다). 정의 전이면 빈 값으로 두고, 다음 갱신 틱이
         //  채운다(`shellElapsedEls` 에 등록되므로 1초 뒤 정상 표시).
         el.textContent =
-          typeof fmtElapsed === "function" ? fmtElapsed(now - (entry.startedAt || now)) : "";
+          typeof fmtElapsed === "function" ? fmtElapsed(shellElapsedMs(entry, now)) : "";
         if (entry.status === "running") shellElapsedEls.set(entry.shellId, el);
         meta.appendChild(el);
         if (entry.status !== "running" && entry.exitCode != null) {
@@ -344,6 +378,38 @@
         return card;
       };
 
+      /**
+       * **읽던 자리를 옮겨 붙인다** (2026-10-23, docs/decisions/2026-10-23-background-panel-ux.md ④-(2) R1).
+       *  셸 목록은 통째로 다시 그려(`innerHTML = ""`) 브라우저 스크롤 앵커가 사라진다 — 보던 카드 **위의** 셸이 끝나 «실행 중» 에서
+       *  빠지자 `scrollTop` 은 그대로라 보던 카드가 188px 밀렸다(헤드리스). 잡 목록은 노드를 두고 클래스로만 숨겨 브라우저가 지킨다.
+       *  그래서: 비우기 전에 칸 윗변에 걸쳤거나 그 아래 있는 카드들의 (id, 칸 기준 위치)를 순서대로 적고, 다시 그린 뒤 **아직 그려진 첫 카드**의
+       *  위치 변화만큼 `scrollTop` 을 고친다. 이동 직후에만이 아니라 늘 — «읽던 자리» 는 이동했든 손으로 내렸든 같은 질문이다.
+       *  맨 위(`scrollTop` 0)·안 보이는 칸(닫힌 패널 — 높이 0)에선 아무것도 안 한다(결과가 지금과 같다).
+       */
+      const shellReadingAnchor = (grid) => {
+        if (!(grid.scrollTop > 0) || typeof grid.getBoundingClientRect !== "function") return null;
+        const top = grid.getBoundingClientRect().top;
+        const out = [];
+        for (const c of grid.querySelectorAll(".shell-card")) {
+          const r = c.getBoundingClientRect();
+          if (r.bottom > top && r.height > 0) out.push({ id: c.dataset.shellId, at: r.top - top });
+        }
+        return out.length ? out : null;
+      };
+      const keepShellReadingAnchor = (grid, anchor) => {
+        if (!anchor) return;
+        const now = new Map();
+        for (const c of grid.querySelectorAll(".shell-card")) now.set(c.dataset.shellId, c);
+        const top = grid.getBoundingClientRect().top;
+        for (const a of anchor) {
+          const c = now.get(a.id);
+          if (!c) continue;
+          const moved = c.getBoundingClientRect().top - top - a.at;
+          if (moved !== 0) grid.scrollTop += moved;
+          return;
+        }
+      };
+
       // 렌더 타깃 — 옛 사이드바 페이지(#shells-grid, currentView==="shells")에서 백그라운드 드로어
       // 셸 섹션(#bg-shells-list, ADR §5 Phase 3b-2)으로 이식. 드로어는 항상 DOM 에 존재(열림/닫힘은
       // CSS body.bg-open)이라 currentView 게이트가 불필요 — jobCards 와 동형으로 상시 라이브 갱신.
@@ -351,6 +417,7 @@
         const grid = document.getElementById("bg-shells-list");
         const empty = document.getElementById("bg-shells-empty");
         if (!grid) return;
+        const anchor = shellReadingAnchor(grid);
         grid.innerHTML = "";
         shellElapsedEls.clear();
         shellOutputEls.clear();
@@ -384,6 +451,7 @@
           shown += 1;
           grid.appendChild(buildShellCard(e, now));
         }
+        keepShellReadingAnchor(grid, anchor);
         const rc = document.getElementById("bg-shells-count-running");
         const ac = document.getElementById("bg-shells-count-all"); // id 유지·의미=완료(종료) 수.
         if (rc) rc.textContent = String(running);
@@ -398,14 +466,20 @@
       //  디바운스 안 끝난 단명 셸은 패널에도 없다) — 거르는 건 받는 쪽이다. 같은 값이면 안 낸다(렌더는 잦다).
       const shellsRes = window.resourceStore.owned("bg-shells");
       let shellsSig = "";
+      // ★첫 조회(`/api/shells`)가 오기 전의 빈 레지스트리는 «셸 없음» 이 아니라 «아직 모름» 이다 (2026-10-23 적대 검토 B-P3) —
+      //  렌더마다 내면 범위 전환 같은 재그리기가 빈 목록을 내 위젯이 «없음» 이 됐다(타이머는 조회 뒤에만 낸다). 받은 셸이 있으면 그대로 낸다.
+      let shellsSeeded = false;
       const publishShells = () => {
         const list = [...shellRegistry.values()]
           .filter((e) => e.visible)
           .map((e) => ({
             shellId: e.shellId, command: e.command, status: e.status, startedAt: e.startedAt,
+            // 위젯 행 이름 — 있을 때만(없으면 위젯이 지금처럼 명령을 보인다).
+            ...(typeof e.description === "string" && e.description !== "" ? { description: e.description } : {}),
             // 소속 = 카드와 같은 규칙(서버 환원값 → 잡 좌표면 원 세션으로 환원 → 모르면 «미상»). 잡 좌표를 그대로 대화로 쓰지 않는다(적대 검토 10-21).
             ownerThreadKey: e.ownerTk || (typeof shellOwnerSession === "function" ? shellOwnerSession(e.threadKey) : ""),
           }));
+        if (!shellsSeeded && list.length === 0) return;
         const sig = JSON.stringify(list);
         if (sig === shellsSig) return;
         shellsSig = sig;
@@ -446,14 +520,17 @@
       const fetchShellsSeed = () => {
         fetch("/api/shells").then((r) => r.json()).then((d) => {
           if (!d || !Array.isArray(d.shells)) return;
+          shellsSeeded = true;
           for (const s of d.shells) {
             if (!s || !s.shellId) continue;
-            upsertShellEntry(s.shellId, {
+            const se = upsertShellEntry(s.shellId, {
               command: s.command || "", cwd: s.cwd || "", status: normalizeSeedStatus(s.status),
-              startedAt: s.startedAt || Date.now(), threadKey: s.threadKey || "",
+              threadKey: s.threadKey || "",
               ownerTk: typeof s.ownerThreadKey === "string" ? s.ownerThreadKey : "", // 서버 환원 원 세션.
               exitCode: s.exitCode != null ? s.exitCode : null,
+              ...shellFactPatch(s),
             }, { visible: true });
+            settleShellEnd(se);
           }
           capShellRegistry();
           updateShellsBadge();
@@ -494,7 +571,7 @@
             if (!e) return;
             e.flashUntil = Date.now() + 900;
             setTimeout(scheduleShellsRender, 950); // 강조를 걷는 다시 그리기
-            if (!e.expanded) e.expanded = true;
+            // ★펼치지 않는다(사용자 10-23 — 위젯을 누르면 카드 **맨 위**를 보이고, 펼침은 사용자가 그 자리에서). 접힘·펼침은 지금 그대로.
             renderShellsView();
           },
         });

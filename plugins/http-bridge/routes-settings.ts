@@ -1,5 +1,5 @@
 /**
- * **설정 라우트** — 읽고 쓰는 열둘. 전부 `settings.json` 을 만진다.
+ * **설정 라우트** — 읽고 쓰는 열여섯. 전부 `settings.json` 을 만진다.
  *
  * ★`index.ts` 의 `handleRequest` 에서 떼어냈다 (2026-08-30, R3). 324줄이고 **한 관심사**다 —
  *  모델 프로파일·테마·언어·제안·egress·모듈 on/off.
@@ -17,7 +17,7 @@ import { writeJson } from "../../src/core/net/write-json.js";
 import { readSuggestionSettings } from "../../src/core/next-message-suggestion.js";
 import { collectInventory, isCoreModule, isSelfReferentialModule } from "../../src/core/plugins/inventory.js";
 import { collectModules } from "../../src/core/plugins/providers.js";
-import { setDefaultProfile, readEgressChannels, setEgressChannels, setModuleDisabled, setSuggestionEnabled, setMemoryIndexCapBytes, isMemoryIndexCapValue, readMemoryIndexCapBytes, MEMORY_INDEX_CAP_MIN, MEMORY_INDEX_CAP_MAX } from "../../src/core/settings.js";
+import { setDefaultProfile, readEgressChannels, setEgressChannels, setModuleDisabled, setSuggestionEnabled, setMemoryIndexCapBytes, isMemoryIndexCapValue, readMemoryIndexCapBytes, MEMORY_INDEX_CAP_MIN, MEMORY_INDEX_CAP_MAX, loadLimitResumeEnabled, setLimitResumeEnabled } from "../../src/core/settings.js";
 import { MEMORY_INDEX_CAP_BYTES } from "../../src/core/prompt-assembly.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { SESSION_STORAGE_CHANNEL, clearSessionModelProfile, setSessionModelProfile } from "../../src/store/sessions.js";
@@ -163,6 +163,41 @@ export const handleGetMemoryCap = async (ctx: RouteCtx): Promise<void> => {
     const m = e instanceof Error ? e.message : String(e);
     writeJson(res, 500, { error: m });
   }
+  return;
+};
+
+/**
+ * `/set-limit-resume` — 한도 자동 이어가기 on/off. `handleSetSuggestion` 과 동형이되 **쓴 뒤 다시 읽은 유효값**을 돌려준다 —
+ *  쓰기는 홈 파일이고 읽기는 레이어 병합이라, 프로젝트 레이어가 덮고 있으면 요청값과 다르다(화면은 실제로 적용되는 값을 그린다).
+ */
+export const handleSetLimitResume = async (ctx: RouteCtx): Promise<void> => {
+  const { req, res } = ctx;
+  let body: Record<string, unknown>;
+  try {
+    body = await readJsonBody(req);
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, bodyErrorStatus(e), { error: `invalid body: ${m}` });
+    return;
+  }
+  if (typeof body.enabled !== "boolean") {
+    writeJson(res, 400, { error: "enabled(boolean) required" });
+    return;
+  }
+  try {
+    setLimitResumeEnabled(body.enabled);
+    writeJson(res, 200, { ok: true, enabled: loadLimitResumeEnabled() });
+  } catch (e) {
+    const m = e instanceof Error ? e.message : String(e);
+    writeJson(res, 500, { error: m });
+  }
+  return;
+};
+
+/** `/limit-resume` — 현재 유효값(설정 화면 줄이 그린다). 기본값·판정은 코어 `loadLimitResumeEnabled` 한 곳. */
+export const handleGetLimitResume = async (ctx: RouteCtx): Promise<void> => {
+  const { res } = ctx;
+  writeJson(res, 200, { enabled: loadLimitResumeEnabled() });
   return;
 };
 

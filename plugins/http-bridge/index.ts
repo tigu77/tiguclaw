@@ -90,7 +90,7 @@ import {
 } from "./http-body.js";
 import {
   handleSetDefaultProfile, handleSetProfileColor, handleSetSuggestion, handleSetLocale,
-  handleSetMemoryCap, handleGetMemoryCap,
+  handleSetMemoryCap, handleGetMemoryCap, handleSetLimitResume, handleGetLimitResume,
   handleSetTheme, handleSetEgress, handleGetEgress, handleGetSuggestion,
   handleSetSessionProfile, handleSetModuleEnabled, handleGetModelProfiles,
   handleGetProviders,
@@ -470,6 +470,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write" // 설정 파일을 쓰므로 write. (위 set-session-profile 누락 전례 참조)
               : pathname === "/set-memory-cap" && method === "POST"
                 ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
+              : pathname === "/set-limit-resume" && method === "POST"
+                ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
               : pathname === "/set-locale" && method === "POST"
                 ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
               : pathname === "/set-theme" && method === "POST"
@@ -723,6 +725,17 @@ class HttpBridge implements Channel, Observer {
     // /memory-cap — 현재 값 + 허용 범위. 설정 화면 슬라이더가 이걸로 그린다.
     if (pathname === "/memory-cap" && method === "GET") {
       await handleGetMemoryCap(this.routeCtx(req, res, url));
+      return;
+    }
+
+    // /set-limit-resume — 한도 자동 이어가기 on/off. write 게이트(위 role 표). body { enabled: boolean }.
+    // settings.json 의 limitResume.enabled 한 키만 쓰고, 다시 읽은 유효값을 돌려준다. /limit-resume — 현재 유효값(read).
+    if (pathname === "/set-limit-resume" && method === "POST") {
+      await handleSetLimitResume(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/limit-resume" && method === "GET") {
+      await handleGetLimitResume(this.routeCtx(req, res, url));
       return;
     }
 

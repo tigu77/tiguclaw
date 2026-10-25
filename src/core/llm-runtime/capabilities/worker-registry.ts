@@ -65,6 +65,7 @@ import {
   publishSteerAttempt,
   takeUndeliveredChildResults,
   spawnNotifyDest,
+  turnReachOf,
   parentJobIdOf,
   failureOutcome,
   type WorkerOutcome,
@@ -164,7 +165,8 @@ export const runWorkerJob = (
   //  정의가 그것이다(types.ts). 종전엔 매니저 입력에 안 실려, 매니저가 띄운 서브가 좌표를 못 물려받았다 —
   //  매니저가 먼저 끝나면 서브 보고가 `scheduler` 로 떨어져 미배달되거나(실측) 세션의 «마지막 텔레그램
   //  방»(그룹일 수 있다)으로 갔다. 턴 밖 통지(쿨다운 알림)도 같은 좌표를 쓴다. 첫 턴·거두기 턴 공용.
-  const reach = job.notifyDest !== undefined ? { notifyDest: job.notifyDest } : {};
+  //  규칙은 합성 턴(완료 재주입·점검)과 한 곳 — `turnReachOf`.
+  const reach = turnReachOf(job);
 
   // lazy import — capabilities → llm-runtime/index circular 회피 (spawn_agent 동형).
   void (async () => {
@@ -252,6 +254,9 @@ export const runWorkerJob = (
       // 거두기 실패의 오류 이름 — 원인 분류는 이름이 먼저다. 문자열만 넘기면 보고서 본문에 «rate limit» 한 마디만
       //  있어도 시간 종료가 «사용량 한도» 로 읽힌다(outcome.error 에는 보고서 전문이 실린다).
       let harvestFailureName: string | undefined;
+      // 거두기 실패가 한도였으면 런타임이 실은 재개 시각 — 공용 변환(`failureOutcome`)이 읽는 그 칸을 그대로 옮긴다(2026-10-23 한도 자동 이어가기,
+      //  GPT 검토: 이 catch 만 문자열·이름으로 줄여 거두기 턴의 한도에선 재개가 안 걸렸다).
+      let harvestResumeAtMs: number | undefined;
 
       // ─── ★소환자는 **거두고** 끝난다 (ADR 2026-08-19, 사용자 확정 §b) ──────────────
       //  "소환해놓고 끝날 수는 없지. 당장은 안 기다리더라도 결과를 받고 마무리해야지."
@@ -443,6 +448,8 @@ export const runWorkerJob = (
             if (steers.length > 0) steerCh?.restore(steers);
             harvestFailure = e instanceof Error ? e.message : String(e);
             if (e instanceof Error) harvestFailureName = e.name;
+            const caught = failureOutcome(e);
+            if ("error" in caught && caught.resumeAtMs !== undefined) harvestResumeAtMs = caught.resumeAtMs;
             break;
           }
           harvestTexts.push(out.text);
@@ -468,6 +475,7 @@ export const runWorkerJob = (
             : {
                 error: `${harvestFailure}\n\n${harvestFailureNote(harvestFailure)}\n${report}`,
                 ...(harvestFailureName !== undefined ? { errorName: harvestFailureName } : {}),
+                ...(harvestResumeAtMs !== undefined ? { resumeAtMs: harvestResumeAtMs } : {}),
               };
       }
     } catch (e) {

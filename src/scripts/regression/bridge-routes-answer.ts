@@ -33,6 +33,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { scrubDiag, scrubText } from "./_probe-helpers.js";
 
 const CHILD = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -42,12 +43,26 @@ const CHILD = path.resolve(
 interface Probe {
   boot?: boolean;
   why?: string;
-  rows?: Array<{ path: string; status: number }>;
-  /** `?jobId=` 단건 갈래가 살아 있나 — 1=목록으로 안 떨어짐, 0=떨어짐, -1=요청 실패. */
-  taskOne?: { got: number; want: number };
+  /** `ms` = 그 요청 하나의 경과(요청 시한 5초와 비교할 값) · `err` = 상태 0 의 사유(예외 종류·원인 코드·데몬 상태). */
+  rows?: Array<{
+    path: string; status: number; ms?: number;
+    err?: { kind: string; code?: string; msg: string; daemon: string };
+  }>;
+  /** `?jobId=` 단건 갈래가 살아 있나 — 1=목록으로 안 떨어짐, 0=떨어짐, -1=요청 실패(`err` = 사유). */
+  taskOne?: { got: number; want: number; err?: string };
   alive?: boolean;
+  /** 데몬이 정리 전에 스스로 끝났을 때의 코드·시그널·시각(데몬 기동부터 ms). */
+  exit?: { code: number | null; signal: string | null; atMs: number };
+  /** 자식 안에서 잰 데몬 기동~정리 직전 — 검사 전체 시간이지 요청별 시간이 아니다. */
+  totalMs?: number;
   tail?: string;
 }
+
+/** 상태 0 한 줄 — 무엇이(경로) 몇 ms 만에 어떤 예외로, 그때 데몬은 어땠나. */
+const deadLine = (r: NonNullable<Probe["rows"]>[number]): string =>
+  r.err === undefined
+    ? r.path
+    : `${r.path}[${r.err.kind}${r.err.code !== undefined ? `/${r.err.code}` : ""} ${String(r.ms)}ms · ${r.err.msg} · daemon ${r.err.daemon}]`;
 
 export const check: RegressionCheck = {
   name: "bridge-routes-answer",
@@ -57,7 +72,10 @@ export const check: RegressionCheck = {
     const out: Assertion[] = [];
     const home = mkdtempSync(path.join(tmpdir(), "br-routes-"));
     let got: Probe = {};
+    // ★자식이 JSON 을 못 냈을 때(90초 시한·크래시) 부모가 실을 사유 — 종료 상태·경과·자식 stderr 의 실패 줄.
+    let spawnDiag = "";
     try {
+      const started = Date.now();
       const r = spawnSync(process.execPath, ["--import", "tsx", CHILD], {
         encoding: "utf8",
         timeout: 90_000,
@@ -67,6 +85,22 @@ export const check: RegressionCheck = {
         got = JSON.parse((r.stdout ?? "").trim().split("\n").pop() ?? "{}") as Probe;
       } catch {
         got = {};
+      }
+      if (got.boot === undefined) {
+        const safe = scrubText(r.stderr ?? "", [home, path.resolve(path.dirname(CHILD), "../../..")]); // 자르기 전에 가린다(임시 홈·레포 경로)
+        const lines = safe.split(/\r?\n/);
+        const errLines = lines.filter((l) => l.startsWith("[bridge-routes] "));
+        // 크래시면 스택 꼬리보다 **오류 제목 줄**이 원인이다(끝에서 자르면 제목이 잘려 나간다).
+        //  Node 는 `TypeError [ERR_X]: 메시지` 꼴로 낸다 — 그 줄을 먼저, 없으면 오류 이름·코드가 든 첫 줄.
+        const title =
+          lines.find((l) => /^\s*[A-Za-z]*(?:Error|Exception)(?: \[[A-Z_]+\])?:/.test(l)) ??
+          lines.find((l) => /\b[A-Z]\w*Error\b|\bERR_[A-Z_]+|\bE[A-Z]{3,}\b/.test(l));
+        spawnDiag =
+          `자식 status=${String(r.status)} signal=${String(r.signal)} error=${String((r.error as NodeJS.ErrnoException | undefined)?.code)} ` +
+          `${String(Date.now() - started)}ms(시한 90,000) · ` +
+          (errLines.length > 0
+            ? errLines.slice(-3).map((l) => l.slice(0, 300)).join(" | ")
+            : `stderr: ${scrubDiag(title ?? safe.slice(-400), [], 200)}`);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -78,7 +112,9 @@ export const check: RegressionCheck = {
       assert(
         "★/worker-jobs?jobId= 가 단건으로 답한다(목록으로 떨어지면 P-4 가 재발한다)",
         got.taskOne?.got === 1,
-        got.taskOne === undefined ? "미측정(부팅 실패)" : `got=${got.taskOne.got}`,
+        got.taskOne === undefined
+          ? "미측정(부팅 실패)"
+          : `got=${got.taskOne.got}${got.taskOne.err !== undefined ? ` · ${got.taskOne.err}` : ""}`,
       ),
     );
 
@@ -87,7 +123,9 @@ export const check: RegressionCheck = {
       assert(
         "프로브 데몬이 떴다(안 뜨면 아래 판정은 무의미하다)",
         got.boot === true,
-        got.why ?? `★프로브 무응답 · ${got.tail ?? ""}`,
+        got.why === undefined
+          ? `★프로브 무응답 · ${spawnDiag}`
+          : `${got.why}${got.exit !== undefined ? ` · 데몬 종료 code=${String(got.exit.code)} signal=${String(got.exit.signal)} ${String(got.exit.atMs)}ms` : ""}`,
       ),
     );
     if (got.boot !== true) return out;
@@ -102,13 +140,20 @@ export const check: RegressionCheck = {
 
     // ★`0` 은 **연결이 끊겼다**는 뜻 — 이 사고의 지문이다. 4xx 는 정상(인자 부족 등).
     const dead = rows.filter((r) => r.status === 0);
+    // 성공해도 요청별 최장 시간을 남긴다 — 요청 시한(5초)에 얼마나 가까웠는지와 검사 전체 시간을 구분해 비교한다.
+    const top = rows.reduce<(typeof rows)[number] | undefined>((a, r) => (a === undefined || (r.ms ?? 0) > (a.ms ?? 0) ? r : a), undefined);
+    const slowest =
+      top?.ms === undefined ? "" : ` · 최장 ${top.path} ${String(top.ms)}ms(요청 시한 5,000) · 자식 전체 ${String(got.totalMs)}ms`;
+    // ★러너는 **실패한 단언만** 출력한다 — 통과했을 때의 요청 시간도 로그에 남도록 한 줄 직접 낸다.
+    //  줄 맨 앞에 ✅/🔴 를 두지 않는다(`regression-diff.mjs` 는 그 줄만 검사 이름으로 센다).
+    if (slowest !== "") console.log(`     · bridge-routes-answer 요청 ${String(rows.length)}개${slowest}`);
     out.push(
       assert(
         "★★모든 라우트가 **응답한다** — 상태 코드 0(연결 끊김)이 하나도 없다. 0 이 나오면 핸들러가 던졌거나 헤더를 두 번 썼다는 뜻이고, 그건 데몬을 죽인다",
         dead.length === 0,
         dead.length === 0
-          ? `${String(rows.length)}개 전부 응답(2xx ${String(rows.filter((r) => r.status < 300).length)} · 4xx ${String(rows.filter((r) => r.status >= 400 && r.status < 500).length)})`
-          : `★무응답: ${dead.map((r) => r.path).join(", ")}`,
+          ? `${String(rows.length)}개 전부 응답(2xx ${String(rows.filter((r) => r.status < 300).length)} · 4xx ${String(rows.filter((r) => r.status >= 400 && r.status < 500).length)})${slowest}`
+          : `★무응답: ${dead.map(deadLine).join(", ")}${slowest}`,
       ),
     );
 
@@ -116,7 +161,9 @@ export const check: RegressionCheck = {
       assert(
         "★★데몬이 **요청을 다 받고도 살아 있다** — 헤더 이중 쓰기는 unhandledRejection 으로 crash-fast 를 부른다(실사고에서 첫 요청에 죽었다)",
         got.alive === true,
-        got.alive === true ? "생존" : `★죽었다 · ${got.tail ?? ""}`,
+        got.alive === true
+          ? "생존"
+          : `★죽었다${got.exit !== undefined ? ` code=${String(got.exit.code)} signal=${String(got.exit.signal)} ${String(got.exit.atMs)}ms` : ""} · ${got.tail ?? ""}`,
       ),
     );
 

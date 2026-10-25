@@ -59,6 +59,7 @@ import { builtinPool, isSelectableProfile } from "./builtin-profiles.js";
 import { TurnTimeoutError } from "./turn-timeout.js";
 import { IdleTimeoutError } from "./idle-timeout.js";
 import { ToolHangError } from "./tool-watchdog.js";
+import { markLimitResume } from "./resume-signal.js";
 import {
   saveCooldown,
   deleteCooldown,
@@ -1176,13 +1177,17 @@ const publishCooldownEvent = (
   }
 };
 
-// 쿨다운 스킵 선별 — runPool 이 그대로 사용(로직 단일 소스, 중복 0). rate-limit 걸린
-// spec 은 제외하고, ★전부 쿨다운이면 원본 pool 그대로 반환(last-resort) — 유효 풀이 비어
-// 턴이 응답 0 으로 죽으면 안 됨(쿨다운은 최적화일 뿐, 하드 차단 아님). export — 격리 검증
-// (_workspace) 이 실제 runPool 이 쓰는 이 함수를 직접 호출(mock 어댑터 불필요, 순수 함수).
-export const selectEligiblePool = (
+// 쿨다운 스킵 선별 — runPool 이 쓴다(로직 단일 소스). 용량 필터(`withinCapacity`) → 쿨다운 필터(`eligibleOf`) 두 단계이고, rate-limit 걸린
+// spec 은 제외하되 ★전부 쿨다운이면 용량을 지난 풀 그대로(last-resort) — 유효 풀이 비어 턴이 응답 0 으로 죽으면 안 됨(쿨다운은 최적화일 뿐,
+// 하드 차단 아님). ★두 단계로 나눈 이유(2026-10-23): 재개 시각 판정(`poolReadyAt`)이 **같은 용량 필터 결과**를 봐야 한다. 합친 함수
+// `selectEligiblePool` 은 그 뒤로 부르는 곳이 없어 지웠다(죽은 export).
+/**
+ * 용량 필터 — 쿨다운 선별의 앞 단계. ★재개 시각 판정(`poolReadyAt`)이 **같은 후보 집합**을 보도록 뺐다(같은 판단 두 벌 금지,
+ *  2026-10-23 한도 자동 이어가기 §3.2). 동작은 그대로다.
+ */
+const withinCapacity = (
   pool: ModelSpec[],
-  inputChars = 0,
+  inputChars: number,
 ): ModelSpec[] => {
   // ★용량 스킵 (2026-07-26) — 입력이 그 모델의 관측 상한을 넘으면 **아예 호출하지 않는다**.
   //
@@ -1196,7 +1201,7 @@ export const selectEligiblePool = (
   //
   //  한도 미설정 모델은 그대로 통과 — 모르는 것에 추측 한도를 씌우지 않는다.
   const limits = inputChars > 0 ? loadModelInputLimits() : new Map<string, number>();
-  const withinCapacity = pool.filter((spec) => {
+  const fits = pool.filter((spec) => {
     // ★키는 `provider:model`(specLabel) — 쿨다운 키(provider 단위)와 다르다. 용량은
     //  같은 provider 안에서도 모델마다 다르므로 모델까지 구분해야 한다.
     const cap = limits.get(specLabel(spec));
@@ -1209,7 +1214,11 @@ export const selectEligiblePool = (
   });
   // 전부 초과여도 풀을 비우지 않는다 — 상한은 관측값(추정)이라 하드 차단이면 오관측 하나가
   // 턴을 통째로 죽인다. 마지막엔 그냥 시도해 본다(쿨다운의 last-resort 와 같은 태도).
-  const sized = withinCapacity.length > 0 ? withinCapacity : pool;
+  return fits.length > 0 ? fits : pool;
+};
+
+/** 쿨다운 필터 — 쿨다운 선별의 뒤 단계(전부 쉬는 중이면 받은 풀 그대로 = last-resort). */
+const eligibleOf = (sized: ModelSpec[]): ModelSpec[] => {
   const eligible = sized.filter((spec) => {
     const { key, remainingMs: remaining } = cooldownStatus(spec);
     if (remaining <= 0) return true;
@@ -1322,18 +1331,51 @@ setSummarizerCooldownPort(summarizerCooldownPort);
 /** 검사용 — 요약 경로의 쿨다운 등록을 실제 객체로 부른다(레드팀 M3: 이 분기가 무검사였다). */
 export const __summarizerCooldownPortForTest = summarizerCooldownPort;
 
+/**
+ * 이 실패가 쿨다운 대상인가(한도·인증 거부) — 등록(`registerCooldownIfRateLimited`)과 재개 시각 판정(`runPool`)이 같이 쓴다(2026-10-23).
+ * ★도구 하드 상한은 우리가 끊은 것이라 백엔드 한도·인증과 무관하다 — 그리고 문장에 **서드파티 도구 이름**이 들어간다
+ *  (`rate_limit_status` 같은 이름이면 아래 패턴이 «한도» 로 읽고 그 모델을 쉬게 한다). 분류 전에 뺀다.
+ * ★인증 거부도 쉬게 한다 (2026-09-26) — 재로그인 전까지 매 턴 다시 해도 같은 401 이다.
+ *  판정은 `classifyCooldown` 한 곳 — 어댑터의 구조화 한도 신호(SDK rate_limit_event)가 문구보다 먼저다(2026-10-10).
+ */
+const cooldownKindOf = (e: unknown): "limit" | "auth" | null =>
+  e instanceof ToolHangError ? null : classifyCooldown(e, errorDetail(e));
+
+/**
+ * **이 풀을 언제 다시 쓸 수 있나** — 한도로 끝난 턴의 재개 시각 (2026-10-23, 설계 §3.2).
+ * 용량 필터를 지난 후보 중 **이번 실행에서 한도 아닌 이유로 실패하지 않은** 후보마다 장부의 해제 시각(없으면 지금)의 최솟값.
+ * ★«쿨다운이 없다» ≠ «쓸 수 있다» — 이번 턴에서 구조적으로 실패한 후보(자격 증명 없음·모델 거부·인증 거부)는 쿨다운 행이 없어
+ *  세면 «지금 가능» 이 되므로 뺀다(사전 조회 없이 그 턴이 이미 본 결과만 쓴다). 탐침 부작용(`markCooldownProbe`) 없음.
+ * 모두 빠지면 undefined(재개하지 않는다).
+ */
+const poolReadyAt = (
+  sized: readonly ModelSpec[],
+  failedOther: ReadonlySet<ModelSpec>,
+  now: number = Date.now(),
+): number | undefined => {
+  let best: number | undefined;
+  for (const spec of sized) {
+    if (failedOther.has(spec)) continue;
+    const key = cooldownKey(spec);
+    let at: number;
+    try {
+      at = getCooldownRow(key, now)?.untilTs ?? now;
+    } catch {
+      at = cooldownUntil.get(key) ?? now; // DB 조회 실패 — 집행과 같은 보수적 폴백(메모리 캐시).
+    }
+    const ready = Math.max(now, at);
+    if (best === undefined || ready < best) best = ready;
+  }
+  return best;
+};
+
 export const registerCooldownIfRateLimited = (
   spec: ModelSpec,
   e: unknown,
 ): { key: string; untilTs: number; reason: "limit" | "auth" } | null => {
-  // ★도구 하드 상한은 우리가 끊은 것이라 백엔드 한도·인증과 무관하다 — 그리고 문장에 **서드파티 도구 이름**이 들어간다
-  //  (`rate_limit_status` 같은 이름이면 아래 패턴이 «한도» 로 읽고 그 모델을 쉬게 한다). 분류 전에 뺀다.
-  if (e instanceof ToolHangError) return null;
-  const detail = errorDetail(e);
-  // ★인증 거부도 쉬게 한다 (2026-09-26) — 재로그인 전까지 매 턴 다시 해도 같은 401 이다.
-  //  판정은 `classifyCooldown` 한 곳 — 어댑터의 구조화 한도 신호(SDK rate_limit_event)가 문구보다 먼저다(2026-10-10).
-  const kind = classifyCooldown(e, detail);
+  const kind = cooldownKindOf(e);
   if (kind === null) return null;
+  const detail = errorDetail(e);
   const auth = kind === "auth";
   const limitMs = auth ? null : limitCooldownMs(e, detail);
   const parsed = limitMs?.ms ?? null;
@@ -1589,9 +1631,20 @@ const runPool = async (
   //  여기 `??` 는 `runPool` 을 단독으로 부르는 경로의 안전망일 뿐이다.
   const replay = input.replay ?? createReplayGuard();
   // 쿨다운 스킵 — rate-limit 걸린 어댑터를 매 턴 재두드리지 않음(호출 자체를 안 함,
-  // 레이턴시+통신 낭비 제거). 전부 쿨다운이면 selectEligiblePool 이 원본 pool 그대로
+  // 레이턴시+통신 낭비 제거). 전부 쿨다운이면 eligibleOf 가 용량을 지난 풀 그대로
   // 반환(last-resort, 유효 풀이 비어 턴이 응답 0 으로 죽지 않게).
-  const effectivePool = selectEligiblePool(pool, input.text?.length ?? 0);
+  const sized = withinCapacity(pool, input.text?.length ?? 0);
+  const effectivePool = eligibleOf(sized);
+  // ★한도 자동 이어가기 (2026-10-23, 설계 §3.2) — 이번 실행에서 **한도가 아닌 이유로** 실패한 후보. 재개 시각 판정이 이들을 «지금 가능» 으로 세지 않게 한다.
+  //  기록만 하고 성공 경로에선 아무도 안 읽는다(평소 비용 0).
+  const failedOther = new Set<ModelSpec>();
+  let lastKind: "limit" | "auth" | null = null;
+  /** 한도 오류를 던지기 직전 — 그 풀의 재개 시각(과 부분 실행 사유)을 오류 객체에 싣는다. 분류 호출(internal)은 재개 대상이 아니다. */
+  const markResumable = (e: unknown, partialReason?: string): void => {
+    if (input.internal === true) return;
+    const at = poolReadyAt(sized, failedOther);
+    if (at !== undefined) markLimitResume(e, at, partialReason);
+  };
   /** 시도한 spec 체인 — 실패 통보가 "왜 이 어댑터냐"를 설명할 수 있게(2026-07-30). */
   const attemptChain: string[] = [];
   const poolStartedAt = Date.now();
@@ -1698,6 +1751,9 @@ const runPool = async (
       //  그래서 사용자에게 "언제 풀리는지" 를 못 알려줬다(429 원문은 200자 컷에 `resets_at`
       //  바로 앞에서 잘려 사람이 읽을 수도 없었다). 등록은 순수 장부라 앞당겨도 안전하고,
       //  앞당기면 **아는 것을 말할 수 있게** 된다.
+      // 재개 판정의 재료 — **꾸미기 전** 오류로 한 번(설계 §3.2: 사유 문장에 든 도구 이름이 한도로 읽히면 안 된다).
+      const kind = cooldownKindOf(e);
+      if (kind !== "limit") failedOther.add(spec);
       const entered = registerCooldownIfRateLimited(spec, e);
       // ★채널 무관 통지 (2026-08-01, 사용자 지적: "텔레그램으로 작업하는 상황에서도
       //  알아야 하는 정보"). 종전엔 대시보드 SSE 렌더에만 있어 폰에서는 모델이 왜
@@ -1709,6 +1765,15 @@ const runPool = async (
         markCooldownAnnounced(entered.key, entered.untilTs);
         // 리셋 시점 문구는 `formatResetAt` 한 곳에서(채널 오류 응답·매니저 통지와 같은 문장 — 2026-10-05 영어 통일 때 합침).
         const when = formatResetAt(Math.max(0, entered.untilTs - Date.now()));
+        // ★★**«다른 모델로 자동 전환합니다» 는 전환할 후보가 있을 때만 참이다** (2026-10-23).
+        //  종전엔 후보가 하나뿐인 풀(`frontier-claude`·`frontier-gpt` 같은 단일 모델 프로파일)에서도 이 문장을 붙였다.
+        //  판정은 새로 만들지 않고 재개 시각 판정(`poolReadyAt`)을 그대로 쓴다 — 그 후보의 쿨다운이 지금 풀려 있으면 «지금» 이 나온다.
+        //  ★대상은 **이번 순회에 실제로 남은 후보**다(`effectivePool` 의 뒤쪽) — 시작 때 쉬어서 빠진 후보는 도중에 풀려도 이 턴에선
+        //   시도되지 않는다(GPT 검토 R1). ★방금 쉬게 된 쿨다운 키(provider 단위)의 후보는 장부 쓰기 성패와 무관하게 뺀다 —
+        //   같은 계정의 다른 모델은 같이 쉰다(쓰기만 실패하면 DB 조회가 «없음» 을 줘서 남았다, 같은 검토).
+        const canSwitch =
+          (poolReadyAt(effectivePool.slice(specIndex + 1).filter((s) => cooldownKey(s) !== entered.key), failedOther) ?? Infinity) <=
+          Date.now();
         // ★통지 좌표는 **`notifyDest` 가 있으면 그것**이다 (2026-08-06, 로그 실측 유실).
         //  스케줄 턴은 `channel="scheduler"` 로 돈다 — 그건 발송 채널이 아니라 *트리거
         //  이름*이라, 이 알림이 `deliverOutbound: 발송 채널 "scheduler" 이 등록돼 있지
@@ -1739,12 +1804,14 @@ const runPool = async (
             (entered.reason === "auth"
               ? translate("srv.limit.authRejected", { adapter: adapterLabel(spec.adapter) })
               : translate("srv.limit.reached", { adapter: adapterLabel(spec.adapter), when })) +
-            "\n" +
             (replayBlocked
-              ? translate("srv.limit.replayBlocked")
-              : entered.reason === "auth"
-                ? translate("srv.limit.switchMeanwhile")
-                : translate("srv.limit.switchUntil")),
+              ? "\n" + translate("srv.limit.replayBlocked")
+              : !canSwitch
+                ? ""
+                : "\n" +
+                  (entered.reason === "auth"
+                    ? translate("srv.limit.switchMeanwhile")
+                    : translate("srv.limit.switchUntil"))),
           label: "cooldown",
         }).catch(() => undefined); // 통지 실패가 턴을 무르지 않는다.
       }
@@ -1779,10 +1846,12 @@ const runPool = async (
         if (blockedReason !== undefined && e instanceof Error) {
           e.message = `${e.message}\n${blockedReason}`;
         }
+        if (kind === "limit") markResumable(e, blockedReason);
         throw e;
       }
       // (쿨다운 등록은 위 turn_error 발행 **전에** 끝났다 — 발행이 해제 시각을 실어야 해서.)
       lastError = e;
+      lastKind = kind;
       if (effectivePool.length > 1) {
         // ★진단 수치 병기 (2026-07-30) — 종전엔 "무엇이 실패했다"만 있어 **어느 대화가
         //  죽었는지** 알 수 없었다(동시에 dashboard:*·scheduler:*·worker:* 가 도는 데몬에서
@@ -1803,6 +1872,7 @@ const runPool = async (
         `(thread=${input.threadKey} 시도=${attemptChain.join(" → ")} ${Date.now() - poolStartedAt}ms)`,
     );
   }
+  if (lastError !== undefined && lastKind === "limit") markResumable(lastError);
   throw lastError ?? new Error("llm-runtime: the model pool is empty.");
 };
 

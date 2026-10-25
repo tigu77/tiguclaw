@@ -21,6 +21,8 @@
  *  - GET  /api/suggestion → bridge GET /suggestion (read, 현재 값)
  *  - POST /api/set-memory-cap → bridge POST /set-memory-cap (write, 메모리 인덱스 캡)
  *  - GET  /api/memory-cap → bridge GET /memory-cap (read, 현재 값 + 허용 범위)
+ *  - POST /api/set-limit-resume → bridge POST /set-limit-resume (write, 한도 자동 이어가기 on/off)
+ *  - GET  /api/limit-resume → bridge GET /limit-resume (read, 현재 유효값)
  *  - POST /api/set-egress → bridge POST /set-egress (write, 함께 보낼 채널)
  *  - GET  /api/egress → bridge GET /egress (read, 현재 값 + 가능 채널)
  *  - POST /api/set-session-profile → bridge POST /set-session-profile (write, 이 세션(탭)만 sticky 프로파일)
@@ -935,6 +937,20 @@ const server = http.createServer((req, res) => {
     }
     if (pathname === "/api/memory-cap" && method === "GET") {
       await proxyJson(res, "/memory-cap");
+      return;
+    }
+    // 한도 자동 이어가기 on/off — 설정 화면 한 줄이 읽고 쓴다. /set-memory-cap 과 동형(write 토큰 server-side 주입).
+    if (pathname === "/api/set-limit-resume" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-limit-resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    if (pathname === "/api/limit-resume" && method === "GET") {
+      await proxyJson(res, "/limit-resume");
       return;
     }
     if (pathname === "/api/set-suggestion" && method === "POST") {

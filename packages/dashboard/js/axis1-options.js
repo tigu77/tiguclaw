@@ -292,7 +292,8 @@
       const queueOptimisticBubble = (text, opts) => {
         const o = opts || {};
         const cid = o.cid || "";
-        const div = buildHistoryDiv({ ts: Date.now(), role: "user", text });
+        // 답글 표시도 이력과 같은 칸(`data.replyTo`)으로 — echo 가 이 버블을 **제자리에서** 승격하므로 표시가 깜빡이지 않는다.
+        const div = buildHistoryDiv({ ts: Date.now(), role: "user", text, ...(o.replyTo ? { data: { replyTo: o.replyTo } } : {}) });
         // 브라우저 시계 ts — 순서 판정(vtNewestTs)에서 빠진다. echo 승격이 서버 ts 로 바꾸며 뗀다(sse.js).
         div.dataset.clock = "local";
         if (o.attachments && o.attachments.length) {

@@ -1532,6 +1532,12 @@
          함께 정리(#bg-shells-body 가 대체 컨테이너, app.css 위 .bg-shells-body 참조). */
       .agent-card.shell-card.exited { border-left-color:var(--good); }
       .agent-card.shell-card.killed { border-left-color:var(--text-dim); opacity:.85; }
+      /* 셸 이름(Bash description, 10-23) — 맨 윗줄 첫 칸, 길면 말줄임(툴팁=전문). 배지·상태는 줄지 않는다. */
+      .shell-card-label { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.8125rem; font-weight:750; color:var(--text); }
+      .shell-card .agent-card-kind, .shell-card .agent-card-status { flex:0 0 auto; }
+      /* 설명이 있으면 설명이 먼저 자리를 갖는다(10-23 실측: 세션 배지 탓에 한글 7~8자만 보였다) — 세션 배지가 먼저 줄고
+         (말줄임·툴팁은 그대로) 한글 네 글자가 들어가는 최소 폭에서 멈춘다. 설명 없는 카드엔 안 걸린다(지금 모습 그대로). */
+      .shell-card-label ~ .shell-card-session { flex-shrink:100; min-width:5.5em; }
       .shell-card-command { font-family:var(--font-mono); font-size:0.8125rem; }
       .shell-card-cwd { font-family:var(--font-mono); font-size:0.625rem; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .shell-card-exitcode { font-size:0.6875rem; color:var(--text-mute); font-family:var(--font-mono); }
@@ -1709,6 +1715,12 @@
       .chat-reply .cr-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
       .chat-reply .cr-x { flex:none; cursor:pointer; border:0; background:transparent; color:var(--text-dim); font-size:0.8125rem; line-height:1; padding:0 2px; }
       .chat-reply .cr-x:hover { color:var(--text); }
+      /* 답글 표시(보낸 메시지 카드 위 «↩ 원문 앞부분», 2026-10-23) — 입력창 칩(.chat-reply)과 같은 결, 한 줄로 줄인다. */
+      .reply-ref { display:flex; align-items:center; gap:6px; max-width:100%; box-sizing:border-box; margin:2px 0 4px; padding:3px 8px; border:0; border-left:3px solid var(--accent-2); background:rgb(var(--accent-2-rgb) / .08); border-radius:6px; font:inherit; font-size:0.6875rem; color:var(--text-mute); text-align:left; }
+      .reply-ref .rr-mark { flex:none; font-weight:800; color:var(--accent-2); }
+      .reply-ref .rr-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
+      .reply-ref-jump { cursor:pointer; }
+      .reply-ref-jump:hover { color:var(--text); background:rgb(var(--accent-2-rgb) / .14); }
       /* 컴포저 백그라운드 작업 인디케이터 — 현재 세션에 매니저가 돌면 입력창 위에 노출(클릭=드로어). */
       .chat-bg-active { display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; padding:6px 11px; border:1px solid rgb(var(--good-rgb) / .4); background:rgb(var(--good-rgb) / .10); border-radius:999px; font-size:0.6875rem; font-weight:700; color:var(--good); cursor:pointer; align-self:flex-start; }
       .chat-bg-active:hover { border-color:var(--good); background:rgb(var(--good-rgb) / .16); }
@@ -1812,7 +1824,47 @@
       #chat-send.stop[data-stopping="1"] { opacity:.55; }
       #chat-send.stop { background:rgb(var(--bad-rgb) / .16); color:var(--bad); box-shadow:inset 0 0 0 1px rgb(var(--bad-rgb) / .45); }
       #chat-send.stop:hover { background:rgb(var(--bad-rgb) / .26); }
-      #chat-status { color:var(--text-mute); font-size:0.625rem; margin-top:6px; min-height:12px; }
+      /* ── 입력창 위 정보 한 번에 접기 — 모든 폭 (2026-10-24 — docs/decisions/2026-10-24-mobile-composer-info-collapse.md §12) ──
+         사용자 «데스크탑이든 어디든 다같이». 한 레이아웃을 모든 폭에 쓰고, 폭에 따라 다른 것은 진행 표시 자리 하나다
+         (모바일 = 요약 상자째 맨 위 · 데스크톱 = 요약 상자가 늘 display:contents 라 폼 아래 그 자리, 아래 미디어 블록).
+         ★격자 두 칸: 줄은 전부 한 행 전체(span 2), 펼침 때만 태그 줄(1칸)과 토글(2칸)이 한 행을 나눠 쓴다. `span 2` 인 이유:
+         절대 위치 자식(#chat-jump·#chat-slash·📤 팝오버)은 «span 만 있는 배치 = auto 두 줄» 이라 기준 상자가 안쪽 여백 상자
+         그대로다(줄 번호를 주면 12px 밀린다 — §11 변이 실측). 입력 기록 알약은 내용만큼 폭(justify-self:start). */
+      #chat { display:grid; grid-template-columns:minmax(0,1fr) auto; }
+      #chat > * { grid-column:span 2; }
+      #chat > .chat-histind { justify-self:start; }
+      /* 작업 알약 한 줄 — 둘이 함께 돌면 나란히(격자 전환 전 데스크톱 블록 흐름에서 인라인 상자 둘이 한 줄이던 것과 같은 모양).
+         둘 다 숨으면 높이 0 — 아래 여백은 알약 쪽에 있다. */
+      .chat-work { display:flex; flex-wrap:wrap; align-items:flex-start; column-gap:4px; }
+      .chat-summary { display:contents; }
+      #chat-status { grid-column:span 2; color:var(--text-mute); font-size:0.625rem; margin-top:6px; min-height:12px; }
+      /* 토글 = 큰 화살표 하나(사용자 «큰 화살표를 아래로 · 접은 다음에는 입력 정보 화살표보다 큰 윗화살표»). 낱말은 화면에 없고
+         이름은 JS 가 aria-label·title 로 단다. 글자는 기존 접기 관례(▾ + 접히면 회전, .module-group-chevron·.bg-group-chevron). */
+      .chat-info-toggle { display:inline-flex; flex:none; align-items:center; justify-content:flex-end; gap:6px; min-width:32px; min-height:30px; margin:0; padding:0 4px;
+        background:none; border:0; color:var(--text-mute); font:inherit; font-size:0.6875rem; font-weight:700; white-space:nowrap; cursor:pointer; }
+      .chat-info-toggle:hover { color:var(--text); }
+      .cit-badges { display:inline-flex; align-items:center; gap:4px; }
+      .cit-badges:empty, #chat:not(.info-collapsed) .cit-badges { display:none; }
+      .cit-badge { padding:2px 7px; border-radius:999px; background:rgb(var(--accent-rgb) / .10); color:var(--accent); }
+      .cit-caret { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; font-size:1.5rem; line-height:1; transition:transform .15s; }
+      .cit-caret::before { content:"▾"; }
+      #chat.info-collapsed .cit-caret { transform:rotate(180deg); }
+      /* 펼침 — 토글은 태그 줄 오른쪽 칸(같은 행, 격자 칸이 나뉘어 칩과 겹칠 수 없다). ★행 높이는 태그 줄이 정한다 — 토글은 그 높이로
+         늘어나고(stretch) 화살표는 위쪽에 둔다(태그 줄이 여러 줄로 펼쳐져도 첫 행 오른쪽). 최소 높이를 따로 주면 행이 그만큼 커진다.
+         ★풀린 요약 상자의 자식은 DOM 상 #chat 직계가 아니라 `#chat > *` 를 못 받는다 — 칸을 명시한다(§11 설계 R1 D1). */
+      #chat:not(.info-collapsed) > #chat-context { grid-column:1; order:-2; }
+      #chat:not(.info-collapsed) #chat-info-toggle { grid-column:2; order:-2; align-self:stretch; align-items:flex-start; min-height:0; margin:0 0 8px; padding:2px 2px 0 8px; color:var(--text-dim); }
+      #chat:not(.info-collapsed) #chat-info-toggle:hover { color:var(--text); }
+      /* 태그 줄을 아직 안 그렸으면(첫 렌더 전 빈 DOM) 토글만 담은 행이 생긴다 — 그동안은 숨긴다(§11 설계 R1 D2). 접힘의 펼치기 버튼엔 안 걸린다. */
+      #chat:not(.info-collapsed) > #chat-context:empty ~ #chat-summary > #chat-info-toggle { display:none; }
+      /* 접기 = 표시만. 각 줄은 자기 모듈이 계속 그리고, 숨은 동안 바뀐 것도 펼치면 그대로 보인다. 묶음 = 토글 aria-controls 와 같은 집합. */
+      #chat.info-collapsed > :is(#chat-context, #chat-projects, #chat-work, #chat-attach, #chat-reply) { display:none; }
+      /* 데스크톱 접힘 — 진행 표시는 폼 아래에 그대로 두고(접기 묶음 밖이라 늘 보인다), 토글 자신이 맨 위 한 줄 상자가 된다
+         (모바일 요약 상자와 같은 높이·테두리 · 배지 + 큰 ▴ 오른쪽 정렬 · 줄 전체가 누를 곳). */
+      @media (min-width: 901px) {
+        #chat.info-collapsed #chat-info-toggle { grid-column:span 2; order:-1; margin:0 0 8px; padding:0 8px;
+          background:var(--card); border:1px solid var(--border); border-radius:10px; }
+      }
       #chat-status.working { color:var(--accent-2); font-weight:700; animation:chat-working-pulse 1.4s ease-in-out infinite; }
       /* 대기 중(메인은 비었고 백그라운드만 도는 상태) — 강조도 펄스도 없다. "지금 말 걸어도
          된다" 는 뜻이라 시선을 끌 이유가 없고, 펄스는 "내 일이 진행 중" 으로 읽힌다. */
@@ -2146,8 +2198,25 @@
            화면 최하단(컴포저 바닥)을 덮어 가려진다(iOS는 포커스된 입력창만 키보드 위로 노출).
            그래서 모바일에서만 진행표시를 입력창 위로 올려(order) 키보드가 떠도 늘 보이게 한다.
            비활성(idle)엔 접어(min-height:0) 입력창 위 상시 여백 방지 — .working 일 때만 자리. */
-        #chat { display:flex; flex-direction:column; }
-        #chat-status { order:1; min-height:0; margin:0; }
+        /* 격자·토글·펼침/접힘 규칙은 모든 폭 공통(전역, 결정 문서 §12). 여기는 모바일에서만 다른 **진행 표시 자리**다. */
+        /* ★진행 표시는 **요약 줄 맨 왼쪽**에 산다 (2026-10-24 사용자 최종 합의 — 결정 문서 §9). 요약 줄은 #chat 격자의 맨 위
+           (order:-1) 한 줄이라 키보드가 떠도 입력창과 같이 보인다(종전 order:1 로 폼 위에 올린 이유 그대로). 그리는 코드
+           (axis1-options.js refreshWorking·paintWorking)는 id 로 찾으므로 자리만 바뀐다.
+           ★줄어드는 칸은 **하나**(상태 칸)다 — 토글은 안 줄고, 상태 칸이 남는 폭을 다 받고 모자라면 라벨 끝부터 말줄임
+           (스피너·경과는 남는다). 둘이 같이 줄면 우선순위가 안 선다(설계 검토 R1). */
+        #chat-summary { order:-1; display:flex; align-items:center; gap:6px; min-height:30px; margin:0 0 8px; padding:0 2px 0 6px;
+          background:var(--card); border:1px solid var(--border); border-radius:10px; }
+        #chat-summary #chat-status { flex:1 1 0; min-width:0; overflow:hidden; display:flex; align-items:center; gap:4px;
+          white-space:nowrap; margin:0; min-height:0; padding:4px 0 4px 4px; font-size:0.6875rem; }
+        /* ↑ 안쪽 여백 4px = 도는 스피너의 대각선 몫 — 이 칸은 극단 폭에서 자르려고 overflow:hidden 이라, 여백이 없으면 회전한 모서리가 잘린다. */
+        #chat-summary #chat-status > * { flex:none; }
+        #chat-summary #chat-status > .chat-work-label { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+        /* ── 펼침 = 요약 상자를 푼다 (2026-10-24 갱신 2, 사용자 실기 «입력 정보 ▾» 혼자 한 줄 → 결정 문서 §11) ──
+           요약 전용 행을 없애고 토글은 태그 줄 오른쪽 칸(전역 규칙), 진행 표시는 작업 중일 때만 맨 위 전폭 한 줄(대기 중엔 행 없음).
+           ★풀린 상자의 자식은 DOM 상 #chat 직계가 아니라 `#chat > *` 를 못 받는다 — 칸을 명시한다(설계 R1 D1). */
+        #chat:not(.info-collapsed) > #chat-summary { display:contents; }
+        #chat:not(.info-collapsed) #chat-status { grid-column:span 2; order:-3; margin:0 0 4px; }
+        #chat:not(.info-collapsed) #chat-status:not(.working) { display:none; }
         #chat-form { order:2; flex-wrap:wrap; }
         /* 입력필드를 도구 버튼들 위 전용 행으로 — textarea 전폭 첫 행, 📎·🎤·(egress)·전송 아래 행.
            전송은 우측 정렬. (모바일 전용, 2026-07-19 사용자 요청) */
@@ -2164,7 +2233,6 @@
            이 칸이 받는다 — 375 에서 92px, 320 에서 37px 로 좁아지되 줄은 안 깨진다. */
         #chat-form .chat-model-select { flex:1 1 0; min-width:0; max-width:none; }
         #chat-form #chat-send { flex:none; margin-left:auto; }
-        #chat-status.working { margin:0 0 6px; }
       }
       @media (max-width: 430px) { .summary-grid { grid-template-columns:minmax(0,1fr); } header .brand { font-size:0.9375rem; } }
       /* ── 설정 뷰 (2026-08-10) — 항목 하나짜리. 늘 때 늘린다. ── */

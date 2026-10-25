@@ -66,6 +66,7 @@ import { DISALLOWED_TOOLS, DISALLOWED_URLS } from "../../../auth/permissions.js"
 import { getPaths } from "../../paths.js";
 import { loadWebSearchConfig } from "../../settings.js";
 import { detectShell, shellSpawnOptions } from "../../runtime-env.js";
+import { createShellOutputDecoder, type ShellOutputDecoder } from "../../shell-output-decoder.js";
 import { getEventBus } from "../../eventbus.js";
 import { toolSlowWarnMs } from "../tool-watchdog.js";
 // 셸의 원 세션 환원 — 매니저·서브가 띄운 셸은 threadKey 가 잡 좌표(worker:/agent:)라 세션 키가
@@ -246,11 +247,16 @@ interface BgShell {
   status: "running" | "completed" | "killed";
   exitCode: number | null;
   startedAt: number;
+  /** 끝난 시각 — 터미널 전이가 DB 에 쓰는 **같은 값**(화면이 경과를 여기서 멈춘다, 2026-10-23). 진행 중엔 없다. */
+  finishedAt?: number;
+  /** Bash `description`(정리한 값) — 백그라운드 목록·셸 카드의 이름. 없으면 화면은 지금처럼 명령을 보인다. */
+  description?: string;
   // 어느 대화 턴이 이 셸을 띄웠나 (ADR §1 shell.started.threadKey). 팩토리/Bash 도구가
   // 전파 안 하면 "" 폴백(회귀 0) — 대시보드 관측용, 실행/추적 로직엔 영향 0.
   threadKey: string;
   /**
-   * ★받은 출력의 **실제 총량**(두 스트림 합, 글자) — 버퍼는 1MB 에서 멈추지만 이건 계속 는다. «진전» 판정의 정본
+   * ★받은 출력의 **실제 총량**(두 스트림 합, **원바이트** — 2026-10-23: 디코더가 미완 줄을 잡아 두는 동안에도 바이트가 오면 진전이다) — 버퍼는 1MB 에서
+   *  멈추지만 이건 계속 는다. «진전» 판정의 정본
    *  (버퍼 길이로 재면 상한에 닿은 순간 출력이 계속 나와도 «멈춤» 으로 읽혔다 — 적대 검토 F2).
    */
   received: number;
@@ -258,6 +264,9 @@ interface BgShell {
   recent: string;
   /** 지금 이 셸을 기다리는 `BashOutput` 들 — 들어오는 조각마다 찾는 글자를 **한 번씩만** 훑는다. */
   waiters: Set<ShellWaiter>;
+  /** 스트림별 출력 디코더(`shell-output-decoder.ts`) — Windows 는 줄마다 UTF-8/OEM 을 가르고 미완 줄을 잡아 둔다. */
+  outDec: ShellOutputDecoder;
+  errDec: ShellOutputDecoder;
 }
 /** 기다림 하나 — 찾는 글자(그대로 비교, 정규식 아님)와 조각 경계에 걸친 꼬리. */
 interface ShellWaiter {
@@ -266,17 +275,33 @@ interface ShellWaiter {
   hit: string | undefined;
 }
 const SHELL_RECENT_KEEP = 4_000;
-/** 들어온 조각을 기다림들에 먹인다 — 각 바이트를 한 번씩만 본다(새 출력이 없으면 아무것도 안 돈다). */
-const feedWaiters = (shell: BgShell, chunk: string): void => {
-  shell.received += chunk.length;
+/**
+ * 들어온 조각을 기다림들에 먹인다 — 각 바이트를 한 번씩만 본다(새 출력이 없으면 아무것도 안 돈다).
+ * ★`bytes` = 이번에 도착한 원바이트(진전 판정), `chunk` = 이번에 **확정된** 글자. 디코더가 잡아 둔 미완 줄은 `pending()`(잠정 해석)으로 함께 훑되
+ *  `carry` 엔 넣지 않는다 — 잠정 일치는 약한 계약(설계 §3: 찾는 글자가 바로 그 오해석 글자일 때만 잘못 깬다).
+ */
+const feedWaiters = (shell: BgShell, chunk: string, bytes: number): void => {
+  shell.received += bytes;
   shell.recent = (shell.recent + chunk).slice(-SHELL_RECENT_KEEP);
+  if (shell.waiters.size === 0) return;
+  const held = [shell.outDec.pending(), shell.errDec.pending()].filter((x) => x !== "");
   for (const w of shell.waiters) {
     if (w.hit !== undefined) continue;
     const text = w.carry + chunk;
-    w.hit = w.needles.find((n) => text.includes(n));
+    w.hit = w.needles.find((n) => text.includes(n) || held.some((h) => (text + h).includes(n)));
     const keep = Math.max(0, Math.max(...w.needles.map((n) => n.length)) - 1);
     w.carry = keep === 0 ? "" : text.slice(-keep);
   }
+};
+/**
+ * 잡아 둔 미완 줄을 확정한다(두 스트림 `end()` — 멱등). ★상태를 끝으로 바꾸기 **전에**(같은 동기 구간) 부른다 — `BashOutput`·대시보드는 끝난 상태를
+ *  보면 더 묻지 않는다(설계 §2.2). `close`·`error` 는 상태와 무관하게 맨 먼저(kill 뒤 늦게 와 다시 잡힌 꼬리도 여기서).
+ */
+const settleShellText = (shell: BgShell): void => {
+  const o = shell.outDec.end();
+  const e = shell.errDec.end();
+  if (o !== "") { shell.stdout = appendCapped(shell.stdout, o); feedWaiters(shell, o, 0); }
+  if (e !== "") { shell.stderr = appendCapped(shell.stderr, e); feedWaiters(shell, e, 0); }
 };
 const BG_SHELLS = new Map<string, BgShell>();
 const BG_MAX = 20; // 동시 백그라운드 셸 상한(메모리 바운드).
@@ -454,6 +479,22 @@ export const killAllBgShellsSync = (): number => {
   return killed;
 };
 
+/** Bash `description` 정리 — 한 곳. 앞뒤 공백을 걷고, 비면 없음, 200자(코드 포인트)로 자른다(이벤트·SSE 리플레이에 실리는 표시용 값). */
+const SHELL_DESCRIPTION_MAX = 200;
+const normalizeShellDescription = (d: string | undefined): string | undefined => {
+  if (typeof d !== "string") return undefined;
+  const t = d.trim();
+  return t === "" ? undefined : [...t].slice(0, SHELL_DESCRIPTION_MAX).join("");
+};
+/** 셸 이벤트·스냅샷의 **있을 때만** 필드 — 설명·끝 시각. 없는 값을 빈 문자열·0 으로 싣지 않는다(화면이 지우지 않게). */
+const shellShownFields = (
+  description: string | undefined,
+  finishedAt: number | undefined,
+): { description?: string; finishedAt?: number } => ({
+  ...(description !== undefined ? { description } : {}),
+  ...(typeof finishedAt === "number" ? { finishedAt } : {}),
+});
+
 // baseCwd 주입(3b) — 백그라운드 셸도 턴 cwd 기준으로 실행(포그라운드 Bash 와 대칭).
 // threadKey(ADR Phase 2 §1) — 어느 대화 턴이 이 셸을 띄웠나(관측용, 미전파 시 "" 폴백).
 // ★env 는 받지 않는다 — 셸은 **늘** 시크릿을 지운 env 로 뜬다(아래 spawn 의 `buildChildEnv()`, 판정 한 곳).
@@ -461,6 +502,7 @@ const launchBgShell = async (
   command: string,
   cwd: string,
   threadKey: string,
+  description?: string,
 ): Promise<string> => {
   // 끝난 셸 하나 정리해 상한 압박 완화(전부 running 이면 그대로 진행 — 20 이면 충분).
   if (BG_SHELLS.size >= BG_MAX) {
@@ -481,11 +523,13 @@ const launchBgShell = async (
   const child = spawn(SHELL.bin, SHELL.argsFor(command), shellSpawnOptions(SHELL, { cwd, env: buildChildEnv() }, { processGroup: true }));
   const pgid = child.pid ?? -1;
   const startedAt = Date.now();
+  const label = normalizeShellDescription(description);
   const shell: BgShell = {
     child,
     pgid,
     command,
     cwd,
+    ...(label !== undefined ? { description: label } : {}),
     stdout: "",
     stderr: "",
     stdoutRead: 0,
@@ -497,16 +541,18 @@ const launchBgShell = async (
     received: 0,
     recent: "",
     waiters: new Set(),
+    outDec: createShellOutputDecoder(),
+    errDec: createShellOutputDecoder(),
   };
   child.stdout?.on("data", (d: Buffer) => {
-    const chunk = d.toString("utf8");
+    const chunk = shell.outDec.write(d);
     shell.stdout = appendCapped(shell.stdout, chunk);
-    feedWaiters(shell, chunk);
+    feedWaiters(shell, chunk, d.length);
   });
   child.stderr?.on("data", (d: Buffer) => {
-    const chunk = d.toString("utf8");
+    const chunk = shell.errDec.write(d);
     shell.stderr = appendCapped(shell.stderr, chunk);
-    feedWaiters(shell, chunk);
+    feedWaiters(shell, chunk, d.length);
   });
   // shell.exited 페이로드 — close/error(자연종료) 공용 빌더. status="exited"(kill 경로는
   // killShellById/killAllBgShells 가 별도로 "killed" 를 발행 — 이 핸들러는 status==="running"
@@ -519,29 +565,34 @@ const launchBgShell = async (
       status,
       exitCode: shell.exitCode,
       startedAt: shell.startedAt,
+      ...shellShownFields(shell.description, shell.finishedAt),
       threadKey: shell.threadKey,
       ownerThreadKey: resolveOwnerThreadKey(shell.threadKey), // 원 세션(잡 좌표 환원).
     });
   };
   child.on("error", () => {
+    settleShellText(shell);
     if (shell.status === "running") {
       shell.status = "completed";
       shell.exitCode = -1;
+      const finishedAt = (shell.finishedAt = Date.now());
       persistBgShellSafe("close(error)", () =>
-        markShellTerminalDb(id, "completed", shell.exitCode),
+        markShellTerminalDb(id, "completed", shell.exitCode, finishedAt),
       );
       publishExited();
     }
   });
   child.on("close", (code, signal) => {
+    settleShellText(shell); // ★가드 밖 — kill 뒤 늦게 와 다시 잡힌 꼬리도 확정한다(상태 변경·DB·이벤트만 가드 안)
     if (shell.status === "running") {
       // ★신호로 죽은 것은 «성공(0)» 이 아니다 (2026-10-08 적대 검토). 종전엔 `code ?? 0` 이라 OOM·밖에서 보낸 kill·
       //  재시작 정리가 exit 0 으로 기록됐고, 그 결과를 그대로 알리는 실행형 커맨드가 중단된 배포를 «✅ 끝났습니다» 로 보고했다.
       const bySignal = code === null && signal !== null;
       shell.status = bySignal ? "killed" : "completed";
       shell.exitCode = code;
+      const finishedAt = (shell.finishedAt = Date.now());
       persistBgShellSafe("close", () =>
-        markShellTerminalDb(id, shell.status === "killed" ? "killed" : "completed", shell.exitCode),
+        markShellTerminalDb(id, shell.status === "killed" ? "killed" : "completed", shell.exitCode, finishedAt),
       );
       publishExited(bySignal ? "killed" : "exited");
     }
@@ -554,6 +605,7 @@ const launchBgShell = async (
     cwd,
     status: "running",
     startedAt,
+    ...shellShownFields(label, undefined),
     threadKey,
     ownerThreadKey: resolveOwnerThreadKey(threadKey), // 원 세션(잡 좌표 환원).
   });
@@ -570,6 +622,8 @@ const launchBgShell = async (
       command,
       cwd,
       startedAt,
+      // 재시작 뒤 리퍼 통지(`shell.exited`)에도 같은 이름이 실리게 — 새로 연 화면은 그 통지로 카드를 만든다.
+      ...(label !== undefined ? { description: label } : {}),
       // startedLabel 은 아래서 비동기 사후 채움(ps 조회가 async라 아직 없음).
     });
   });
@@ -616,6 +670,7 @@ export const startBackgroundShell = async (
     const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
       if (settled) return;
       settled = true;
+      settleShellText(s); // exit+200ms 로 먼저 낼 때도 잡아 둔 꼬리까지 결과에
       const killed = s.status === "killed" || (code === null && signal !== null);
       resolve({ status: killed ? "killed" : "completed", exitCode: code, recent: s.recent });
     };
@@ -646,8 +701,9 @@ const markShellTerminalDb = (
   bashId: string,
   status: Exclude<BgShellStatus, "running">,
   exitCode: number | null,
+  finishedAt: number,
 ): void => {
-  markBgShellStatusDb(bashId, status, { finishedAt: Date.now(), exitCode });
+  markBgShellStatusDb(bashId, status, { finishedAt, exitCode });
   pruneTerminalBgShellsDb(TERMINAL_BG_SHELL_KEEP);
 };
 
@@ -672,12 +728,14 @@ export const killAllBgShells = async (): Promise<void> => {
   await Promise.all(
     entries.map(async ([id, s]) => {
       if (s.status === "running") {
+        settleShellText(s); // 끝을 보이기 전에 잡아 둔 꼬리부터(같은 동기 구간)
         // ★죽이기 **전에** 표시한다 — 자식의 close 가 먼저 오면 «정상 종료» 로 굳는다(아래 killShellById 와 같은 이유).
         s.status = "killed";
         await killTree(s.pgid, "SIGTERM");
+        const finishedAt = (s.finishedAt = Date.now());
         persistBgShellSafe("killAllBgShells", () => {
           markBgShellStatusDb(id, "killed", {
-            finishedAt: Date.now(),
+            finishedAt,
             exitCode: s.exitCode,
           });
         });
@@ -688,6 +746,7 @@ export const killAllBgShells = async (): Promise<void> => {
           status: "killed",
           exitCode: s.exitCode,
           startedAt: s.startedAt,
+          ...shellShownFields(s.description, finishedAt),
           threadKey: s.threadKey,
         });
       }
@@ -710,6 +769,10 @@ export interface BgShellSnapshot {
   /** 원 세션 threadKey — threadKey 가 잡 좌표(worker:/agent:)면 환원한 값. 미상은 "". */
   ownerThreadKey: string;
   exitCode: number | null;
+  /** 끝난 시각(끝났을 때만). */
+  finishedAt?: number;
+  /** Bash `description`(있을 때만). */
+  description?: string;
 }
 
 /**
@@ -731,6 +794,7 @@ export const listShells = (): BgShellSnapshot[] =>
       // (잡 레지스트리 전체를 보는 쪽이 authoritative — 대시보드 세션 스코프 판정 근거).
       ownerThreadKey: resolveOwnerThreadKey(s.threadKey),
       exitCode: s.exitCode,
+      ...shellShownFields(s.description, s.finishedAt),
     }))
     .sort((a, b) => b.startedAt - a.startedAt);
 
@@ -786,11 +850,13 @@ export const killShellById = async (shellId: string): Promise<boolean> => {
   if (s.status === "running") {
     // ★죽이기 **전에** 표시한다 (2026-10-08 적대 검토). 종전엔 `await killTree` 뒤에 세웠는데, Windows `taskkill` 을
     //  기다리는 사이 자식의 close 가 먼저 와 «completed · 1» 로 굳고 shell.exited 가 두 번(exited·killed) 나갔다.
+    settleShellText(s); // 끝을 보이기 전에 잡아 둔 꼬리부터(같은 동기 구간 — `BashOutput` 은 끝난 셸을 «끝남» 으로 돌려준다)
     s.status = "killed";
     await killTree(s.pgid, "SIGKILL");
+    const finishedAt = (s.finishedAt = Date.now());
     persistBgShellSafe("killShellById", () => {
       markBgShellStatusDb(shellId, "killed", {
-        finishedAt: Date.now(),
+        finishedAt,
         exitCode: s.exitCode,
       });
     });
@@ -801,6 +867,7 @@ export const killShellById = async (shellId: string): Promise<boolean> => {
       status: "killed",
       exitCode: s.exitCode,
       startedAt: s.startedAt,
+      ...shellShownFields(s.description, finishedAt),
       threadKey: s.threadKey,
     });
   }
@@ -838,8 +905,9 @@ export const killShellById = async (shellId: string): Promise<boolean> => {
  * 가 분기 없이 그대로 처리한다.
  */
 const announceReaped = (
-  row: { bashId: string; command: string; cwd: string; startedAt: number },
+  row: { bashId: string; command: string; cwd: string; startedAt: number; description?: string },
   status: "exited" | "killed",
+  finishedAt?: number, // 지금 죽였을 때만 — stale(이미 없던 프로세스)은 언제 끝났는지 모른다
 ): void => {
   publishShellEventSafe("shell.exited", {
     shellId: row.bashId,
@@ -848,6 +916,7 @@ const announceReaped = (
     status,
     exitCode: null,
     startedAt: row.startedAt,
+    ...shellShownFields(row.description, finishedAt),
     threadKey: "",
     ownerThreadKey: "",
   });
@@ -878,14 +947,15 @@ export const reapPreviousGeneration = async (): Promise<void> => {
         nowLabel === row.startedLabel;
       if (identityMatch) {
         await killTree(row.pgid, "SIGKILL");
+        const killedAt = Date.now();
         markBgShellStatusDb(row.bashId, "killed", {
-          finishedAt: Date.now(),
+          finishedAt: killedAt,
           exitCode: null,
         });
         console.log(
           `bg-shells reaper: 이전 세대 고아 killTree(bashId=${row.bashId}, pgid=${row.pgid}).`,
         );
-        announceReaped(row, "killed");
+        announceReaped(row, "killed", killedAt);
       } else {
         // 프로세스 부재 / 신원 불일치(PID 재사용) / label 미보유 — 전부 안전측 stale.
         markBgShellStatusDb(row.bashId, "stale", {
@@ -1514,7 +1584,10 @@ const makeFileOpsTools = (
     {
       command: z.string().min(1),
       timeout: z.number().int().min(1).optional().describe("타임아웃 (초 단위, 기본 120, 최대 600)"),
-      description: z.string().optional(),
+      description: z
+        .string()
+        .optional()
+        .describe("이 명령이 하는 일을 짧게(5~10단어). run_in_background 로 띄우면 백그라운드 작업 목록·셸 카드에 이 문구가 이름으로 보인다"),
       run_in_background: z.boolean().optional(),
     },
     async (args) => {
@@ -1534,7 +1607,7 @@ const makeFileOpsTools = (
 
       // 백그라운드 실행 — 즉시 bash_id 반환(안 막힘). timeout 미적용(완료/Kill 까지 돎).
       if (args.run_in_background === true) {
-        const id = await launchBgShell(args.command, base, threadKey);
+        const id = await launchBgShell(args.command, base, threadKey, args.description);
         return okText(
           `백그라운드 실행 시작 (bash_id: ${id}). ` +
             `BashOutput({ bash_id: "${id}", wait_seconds: … }) 로 끝날 때까지 기다리고(되묻지 말고 한 번에), KillShell 로 종료.`,
@@ -1577,10 +1650,13 @@ const makeFileOpsTools = (
       // stdout/stderr 수집 — cap 초과 시 즉시 죽이고 maxBuffer 로 보고(execFile 동형).
       let outBuf = "", errBuf = "", outBytes = 0, errBytes = 0;
       let overflow = false, timedOut = false, abortedByUser = false;
+      // 스트림별 디코더 — Windows 의 OEM 코드 페이지 출력(ping·`echo 한글`)을 줄마다 가른다(`shell-output-decoder.ts`). 상한은 원바이트로 그대로.
+      const outDec = createShellOutputDecoder();
+      const errDec = createShellOutputDecoder();
       const collect = (chunk: Buffer, which: "out" | "err"): void => {
         const n = chunk.length;
-        if (which === "out") { outBytes += n; if (outBuf.length < BASH_MAX_BUFFER_BYTES * 2) outBuf += chunk.toString("utf8"); }
-        else { errBytes += n; if (errBuf.length < BASH_MAX_BUFFER_BYTES * 2) errBuf += chunk.toString("utf8"); }
+        if (which === "out") { outBytes += n; const t = outDec.write(chunk); if (outBuf.length < BASH_MAX_BUFFER_BYTES * 2) outBuf += t; }
+        else { errBytes += n; const t = errDec.write(chunk); if (errBuf.length < BASH_MAX_BUFFER_BYTES * 2) errBuf += t; }
         if (!overflow && (outBytes > BASH_MAX_BUFFER_BYTES || errBytes > BASH_MAX_BUFFER_BYTES)) {
           overflow = true;
           killGroup();
@@ -1631,6 +1707,9 @@ const makeFileOpsTools = (
       clearTimeout(timer);
       abortSignal?.removeEventListener("abort", onAbort);
       if (childPid > 1) FOREGROUND_SHELL_PIDS.delete(childPid);
+      // 결과를 만드는 한 곳 — close·error·exit+200ms·finishAfterKill 이 모두 여기로 모인다. 잡아 둔 미완 줄을 확정한다.
+      { const t = outDec.end(); if (outBuf.length < BASH_MAX_BUFFER_BYTES * 2) outBuf += t; }
+      { const t = errDec.end(); if (errBuf.length < BASH_MAX_BUFFER_BYTES * 2) errBuf += t; }
 
       const out = truncateBashOutput(outBuf);
       const err = truncateBashOutput(errBuf);
@@ -1701,7 +1780,9 @@ const makeFileOpsTools = (
         // 기다리기 전에 이미 와 있던(아직 안 읽은) 출력도 본다 — 글자 비교라 한 번 훑는 데 1MB 도 가볍다.
         if (needles.length > 0) {
           const unread = s.stdout.slice(s.stdoutRead) + s.stderr.slice(s.stderrRead);
-          waiter.hit = needles.find((n) => unread.includes(n));
+          // 잡아 둔 미완 줄(잠정 해석)도 본다 — 조각마다 먹이는 `feedWaiters` 와 같은 약한 계약.
+          const held = [s.outDec.pending(), s.errDec.pending()].filter((x) => x !== "");
+          waiter.hit = needles.find((n) => unread.includes(n) || held.some((h) => (unread + h).includes(n)));
           // 이미 와 있던 꼬리와 다음 조각에 걸친 글자도 찾게 — 꼬리를 이어 붙일 자리에 둔다(적대 검토 2R N2).
           const keep = Math.max(...needles.map((n) => n.length)) - 1;
           waiter.carry = keep > 0 ? unread.slice(-keep) : "";

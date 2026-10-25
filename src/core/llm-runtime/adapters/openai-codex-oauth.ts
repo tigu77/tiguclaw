@@ -1798,7 +1798,7 @@ export const runOpenAiCodex = async (
       }
       // ★조립된 입력 상한 검사 (2026-07-26) — 호출 *전에* 끊는다.
       //
-      //  왜 여기인가: facade 의 용량 스킵(selectEligiblePool)은 `input.text` 즉 **현재
+      //  왜 여기인가: facade 의 용량 스킵(withinCapacity)은 `input.text` 즉 **현재
       //  메시지만** 본다. 긴 스레드에서 부피의 대부분은 히스토리라 그쪽으로는 안 걸린다.
       //  여기서는 **실제로 보낼 body** 를 재므로 추정이 아니라 사실이다.
       //

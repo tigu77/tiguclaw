@@ -1,5 +1,6 @@
 {
   "idle": "No background work running right now.",
+  "loading": "Loading…",
   "unnamed": "(unnamed)",
   "since": "{n}m",
   "widget.live": "Background work",
@@ -11,6 +12,8 @@
   "timer.in": "in {n}m",
   "timer.now": "soon",
   "menu.openPanel": "Open the background panel",
+  "menu.viewKind": "Group by type (now: by conversation)",
+  "menu.viewSession": "Group by conversation (now: by type)",
   "menu.collapseAll": "Collapse all",
   "menu.expandAll": "Expand all",
   "session.unknown": "Unknown conversation"

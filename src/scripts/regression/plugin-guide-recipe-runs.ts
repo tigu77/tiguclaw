@@ -104,12 +104,12 @@ export const check: RegressionCheck = {
         getDataRoutes?: () => Record<string, { handler: (q: Record<string, string>) => Promise<unknown> }>;
       };
       const routes = inst.getDataRoutes?.() ?? {};
-      const got = await routes.greeting?.handler({ who: "정태" });
+      const got = await routes.greeting?.handler({ who: "Alex" });
       out.push(
         assert(
           "★★선언한 데이터 라우트가 **실제로 값을 낸다** — 가이드가 약속한 결과다(선언만 읽히고 안 불리면 독자는 '왜 빈 칸이지' 를 겪는다)",
           typeof (got as { text?: string } | undefined)?.text === "string" &&
-            (got as { text: string }).text.includes("정태"),
+            (got as { text: string }).text.includes("Alex"),
           JSON.stringify(got ?? null),
         ),
       );

@@ -1075,6 +1075,43 @@ export const loadSchedulerRetryEnabled = (
 };
 
 /**
+ * 한도 자동 이어가기 — `settings.json` `limitResume.enabled` (2026-10-23, 설계 2026-10-22-limit-auto-resume §3.1).
+ * ★기본 **꺼짐**(사용자 결정 §9-1) — 자는 동안 비서가 스스로 일을 재개하는 것이라, 처음 받는 사용자가 모르는 사이 비용·변경이 생기면 안 된다.
+ * 읽는 시점은 한도 실패가 난 그 순간뿐이다(매 턴 아님). 끈 뒤에도 이미 걸린 타이머는 그대로 운다(패널·`/schedule delete` 로 지운다).
+ */
+export const loadLimitResumeEnabled = (
+  cwd: string = process.cwd(),
+): boolean => {
+  let enabled = false;
+  for (const layer of loadSettingsLayers(cwd)) {
+    const sec = (layer as Record<string, unknown>).limitResume;
+    if (sec === null || typeof sec !== "object" || Array.isArray(sec)) continue;
+    const v = (sec as Record<string, unknown>).enabled;
+    if (typeof v === "boolean") enabled = v;
+  }
+  return enabled;
+};
+
+/**
+ * 한도 자동 이어가기 쓰기 — 대시보드 설정 줄이 부른다(2026-10-23, docs/decisions/2026-10-23-limit-resume-dashboard-toggle.md).
+ * 홈 `settings.json` 의 `limitResume.enabled` **한 키만** 바꾼다(같은 블록·다른 설정 보존). 읽기는 위 `loadLimitResumeEnabled` 한 곳 —
+ * 프로젝트 레이어가 덮고 있으면 유효값은 쓴 값과 다를 수 있다(그래서 브리지는 쓴 뒤 다시 읽은 값을 돌려준다).
+ */
+export const setLimitResumeEnabled = (enabled: boolean): void => {
+  const file = getPaths().settings;
+  // ★깨져 있으면 던진다 — `{}` 로 덮으면 이 파일의 다른 설정이 함께 사라진다(형제와 동형).
+  const root = readSettingsRootForWrite(file);
+  const existing = root.limitResume;
+  const limitResume: Record<string, unknown> =
+    existing !== null && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  limitResume.enabled = enabled;
+  root.limitResume = limitResume;
+  writeSettingsRootAtomic(file, root);
+};
+
+/**
  * 프로파일 이름 → 순서 있는 풀 체인(raw `provider:model` 배열들).
  *  - 각 원소 = 한 프로파일의 pool(파싱 전 raw). 파싱/ModelSpec 변환은 llm-runtime 몫.
  *  - `.fallback` 을 따라 조립하되 visited-set 로 순환 절단, 댕글링 참조는 그 엣지 drop(체인 종료).

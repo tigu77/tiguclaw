@@ -370,6 +370,34 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       assert.equal(d.psErrorText({ stdout: "", stderr: "" }), "no output");
       return "문장만";
     });
+    test("★긴 오류 문장은 콘솔 폭에서 접혀 여러 조각으로 오고 접힌 자리에도 줄 끝이 붙는다 — 문장을 끝까지 잇는다(레드팀 10-22 P-2, Windows 검증 기기 10-23 실측 모양 그대로)", () => {
+      // 실측: `Get-Item 'C:\no\such\tiguclaw-p2-xxx…'` 을 `winPsArgs` 로 — 폭 118 에서 접혔다. 종전 결과는 첫 조각(«…xxxx» 에서 끊김).
+      const x = "x".repeat(180);
+      const msg = `Get-Item : Cannot find path 'C:\\no\\such\\tiguclaw-p2-${x}' because it does not exist.`;
+      const W = 118;
+      const wrapped = [msg.slice(0, W), msg.slice(W, 2 * W), msg.slice(2 * W)];
+      const S = (t: string) => `<S S="Error">${t}_x000D__x000A_</S>`;
+      const clixml = '#< CLIXML\r\n<Objs Version="1.1.0.1">' + wrapped.map(S).join("") + S("At line:1 char:83") +
+        S("+ ... nce='Stop'; Get-Item 'C:\\no\\such\\tiguclaw-p2-xxxxxxxxxxxxxxxxxxxxxxxx ...") +
+        // 부속 줄도 폭을 채워 접힌다(실측: CategoryInfo 가 118 에서 «…ItemNotFoundExcep » / «   tion»)
+        S("    + CategoryInfo          : ObjectNotFound: (C:\\no\\such\\tigu...xxxxxxxxxxxxxxx:String) [Get-Item], ItemNotFoundExcep ".padEnd(W).slice(0, W)) +
+        S("   tion") + S(" ") + "</Objs>";
+      assert.equal(wrapped[0].length, W); assert.equal(wrapped[1].length, W);
+      assert.equal(d.psErrorText({ stdout: "", stderr: clixml }), msg);
+      // 접힘이 없는 짧은 출력에서 가장 긴 줄이 문장이어도 부속 줄(«위치 줄:»)을 붙이지 않는다
+      const short = '#< CLIXML <Objs>' + S("Disable-ScheduledTask : 액세스가 거부되었습니다.") + S("위치 줄:1 문자:1") + "</Objs>";
+      assert.equal(d.psErrorText({ stdout: "", stderr: short }), "Disable-ScheduledTask : 액세스가 거부되었습니다.");
+      // 진짜 줄바꿈 — 폭에 닿은 줄이 하나뿐이면 접힘의 증거가 아니다: 붙이지 않고 공백으로 잇는다(GPT R1)
+      const twoLines = '#< CLIXML <Objs>' + S("Disable-ScheduledTask : first diagnostic sentence.") + S("Second sentence.") + S("At line:1 char:1") + "</Objs>";
+      assert.equal(d.psErrorText({ stdout: "", stderr: twoLines }), "Disable-ScheduledTask : first diagnostic sentence. Second sentence.");
+      // 문장 앞의 부속 줄은 건너뛴다(종전 필터와 같다 — 거기서 멈추면 «no error text», GPT R1)
+      const lead = '#< CLIXML <Objs>' + S("At line:1 char:1") + S("Disable-ScheduledTask : Access is denied.") + S("+ CategoryInfo : PermissionDenied") + "</Objs>";
+      assert.equal(d.psErrorText({ stdout: "", stderr: lead }), "Disable-ScheduledTask : Access is denied.");
+      // 문장 덩어리는 빈 줄에서 끝난다 — 그 뒤의 (부속 줄 아닌) 꼬리를 붙이지 않는다(GPT R2)
+      const blankTail = '#< CLIXML <Objs>' + S("Disable-ScheduledTask : Access is denied.") + S(" ") + S("diagnostic tail") + "</Objs>";
+      assert.equal(d.psErrorText({ stdout: "", stderr: blankTail }), "Disable-ScheduledTask : Access is denied.");
+      return "끝까지 · 부속 줄 안 붙음 · 진짜 줄바꿈은 공백 · 앞 부속 줄 건너뜀 · 빈 줄에서 끝";
+    });
     // ★winStop·winUninstall·winRepair 를 실제 본문으로 — 의존은 주입한 것뿐이라, 본문이 다른 것(환경 저장·재등록)을 부르면 ReferenceError 로 빨개진다.
     const bodyOf = (name: string): string => source.slice(source.indexOf(`const ${name} = (c) => {`), source.indexOf("\n};\n", source.indexOf(`const ${name} = (c) => {`)) + 3);
     type TS = { state: "enabled" | "disabled" | "missing" | "unknown"; why?: string };

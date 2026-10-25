@@ -406,9 +406,10 @@ const main = async (): Promise<void> => {
   // ★모델은 쓰지 않는다 — 쓰는 순간 그 값에 고정되고 자동 최신이 죽는다(2026-08-13). 설치 때는 묻지도 않는다(2026-10-22 정태님):
   //  로그인 전이라 이 판에 든 옛 값밖에 못 보여주고, Enter 만 누른 «고정» 이 조용히 옛 모델에 묶였다. 고정이 필요하면 연결된 뒤 비서에게
   //  말하면 된다(settings.json 은 데이터라 다음 턴부터 반영).
+  // ★기존 홈에 다시 돌려도 맞는 한 문장 — 프로파일이 있으면 그대로 이긴다(외부 GPT 검토 10-22: 무조건 «auto» 라고 말해 기존 설정과 달랐다).
   console.log(
-    "✅ Models = auto. Nothing was written — every task uses the latest model of your signed-in providers " +
-      "(see `/models`). To use other models later, just ask tiguclaw — it saves them to settings.json, and those win.",
+    "✅ Model settings were not touched. Existing profiles in settings.json are kept; with none, every task uses the latest " +
+      "model of your signed-in providers (see `/models`). To use other models later, just ask tiguclaw — it saves them to settings.json, and those win.",
   );
   console.log("");
   // 다음 단계 — onboard 가 부른 것이면 이어서 자동으로 간다고만, 단독이면 실제 설정대로(`initNextSteps`).

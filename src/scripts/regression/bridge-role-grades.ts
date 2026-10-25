@@ -44,6 +44,7 @@ const EXPECTED: Record<string, Grade> = {
   "POST /set-egress": "write",
   "POST /set-suggestion": "write",
   "POST /set-memory-cap": "write",
+  "POST /set-limit-resume": "write", // 한도 자동 이어가기 on/off(2026-10-23) — GET /limit-resume 은 read 허용(limit-resume-has-a-place 가 본다)
   "POST /set-locale": "write",
   "POST /set-theme": "write",
   "POST /set-profile-color": "write",

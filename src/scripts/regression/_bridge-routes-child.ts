@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { seedIsolatedEnv, freePort, bootVerdict, reapOnExit } from "./_probe-helpers.js";
+import { seedIsolatedEnv, freePort, bootVerdict, reapOnExit, describeFetchError, scrubDiag, scrubText } from "./_probe-helpers.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -95,6 +95,26 @@ const main = async (): Promise<void> => {
     stdio: ["ignore", "pipe", "pipe"],
   });
   reapOnExit(child.pid);
+  // ★진단(2026-10-24) — 판정은 그대로 두고 **사유**만 싣는다. 헤더·본문·환경은 기록하지 않는다.
+  //  데몬이 정리 전에 스스로 끝났으면 그 시각·코드를 남긴다(«살아 있는가» 실패의 근거).
+  const t0 = performance.now();
+  const sinceMs = (from: number): number => Math.round(performance.now() - from);
+  const hide = [token, home, REPO];
+  let early: { code: number | null; signal: string | null; atMs: number } | undefined;
+  child.on("exit", (code, signal) => {
+    early ??= { code, signal, atMs: sinceMs(t0) };
+  });
+  // ★**catch 시점의 관측**이다 — 데몬을 죽인 바로 그 요청은 exit 이벤트가 아직 안 와 alive 로 찍힐 수 있다.
+  //  그래서 시각(데몬 기동 기준 ms)을 붙인다 — `exit.atMs` 와 맞대 보면 선후가 보인다.
+  const daemonState = (): string =>
+    `${child.exitCode === null && child.signalCode === null
+      ? "alive"
+      : `exited code=${String(child.exitCode)} signal=${String(child.signalCode)}`} @${String(sinceMs(t0))}ms`;
+  // 실패 한 줄을 **stderr 에도** 즉시 낸다 — 부모 90초 시한에 끊기면 stdout JSON 이 안 나오므로
+  //  그때 부모가 실을 근거다. stdout 은 마지막 JSON 한 줄만 쓴다(부모 파서 보호).
+  const failLine = (s: string): void => {
+    process.stderr.write(`[bridge-routes] ${s}\n`);
+  };
   child.stdout.on("data", (d: Buffer) => (log += d.toString()));
   child.stderr.on("data", (d: Buffer) => (log += d.toString()));
 
@@ -102,11 +122,16 @@ const main = async (): Promise<void> => {
   while (Date.now() < deadline && !bootVerdict(log, bp).ok) {
     await new Promise((r) => setTimeout(r, 500));
   }
-  const boot = bootVerdict(log, bp);
+  // 갈래는 원문으로 정하고, 사유에 붙는 로그 조각만 **가린 뒤 자른다**(재판정하지 않는다 — 가린 로그로 다시 판정하면 갈래가 바뀔 수 있다).
+  const boot = bootVerdict(log, bp, (s) => scrubText(s, hide));
 
-  const rows: Array<{ path: string; status: number }> = [];
+  const rows: Array<{
+    path: string; status: number; ms: number;
+    err?: { kind: string; code?: string; msg: string; daemon: string };
+  }> = [];
   if (boot.ok) {
     for (const r of routes) {
+      const started = performance.now();
       try {
         const res = await fetch(`http://127.0.0.1:${bp}${r.path}`, {
           method: r.method,
@@ -117,17 +142,23 @@ const main = async (): Promise<void> => {
           ...(r.method === "POST" ? { body: "{}" } : {}),
           signal: AbortSignal.timeout(5000),
         });
-        rows.push({ path: `${r.method} ${r.path}`, status: res.status });
-      } catch {
-        rows.push({ path: `${r.method} ${r.path}`, status: 0 });
+        rows.push({ path: `${r.method} ${r.path}`, status: res.status, ms: sinceMs(started) });
+      } catch (e) {
+        const row = {
+          path: `${r.method} ${r.path}`, status: 0, ms: sinceMs(started),
+          err: { ...describeFetchError(e, hide), daemon: daemonState() },
+        };
+        rows.push(row);
+        failLine(JSON.stringify(row));
       }
     }
   }
   // ★**단건 갈래를 실제로 두드린다** (2026-09-04 2R G-5). 라우트 목록 훑기는 `?jobId=` 를
   //  안 만들어 보므로, 그 갈래가 통째로 죽어도 초록이었다. 여기서 잡을 하나 만들어
   //  «끝난 잡의 지시문 원문» 이 돌아오는지 본다 — 1라운드가 고친 P-4 의 서버 절반이다.
-  let taskOne: { got: number; want: number } | undefined;
+  let taskOne: { got: number; want: number; err?: string } | undefined;
   if (boot.ok) {
+    let oneStarted = performance.now();
     try {
       const want = "가".repeat(1500);
       const mk = await fetch(`http://127.0.0.1:${bp}/messages`, {
@@ -139,6 +170,7 @@ const main = async (): Promise<void> => {
       void mk;
       // 잡은 LLM 없이 못 만드므로 **코어를 직접** 부른다(같은 프로세스가 아니라 자식이지만
       // 같은 홈·같은 DB 다 — 메모리 맵은 데몬 쪽이라 여기선 라우트 응답 형태만 본다).
+      oneStarted = performance.now();
       const res = await fetch(`http://127.0.0.1:${bp}/worker-jobs?jobId=nope-${Date.now()}`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(5000),
@@ -148,15 +180,22 @@ const main = async (): Promise<void> => {
       //  그건 «단건 갈래가 없다» 는 뜻이다(프록시가 쿼리를 버리는 회귀와 같은 증상).
       taskOne = { got: body.jobs === undefined && body.jobId !== undefined ? 1 : 0, want: 1 };
       void want;
-    } catch {
-      taskOne = { got: -1, want: 1 };
+    } catch (e) {
+      const d = describeFetchError(e, hide);
+      taskOne = {
+        got: -1, want: 1,
+        err: `GET /worker-jobs?jobId= ${d.kind}${d.code !== undefined ? `/${d.code}` : ""} ${String(sinceMs(oneStarted))}ms · ${d.msg} · daemon ${daemonState()}`,
+      };
+      failLine(taskOne.err ?? "");
     }
   }
   const alive = child.exitCode === null && child.signalCode === null;
+  const exit = alive ? undefined : early;
+  const totalMs = sinceMs(t0);
   child.kill("SIGKILL");
   if (process.env.PROBE_HOME === undefined) rmSync(home, { recursive: true, force: true });
   process.stdout.write(
-    `\n${JSON.stringify({ boot: boot.ok, why: boot.why, rows, alive, taskOne, tail: log.slice(-300) })}\n`,
+    `\n${JSON.stringify({ boot: boot.ok, why: scrubDiag(boot.why, [], 300), rows, alive, exit, totalMs, taskOne, tail: scrubDiag(scrubText(log, hide).slice(-300), [], 300) })}\n`,
   );
 };
 

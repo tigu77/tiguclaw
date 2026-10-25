@@ -1,5 +1,6 @@
 {
   "idle": "지금 돌고 있는 백그라운드 작업이 없습니다.",
+  "loading": "불러오는 중…",
   "unnamed": "(이름 없음)",
   "since": "{n}분째",
   "widget.live": "백그라운드 작업",
@@ -11,6 +12,8 @@
   "timer.in": "{n}분 뒤",
   "timer.now": "곧",
   "menu.openPanel": "백그라운드 패널 열기",
+  "menu.viewKind": "종류별로 보기 (지금: 세션별)",
+  "menu.viewSession": "세션별로 보기 (지금: 종류별)",
   "menu.collapseAll": "모두 접기",
   "menu.expandAll": "모두 펼치기",
   "session.unknown": "대화 미상"

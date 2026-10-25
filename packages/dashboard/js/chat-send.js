@@ -81,6 +81,7 @@
       });
       const addFiles = async (files) => {
         await ensureAttachLimits(); // 모르면 여기서 한 번 더 묻는다(부팅 때 못 받았을 수 있다).
+        let added = 0;
         for (const f of files) {
           const queuedBytes = pendingAttachments.reduce((n, a) => n + (a.bytes || 0), 0);
           const why = attachRejection(pendingAttachments.length, queuedBytes, f.size, attachLimits);
@@ -90,9 +91,13 @@
           try {
             const dataBase64 = await readAsBase64(f);
             pendingAttachments.push({ filename: f.name || "file", mimeType: f.type || "application/octet-stream", dataBase64, bytes: f.size });
+            added += 1;
           } catch { showToast(i18n("chat.attach.readFailed", { name: f.name }), "bad"); }
         }
         renderAttachChips();
+        // 새로 붙은 것이 있을 때만 알린다(전부 거절·읽기 실패면 안내 토스트뿐) — 펼칠지는 접기 쪽(mobile-nav.js)이 정한다.
+        //  복원(탭 전환·전송 실패)·제거는 `renderAttachChips` 만 부르므로 여기를 지나지 않는다.
+        if (added > 0 && typeof window.composerInfoAdded === "function") window.composerInfoAdded();
       };
       attachBtn.addEventListener("click", () => fileInput.click());
       fileInput.addEventListener("change", () => { if (fileInput.files && fileInput.files.length) addFiles([...fileInput.files]); fileInput.value = ""; });

@@ -60,9 +60,9 @@
         }
         const meta = document.createElement("div"); meta.className = "agent-card-meta";
         const el = document.createElement("span"); el.className = "agent-card-elapsed";
-        // 로드 순서 가드 — 정의(background-drawer.js)가 이 파일보다 뒤다.
+        // 로드 순서 가드(옛 정의 자리 기준 — 지금은 util.js 에 있다). 끝난 카드는 끝 시각에서 멈춘다(`jobElapsedMs`, 10-23).
         el.textContent =
-          typeof fmtElapsed === "function" ? fmtElapsed(now - (e.startTs || now)) : "";
+          typeof fmtElapsed === "function" ? fmtElapsed(jobElapsedMs(e, now)) : "";
         if (e.status === "running" && elapsedRegistry) elapsedRegistry.set(jobId, el);
         meta.appendChild(el);
         const hasDetail = !!(e.task || e.result || e.errorText || e.stepCount > 0);

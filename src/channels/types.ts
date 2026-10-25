@@ -187,6 +187,11 @@ export interface IncomingMessage {
    * 정확히 다시 읽는 재료. 채널이 대화 기록 행 id 로 바꿀 수 있을 때만 싣는다(시각으로 «가까운 메시지» 를 고르지 않는다).
    */
   replyToRef?: ReplyRef;
+  /**
+   * 답글 대상 **말풍선의 화면 시각**(대시보드, 2026-10-23) — 카드 위 «↩ 원문» 을 눌렀을 때 옮겨 갈 좌표일 뿐이다(모델에 싣지 않는다).
+   *  행 id 를 못 받은 말풍선(도구를 쓴 턴의 답 등)도 옮겨 갈 수 있게. 쓰는 곳은 `core/reply-preview.ts` 하나.
+   */
+  replyToAt?: number;
   /** 이 인입 메시지의 채널 메시지 id(텔레그램 message_id 등) — 대화 기록 행에 묶여, 나중에 이 메시지에 단 답글이 원문을 짚는다. */
   channelMessageRef?: ChannelMessageRef;
   /** 신규 additive — 미지정/빈 배열 = 현행 text-only 경로 (회귀 0). */

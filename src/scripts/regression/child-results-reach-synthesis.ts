@@ -103,9 +103,11 @@ const runManagerTurn = async (
           channelUserId: "u",
         } as never);
         // 합류가 **먼저** 선점한다(그래야 status=running 에서 걸린다 — 실제 순서와 같다).
-        if (viaJoin) claimJobJoin(childId);
+        // 소환자(이 매니저 턴 = `worker:<매니저>`)의 대기다 — 권리는 직속 소환자에게만 생긴다(2026-10-23).
+        const claim = viaJoin ? claimJobJoin(childId, `worker:${managerId}`) : undefined;
         await onWorkerComplete(childId, { result: body });
-        if (viaJoin) releaseJobJoin(childId);
+        releaseJobJoin(claim, { handedOff: true }); // 합류가 결과를 받아 갔다
+
       }
       // ★그리고 도구를 계속 쓴 뒤(실측 13회) 본문 **없이** 종합한다 — 압축이 먹은 상태.
       //  실제 사고의 본 보고서는 6,474자였다.

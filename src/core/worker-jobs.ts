@@ -34,6 +34,8 @@
  * MVP = 메모리 레지스트리(영속 0, W-I7 재시작 정직). scheduler `inFlight` Set 동형.
  */
 import { formatResetAt, isRateLimited, parseCooldownMs } from "./llm-runtime/rate-limit.js";
+import { resumeAtOf } from "./llm-runtime/resume-signal.js";
+import { noteLimitStop, RESUME_MARGIN_MS, resumeNoteLine, type ResumeNote } from "./limit-resume.js";
 import { bumpRevision, stampFor, RUNNING_WORK } from "./resource-revision.js";
 import { DAEMON_RESTART_INTERRUPTED } from "./inflight-turns.js";
 import { randomUUID } from "node:crypto";
@@ -81,6 +83,10 @@ const publishWorkerLifecycle = (
     label: string;
     threadKey: string;
     status: string;
+    /** 잡 시작 시각(서버) — 화면의 경과시간 기준. 실시간으로 시작된 잡도 이 값으로 «N분째» 를 그린다(2026-10-23). */
+    startedAt: number;
+    /** 끝난 시각(서버) — 있으면 화면이 경과를 여기서 멈춘다. 모르면(부팅 복구의 중단) 안 싣는다. */
+    finishedAt?: number | null;
     kind?: WorkerJobKind;
     agentName?: string;
     modelTier?: string;
@@ -109,6 +115,10 @@ const publishWorkerLifecycle = (
         // 대시보드 세션 스코프 필터가 이걸로 판정한다(프런트의 부분 지도 추측 제거).
         ownerThreadKey: resolveOwnerThreadKey(job.threadKey),
         status: job.status,
+        // ★시각은 서버가 아는 사실이다 (2026-10-23 — 종전엔 안 실어, 실시간으로 시작된 잡은 위젯에 경과가 비고
+        //  새로고침해야 보였다). 끝 시각은 숫자일 때만 — 모르는 값을 지어내지 않는다.
+        startedAt: job.startedAt,
+        ...(typeof job.finishedAt === "number" ? { finishedAt: job.finishedAt } : {}),
         // kind='agent' 면 대시보드가 서브에이전트 카드로 렌더(agentName 라벨). 미지정=worker.
         kind: job.kind ?? "worker",
         ...(job.agentName !== undefined ? { agentName: job.agentName } : {}),
@@ -265,11 +275,17 @@ export type WorkerJobKind = "worker" | "agent";
  * 잡 하나의 끝 — 결과 또는 원인. `errorName` 은 원인이 타입 오류였을 때 그 이름이다
  * (문장이 아니라 이름으로 분류하려고 — `failureKind`). 문자열 오류면 없다.
  */
-export type WorkerOutcome = { result: string } | { error: string; errorName?: string };
+export type WorkerOutcome = { result: string } | { error: string; errorName?: string; resumeAtMs?: number };
 
-/** 던져진 것 → 실패 outcome. 두 레지스트리(매니저·서브에이전트)가 이 한 곳을 쓴다 — 이름을 빠뜨리는 자리가 안 생기게. */
-export const failureOutcome = (e: unknown): WorkerOutcome =>
-  e instanceof Error ? { error: e.message, errorName: e.name } : { error: String(e) };
+/**
+ * 던져진 것 → 실패 outcome. 두 레지스트리(매니저·서브에이전트)가 이 한 곳을 쓴다 — 이름을 빠뜨리는 자리가 안 생기게.
+ * `resumeAtMs` = 런타임이 «한도이고 그 풀은 이때 쓸 수 있다» 고 정한 값(`resumeAtOf` — 2026-10-23 한도 자동 이어가기). 없으면 재개 대상이 아니다.
+ */
+export const failureOutcome = (e: unknown): WorkerOutcome => {
+  if (!(e instanceof Error)) return { error: String(e) };
+  const resumeAtMs = resumeAtOf(e);
+  return { error: e.message, errorName: e.name, ...(resumeAtMs !== undefined ? { resumeAtMs } : {}) };
+};
 
 export interface WorkerJobRecord {
   jobId: string;
@@ -342,6 +358,11 @@ export interface WorkerJobRecord {
   errorName?: string;
   /** 이 잡 좌표에서 끝난 턴들의 토큰 합계 — `recordJobTurnUsage` 가 채운다. 런타임 전용. */
   usage?: JobUsage;
+  /**
+   * 한도로 실패해 재개를 걸었거나 상한에 닿았다 — 실패 통지(raw)와 합류 결과가 **같은 칸**을 읽어 문구를 붙인다
+   *  (판단 하나, 표현 둘 — 2026-10-23 한도 자동 이어가기 §3.6). 런타임 전용.
+   */
+  limitResume?: ResumeNote;
 }
 
 /** 모듈 전역 레지스트리 — singleton 데몬 (scheduler inFlight 동형). */
@@ -426,6 +447,7 @@ export const registerJob = (input: RegisterJobInput): string => {
       label: input.label,
       threadKey: input.threadKey,
       status: "running",
+      startedAt,
       kind,
       agentName: input.agentName,
       modelTier: input.modelTier,
@@ -632,29 +654,68 @@ export const markCancelled = (jobId: string, reason: string): void => {
   publishWorkerLifecycle("worker.cancelled", job, { error: reason, task: job.task });
 };
 
-export const claimJobJoin = (jobId: string): boolean => {
-  const job = jobs.get(jobId);
-  if (job === undefined || job.status !== "running") return false;
-  joinedJobs.add(jobId);
-  return true;
-};
+/**
+ * 보고 억제 권리 하나 — **호출마다 새 객체**다(같은 소환자의 중첩 대기도 서로 다른 토큰).
+ *
+ * ★2026-10-23 (외부 GPT 검토 P1~P3 · [설계](../../docs/decisions/2026-10-23-join-owner-claim-fix.md)). 종전엔 jobId 집합 하나라
+ *  ①누가 기다리는지 안 봐서 **소환자가 아닌 대기**(형제 매니저의 관찰)가 소환자 보고를 막았고(실사례: 메인 대화 완료 보고 누락)
+ *  ②해제가 jobId 로 지워 **남이 얻은 권리**까지 풀었고 ③취소된 대기도 시한까지 권리를 쥐었다.
+ *  그래서 권리를 «호출이 쥔 토큰» 으로 바꾸고, 그 호출의 취소 신호를 함께 든다 — abort 된 토큰은 그 순간부터 권리가 아니다.
+ */
+export type JoinClaim = { readonly jobId: string; readonly signals: readonly AbortSignal[] };
 
-/** 합류가 선점했나 — `onWorkerComplete` 가 밀어넣기를 건너뛸지 판정한다. */
-export const isJobJoined = (jobId: string): boolean => joinedJobs.has(jobId);
+const claimLive = (c: JoinClaim): boolean => !c.signals.some((s) => s.aborted);
 
 /**
- * 선점을 **푼다** — 합류가 «더는 기다리지 않는다» 고 알린다.
+ * 이 잡의 결과를 합류로 받겠다고 권리를 건다 — **직속 소환자의 대기만**.
  *
- * ★반드시 `finally` 에서 부른다 (2026-09-03 적대 검토 P-B, 실측 재현). 선점한 채로 부모
- *  턴이 죽으면(`/stop`·브리지 끊김·턴 실패·매니저 취소) `onWorkerComplete` 가 «합류가
- *  받아갔다» 고 보고 배달을 건너뛰어 **결과가 조용히 사라진다.** 검토자가 고아 프로미스로
- *  재현했다: 재주입 0건(대조군 1건), 로그엔 «선점 — 재주입 생략» 한 줄만.
- * ★그리고 그 자동 복구(시한 초과 시 해제)는 기본 시한이 무한이라 **절대 안 돌았다**(P-A).
- *  둘이 겹쳐 «영구 유실» 이 됐다 — 그래서 시한을 유한으로 바꾸고 해제를 `finally` 로 옮겼다.
- *  ★이 집합은 **결과를 잃지 않는 쪽으로** 실패해야 한다: 못 받았으면 종전 경로가 받는다.
+ * ★대기자 좌표는 호출 문맥(`parentInput.threadKey`)에서만 온다 — 도구 인자가 아니다. 그대로의 좌표로 비교한다:
+ *  최상위 세션으로 환원하면 같은 세션의 형제 매니저가 같아져 ①이 다시 열린다. 권리가 없어도 기다려 결과를 받는 건 된다(관찰).
+ * 이미 끝난 잡 · 이미 취소된 대기 → 권리 없음(`undefined`) — 그때는 재주입이 이미 갔거나 가야 한다.
  */
-export const releaseJobJoin = (jobId: string): void => {
-  joinedJobs.delete(jobId);
+export const claimJobJoin = (
+  jobId: string,
+  waiterThreadKey: string | undefined,
+  signals: readonly AbortSignal[] = [],
+): JoinClaim | undefined => {
+  const job = jobs.get(jobId);
+  if (job === undefined || job.status !== "running") return undefined;
+  if (typeof waiterThreadKey !== "string" || waiterThreadKey === "" || job.threadKey !== waiterThreadKey) return undefined;
+  const claim: JoinClaim = { jobId, signals: [...signals] };
+  if (!claimLive(claim)) return undefined;
+  const set = joinClaims.get(jobId) ?? new Set<JoinClaim>();
+  set.add(claim);
+  joinClaims.set(jobId, set);
+  return claim;
+};
+
+/** 살아 있는 권리가 있나 — `deliverCompletion` ⓪이 배달을 **보류할지** 판정한다(취소된 토큰은 세지 않는다). */
+export const isJobJoined = (jobId: string): boolean => {
+  for (const c of joinClaims.get(jobId) ?? []) if (claimLive(c)) return true;
+  return false;
+};
+
+/**
+ * 그 호출이 쥔 권리 **하나만** 푼다 — `wait_for_worker` 핸들러의 `finally` 가 부른다(어떤 경로로 끝나든).
+ *
+ * ★`handedOff` = 그 호출이 이 잡의 최종 결과를 **살아 있는 채로 반환했나**. 보류된 배달은 그때만 버린다.
+ *  못 넘겼으면(취소·예외·시한 «진행 중» 기록) 살아 있는 권리가 더 없을 때 **종전 소환자 보고 경로**로 보낸다 —
+ *  이 집합은 **결과를 잃지 않는 쪽으로** 실패해야 한다(2026-09-03 P-B 를 «취소된 합류» 까지 넓힌 것).
+ * ★보류분은 첫 await 전에 **동기적으로 꺼낸다** — 겹친 두 해제가 같은 결과를 두 번 보내지 못한다.
+ */
+export const releaseJobJoin = (claim: JoinClaim | undefined, opts: { handedOff: boolean }): void => {
+  if (claim === undefined) return;
+  const set = joinClaims.get(claim.jobId);
+  if (set !== undefined) {
+    set.delete(claim);
+    if (set.size === 0) joinClaims.delete(claim.jobId);
+  }
+  const parked = parkedCompletions.get(claim.jobId);
+  if (parked === undefined) return;
+  if (opts.handedOff) parked.handedOff = true;
+  if (isJobJoined(claim.jobId)) return; // 아직 넘겨받을 수 있는 대기가 있다 — 그 호출이 정한다.
+  parkedCompletions.delete(claim.jobId);
+  void closeParkedCompletion(parked);
 };
 
 /**
@@ -681,25 +742,26 @@ export const awaitJobOutcome = async (
   jobId: string,
   timeoutMs: number,
   pollMs = 200,
+  signals: readonly AbortSignal[] = [],
 ): Promise<WorkerJobRecord | undefined> => {
+  // ★권리를 **건드리지 않는다** (2026-10-23) — 종전엔 완료·시한에서 jobId 로 지워 관찰자의 대기가 소환자의 권리를 풀었다(P2).
+  //  해제는 권리를 얻은 호출의 몫이다(`releaseJobJoin`). 시한 초과·취소면 running 그대로 반환한다(호출자가 «진행 중» 으로 보고).
   const deadline = Date.now() + resolveJoinTimeoutMs(timeoutMs);
   for (;;) {
     const job = jobs.get(jobId);
     if (job === undefined) return undefined; // 모르는 잡 — 호출자가 «없음» 으로 보고한다.
-    if (job.status !== "running") {
-      joinedJobs.delete(jobId); // 받았으니 선점 해제(누수 0).
-      return job;
-    }
-    if (Date.now() >= deadline) {
-      // ★**선점을 반드시 푼다** — 안 풀면 나중에 자식이 끝나도 `onWorkerComplete` 가
-      //  «합류가 받아갔다» 고 보고 배달을 건너뛴다. 즉 **결과가 조용히 사라진다.**
-      //  (2026-09-03 이 함수를 만들면서 낸 결함 — 분류 검토 중에 잡았다.)
-      //  합류가 못 받았으면 종전 경로가 받아야 한다: 이 집합은 **결과를 잃지 않는 쪽으로**
-      //  실패해야 한다.
-      joinedJobs.delete(jobId);
-      return job; // running 그대로 반환 = 시한 초과 신호.
-    }
-    await new Promise((r) => setTimeout(r, pollMs));
+    if (job.status !== "running") return job;
+    if (Date.now() >= deadline || signals.some((s) => s.aborted)) return job;
+    // 폴 간격을 기다리되 취소되면 바로 깬다(취소된 턴을 시한까지 붙잡지 않는다).
+    await new Promise<void>((resolve) => {
+      const wake = (): void => {
+        clearTimeout(timer);
+        for (const s of signals) s.removeEventListener("abort", wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, pollMs);
+      for (const s of signals) s.addEventListener("abort", wake, { once: true });
+    });
   }
 };
 
@@ -905,7 +967,7 @@ interface CheckinEvidence {
    *  `seq` 는 어댑터가 도구 start/end 를 잇는 호출 식별자다(claude `timing.seq`,
    *  codex `callIdToSeq`) — 그게 곧 호출의 정체다.
    */
-  inFlight: Map<string, { tool: string; at: number }>;
+  inFlight: Map<string, { tool: string; at: number; detail?: string }>;
   /** 마지막 활동 시각. */
   lastActivityAt: number;
   /**
@@ -913,6 +975,13 @@ interface CheckinEvidence {
    * 모델이 이미 쓴 구조화 필드라 추가 호출·문장 해석 0. 쓸지는 모델 판단이라 없는 작업이 더 많다(그땐 안 그린다).
    */
   todos?: ReadonlyArray<{ content: string; status: string; activeForm?: string }>;
+  /** 그 할 일이 마지막으로 적힌 시각 — 진행 알림이 «그 구간에 갱신 없음(낡음)» 을 가른다(2026-10-23). 이월한다. */
+  todosAt?: number;
+  /**
+   * 마지막 진행 알림 이후 **성공한** 파일 쓰기·커밋 — 종료 이벤트에서 센다(2026-10-23, 운영 인스턴스 실사례: 커밋 셋이 있었는데 요약이
+   *  «진행 없음» — 커밋 호출은 최근 행동 40개 밖으로 밀렸고 명령 줄은 잘렸다). 알림을 보내면 0으로. 이월한다.
+   */
+  outputsSinceProgress?: ProgressOutputs;
   /** 최근 도구 행동(바운드 `PROGRESS_RECENT_CAP`) — 진행 알림의 원료(`job-progress.ts`). 점검 주기가 바뀌어도 **이월**한다. */
   recent: ProgressAction[];
   /** 마지막 진행 알림 시각 — 없으면 잡 시작부터 잰다. 이월한다. */
@@ -1113,6 +1182,8 @@ const deliverCheckin = async (
         reply: reinjectReply,
         // ★점검 재주입도 같은 좌표로 나간다 — 중복 차단 대상.
         replyTarget: { channel: dest.channel, target: dest.target ?? null },
+        // 이 턴의 사람 도달 좌표 = 잡의 보고 좌표 — 완료 재주입과 같은 규칙(`turnReachOf`).
+        ...turnReachOf(reportJob),
         // 선택지도 같은 좌표로(완료 재주입과 같은 처방 — 없으면 «함께 보낼 채널» 에만 간다).
         ...((): { presentOptions?: NonNullable<ReturnType<typeof optionsPresenterFor>> } => {
           const p = optionsPresenterFor(dest.channel, dest.target ?? null, reportJob.threadKey); // 고른 값은 물어본 스레드로
@@ -1168,6 +1239,8 @@ const maybeSendProgress = (job: WorkerJobRecord, ev: CheckinEvidence, now: numbe
   ev.activeSinceProgress = false;
   const errors = ev.errorsSinceProgress ?? 0;
   ev.errorsSinceProgress = 0;
+  const outputs = ev.outputsSinceProgress;
+  ev.outputsSinceProgress = undefined;
   const actions = actionsSince(ev.recent, since);
   void (async (): Promise<void> => {
     const composed = await composeProgressNotice({
@@ -1181,6 +1254,9 @@ const maybeSendProgress = (job: WorkerJobRecord, ev: CheckinEvidence, now: numbe
       elapsedMs: now - job.startedAt,
       actions,
       todos: ev.todos,
+      ...(ev.todosAt !== undefined ? { todosAt: ev.todosAt } : {}),
+      since,
+      ...(outputs !== undefined ? { outputs } : {}),
       language: readLocale() === "ko" ? "한국어" : "English",
     });
     if (composed === null) {
@@ -1264,8 +1340,10 @@ const checkinTick = (nowArg?: number): void => {
     next.activeSinceProgress = ev.activeSinceProgress;
     next.lastRealActivityAt = ev.lastRealActivityAt;
     next.errorsSinceProgress = ev.errorsSinceProgress;
+    next.outputsSinceProgress = ev.outputsSinceProgress;
     // 할 일도 이월한다 — 빠지면 점검 한 번 뒤 작업 카드 📋 와 진행 알림의 할 일 줄이 다음 update_todos 까지 사라졌다(2026-10-14 적대 검토 P1).
     next.todos = ev.todos;
+    next.todosAt = ev.todosAt;
     evidence.set(job.jobId, next);
 
     console.log(
@@ -1345,6 +1423,7 @@ const startCheckinScanner = (): void => {
         .slice(0, 50)
         .filter((x) => typeof x?.content === "string" && typeof x?.status === "string")
         .map((x) => ({ content: x.content as string, status: x.status as string, ...(typeof x.activeForm === "string" ? { activeForm: x.activeForm } : {}) }));
+      rec.todosAt = Date.now();
       return;
     }
     if (ev.type !== "llm.activity") return;
@@ -1378,16 +1457,26 @@ const startCheckinScanner = (): void => {
       //  세 어댑터의 시작 이벤트(전부 phase 없음)를 하나도 못 셌다: 진행 중 도구가 늘 비어 긴 Bash 하나만 도는 잡이 «완전 침묵» 으로
       //  자동 종료될 수 있었고, 진행 알림은 «최근 행동 0건» 만 냈다(2026-10-14 돌쇠 실검증에서 발견 — 검사가 phase:"start" 를 손으로 넣어 못 봤다).
       if (p.phase !== "end") {
-        rec.inFlight.set(callKey, { tool: label, at: now });
         const detail = (p as { detail?: unknown }).detail;
+        rec.inFlight.set(callKey, { tool: label, at: now, ...(typeof detail === "string" ? { detail } : {}) });
         pushRecentAction(rec.recent, { at: now, tool: label, key: callKey, ...(typeof detail === "string" ? { detail } : {}) });
       } else {
+        const started = rec.inFlight.get(callKey);
         rec.inFlight.delete(callKey);
+        const output = (p as { output?: { isError?: unknown; text?: unknown } }).output;
         // 오류로 끝난 호출은 진행 알림이 «오류 N건» 을 하네스 몫으로 붙인다(요약이 감춰도 남게).
-        if ((p as { output?: { isError?: unknown } }).output?.isError === true) {
+        if (output?.isError === true) {
           rec.errorsSinceProgress = (rec.errorsSinceProgress ?? 0) + 1;
           const hit = [...rec.recent].reverse().find((a) => a.key === callKey);
           if (hit !== undefined) hit.error = true;
+        } else {
+          // 성공한 산출 — 파일 쓰기(이름표)·커밋(`git commit` 명령 + 출력의 요약 줄 + 성공). 진행 알림이 하네스 몫으로 붙인다.
+          const writes = isFileWriteTool(label) ? 1 : 0;
+          const commits = commitsMade(started?.detail, typeof output?.text === "string" ? output.text : undefined);
+          if (writes + commits > 0) {
+            const o = rec.outputsSinceProgress ?? { writes: 0, commits: 0 };
+            rec.outputsSinceProgress = { writes: o.writes + writes, commits: o.commits + commits };
+          }
         }
       }
     } else if (p.kind === "text") {
@@ -1445,11 +1534,15 @@ export const __checkinTickForTest = (now?: number): void => checkinTick(now);
 /** 검사용 — 그 잡의 점검 증거 중 이월돼야 하는 필드(무활동 분기 뒤에도 남는가). */
 export const __checkinEvidenceForTest = (
   jobId: string,
-): { recent: number; todos: number; lastProgressAt?: number; activeSinceProgress?: boolean } | undefined => {
+): { recent: number; todos: number; todosAt?: number; outputs?: string; lastProgressAt?: number; activeSinceProgress?: boolean } | undefined => {
   const ev = evidence.get(jobId);
   return ev === undefined
     ? undefined
-    : { recent: ev.recent.length, todos: ev.todos?.length ?? 0, lastProgressAt: ev.lastProgressAt, activeSinceProgress: ev.activeSinceProgress };
+    : {
+        recent: ev.recent.length, todos: ev.todos?.length ?? 0, todosAt: ev.todosAt,
+        outputs: ev.outputsSinceProgress === undefined ? undefined : `${ev.outputsSinceProgress.writes}/${ev.outputsSinceProgress.commits}`,
+        lastProgressAt: ev.lastProgressAt, activeSinceProgress: ev.activeSinceProgress,
+      };
 };
 
 export const resolveOwnerThreadKey = (
@@ -1717,8 +1810,20 @@ export const takeUndeliveredChildResults = (
   return out;
 };
 
+/** 검사 전용 — 합류 권리·보류 배달이 남았나(누수 판정). */
+export const __joinStateForTest = (): { claims: number; parked: number } => ({
+  claims: [...joinClaims.values()].reduce((n, set) => n + set.size, 0),
+  parked: parkedCompletions.size,
+});
+/** 검사 전용 — 보관 상한 정리처럼 잡을 맵에서만 뺀다(보류 배달이 레코드를 들고 있는지 보려고). */
+export const __forgetJobForTest = (jobId: string): void => {
+  jobs.delete(jobId);
+};
+
 export const __resetJobsForTest = (): void => {
   jobs.clear();
+  joinClaims.clear();
+  parkedCompletions.clear();
   cancelHooks.clear();
   pendingTurnIds.clear();
 };
@@ -1891,13 +1996,19 @@ export const SUBAGENT_TIMEOUT_MS = parseTimeoutEnv(
  * ★**선점을 못 한 경우는 종전대로 둔다.** 자식이 합류 전에 이미 끝나 결과가 배달됐다면
  *  그건 «늦게 합류한» 것이고, 그때는 재주입이 옳다(결과를 잃는 것보다 두 번 보는 게 낫다).
  *  즉 이 집합은 **결과를 잃지 않는 쪽으로** 실패한다.
+ * ★2026-10-23 — jobId 집합에서 «잡 → 호출별 토큰» 으로(직속 소환자만 · 자기 토큰만 해제 · 취소된 토큰은 무효, `JoinClaim`).
  */
-const joinedJobs = new Set<string>();
+const joinClaims = new Map<string, Set<JoinClaim>>();
 
 /**
- * 이 잡의 결과를 합류로 받겠다고 선점한다.
- * 이미 끝난 잡이면 `false` — 그때는 재주입이 이미 갔거나 가는 중이라 선점이 의미 없다.
+ * **배달 보류(주차)** — 살아 있는 합류 권리가 있을 때 끝난 잡의 배달을 여기 둔다(2026-10-23, 종전엔 «건너뜀»).
+ *
+ * ★잡 레코드 **자체**를 든다 — 보류 중 보관 상한(`pruneTerminalJobsInMemory`)이 맵에서 지워도 배달 재료가 남는다.
+ *  닫는 곳은 `releaseJobJoin` 하나다(권리가 모두 풀릴 때).
  */
+type ParkedCompletion = { job: WorkerJobRecord; outcome: WorkerOutcome; late: readonly string[]; handedOff: boolean };
+const parkedCompletions = new Map<string, ParkedCompletion>();
+
 /**
  * **합류의 기본 시한** (ms) — 1분. env `JOIN_WAIT_TIMEOUT_MS`.
  *
@@ -2480,7 +2591,10 @@ import {
   notifySessionThreadKey,
   telegramTargetFor,
 } from "../store/sessions.js";
-import { actionsSince, composeProgressNotice, isProgressDue, pushRecentAction, type ProgressAction } from "./job-progress.js";
+import {
+  actionsSince, commitsMade, composeProgressNotice, isFileWriteTool, isProgressDue, pushRecentAction,
+  type ProgressAction, type ProgressOutputs,
+} from "./job-progress.js";
 import { readProgressNoticeSettings } from "./settings.js";
 import { readLocale } from "./i18n.js";
 // 통지 문구는 판정과 같은 자리(tool-watchdog)에서 만든다 — 두 곳에 두면 한쪽만 늙는다.
@@ -2553,6 +2667,19 @@ const destForJob = (job: {
     channel: job.channel,
     target: deriveTargetFromThreadKey(job.channel, job.threadKey),
   };
+
+/**
+ * 잡이 여는 턴의 **사람 도달 좌표** — 잡의 보고 좌표를 그대로 싣는다(2026-10-24 Windows 운영 인스턴스). 합성 턴(완료 재주입·점검)과
+ *  매니저 자신의 턴(`worker-registry` 의 `reach`)이 같이 쓴다 — 같은 규칙을 두 자리에 두지 않는다.
+ * ★사고: 대시보드에서 띄운 매니저 A 의 완료 보고 턴엔 좌표가 하나도 없었다(`session` 은 정규화가 필요할 때만 싣는다).
+ *  그 턴에서 띄운 매니저 B 는 `spawnNotifyDest` 가 undefined 를 캡처했고, B 완료 턴의 `send_file` 이
+ *  «http-bridge target required» 로 막혔다.
+ * ★`channelAddress`·`session` 으로 싣지 않는다 — 앞은 채널과 주소 쌍이 섞이고(대화=대시보드·결과=텔레그램),
+ *  뒤는 세션 정체성과 세션 메타(last_channel_target)를 바꾼다. 보고 좌표가 없는 잡은 비워 둔다 →
+ *  자식이 같은 (채널, 스레드)로 `destForJob` 폴백(종전과 같다).
+ */
+export const turnReachOf = (job: { notifyDest?: WorkerNotifyDest }): { notifyDest?: WorkerNotifyDest } =>
+  job.notifyDest !== undefined ? { notifyDest: job.notifyDest } : {};
 
 /**
  * 띄우는 턴의 좌표에서 **보고 좌표를 스폰 시점에 캡처**한다 — 매니저·서브에이전트 공용.
@@ -2860,7 +2987,19 @@ const buildRawNotice = (job: WorkerJobRecord): string => {
   // 존재, region 도메인). 카운트를 *지어내지 않고* 일부 진행 가능성을 정직히 안내해
   // 사용자가 이어서/처음부터 중 결정하게 한다(임무 §3 — feasible 범위 한도).
   // 원인이 비면(`job.error` 없음) `humanizeWorkerError` 가 «알 수 없는 오류» 를 사용자 언어로 낸다.
-  return translate("srv.job.failed", { label: job.label, cause: humanizeWorkerError(job.error ?? "", job.errorName) });
+  // ★한도 자동 이어가기 (2026-10-23 §3.8) — 재개를 걸었으면 «다시 시켜주세요»·«알려주시면» 대신 «{when} 이어서 · 취소 길» 을 **같은 메시지**에.
+  const note = job.limitResume;
+  if (note?.kind === "armed") {
+    const now = Date.now();
+    const ms = parseCooldownMs(job.error ?? "") ?? Math.max(0, note.wakeAt - RESUME_MARGIN_MS - now);
+    return translate("srv.job.failedLimitResume", {
+      label: job.label,
+      cause: translate("srv.job.error.limitPaused", { when: formatResetAt(ms, now) }),
+      resume: resumeNoteLine(note, now),
+    });
+  }
+  const failed = translate("srv.job.failed", { label: job.label, cause: humanizeWorkerError(job.error ?? "", job.errorName) });
+  return note?.kind === "capped" ? `${failed}\n${resumeNoteLine(note)}` : failed;
 };
 
 /** 작업자가 끝난 뒤 도착해 반영 못 한 지시 — raw 통지 꼬리. 비면 "". */
@@ -3059,6 +3198,33 @@ const deliverToSummoner = (
   return ok;
 };
 
+/**
+ * 한도로 실패한 **최상위 작업**(소환자가 세션)이면 그 대화에 재개를 건다 — 결과는 잡의 `limitResume` 칸(통지·합류가 같이 읽는다).
+ * 소환자가 매니저인 하위 작업은 대상이 아니다(돌고 있으면 매니저 결과함으로 가고, 끝났으면 매니저가 항목이다 — 설계 §3.5 표). ★그 판정은
+ *  `noteLimitStop` 의 «사람의 대화인가» 한 곳이다 — 하위 작업의 좌표는 늘 `worker:`/`agent:` 라 거기서 빠진다(여기서 또 가르면 같은 판단 두 벌).
+ * 저장소 실패는 삼킨다 — 그러면 현행 통지 그대로(Q6).
+ */
+const noteJobLimitStop = (jobId: string, outcome: WorkerOutcome): void => {
+  if (!("error" in outcome) || outcome.resumeAtMs === undefined) return;
+  const job = jobs.get(jobId);
+  if (job === undefined || job.status !== "failed") return;
+  try {
+    const note = noteLimitStop({
+      session: job.threadKey,
+      resumeAtMs: outcome.resumeAtMs,
+      item: { kind: "job", at: Date.now(), label: job.label, jobId, ...(job.modelTier !== undefined ? { modelTier: String(job.modelTier) } : {}) },
+      dest: destForJob(job),
+    });
+    if (note !== undefined) job.limitResume = note;
+  } catch (e) {
+    console.warn(`worker-jobs: '${job.label}'(${jobId}) 한도 재개를 못 걸었다 — 현행 통지로: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
+
+/** 합류 결과의 실패 꼬리 — 재개를 걸었거나 상한이면 같은 한 줄(통지와 같은 칸). 없으면 "". */
+export const jobLimitResumeLine = (job: WorkerJobRecord): string =>
+  job.limitResume === undefined ? "" : `\n${resumeNoteLine(job.limitResume)}`;
+
 /** 잡이 아직 도는가 — 중복 소환 판정이 «이미 끝난 잡» 을 돌려주지 않게(2026-10-02 적대 검토 P-4). */
 export const isJobRunning = (jobId: string): boolean => jobs.get(jobId)?.status === "running";
 
@@ -3071,7 +3237,7 @@ const deliverCompletion = async (
   jobId: string,
   outcome: WorkerOutcome,
   lateUserMessages: readonly string[],
-): Promise<boolean> => {
+): Promise<boolean | "parked"> => {
   // 1) 레지스트리 마킹. 단 이미 cancelled 면(cancelJob 이 abort 전 마킹) 그 status 보존 —
   //    abort 가 runRegionA 를 reject 시켜 여기로 error 가 와도 "실패" 아닌 "취소"로 통지.
   const existing = jobs.get(jobId);
@@ -3084,6 +3250,8 @@ const deliverCompletion = async (
     // 시크릿 누수 0 — redactSecrets 통과 후 기록 (architect §7).
     const { redactSecrets } = await import("./outbound-sanitize.js");
     markFailed(jobId, redactSecrets(outcome.error), outcome.errorName);
+    // ★한도 자동 이어가기 (2026-10-23 §3.6) — 마킹 **바로 다음, await 없이**: 합류 쪽이 상태를 읽을 때 이미 칸이 있다.
+    noteJobLimitStop(jobId, outcome);
   }
 
   const found = jobs.get(jobId);
@@ -3091,17 +3259,31 @@ const deliverCompletion = async (
     console.error(`worker-jobs: onWorkerComplete unknown jobId=${jobId}`);
     return false;
   }
-  // ─── ⓪ **합류가 선점했으면 밀어넣지 않는다** (2026-09-03) ─────────────────────────
-  //  `wait_for_worker` 로 부른 쪽이 결과를 직접 받는다. 여기서 또 밀어넣으면 **같은 것을
-  //  두 번 보고**한다. 상태 마킹(markDone/markFailed)은 **위에서 이미 끝났으므로**
-  //  합류 쪽이 그 값을 읽는다 — 여기서 거르는 건 «배달» 뿐이다.
+  // ─── ⓪ **합류가 선점했으면 지금 밀어넣지 않는다** (2026-09-03 · 2026-10-23 «보류») ───────────
+  //  `wait_for_worker` 로 부른 **직속 소환자**가 결과를 직접 받는다. 여기서 또 밀어넣으면 **같은 것을
+  //  두 번 보고**한다. 상태 마킹(markDone/markFailed)은 **위에서 이미 끝났으므로** 합류 쪽이 그 값을 읽는다.
+  //  ★버리지 않고 **보류**한다 — 그 합류가 결과를 넘기지 못하고 끝나면(취소·예외·시한) `releaseJobJoin` 이
+  //   아래 ① 이하로 보낸다(종전엔 여기서 끝이라 그 결과가 사라졌다 — 외부 GPT 검토 R1-1·R1-2).
   if (isJobJoined(jobId)) {
+    parkedCompletions.set(jobId, { job: found, outcome, late: lateUserMessages, handedOff: false });
     console.log(
-      `worker-jobs: '${found.label}'(${jobId}) 는 합류(wait_for_worker)가 선점 — 재주입 생략`,
+      `worker-jobs: '${found.label}'(${jobId}) 는 합류(wait_for_worker)가 선점 — 배달 보류(합류가 넘겨받으면 재주입 생략)`,
     );
-    return false;
+    return "parked";
   }
+  return routeCompletion(found, jobId, outcome, lateUserMessages);
+};
 
+/**
+ * ⓪ 이후의 배달 — 결과 수신함 → 연쇄 취소 → 좌표 환원 → 실패 raw / 메인 재주입 + 안전망. 메인 완료 턴으로 갔으면 true.
+ * ★`deliverCompletion` 과 보류를 닫는 `closeParkedCompletion` 만 부른다(두 번째 배달 경로를 만들지 않는다).
+ */
+const routeCompletion = async (
+  found: WorkerJobRecord,
+  jobId: string,
+  outcome: WorkerOutcome,
+  lateUserMessages: readonly string[],
+): Promise<boolean> => {
   // ─── ① 소환자가 **돌고 있는 매니저**면 그 턴의 steering 큐로 (ADR 2026-08-19 §4) ────
   // 새 턴을 여는 아래 경로보다 **먼저** 본다: 매니저 좌표(`worker:<id>`)로 합성 유저턴을
   // 열면 그 턴은 돌고 있는 매니저에게 안 닿고(매니저는 핸들러가 아니라 runRegionA 안이다)
@@ -3276,6 +3458,8 @@ const deliverCompletion = async (
     ...(completionPresentOptions !== undefined ? { presentOptions: completionPresentOptions } : {}),
     // ★이 답이 실제로 나가는 좌표 — egress fan-out 이 같은 곳에 또 보내지 않게.
     replyTarget: { channel: dest.channel, target: dest.target ?? null },
+    // ★이 턴에서 띄우는 매니저·서브의 보고 좌표 · 턴 밖 통지(쿨다운) 좌표 — `turnReachOf` 주석.
+    ...turnReachOf(job),
   };
 
   // 메인 핸들러로 재주입 (유저 interim turn 과 직렬). ★ mainHandler(=serializedHandler)
@@ -3323,14 +3507,45 @@ export const onWorkerComplete = async (
   lateUserMessages: readonly string[] = [],
 ): Promise<void> => {
   const carried = await deliverCompletion(jobId, outcome, lateUserMessages);
+  if (carried === "parked") return; // 늦은 지시는 보류를 닫는 쪽이 같은 규칙(`afterRoute`)으로 정한다.
+  await afterRoute(jobs.get(jobId), carried, lateUserMessages);
+};
+
+/** 완료 배달 뒤 늦은 지시 — 메인 완료 턴에 실렸으면(carried) 끝, 아니면 소유자에게 따로 알린다(한 곳에서 정한다). */
+const afterRoute = async (
+  job: WorkerJobRecord | undefined,
+  carried: boolean,
+  lateUserMessages: readonly string[],
+): Promise<void> => {
   if (carried || lateUserMessages.length === 0) return;
-  const job = jobs.get(jobId);
   if (job === undefined) return;
   try {
     await notifyJobOwner(job, lateNotice(lateUserMessages, job.label).trimStart());
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
-    console.error(`worker-jobs: 늦은 지시 통지 실패 (job='${job.label}' ${jobId}): ${reason}`);
+    console.error(`worker-jobs: 늦은 지시 통지 실패 (job='${job.label}' ${job.jobId}): ${reason}`);
+  }
+};
+
+/**
+ * 보류한 배달을 닫는다 — `releaseJobJoin` 이 **동기적으로 꺼낸 값만** 들고 온다(정확히 한 번).
+ * 합류가 넘겨받았으면 종전 «합류가 받아감» 그대로(늦은 지시만 따로), 못 넘겨받았으면 ① 이하로 보낸다.
+ */
+const closeParkedCompletion = async (p: ParkedCompletion): Promise<void> => {
+  const { job, outcome, late } = p;
+  try {
+    if (p.handedOff) {
+      console.log(`worker-jobs: '${job.label}'(${job.jobId}) 합류가 결과를 넘겨받음 — 재주입 생략`);
+      await afterRoute(job, false, late);
+      return;
+    }
+    console.log(
+      `worker-jobs: '${job.label}'(${job.jobId}) 합류가 결과를 넘기지 못하고 끝남(취소·시한·예외) — 보류한 배달을 소환자 보고 경로로`,
+    );
+    await afterRoute(job, await routeCompletion(job, job.jobId, outcome, late), late);
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`worker-jobs: 보류한 배달 실패 (job='${job.label}' ${job.jobId}): ${reason}`);
   }
 };
 
@@ -3355,7 +3570,8 @@ const publishInterrupted = (
   job: ReturnType<typeof listInterruptedWorkerJobs>[number],
 ): void => {
   try {
-    publishWorkerLifecycle("worker.interrupted", { ...job, status: "interrupted" }, {
+    // ★끝 시각은 싣지 않는다 — 데몬이 죽은 사이 언제 멈췄는지 모른다(복구 시각은 끝 시각이 아니다).
+    publishWorkerLifecycle("worker.interrupted", { ...job, status: "interrupted", finishedAt: null }, {
       error: DAEMON_RESTART_INTERRUPTED,
       task: (job as { task?: string }).task,
     });

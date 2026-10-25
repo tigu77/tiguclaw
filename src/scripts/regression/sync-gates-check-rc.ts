@@ -30,8 +30,12 @@ import { skip } from "./_framework.js";
  *  실패를 비영으로 만드는지 본다(문장만 검사하면 헬퍼가 망가져도 초록이다).
  */
 import { readFile, stat } from "node:fs/promises";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { execFile } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { blockContaining, runSyncBlock, sectionBlock } from "./_sync-blocks.js";
 
 const REPO = new URL("../../../", import.meta.url);
 
@@ -91,6 +95,18 @@ export const check: RegressionCheck = {
     const sourced = multi.filter((b) => /sync-gate\.sh/.test(b));
 
     const helperSrc = await readFile(new URL("_workspace/sync-gate.sh", REPO), "utf8");
+    // ★`gate`·`need`·`run` 은 실패를 **기록만** 한다 — 블록 rc 는 `gate_done`(또는 그 줄의 `|| exit`)이 만든다.
+    //  §5 가 `gate_done` 없이 `git add -A` 로 끝나, 그 안의 게이트가 실패해도 블록이 rc=0 이었다(2026-10-25 적발).
+    const recordsOnly = /^[ \t]*(gate|need|run)[ \t](?![^\n]*\|\|[ \t]*exit)/m;
+    const unclosed = blocks.filter((b) => recordsOnly.test(b) && !/^[ \t]*gate_done\b/m.test(b));
+    // ★`gate_done` 이 «있다» 로는 부족하다 — 그 뒤에 명령이 오면 블록 rc 는 그 명령의 것이다(`gate_done` 다음 `true` 한 줄로
+    //  실패가 사라졌다 — GPT 검토 10-25). 마지막 명령이거나, 그 줄에서 `|| exit` 로 끊어야 한다.
+    const effective = (b: string): string[] => b.split("\n").map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#") && l !== ")");
+    const doneNotFinal = blocks.filter((b) => {
+      const e = effective(b);
+      const i = e.findIndex((l) => /^gate_done\b/.test(l));
+      return i >= 0 && i !== e.length - 1 && !/^gate_done\s*\|\|\s*exit\b/.test(e[i]!);
+    });
 
     const out: Assertion[] = [
       assert(
@@ -108,6 +124,16 @@ export const check: RegressionCheck = {
         // 스킬 본문이 `gate() {` 를 다시 정의하지 않는다.
         !/^\s*gate\(\) \{/m.test(skill) && /^gate\(\) \{/m.test(helperSrc),
         `스킬 안 재정의 ${/^\s*gate\(\) \{/m.test(skill)} · 헬퍼에 정의 ${/^gate\(\) \{/m.test(helperSrc)}`,
+      ),
+      assert(
+        "★헬퍼로 실패를 기록하는 블록은 `gate_done`(또는 그 줄의 `|| exit`)으로 rc 를 만든다",
+        unclosed.length === 0,
+        `닫히지 않은 블록 ${unclosed.length}개${unclosed.map((b) => ` · «${b.split("\n").find((l) => recordsOnly.test(l))?.trim().slice(0, 60) ?? ""}»`).join("")}`,
+      ),
+      assert(
+        "★`gate_done` 은 블록의 마지막 명령이거나 그 줄에서 `|| exit` 로 끊는다 — 뒤에 명령이 오면 실패가 그 rc 로 덮인다",
+        doneNotFinal.length === 0,
+        `어긋난 블록 ${doneNotFinal.length}개${doneNotFinal.map((b) => ` · «${effective(b).slice(-1)[0]?.slice(0, 60) ?? ""}»`).join("")}`,
       ),
     ];
 
@@ -145,6 +171,71 @@ export const check: RegressionCheck = {
         `exit 7 보고: ${/rc=7/.test(rcKept.out) ? "rc=7" : rcKept.out.slice(0, 120)}`,
       ),
     );
+
+    // ── ③ push·설치를 가르는 **실제 블록**을 돌린다(§6·R5·§7) ────────────────────
+    //  ★헬퍼가 맞아도 블록이 그 rc 를 안 쓰면 소용없다 — §6 은 업데이트 검사 실패 뒤 push 했고, R5 는 CI 실패 뒤 main 에 push 했고,
+    //   §7 은 `npm ci | tee | tail` 이 실패를 삼켜 «설치 검증 완료» 까지 갔다(GPT 검토 10-25 재현). 스텁으로 실패를 넣어 rc·이후 호출을 본다.
+    //  (§5 의 대조·audit 는 `public-lock-matches-dev` 가 같은 방식으로 본다.)
+    const repoRoot = new URL(".", REPO).pathname;
+    const pushes = (r: { calls: string[] }, ref: string): number => r.calls.filter((c) => /^git .*\bpush\b/.test(c) && c.includes(ref)).length;
+    const s6 = sectionBlock(skill, "6. ");
+    const r5 = blockContaining(skill, "check-public-ci.mjs", "refs/heads/main");
+    const s7 = sectionBlock(skill, "7. ");
+    const s7boot = sectionBlock(skill, "7. ", 1);
+    out.push(assert("§6·R5·§7 의 블록을 찾는다", s6 !== undefined && r5 !== undefined && s7 !== undefined && s7boot !== undefined,
+      JSON.stringify({ s6: s6 !== undefined, r5: r5 !== undefined, s7: s7 !== undefined, s7boot: s7boot !== undefined })));
+    if (s6 !== undefined && r5 !== undefined && s7 !== undefined && s7boot !== undefined) {
+      const rel = { SYNC_MODE: "release" };
+      const s6ok = await runSyncBlock(repoRoot, s6, {}, rel);
+      const s6upd = await runSyncBlock(repoRoot, s6, { update: 7 }, rel);
+      const s6push = await runSyncBlock(repoRoot, s6, { push: 1 });
+      const s6commit = await runSyncBlock(repoRoot, s6, { commit: 7 });
+      const s6synced = await runSyncBlock(repoRoot, s6, {}, { STUB_NOTHING_STAGED: "0" });
+      const s6unpushed = await runSyncBlock(repoRoot, s6, {}, { STUB_NOTHING_STAGED: "0", STUB_REMOTE_DEV: "f".repeat(40) });
+      const s6noRemote = await runSyncBlock(repoRoot, s6, { lsRemote: 2 }, { STUB_NOTHING_STAGED: "0" });
+      const r5ok = await runSyncBlock(repoRoot, r5);
+      const r5ci = await runSyncBlock(repoRoot, r5, { ci: 7 });
+      const s7ok = await runSyncBlock(repoRoot, s7);
+      const s7ci = await runSyncBlock(repoRoot, s7, { npmCi: 7 });
+      const s7build = await runSyncBlock(repoRoot, s7, { build: 7 });
+      const bootT = mkdtempSync(path.join(os.tmpdir(), "tiguclaw-regression-bootT-"));
+      mkdirSync(path.join(bootT, "app"));
+      const bootEnv = { T: bootT };
+      const s7bOk = await runSyncBlock(repoRoot, s7boot, {}, bootEnv);
+      const s7bProd = await runSyncBlock(repoRoot, s7boot, { buildProd: 7 }, bootEnv);
+      const s7bBoot = await runSyncBlock(repoRoot, s7boot, { boot: 7 }, bootEnv);
+      rmSync(bootT, { recursive: true, force: true });
+      const done = (r: { out: string }): boolean => /설치 검증 완료/.test(r.out);
+      out.push(
+        assert("§6 정상(릴리스 모드) — 업데이트 검사 뒤 dev 로 한 번 push · 0 · SYNC_SHA 출력",
+          s6ok.rc === 0 && pushes(s6ok, "refs/heads/dev") === 1 && /SYNC_SHA=/.test(s6ok.out), `rc=${s6ok.rc} · push ${pushes(s6ok, "refs/heads/dev")}`),
+        assert("★§6 업데이트 검사가 실패하면 push 하지 않고 비영으로 끝난다",
+          s6upd.rc !== 0 && pushes(s6upd, "refs/heads/") === 0, `rc=${s6upd.rc} · push ${pushes(s6upd, "refs/heads/")}`),
+        assert("★§6 push 가 실패하면 비영 — SYNC_SHA 를 «성공» 처럼 내지 않는다",
+          s6push.rc !== 0 && !/SYNC_SHA=/.test(s6push.out), `rc=${s6push.rc}`),
+        assert("★§6 commit 이 실패하면 push 하지 않고 비영 — SYNC_SHA 도 안 낸다",
+          s6commit.rc !== 0 && pushes(s6commit, "refs/heads/") === 0 && !/SYNC_SHA=/.test(s6commit.out), `rc=${s6commit.rc} · push ${pushes(s6commit, "refs/heads/")}`),
+        assert("§6 바꿀 것 없음 + HEAD = 원격 dev — «최신 상태» 로 0 · commit·push 없음",
+          s6synced.rc === 0 && /최신 상태/.test(s6synced.out) && pushes(s6synced, "refs/heads/") === 0 && !s6synced.calls.some((c) => / commit /.test(c)),
+          `rc=${s6synced.rc} · ${s6synced.out.trim().split("\n").slice(-1)[0]?.slice(0, 80) ?? ""}`),
+        assert("★§6 바꿀 것 없음인데 HEAD ≠ 원격 dev(미전송 커밋) — «최신 상태» 가 아니라 비영",
+          s6unpushed.rc !== 0 && !/최신 상태/.test(s6unpushed.out) && pushes(s6unpushed, "refs/heads/") === 0,
+          `rc=${s6unpushed.rc} · ${s6unpushed.out.trim().split("\n").slice(-1)[0]?.slice(0, 80) ?? ""}`),
+        assert("★§6 바꿀 것 없음인데 원격 dev 조회가 실패 — «최신 상태» 가 아니라 비영 · commit·push·SYNC_SHA 없음",
+          s6noRemote.rc !== 0 && !/최신 상태/.test(s6noRemote.out) && pushes(s6noRemote, "refs/heads/") === 0 &&
+            !s6noRemote.calls.some((c) => / commit /.test(c)) && !/SYNC_SHA=/.test(s6noRemote.out),
+          `rc=${s6noRemote.rc} · ${s6noRemote.out.trim().split("\n").slice(-1)[0]?.slice(0, 80) ?? ""}`),
+        assert("R5 정상 — CI 확인 뒤 main 으로 한 번 push · 0", r5ok.rc === 0 && pushes(r5ok, "refs/heads/main") === 1, `rc=${r5ok.rc} · push ${pushes(r5ok, "refs/heads/main")}`),
+        assert("★R5 CI 확인이 실패하면 main 에 push 하지 않고 비영", r5ci.rc !== 0 && pushes(r5ci, "refs/heads/main") === 0, `rc=${r5ci.rc} · push ${pushes(r5ci, "refs/heads/main")}`),
+        assert("§7 설치 정상 — 0 · «설치 검증 완료»", s7ok.rc === 0 && done(s7ok), `rc=${s7ok.rc} · ${s7ok.out.trim().split("\n").slice(-1)[0]?.slice(0, 100) ?? ""}`),
+        assert("★§7 npm ci 가 실패하면 비영 — «설치 검증 완료» 까지 가지 않는다", s7ci.rc !== 0 && !done(s7ci), `rc=${s7ci.rc} · 완료 표시 ${done(s7ci)}`),
+        assert("★§7 build 가 실패하면 비영 — «설치 검증 완료» 까지 가지 않는다", s7build.rc !== 0 && !done(s7build), `rc=${s7build.rc} · 완료 표시 ${done(s7build)}`),
+        assert("§7 부팅 정상 — 0", s7bOk.rc === 0, `rc=${s7bOk.rc}`),
+        assert("★§7 build:prod 가 실패하면 부팅 검사로 가지 않고 비영",
+          s7bProd.rc !== 0 && !s7bProd.calls.some((c) => c.includes("check-public-boot")), `rc=${s7bProd.rc}`),
+        assert("★§7 부팅 검사가 실패하면 비영", s7bBoot.rc !== 0, `rc=${s7bBoot.rc}`),
+      );
+    }
     return out;
   },
 };

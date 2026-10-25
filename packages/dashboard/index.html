@@ -196,16 +196,20 @@
           <div id="chat-slash" class="chat-slash" hidden></div>
           <div id="chat-context" class="chat-context"></div>
           <div id="chat-projects" class="chat-projects"></div>
-          <div id="chat-reply" class="chat-reply" hidden></div>
+          <!-- 작업 알약 한 줄(2026-10-24 갱신 3 — 결정 문서 §12) — 둘이 함께 돌면 나란히 선다(모든 폭). 접기는 이 묶음째. -->
+          <div id="chat-work" class="chat-work">
           <button id="chat-bg-active" class="chat-bg-active" type="button" hidden title="백그라운드 작업 보기" data-i18n-attrs="title=bg.view.title"></button>
           <!-- 표면 B — 셸 컴포저 스트립(ADR 2026-07-17 §5-B, Phase 3b → §5 셸 드로어 이식 Phase 3b-2).
                매니저 스트립(위)과 물리적으로 분리된 별도 레인(사용자 확정 — 다른 종). 세션 스코프
                러닝 카운트, 누르면 백그라운드 드로어를 열고 셸 섹션으로 포커스(view-shells.js
                showShells → openBg). background-drawer.js refreshShellStrip 이 갱신. -->
           <button id="chat-shell-active" class="chat-bg-active chat-shell-active" type="button" hidden title="셸 보기" data-i18n-attrs="title=shell.view.title"></button>
+          </div>
           <!-- 입력 히스토리 위치 표시(↑/↓ 탐색 중에만). 클로드코드 웹과 같은 자리·같은 뜻. -->
           <div id="chat-histind" class="chat-histind" hidden aria-live="polite"></div>
           <div id="chat-attach"></div>
+          <!-- 답글 줄은 입력폼 바로 위(2026-10-24 사용자 «답글 라인도 채팅입력 필드 바로 위로» — 결정 문서 §12). -->
+          <div id="chat-reply" class="chat-reply" hidden></div>
           <form id="chat-form" autocomplete="off">
             <button id="chat-attach-btn" type="button" title="파일 첨부" aria-label="파일 첨부" data-i18n-attrs="title=chat.attach;aria-label=chat.attach">📎</button>
             <button id="chat-mic-btn" type="button" title="길게 눌러 음성 입력 (텔레그램식)" aria-label="음성 입력 (길게 누르기)" data-i18n-attrs="title=chat.mic.title;aria-label=chat.mic.aria">🎤<span id="chat-mic-timer" class="mic-timer" hidden></span></button>
@@ -219,7 +223,14 @@
             <button id="chat-send" type="submit" data-i18n="chat.send">전송</button>
             <input type="file" id="chat-file" multiple hidden />
           </form>
-          <div id="chat-status"></div>
+          <!-- 요약 줄(2026-10-24 — docs/decisions/2026-10-24-mobile-composer-info-collapse.md §9·§11·§12). 입력창 위 정보(aria-controls 의
+               줄들)를 한 번에 접는다 — 모든 폭. 펼침이면 토글(큰 ▾)이 태그 줄 오른쪽 칸, 접힘이면 맨 위 한 줄(배지 + 큰 ▴).
+               ★진행 표시 자리만 폭에 따라 다르다: 모바일은 이 상자째 맨 위(작업 중 표시 왼쪽), 데스크톱은 상자가 display:contents 라
+               지금처럼 폼 아래 그 자리. 이름(«입력 정보 접기/펼치기» + 배지)은 aria-label·title 로만 — 화면엔 화살표만. -->
+          <div id="chat-summary" class="chat-summary">
+            <div id="chat-status"></div>
+            <button id="chat-info-toggle" class="chat-info-toggle" type="button" aria-expanded="true" aria-controls="chat-context chat-projects chat-work chat-attach chat-reply"><span class="cit-badges"></span><span class="cit-caret" aria-hidden="true"></span></button>
+          </div>
         </div>
       </section>
       <!-- 전체 활동(크로스세션 모니터, 읽기전용) — #workbench/#right 와 상호배타(§2.1 하드 제약,

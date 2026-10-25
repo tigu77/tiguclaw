@@ -69,6 +69,18 @@ const run = async (): Promise<Assertion[]> => {
     });
   }
 
+  // ── ②-2 끝 시각 — 지금 죽인 것(killed)만 그 시각을 싣는다, 이미 없던 것(stale)은 모른다 (2026-10-23 «완료 시간 고정»).
+  //  ★배선 린트다: killed 분기는 이전 세대 프로세스의 신원 일치가 필요해 동작 검사가 안 된다(stale 분기는 background-panel-ux 가 실행으로 본다).
+  {
+    const killedCall = /announceReaped\(row, "killed", (\w+)\)/.exec(reaper);
+    const usedForDb = killedCall !== null && new RegExp(`markBgShellStatusDb\\(row\\.bashId, "killed", \\{\\s*finishedAt: ${killedCall[1]}`).test(reaper);
+    out.push({
+      name: "★리퍼 killed 통지에 DB 에 쓴 **같은** 끝 시각을 싣는다 · stale 통지엔 안 싣는다",
+      ok: usedForDb && /announceReaped\(row, "exited"\)/.test(reaper),
+      got: killedCall === null ? "★killed 통지에 끝 시각 인자가 없다" : usedForDb ? "DB 와 같은 값" : "★DB 에 쓴 값과 다른 값",
+    });
+  }
+
   // ── ③ 소비처가 그대로 존재한다(발행만 하고 그리는 곳이 없으면 무의미) ──────
   {
     const view = await readFile(

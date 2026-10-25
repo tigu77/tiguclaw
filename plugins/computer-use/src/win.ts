@@ -891,6 +891,18 @@ export const idleSeconds = async (): Promise<number | null> => {
   }
 };
 
+/**
+ * **조작 스크립트 실행 한 자리** — 제품 발사(`post`)와 자가 점검(`selfCheck`)이 같이 쓴다(2026-10-23).
+ * ★시한은 흘리는 이벤트로 정한다(`postTimeoutMs`) — 종전엔 자가 점검만 고정 8초라, 이벤트 수백 개의 빈 연습이 제품이라면 받았을
+ *  시한보다 짧은 시한에 죽었다(집 Windows 전체 회귀에서 «dry 에서 실패: 8000ms 초과» — 기준·최종 양쪽에서 재현). 같은 열은 같은 시한이다.
+ * ★`TIGUCLAW_DRY` 는 언제나 명시한다 — 자식은 `process.env` 를 물려받으므로 어디선가 켜져 있으면 **진짜 조작이 조용히 아무것도 안 하게** 된다.
+ */
+const runControl = (events: readonly LowEvent[], dry: boolean): Promise<RunOk | RunFail> =>
+  runScript(CONTROL_SCRIPT, {
+    TIGUCLAW_EVENTS: JSON.stringify(events),
+    TIGUCLAW_DRY: dry ? "1" : "0",
+  }, postTimeoutMs(events, CHILD_TIMEOUT_MS));
+
 /** 이벤트를 순서대로 쏜다 — 스크립트는 **고정 리터럴**, 값은 전부 `$env` (관측과 같은 규율). */
 export const post = async (
   events: readonly LowEvent[],
@@ -913,13 +925,8 @@ export const post = async (
   | { ok: false; reason: "timeout" | "failed"; detail: string; stdout: string }
 > => {
   if (events.length === 0) return { ok: true, fired: 0, stdout: "" };
-  // ★`TIGUCLAW_DRY` 를 **명시적으로 끈다.** 자식은 `process.env` 를 물려받으므로, 어디선가
-  //  그 이름이 켜져 있으면 **진짜 조작이 조용히 아무것도 안 하게** 된다 — 우리가 이 세션
-  //  내내 쫓던 바로 그 모양이다. 켜는 쪽이 아니라 **끄는 쪽**을 못 박는다.
-  const r = await runScript(CONTROL_SCRIPT, {
-    TIGUCLAW_EVENTS: JSON.stringify(events),
-    TIGUCLAW_DRY: "0",
-  }, postTimeoutMs(events, CHILD_TIMEOUT_MS));
+  // ★`TIGUCLAW_DRY` 를 **명시적으로 끈다**(`runControl`) — 켜는 쪽이 아니라 **끄는 쪽**을 못 박는다.
+  const r = await runControl(events, false);
   if (!r.ok) return r;
   try {
     const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as { fired?: number };
@@ -982,15 +989,13 @@ export const selfCheck = async (): Promise<
 > => {
   const idle = await runScript(IDLE_SCRIPT, {});
   if (!idle.ok) return { ok: false, where: "idle", detail: idle.detail };
-  const input = await runScript(CONTROL_SCRIPT, { TIGUCLAW_EVENTS: "[]", TIGUCLAW_DRY: "0" });
+  const input = await runControl([], false);
   if (!input.ok) return { ok: false, where: "input", detail: input.detail };
   // ★**이벤트를 실제로 통과시켜 본다 — 입력은 0이다**(`TIGUCLAW_DRY`).
   //  빈 배열은 «컴파일이 되나» 까지만 본다. 루프 안에서 던지는 부류(음수 휠의 `[uint32]`,
   //  모르는 키 이름, 좌표 정규화)는 **이벤트가 흘러야** 드러난다.
-  const dry = await runScript(CONTROL_SCRIPT, {
-    TIGUCLAW_DRY: "1",
-    TIGUCLAW_EVENTS: JSON.stringify(DRY_EVENTS),
-  });
+  //  ★시한은 제품 `post` 가 같은 열에 주는 것과 같다(`runControl`) — 점검만 더 짧으면 «제품은 되는데 점검이 빨강» 이 된다.
+  const dry = await runControl(DRY_EVENTS, true);
   if (!dry.ok) return { ok: false, where: "dry", detail: dry.detail };
   // ★빈 연습이면 **한 번도 안 쏴야** 한다 — 그 숫자가 이름의 뜻을 지킨다.
   const dryFired = (() => {
@@ -1009,10 +1014,7 @@ export const selfCheck = async (): Promise<
   //   문구를 찾지 않고, **우리가 보낸 글자가 그대로 돌아오는지**를 본다 — 한글·라틴 악센트·
   //   한자·이모지(서로게이트 쌍)를 한 번에 태운다.
   const echo = "키é漢🙂";
-  const probe = await runScript(CONTROL_SCRIPT, {
-    TIGUCLAW_DRY: "1",
-    TIGUCLAW_EVENTS: JSON.stringify([{ t: "keydown", key: echo }]),
-  });
+  const probe = await runControl([{ t: "keydown", key: echo }], true);
   const textSurvives = !probe.ok && probe.detail.includes(echo);
   // ★**가드가 실제로 멈췄나** — 빈 연습 목록 끝에 일부러 어긋나는 `front` 를 두었으므로
   //  반드시 멈춰야 한다. 이 값이 `false` 면 가드가 **안 도는 것**이고, 그건 남의 창에

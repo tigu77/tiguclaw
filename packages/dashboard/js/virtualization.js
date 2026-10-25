@@ -778,7 +778,9 @@
        */
       const JUMP_PASSES = 14;     // 보정 상한. 대개 3~5회에 수렴하지만 긴 목록은 더 걸린다.
       const JUMP_TOLERANCE = 6;   // 이 픽셀 안이면 도착으로 본다.
-      window.vtScrollToTs = async (ts) => {
+      // `pick`(선택) = 목록에서 **정확한 대상**을 고르는 함수(items → item|null). 주면 «가장 가까운 것» 을 쓰지 않는다 —
+      //  답글의 원문처럼 «다른 메시지에 내려놓으면 틀린» 이동용(2026-10-23). 안 주면 종전대로(검색 결과 이동).
+      window.vtScrollToTs = async (ts, pick) => {
         if (typeof ts !== "number" || !Number.isFinite(ts)) return false;
         stickBottom = false;
         if (typeof updateChatJump === "function") updateChatJump();
@@ -789,6 +791,7 @@
         //  대신 창을 넓게 잡지 않는다 — 멀리 있는 엉뚱한 줄에 내려놓느니 못 찾았다고 말한다.
         const NEAR_MS = 60_000;
         const findHit = () => {
+          if (typeof pick === "function") return pick(vtItems) || null;
           let best = null;
           let bestD = Infinity;
           for (const it of vtItems) {

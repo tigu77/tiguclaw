@@ -17,3 +17,7 @@
 .rw-label { font-weight:650; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
 .rw-since { margin-left:auto; color:var(--text-mute); font-size:.6875rem; flex:0 0 auto; }
 .rw-go { flex:0 0 auto; color:var(--text-mute); }
+.rw-sess .rw-row { padding-left:20px; }
+/* 세션별 보기 — 종류가 바뀌는 자리의 1px 선(줄을 차지하지 않는다 · 행 내용 시작선에 맞춰 들여쓴다) */
+.rw-row.rw-kind-break { position:relative; margin-top:3px; }
+.rw-row.rw-kind-break::before { content:""; position:absolute; left:20px; right:4px; top:-2px; border-top:1px solid var(--border); }

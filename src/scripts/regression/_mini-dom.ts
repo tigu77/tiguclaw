@@ -179,7 +179,6 @@ export class MElement extends MNode {
   classList: any;
   value = "";
   disabled = false;
-  hidden = false;
   checked = false;
   type = "";
   title = "";
@@ -231,6 +230,9 @@ export class MElement extends MNode {
       },
     };
   }
+  /** `hidden` 은 **속성의 반영**이다(브라우저와 같다) — 그래야 `attributeFilter:["hidden"]` 관측이 깬다(2026-10-24). */
+  get hidden(): boolean { return this.attrs.has("hidden"); }
+  set hidden(v: boolean) { if (v) this.setAttribute("hidden", ""); else this.removeAttribute("hidden"); }
   get className(): string { return this.getAttribute("class") ?? ""; }
   set className(v: string) { this.setAttribute("class", String(v)); }
   get id(): string { return this.getAttribute("id") ?? ""; }
@@ -355,6 +357,8 @@ export class MiniMutationObserver {
   doc: MiniDocument;
   q: any[] = [];
   scheduled = false;
+  /** 콜백에 배달한 기록 전부 — 검사가 «무엇이 이 관측자를 깨웠나» 를 본다(콜백 안에서 같은 글이면 안 쓰는 코드는 쓰기 횟수로는 안 보인다). */
+  delivered: any[] = [];
   constructor(doc: MiniDocument, cb: (recs: any[]) => void) {
     this.doc = doc;
     this.cb = cb;
@@ -369,7 +373,7 @@ export class MiniMutationObserver {
     queueMicrotask(() => {
       this.scheduled = false;
       const r = this.takeRecords();
-      if (r.length > 0) this.cb(r);
+      if (r.length > 0) { this.delivered.push(...r); this.cb(r); }
     });
   }
 }
@@ -507,7 +511,9 @@ export const makeDomContext = (extra: Record<string, unknown> = {}) => {
   Object.assign(win, {
     innerWidth: 1280,
     innerHeight: 800,
-    matchMedia: (q: string) => ({ matches: /max-width:\s*900px/.test(q) ? win.innerWidth <= 900 : false, addEventListener() {}, removeEventListener() {} }),
+    // ★`matches` 는 **읽을 때의 폭**이다(브라우저의 MediaQueryList 와 같게) — 만들 때 값을 굳히면 «처음 판정 고정» 변이를
+    //  원리적으로 못 잡는다(2026-10-24 독립 사냥 M1: 데스크톱→모바일 전환 뒤 바닥 재고정).
+    matchMedia: (q: string) => ({ get matches() { return /max-width:\s*900px/.test(q) ? win.innerWidth <= 900 : false; }, addEventListener() {}, removeEventListener() {} }),
     confirm: () => true,
     document,
     // 창에 직접 내는 이벤트(`window.dispatchEvent(new CustomEvent(…))`) — 대상 단계 하나뿐이다(창엔 조상이 없다).
@@ -559,6 +565,8 @@ export const bootDashboard = (opts: {
   ids?: string[];
   /** index.html 의 `id` 전부를 (그 태그로, 평평하게) 만든다 — chat-core.js 처럼 정적 요소를 많이 잡는 파일을 실을 때. */
   allIds?: boolean;
+  /** 파일을 싣기 **전에** body 에 넣을 진짜 마크업 조각(주석은 뺀다) — 자식 구조가 필요한 화면(예: `#chat`)을 index.html 에서 그대로 가져올 때. 같은 id 는 `ids`·`allIds` 가 다시 만들지 않는다. */
+  html?: string;
   stubs?: string;
   width?: number;
   extra?: Record<string, unknown>;
@@ -583,9 +591,14 @@ export const bootDashboard = (opts: {
     locale: "ko",
     strings: JSON.parse(readFileSync(path.join(DASH_JS, "../../../locales/ko.json"), "utf8")),
   };
+  if (opts.html) {
+    const box = document.createElement("div");
+    box.innerHTML = opts.html.replace(/<!--[\s\S]*?-->/g, "");
+    for (const c of [...box.childNodes]) document.body.appendChild(c);
+  }
   const made = new Set<string>();
   const add = (id: string, tag = "div"): void => {
-    if (made.has(id)) return;
+    if (made.has(id) || document.getElementById(id) !== null) return;
     made.add(id);
     const e = document.createElement(tag);
     e.id = id;

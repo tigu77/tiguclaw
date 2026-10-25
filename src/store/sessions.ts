@@ -1072,6 +1072,22 @@ export const initStore = (): void => {
     handle.exec(`ALTER TABLE chat_log ADD COLUMN turn TEXT`);
   }
 
+  // ─── 한도 자동 이어가기 상태 (2026-10-23, 설계 2026-10-22-limit-auto-resume §3.4) ─────────
+  // 사람의 대화(세션)당 한 행 — 지금의 재개 타이머(`schedules` 의 once 행 id)·**대기 중** 한도로 멈춘 것(JSON)·**도는 재개 턴이 맡은 것**(JSON)·
+  //  사용자 메시지 이후 건 횟수·«재개 턴이 시작했다». 맡은 것과 대기를 한 칸에 두면 재개 턴이 도는 사이 다른 실패가 그 목록을 덮는다(GPT 검토 R1).
+  //  공용 `schedules` 표에 한 기능 전용 칸을 섞지 않으려고 따로 둔다. 새 표라 기존 행 무변경.
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS limit_resumes (
+      thread_key    TEXT PRIMARY KEY,
+      schedule_id   INTEGER,
+      items         TEXT NOT NULL,
+      claimed_items TEXT NOT NULL DEFAULT '[]',
+      arms          INTEGER NOT NULL,
+      claimed       INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
+    );
+  `);
+
   // ─── 백그라운드 셸 프로세스 영속 (reap 전용 메타 — 2026-07-17) ──────────────────
   // ADR `docs/decisions/2026-07-17-background-shell-observability.md` §4. 런타임
   // 진실은 file-ops-mcp.ts 의 in-memory BG_SHELLS Map(worker_jobs 와 동형 — 이 테이블은
@@ -1097,6 +1113,14 @@ export const initStore = (): void => {
     );
     CREATE INDEX IF NOT EXISTS idx_bg_shells_status ON bg_shells(status);
   `);
+  // 셸 이름(Bash `description`, 2026-10-23) — 재시작 뒤 리퍼 통지(`shell.exited`)가 새로 연 화면에 종료 카드를 만들 때
+  //  같은 이름이 보이게. 진행 중 셸의 진실은 여전히 메모리(`BG_SHELLS`)다. 옛 행 NULL = 이름 없음. 멱등 ALTER(archived_at 선례).
+  {
+    const cols = handle.prepare(`PRAGMA table_info(bg_shells)`).all() as ColumnInfoRow[];
+    if (!cols.some((c) => c.name === "description")) {
+      handle.exec(`ALTER TABLE bg_shells ADD COLUMN description TEXT`);
+    }
+  }
 
   db = handle;
 };

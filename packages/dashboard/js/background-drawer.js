@@ -127,17 +127,27 @@
       // ★초기값 **켜짐** — 새로고침 하이드레이션이 저절로 바닥(최신)에 안착한다(P-2).
       //  «하이드레이션 끝에 바닥으로» 를 따로 넣으면 그게 다섯 번째 손 목록이 된다.
       let bgStick = true;
+      /**
+       * ★«그 카드로» 이동이 따라가기를 **붙잡는다** (2026-10-23, docs/decisions/2026-10-23-background-panel-ux.md ④-(2)).
+       *  끝 쪽 카드는 목록 끝까지만 올라가고, 그 프로그램 스크롤이 아래 핸들러의 «바닥 근처» 판정으로 따라가기를 다시 켜
+       *  새 카드 하나에 목표가 밀려 올라갔다(헤드리스 126px). 프로그램 스크롤과 사용자 스크롤은 이벤트로 못 가르므로
+       *  **사용자 손**(휠·터치·키·포인터)이나 «↓ 최신» 이 풀어 준다. 붙잡힌 동안은 «켜기» 만 막는다(끈 채가 안전 쪽).
+       */
+      let bgRevealHold = false;
       /** 래치가 켜져 있으면 바닥에 붙인다. 꺼져 있으면 아무것도 안 한다(yank 금지). */
       const bgPin = () => { if (bgStick) bgList.scrollTop = bgList.scrollHeight; };
       // 노출도 **래치와 같은 판정** — 팔로우는 래치, 버튼은 기하면 임계가 갈려 깜빡인다.
       const updateBgJump = () => { if (bgJump) bgJump.hidden = bgStick; };
       if (bgJump) bgJump.addEventListener("click", () => {
         // ★명시로 켠다 — 이미 바닥이면 scroll 이벤트가 안 나 래치가 꺼진 채 남는다.
-        bgStick = true; bgPin(); updateBgJump();
+        bgRevealHold = false; bgStick = true; bgPin(); updateBgJump();
       });
       bgList.addEventListener("scroll", () => {
-        bgStick = bgNearBottom(); updateBgJump();
+        bgStick = bgRevealHold ? false : bgNearBottom(); updateBgJump();
       }, { passive: true });
+      for (const t of ["wheel", "touchstart", "keydown", "pointerdown"]) {
+        bgList.addEventListener(t, () => { bgRevealHold = false; }, { passive: true });
+      }
       // ★**카드마다** 관찰한다. `#bg-list` 는 `flex:1; overflow-y:auto` 라 오버플로 뒤엔
       //  자기 높이가 안 변한다(실측 clientHeight 81→161→309→450→450…) — 컨테이너 관찰자는
       //  **정확히 문제가 되는 구간에서 한 번도 안 운다.** 가장 나쁜 종류의 관찰자다.
@@ -585,6 +595,20 @@
        *  ★못 찾으면 패널만 열고 한 줄 알린다 — 조용히 실패하지 않는다(목록 상한 밖·이미 사라짐).
        * @param {{ find: () => (HTMLElement|null|undefined), inScope?: boolean, showFilter?: () => void, groupHead?: string, open?: (el: HTMLElement) => void, rerender?: () => void }} t
        */
+      /**
+       * 카드 **윗변**을 그 카드의 스크롤 칸(`.bg-list`) 윗변 + 8px 에 둔다 (2026-10-23 — 종전엔 `scrollIntoView({block:"center"})`
+       *  라 긴 카드의 머리가 칸 위로 잘리고, 바깥(패널·문서)까지 움직여 패널 머리가 화면 밖·앱 헤더 밑으로 밀렸다).
+       *  ★그 칸만 움직인다. 끝 쪽 카드는 칸 끝까지만 올라간다(브라우저가 `scrollTop` 을 자른다) — 보장은 «윗변이 칸 안에 보인다».
+       *  `.bg-list` 밖(타이머 줄)은 가장 가까운 만큼만.
+       */
+      const alignCardTop = (card) => {
+        const pane = card && typeof card.closest === "function" ? card.closest(".bg-list") : null;
+        if (pane) {
+          pane.scrollTop += card.getBoundingClientRect().top - pane.getBoundingClientRect().top - 8;
+          return;
+        }
+        if (card && card.scrollIntoView) card.scrollIntoView({ block: "nearest" });
+      };
       const revealBgCard = (t) => {
         openBg();
         if (t.inScope === false && bgSessionScope === "session") setBgSessionScope("all");
@@ -600,18 +624,19 @@
           // ★이 카드로 가겠다는 **명시 이동**이다 — 따라가기를 먼저 끈다 (2026-10-12 릴리스 재검토, 0.69.1 부터 있던 것).
           //  안 끄면 펼침이 일으킨 카드 크기 변화에 핀이 맨 아래(최신)로 되돌려 목표 카드가 화면 밖에 남았다(헤드리스: 3/3).
           //  «↓ 최신» 이 보이고, 누르면 다시 따라간다.
-          bgStick = false; updateBgJump();
+          bgStick = false; bgRevealHold = true; updateBgJump();
           if (typeof t.open === "function") t.open(el);
           const target = t.find() || el; // 펼치기가 다시 그렸으면(셸) 새 노드
-          if (target.scrollIntoView) target.scrollIntoView({ block: "center" });
+          alignCardTop(target);
           target.classList.add("bg-flash");
           setTimeout(() => target.classList.remove("bg-flash"), 900);
         });
       };
       // 잡 — 프로젝트 상세의 compact 카드·위젯이 부른다(종전 이름 `focusBgJob` 그대로, jobId 하나).
-      window.focusBgJob = (jobId) => {
+      // ★가는 곳(찾기·범위·필터·묶음)은 한 벌 — 펼칠지는 **호출자**가 정한다(2026-10-23: 위젯은 안 펼친다, 프로젝트 상세는 펼친다).
+      const jobRevealTarget = (jobId) => {
         const entry = jobCards.get(jobId);
-        revealBgCard({
+        return {
           find: () => (entry && entry.el && entry.el.isConnected ? entry.el : null),
           inScope: entry ? isBgInScope(entry.threadKey, entry.ownerTk) : true,
           showFilter: () => {
@@ -620,13 +645,21 @@
             if ((bgFilter === "done") !== ended) setBgFilter(ended ? "done" : "running");
           },
           groupHead: "bg-jobs-head",
+        };
+      };
+      // 프로젝트 상세의 compact 카드 — 그 카드엔 상세가 없어 패널에서 **펼쳐** 보인다(지금 그대로).
+      window.focusBgJob = (jobId) => {
+        const entry = jobCards.get(jobId);
+        revealBgCard({
+          ...jobRevealTarget(jobId),
           open: () => { if (!entry.el.classList.contains("open")) setJobOpen(jobId, entry, true); },
         });
       };
       // 위젯 `ctx.reveal({ kind, id })` 가 낸 «보여 줘» — 각 묶음이 자기 kind 만 듣는다(표를 두지 않는다, 모르는 kind 는 아무도 안 받는다).
+      //  ★위젯 경로는 **펼치지 않는다**(사용자 10-23 — 카드 맨 위를 보이고, 펼침은 사용자가 그 자리에서).
       window.addEventListener("tigu:reveal", (e) => {
         const d = e.detail || {};
-        if (d.kind === "job" && typeof d.id === "string") window.focusBgJob(d.id);
+        if (d.kind === "job" && typeof d.id === "string") revealBgCard(jobRevealTarget(d.id));
         else if (d.kind === "panel") openBg(); // 패널만 연다(위젯 메뉴 «백그라운드 패널 열기»)
       });
       const bgToggleBtn = document.getElementById("bg-toggle");
@@ -1087,6 +1120,10 @@
           // (기존엔 handleWorkerEvent 만 refreshBgBadge 호출 → 활동-only 카드는 개수 누락).
           refreshBgBadge();
         }
+        // ★시작 시각은 서버 값이 언제 와도 이긴다 (2026-10-23 GPT 설계 검토). 활동(`handleWorkerActivity`)이 먼저 만든 카드는
+        //  `startTs` 가 **화면 시각**이라, 뒤에 lifecycle·스냅샷이 서버 시작 시각을 실어 와도 그대로 남아 경과가 짧게 보였다
+        //  (끝 시각을 서버 값으로 고정하면 `끝 − 시작` 이 음수 → «0s» 로 굳는다). `createdTs`(경합 가드)는 다른 축이라 그대로.
+        if (opts && typeof opts.startedAt === "number" && entry.startTs !== opts.startedAt) entry.startTs = opts.startedAt;
         // 세션 스코프 threadKey 갱신(멱등) — 활동-선도 카드(worker:/agent: 의사값만 있던 카드)에
         // 나중에 lifecycle 이 진짜 원 세션 threadKey 를 실어 오면 반영. 이미 같으면 no-op.
         {
@@ -1279,12 +1316,11 @@
         // 토큰 합계는 상태 단조 가드보다 **앞**에서 — 끝난 카드에 온 스냅샷도 반영해야 한다
         //  (합계 자체가 단조라 옛 값은 setJobUsage 가 거른다).
         if (p.usage) setJobUsage(entry, p.usage);
-        // 서버가 실어 준 "지금 무엇을 하는 중" 을 반영한다(하이드레이션 경로). 값이 없으면
-        // **덮지 않는다** — SSE 로 이미 채워진 것을 빈 값으로 지우면 새로고침만 못해진다.
-        if (p.activity && typeof p.activity === "object") {
-          entry.activity = p.activity;
-          renderDoing(entry);
-          if (Array.isArray(p.activity.todos)) { entry.todos = p.activity.todos; renderTodos(entry); }
+        // 서버가 실어 준 할 일(하이드레이션 경로). 값이 없으면 **덮지 않는다** — SSE 로 이미 채워진 것을 빈 값으로 지우면
+        //  새로고침만 못해진다. («지금 무엇을 하는 중» 한 줄은 상태가 정해진 **뒤**에 반영한다 — 아래.)
+        if (p.activity && typeof p.activity === "object" && Array.isArray(p.activity.todos)) {
+          entry.todos = p.activity.todos;
+          renderTodos(entry);
         }
         // ★잡 상태는 **단조**다 — running → 종료, 되돌아가지 않는다 (2026-07-28).
         //  종전엔 마지막 이벤트가 무조건 이겨서, 재연결 replay 가 흘린 옛 worker.started 가
@@ -1305,7 +1341,6 @@
         ) {
           return entry;
         }
-        const wasRunning = entry.status === "running";
         entry.status = status;
         // ★상태 클래스는 **정의점에서 파생**한다 — 손으로 적으면 빠진다(실제로 `interrupted`
         //  가 빠져 있어, 되살아난 카드에 `interrupted running` 이 함께 남았다).
@@ -1313,14 +1348,28 @@
         entry.el.classList.add(status); // open/has-detail 보존.
         if (status !== "running") entry._cancelRequested = false; // 종료됐으면 낙관 플래그 리셋(멱등).
         entry.statusEl.textContent = BG_STATUS[status] || status;
+        // ★끝 시각은 **여기 한 곳**에서 정한다 (2026-10-23 «완료 시간 고정»). 서버가 준 `finishedAt` 이 언제 와도 이기고,
+        //  모르면(부팅 복구의 중단·옛 페이로드) 처음 끝난 걸 본 때로 멈춘다(종전 동작 그대로). 다시 돌면 지운다.
+        //  ★종전엔 «처음 본 때» 뿐이라 새로고침·replay 로 받은 끝난 카드가 **받은 시각까지** 늘어난 값으로 굳었고,
+        //   에이전트 뷰·프로젝트 상세(`buildAgentCard`)는 끝난 카드도 다시 그릴 때마다 자랐다.
+        if (status === "running") entry.endTs = undefined;
+        else if (typeof p.finishedAt === "number") entry.endTs = p.finishedAt;
+        else if (typeof entry.endTs !== "number") entry.endTs = Date.now();
         // 잡 종료 시 경과시간 최종 확정(틱은 running 만 갱신 → 여기서 마지막 값 고정).
-        if (wasRunning && status !== "running" && entry.elapsedEl) {
-          entry.elapsedEl.textContent = fmtElapsed(Date.now() - (entry.startTs || Date.now()));
+        if (status !== "running" && entry.elapsedEl) {
+          entry.elapsedEl.textContent = fmtElapsed(jobElapsedMs(entry, Date.now()));
         }
         // ★잡이 끝나면 스텝의 진행 표식도 끈다 — 끝 이벤트를 못 받은 도구(취소·재시작·SSE
         //  끊김)가 죽은 잡 안에서 영원히 카운트업하는 것을 막는다. 이게 없으면 위 유령이
         //  그대로 재현된다(잡 상태는 끝났는데 그 안의 줄만 계속 돈다).
         if (status !== "running") clearAllStepsRunning(entry);
+        // ★«지금 무엇을 하는 중» 한 줄은 **도는 카드에만** 산다 (2026-10-23 실측: 끝난 카드에 «· Bash 37s째» 가 멈춘 채 남고,
+        //  새로고침하면 사라졌다 — 서버는 끝난 잡의 활동 증거를 버려 목록에 안 싣는다). 위 진행 표식과 같은 자리에서 끈다.
+        //  ★단조 가드 **뒤**라야 한다 — 앞에 두면 늦게 온 옛 running 스냅샷이 끝난 카드에 그 줄을 되살린다(가드가 상태만 막았다).
+        //  값이 없는 running 이벤트는 SSE 경로라 **덮지 않는다**(새로고침만 못해지지 않게 — 종전 규칙 그대로).
+        if (status !== "running") entry.activity = null;
+        else if (p.activity && typeof p.activity === "object") entry.activity = p.activity;
+        renderDoing(entry);
         if ((status === "failed" || status === "cancelled") && p.error) {
           entry.errorText = String(p.error); // 원문 보관(에이전트 뷰 펼침 상세가 읽음).
           entry.errEl.textContent = p.error;

@@ -343,6 +343,22 @@ export const runMcpLoginCommand = async (text: string): Promise<string> => {
 /** 진행 중 갱신 — 대상당 하나. */
 const refreshing = new Map<string, Promise<string | undefined>>();
 
+/**
+ * 저장 값이 **다른 인가 서버**에 묶여 있나 — SDK `auth()` 의 발급 서버 묶음(1.32, `issuer` 표식)을 우리 갱신 경로에도 그대로 건다.
+ *  표식이 없으면(옛 판이 저장한 것) 묶이지 않은 것으로 본다 — SDK 와 같이 처음 받아 준 서버에 묶는다. 비교는 URL 로 읽어(표기 차이 무시)
+ *  끝 `/` 하나 차이를 허용한다. ★SDK 의 `issuersMatch` 를 옮겨 적은 두 번째 자리다 — SDK 가 내보내지 않아서다(SDK 를 올리면 같이 본다).
+ */
+const boundElsewhere = (stamp: unknown, issuer: string): boolean => {
+  if (typeof stamp !== "string") return false;
+  let [x, y] = [stamp, issuer];
+  try {
+    [x, y] = [new URL(stamp).href, new URL(issuer).href];
+  } catch {
+    /* URL 이 아니면 적힌 그대로 비교 */
+  }
+  return !(x === y || (x.endsWith("/") && x.slice(0, -1) === y) || (y.endsWith("/") && y.slice(0, -1) === x));
+};
+
 /** 갱신 요청에 시한을 건다 — 호출부 신호가 있으면 둘 중 먼저. */
 const timedFetch = (f: typeof fetch): typeof fetch => (u, init) => {
   const t = AbortSignal.timeout(REFRESH_FETCH_TIMEOUT_MS);
@@ -383,6 +399,15 @@ const startRefresh = (k: McpOAuthKey, fetchFn: typeof fetch | undefined): Promis
       const info = rec.discovery?.authorizationServerUrl !== undefined
         ? { authorizationServerUrl: rec.discovery.authorizationServerUrl, authorizationServerMetadata: rec.discovery.authorizationServerMetadata, resourceMetadata: rec.discovery.resourceMetadata }
         : await discoverOAuthServerInfo(k.url, { fetchFn: f });
+      // ★발급 서버 묶음 — 다른 인가 서버에 찍힌 refresh 토큰·클라이언트는 이 서버에 보내지 않는다(SDK `auth()` 와 같은 규칙). 다시 로그인한다.
+      //  없을 때: SDK 1.32 가 로그인 때 찍은 `issuer` 를 첫 자체 갱신이 지웠고(전체 교체 저장), 탐색이 다른 서버를 가리켜도 그대로 보냈다(GPT 검토 10-25).
+      const issuer = String(info.authorizationServerUrl);
+      if (boundElsewhere(rec.tokens.issuer, issuer) || boundElsewhere(rec.client.issuer, issuer)) {
+        forceRefresh.delete(h);
+        if (gen0 === genOf(k)) await markMcpLoginNeeded(k, gen0);
+        console.warn(`mcp-oauth: '${k.name}' 저장된 인증이 다른 인가 서버에 묶여 있어 갱신하지 않음 — 다시 로그인이 필요합니다.`);
+        return undefined;
+      }
       const provider = providerFor(rec, {});
       const resource = await selectResourceURL(k.url, provider, info.resourceMetadata);
       const fresh = await refreshAuthorization(info.authorizationServerUrl, {
@@ -392,7 +417,8 @@ const startRefresh = (k: McpOAuthKey, fetchFn: typeof fetch | undefined): Promis
         ...(resource !== undefined ? { resource } : {}),
         fetchFn: f,
       });
-      provider.saveTokens(fresh);
+      provider.saveTokens({ ...fresh, issuer });
+      if (typeof rec.client.issuer !== "string") rec.client = { ...rec.client, issuer }; // 옛 기록 — 받아 준 이 서버에 묶는다(SDK `bindClientInformation`)
       refreshFailedAt.delete(h);
       forceRefresh.delete(h);
       if (forced) forcedToken.set(h, fresh.access_token);

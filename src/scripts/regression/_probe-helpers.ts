@@ -69,6 +69,8 @@ export const freePort = async (): Promise<number> => {
 export const bootVerdict = (
   out: string,
   port: string,
+  // 사유에 붙이는 **로그 조각만** 거치는 표시 함수(비식별화용) — 갈래는 언제나 원문으로 정한다. 자르기는 그 뒤에.
+  show: (s: string) => string = (s) => s,
 ): { ok: boolean; why: string } => {
   // ★**브리지가 떴는가**가 유일한 판정이다. 다른 플러그인의 실패까지 부팅 실패로 치면
   //  러너의 env 봉인 때문에 스킵되는 플러그인 하나에도 게이트가 빨간불이 된다(실측:
@@ -80,12 +82,19 @@ export const bootVerdict = (
   if (/EADDRINUSE/.test(out)) {
     return { ok: false, why: `★환경: 포트 ${port} 를 누가 잡고 있다(제품 결함 아님)` };
   }
-  const m = /.*(?:plugin-loader|loadPlugins failed|start failed).*/.exec(out);
-  if (m !== null) return { ok: false, why: `★브리지 미기동: ${m[0].slice(0, 160)}` };
-  if (!out.includes("tiguclaw daemon: ready")) {
-    return { ok: false, why: `★부팅 실패 · ${out.slice(-200)}` };
+  const failLine = /.*(?:plugin-loader|loadPlugins failed|start failed).*/;
+  const m = failLine.exec(out);
+  // 조각은 **가린 전체**에서만 고른다(줄 하나만 가리면 앞 줄의 `Bearer` 문맥을 잃는다). 항등이면 같은 줄이다.
+  //  가리다 키워드가 사라졌으면 가린 전체의 **같은 줄 번호** — `scrubText` 는 줄바꿈 수를 바꾸지 않는다.
+  if (m !== null) {
+    const shown = show(out);
+    const line = out.slice(0, m.index).split("\n").length - 1;
+    return { ok: false, why: `★브리지 미기동: ${(failLine.exec(shown)?.[0] ?? shown.split("\n")[line] ?? "").slice(0, 160)}` };
   }
-  return { ok: false, why: `★ready 는 찍혔는데 브리지가 ${port} 를 안 잡았다 · ${out.slice(-160)}` };
+  if (!out.includes("tiguclaw daemon: ready")) {
+    return { ok: false, why: `★부팅 실패 · ${show(out).slice(-200)}` };
+  }
+  return { ok: false, why: `★ready 는 찍혔는데 브리지가 ${port} 를 안 잡았다 · ${show(out).slice(-160)}` };
 };
 
 /**
@@ -192,3 +201,48 @@ export const spawnProbe = (
  */
 export const probeSpec = (repo: string, rel: string): string =>
   JSON.stringify(pathToFileURL(path.join(repo, rel)).href);
+
+/**
+ * 진단 문구 비식별화(줄 유지) — 넘긴 값(토큰·임시 홈·레포 경로)과 사용자 경로·URL 쿼리·Bearer 값을 가린다.
+ * ★**자르기 전에** 전체에 먼저 건다 — 끝 N자를 먼저 떼면 `Bearer ` 같은 문맥이 잘려 값이 남는다.
+ */
+export const scrubText = (text: unknown, hide: readonly string[]): string => {
+  let s = String(text ?? "");
+  for (const h of hide) if (h !== "") s = s.split(h).join("[hidden]");
+  return s
+    .replace(/[A-Za-z]:[\\/]Users[\\/][^\\/\s]+/gi, "[user]")
+    .replace(/\/(?:Users|home)\/[^/\s]+/g, "[user]")
+    .replace(/(https?:\/\/[^\s?#]*)[?#]\S*/gi, "$1?[query]")
+    // 공백·줄바꿈이 몇 개든 그 뒤 값을 가리되 **공백은 그대로 남긴다**(줄 수가 안 바뀐다 — `bootVerdict` 의 줄 번호가 기댄다).
+    .replace(/Bearer(\s+)\S+/gi, "Bearer$1[hidden]");
+};
+
+/** 진단 한 줄 — `scrubText` 뒤 공백을 접고 앞 `max` 자. ★로그용이다. 헤더·본문·환경은 애초에 넘기지 않는다. */
+export const scrubDiag = (text: unknown, hide: readonly string[], max = 120): string =>
+  scrubText(text, hide).replace(/\s+/g, " ").trim().slice(0, max);
+
+/**
+ * `fetch` 예외를 **종류로 가른다** (2026-10-24 Windows 후보 검증).
+ *
+ * ★사고: 라우트 프로브가 모든 예외를 상태 0 하나로 합쳐, 전체 실행에서 난 `GET /inventory` 0 이
+ *  시간 초과인지·연결 끊김인지·다른 예외인지 **로그로 못 갈랐다**(단독·대조 반복은 전부 초록 — 그 순간은 다시 못 본다).
+ *  판정(0 = 무응답)은 그대로 두고 **사유만** 싣는다: 예외 이름(`TimeoutError`·`TypeError`…) ·
+ *  원인 코드(undici 는 `cause.code` 에 `ECONNRESET`·`ECONNREFUSED`·`UND_ERR_SOCKET` 을 둔다) · 비식별 메시지.
+ */
+export const describeFetchError = (
+  e: unknown,
+  hide: readonly string[],
+): { kind: string; code?: string; msg: string } => {
+  const err = (typeof e === "object" && e !== null ? e : {}) as {
+    name?: unknown; message?: unknown; code?: unknown; cause?: unknown;
+  };
+  const cause = (typeof err.cause === "object" && err.cause !== null ? err.cause : {}) as {
+    message?: unknown; code?: unknown;
+  };
+  // 원인 코드는 **문자열만**(`ECONNRESET`·`UND_ERR_SOCKET`) — DOMException 의 숫자 `code`(시간 초과 23)는 원인 코드가 아니다.
+  const code = typeof cause.code === "string" ? cause.code : typeof err.code === "string" ? err.code : undefined;
+  const kind = typeof err.name === "string" && err.name !== "" ? err.name : typeof e;
+  // ★`SyntaxError`(본문 JSON 파싱) 메시지는 **응답 본문 조각**을 담으므로 버린다.
+  const msg = kind === "SyntaxError" ? "[body parse failed]" : scrubDiag(cause.message ?? err.message ?? e, hide);
+  return { kind: scrubDiag(kind, hide), ...(code !== undefined ? { code: scrubDiag(code, hide) } : {}), msg };
+};

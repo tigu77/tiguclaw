@@ -77,6 +77,30 @@ const sweepStaleHomes = (): number => {
 };
 
 /**
+ * **검사가 던진 예외의 원인 사슬** — 이름·코드·syscall 만 (2026-10-24).
+ *
+ * ★Windows 게이트 실행에서 `dashboard-tab-title` 이 «검사 자체가 던졌다: fetch failed» 한 줄만
+ *  남겼다. Node `fetch` 는 진짜 원인(`UND_ERR_SOCKET`·`ECONNRESET`·`UND_ERR_CONNECT_TIMEOUT` …)을
+ *  `cause` 에 넣는데 여기서 `message` 만 찍어 버려, 재현되지 않는 실패의 유일한 단서가 사라졌다.
+ * ★메시지는 싣지 않는다 — 원인 쪽 메시지엔 주소·경로가 들 수 있고 이 로그는 공개 CI 에도 남는다.
+ *  모양이 정해진 식별자만 통과시킨다. 순환 사슬은 방문 집합으로, 긴 사슬은 깊이로 끊는다.
+ */
+const thrownChain = (e: unknown): string => {
+  const id = (v: unknown, re: RegExp): string => (typeof v === "string" && re.test(v) ? v : "");
+  const seen = new Set<unknown>();
+  const parts: string[] = [];
+  let cur: unknown = e;
+  for (let depth = 0; depth < 5 && typeof cur === "object" && cur !== null && !seen.has(cur); depth += 1) {
+    seen.add(cur);
+    const o = cur as { name?: unknown; code?: unknown; syscall?: unknown; cause?: unknown };
+    const name = id(o.name, /^[A-Za-z][A-Za-z0-9_]{0,39}$/) || "?";
+    parts.push([name, id(o.code, /^[A-Z][A-Z0-9_]{0,39}$/), id(o.syscall, /^[a-z][a-z0-9_]{0,19}$/)].filter((s) => s !== "").join("/"));
+    cur = o.cause;
+  }
+  return parts.length === 0 ? "" : ` · 예외 사슬: ${parts.join(" ← ")}`;
+};
+
+/**
  * **끝나고 남은 임시 폴더를 센다** — 내 것 말고 (2026-09-20).
  *
  * ★★**67개가 쌓여 있었는데 아무도 몰랐다.** 위 스위퍼는 «하루 넘은 것» 만 쓸어서, 오늘
@@ -254,7 +278,7 @@ const main = async (): Promise<void> => {
       results = await c.run();
     } catch (e) {
       failed += 1;
-      console.log(`🔴 ${c.name} — 검사 자체가 던졌다: ${e instanceof Error ? e.message : String(e)}`);
+      console.log(`🔴 ${c.name} — 검사 자체가 던졌다: ${e instanceof Error ? e.message : String(e)}${thrownChain(e)} (${Date.now() - started}ms)`);
       continue;
     }
     const omitted = results.filter((r) => r.skip !== undefined);

@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-10-26
+
 ### Added
 
 - **매니저·에이전트가 작업을 시작한 쪽만 풀 수 있는 막힘을 한 줄로 알리고 하던 일을 계속합니다.** 알림은 그 작업을 시작한 대화나 매니저에게 갑니다. 백그라운드 패널의 작업 카드에는 가장 최근 알림이 보이고, 대화에서 시작한 매니저라면 답이 없는 알림이 진행 알림에도 한 번 실립니다. 답은 그 작업에 지시로 전달되고, 알림은 작업당 세 번까지입니다.
@@ -2701,7 +2703,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...HEAD
+[0.77.0]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...v0.75.0
 [0.74.0]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...v0.74.0

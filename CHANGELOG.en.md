@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-10-26
+
 ### Added
 
 - **Managers and agents can send a one-line notice about a blocker that only whoever started the job can clear, and keep working.** The notice goes to the conversation or manager that started the job. The job's card in the background panel shows the latest notice, and for a manager started from a conversation, an unanswered notice is also included once in its progress update. The answer reaches the job as an instruction, and each job can send up to three notices.
@@ -1151,7 +1153,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...HEAD
+[0.77.0]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...v0.75.0
 [0.74.0]: https://github.com/tigu77/tiguclaw/compare/v0.73.1...v0.74.0

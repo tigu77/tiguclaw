@@ -5,7 +5,9 @@ import { Usage } from "@openai/agents-core";
 import { getEventBus } from "../../core/eventbus.js";
 import { beginSummaryUsage } from "../../core/llm-runtime/auxiliary-usage.js";
 import { extractUsage } from "../../core/llm-runtime/adapters/openai-agents-sdk.js";
-import { publishTurnDone } from "../../core/llm-runtime/index.js";
+import { __setAdapterForTest, publishTurnDone } from "../../core/llm-runtime/index.js";
+import { summarizeJobProgress } from "../../core/llm-runtime/classify.js";
+import type { RegionASdkOutput } from "../../core/llm-runtime/types.js";
 import { turnSpend } from "../../core/llm-runtime/turn-spend.js";
 import { __resetJobsForTest, registerJob, getJob } from "../../core/worker-jobs.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -109,6 +111,46 @@ export const check: RegressionCheck = {
         const invalid = extractUsage({ state: { usage: { requests, inputTokens: 10, outputTokens: 1 } } });
         out.push(assert(`잘못된 SDK 횟수 ${String(requests)}를 관측값으로 보존하지 않음`, invalid?.requests === undefined, { requests: String(requests), invalid }));
       }
+      // 진행 요약(job-progress) — 실제 요약 함수를 가짜 어댑터로 돌린다. 모델 칸엔 어댑터가 보고한 모델만, 요청 원장은 미보고를 0으로 채우지 않고(2026-10-25 효율 관측 보완).
+      const progressId = registerJob({ label: "progress", task: "synthetic", threadKey: "dashboard:usage", channel: "dashboard", channelUserId: "u" });
+      const progressEvents: Record<string, unknown>[] = [];
+      const offProgress = getEventBus().subscribe(e => { if (e.type === "llm.auxiliary_usage" && e.payload.threadKey === `worker:${progressId}`) progressEvents.push(e.payload); });
+      let fake: () => Promise<RegionASdkOutput> = async () => ({ text: "요약", model: "served-model", usage: {
+        inputTokens: 60, outputTokens: 5, iterations: 2, inputTokensTotal: 120, outputTokensTotal: 9, cachedTokensTotal: 40,
+        requestUsageEntries: [
+          { model: "served-model", inputTokens: 60, outputTokens: 4, cachedTokens: 20, cacheCreationTokens: 7 },
+          { inputTokens: 60, outputTokens: 5, cachedTokens: 20, reasoningTokens: 3, endpoint: "synthetic" },
+          { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0 },
+          { inputTokens: 0, outputTokens: 0 },
+        ] } });
+      const restoreAdapter = __setAdapterForTest(async () => fake());
+      try {
+        await summarizeJobProgress("synthetic", { jobId: progressId });
+        fake = async () => ({ text: "요약", usage: { inputTokens: 10, outputTokens: 1 } });
+        await summarizeJobProgress("synthetic", { jobId: progressId });
+        fake = async () => { throw new Error("synthetic summary failure"); };
+        await summarizeJobProgress("synthetic", { jobId: progressId });
+        fake = async () => ({ text: "요약", model: "served-no-usage" });
+        await summarizeJobProgress("synthetic", { jobId: progressId });
+      } finally { restoreAdapter(); offProgress(); }
+      const [served, unnamed, failedSummary, modelOnly] = progressEvents;
+      out.push(assert("진행 요약은 작업명이 아니라 어댑터가 보고한 모델을 기록", progressEvents.length === 4 && served?.model === "served-model" && served.adapter === "internal" && served.inputTokens === 120 && served.outputTokens === 9 && served.cachedTokens === 40, progressEvents));
+      out.push(assert("사용량을 못 받은 성공 요약도 보고된 모델은 남기고 토큰은 0으로 채우지 않음", modelOnly?.model === "served-no-usage" && modelOnly.ok === true && modelOnly.inputTokens === undefined && modelOnly.outputTokens === undefined, modelOnly));
+      // 항목 수·순서도 그대로다 — 벤치가 항목마다 관측 요청을 센다(빈 항목도 요청 하나).
+      out.push(assert("진행 요약의 요청별 모델·캐시 생성·추론을 남기되 미보고는 0으로 채우지 않고, 관측된 0과 빈 항목은 보존", JSON.stringify(served?.requestUsageEntries) === JSON.stringify([{ model: "served-model", cacheCreationTokens: 7 }, { reasoningTokens: 3 }, { cacheCreationTokens: 0 }, {}]), served?.requestUsageEntries));
+      // 기록 함수의 모델 우선순위 — 종료 때 받은 모델 › 시작 때 모델(Codex·OpenAI 요약은 시작 모델만 준다).
+      const precedence: Record<string, unknown>[] = [];
+      const offPrecedence = getEventBus().subscribe(e => { if (e.type === "llm.auxiliary_usage" && e.payload.threadKey === "agent:precedence") precedence.push(e.payload); });
+      beginSummaryUsage("agent:precedence", "openai", "start-model")(true, { model: "end-model" });
+      beginSummaryUsage("agent:precedence", "openai", "start-model")(true, { model: "" });
+      beginSummaryUsage("agent:precedence", "openai", "start-model")(false);
+      offPrecedence();
+      out.push(assert("종료 모델이 시작 모델보다 우선, 빈 종료 모델은 시작 모델 유지", precedence.map(p => p.model).join(",") === "end-model,start-model,start-model", precedence.map(p => p.model)));
+      // 캐시를 보고하지 않은 성공은 키가 없어야 한다 — 0 이면 벤치가 불완전 합계를 완전으로 본다(독립 mutation-hunt 10-25 생존 변이 `?? 0`).
+      out.push(assert("usage 는 있으나 캐시 미보고인 성공 요약은 cachedTokens 키 없음(0 채움 금지)", unnamed?.ok === true && unnamed.inputTokens === 10 && !("cachedTokens" in unnamed), unnamed));
+      out.push(assert("모델 미보고 요약·실패 요약은 모델 키 없음, 실패는 ok:false", unnamed !== undefined && !("model" in unnamed) && unnamed.ok === true && failedSummary !== undefined && !("model" in failedSummary) && failedSummary.ok === false && failedSummary.inputTokens === undefined, { unnamed, failedSummary }));
+      const progressLedger = getJob(progressId)!.usage!.summary;
+      out.push(assert("잡 장부의 요약 합계는 종전 규칙 그대로(4회·미보고 2)", progressLedger?.executions === 4 && progressLedger.inputTokens === 130 && progressLedger.outputTokens === 10 && progressLedger.unreported === 2 && getJob(progressId)!.usage!.turns === 0, progressLedger));
       return out;
     } finally { __resetJobsForTest(); }
   },

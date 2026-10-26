@@ -419,7 +419,8 @@ export const check: RegressionCheck = {
       const dash = (f: string): string => fs.readFileSync(new URL(`../../../packages/dashboard/js/${f}`, import.meta.url), "utf8");
       const hints = dash("channel-hints.js"), hr = dash("history-render.js"), rp = dash("reply.js"), tb = dash("tabs.js");
       const ui = {
-        liveThree: (hints.match(/dataset\.turn = turnId/g) ?? []).length === 3 && /payload\.notice !== true && payload\.turn/.test(hints),
+        // 세 갈래 + 세그먼트 갈래의 마지막 텍스트 말풍선(2026-10-25 답글 원문 좌표 — 묶음이 뒤 도구 카드면 말풍선에도 같은 값) = 4.
+        liveThree: (hints.match(/dataset\.turn = turnId/g) ?? []).length === 4 && /payload\.notice !== true && payload\.turn/.test(hints),
         restored: /isOut && !isNotice && typeof entry\.turnId === "string"/.test(hr) && /it\.m\.turnId/.test(hr) && /a\.turnId/.test(hr),
         menu: /closest\("\[data-turn\]"\)/.test(rp) && /if \(ctx && ctx\.turn\) items\.push/.test(rp),
         request: /turn \? \{ threadKey: tk, childKey, turn \}/.test(tb) && /const rk = turn \? tk \+ "\|" \+ turn : tk/.test(tb),

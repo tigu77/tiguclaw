@@ -55,6 +55,14 @@
             setChatBody(card.replyMsg, txt, true);       // 평문 델타 → 세그먼트 마크다운 전체본(자가치유).
             card.replyMsg.classList.remove("streaming");  // 타이핑 커서 off(세그먼트 확정).
           }
+          // ★답글 좌표 (2026-10-25 사용자 신고 — 비서 답에 단 답글이 `{text}` 만 저장돼 «↩ 원문» 이 안 눌렸다). 이력 세그먼트 말풍선과 같은 값:
+          //  `data-ts` = 이 세그먼트의 활동 시각(화면·정렬 좌표 — 이후 바꾸지 않는다), `data-seg` = 그 시각은 대화 기록 행 시각이 아니다(행 조회 금지, reply.js).
+          //  참조는 버리기 전에 남긴다 — 완료(out)가 이 턴의 답 행 좌표를 **마지막 텍스트 말풍선**에 붙인다(channel-hints.js, 이력 병합과 같은 귀속).
+          if (card.replyBubble) {
+            if (typeof p.ts === "number" && Number.isFinite(p.ts)) card.replyBubble.dataset.ts = String(p.ts);
+            card.replyBubble.dataset.seg = "1";
+            card.lastTextBubble = card.replyBubble;
+          }
           card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
           card.sawTextSegment = true;   // out.text 최종 버블 중복 렌더 방지(§5.1).
           card.closedByText = true;     // 다음 도구는 새 카드로.
@@ -82,7 +90,10 @@
           //  시절의 균형이었다. 이제 접기가 턴 전체를 줄이므로 자동으로 접으면 **사용자가
           //  안 시킨 숨김**이 된다. 접는 건 사용자가 정한다.
           card = createTurnCard(p, ts, adapter, thread);
-          if (continuation && prevCard.sawTextSegment) card.sawTextSegment = true;
+          if (continuation && prevCard.sawTextSegment) {
+            card.sawTextSegment = true;
+            card.lastTextBubble = prevCard.lastTextBubble; // 텍스트→도구→완료: 답 행은 앞 카드의 마지막 텍스트 말풍선 것이다.
+          }
           cardByThread.set(thread, card);
           vtAppend(card.group);
         }

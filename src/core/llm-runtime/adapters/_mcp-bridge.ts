@@ -106,7 +106,12 @@ export const adaptClaudeMcpServer = async (
   };
 
   return {
-    cacheToolsList: true,
+    // ★목록 캐시 끔(2026-10-26) — @openai/agents 는 `cacheToolsList` 인 서버의 목록을 **프로세스 전역**에 서버 이름 키로 둔다
+    //  (agents-core `mcp.js` `getMcpToolsFromServer` · `mcpToolCache.js`). 이 브리지는 턴마다 새로 만들고 같은 이름이라도 턴 종류에
+    //  따라 도구가 다르다(`agents` 의 `steer_worker` 는 매니저 턴에만) — 첫 턴의 목록이 이후 모든 턴에 재사용돼, 매니저 턴 뒤 메인 턴이
+    //  «Duplicate tool names: steer_worker» 로 모델 호출 없이 죽고 거꾸로면 매니저가 `steer_worker` 를 잃었다. 목록의 수명 = 이
+    //  브리지(턴)의 수명이라 전역에 둘 것이 없다 — 외부 MCP 래퍼(`external-mcp.ts` `leaseOf`)와 같은 판단.
+    cacheToolsList: false,
     get name() {
       return name;
     },

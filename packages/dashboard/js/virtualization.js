@@ -1352,6 +1352,7 @@
           // 인터리브(2026-07-13): sawTextSegment=이 턴이 kind:"text" 세그먼트를 냈나(out 중복 방지),
           // closedByText=직전 텍스트 세그먼트가 도구 런을 닫음(다음 도구는 새 카드로 → 텍스트↔도구 교차).
           sawTextSegment: false, closedByText: false,
+          lastTextBubble: null, // 이 턴의 마지막 텍스트 세그먼트 말풍선 — 완료가 답 행 좌표를 붙인다(token-delta.js·channel-hints.js).
         };
       };
 
@@ -1370,7 +1371,7 @@
           costEl: null, replyCostEl: null, // 비용 표시 자리(카드 헤더 없음 → 버블 헤더 사용).
           modelEl: null, replyModelEl: null, modelSeen: "", // 모델 표시도 동일(버블 헤더 사용).
           replyBubble: null, replyMsg: null, replyRaw: "",
-          sawTextSegment: false, closedByText: false, // 인터리브 상태(createTurnCard 와 동형).
+          sawTextSegment: false, closedByText: false, lastTextBubble: null, // 인터리브 상태(createTurnCard 와 동형).
         };
       };
 

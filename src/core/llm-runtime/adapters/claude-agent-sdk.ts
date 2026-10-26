@@ -117,6 +117,7 @@ import { cliOwnAuthToolNames, moveRemoteHeadersToEnv, readExternalMcpServers, is
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import { createNotifyOwnerMcpServer } from "../capabilities/notify-owner-mcp.js";
 import { createToolRecallMcpServer } from "../capabilities/tool-recall-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createSessionToolsMcpServer } from "../capabilities/session-tools-mcp.js";
@@ -645,6 +646,7 @@ export const runClaude = async (
   //  잡혀 경고가 안 나가고, 뒤에 오는 코어에 덮이고, 그런데 `find_capabilities` 는 계속
   //  광고한다. 회귀가 이 목록과 실제 리터럴을 **대조**한다.
   const LATE_CORE_MCP_KEYS = ["file-ops", "todo", "find-capabilities"] as const;
+  const notifyOwnerServer = createNotifyOwnerMcpServer(input);
   const leanMcpServers: Options["mcpServers"] = toolsNone
     ? { ...externalToolsMcp, ...neutralReadMcp }
     : {
@@ -687,6 +689,9 @@ export const runClaude = async (
         ...(input.sendAttachment !== undefined
           ? { "send-file": createSendFileMcpServer(input.sendAttachment, sentFiles) }
           : {}),
+        // notify_owner(2026-10-25) — 작업자가 소환자에게 한 줄 알리고 계속 일한다. 자기 잡이 있는 턴(매니저·서브)만 —
+        //  판정은 팩토리 한 곳(없으면 undefined). codex/openai 와 같은 조건(설계 §6).
+        ...(notifyOwnerServer !== undefined ? { "notify-owner": notifyOwnerServer } : {}),
         // prompt-options(축1, 2026-06-25) — 객관식 선택지 제시. 채널 렌더 클로저가 있을
         // 때만 등록(미지원 채널·비채널 turn 은 미등록 = 도구 노출 0). codex/openai 와 parity.
         ...(input.presentOptions !== undefined

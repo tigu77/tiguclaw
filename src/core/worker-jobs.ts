@@ -39,7 +39,7 @@ import { noteLimitStop, RESUME_MARGIN_MS, resumeNoteLine, type ResumeNote } from
 import { bumpRevision, stampFor, RUNNING_WORK } from "./resource-revision.js";
 import { DAEMON_RESTART_INTERRUPTED } from "./inflight-turns.js";
 import { randomUUID } from "node:crypto";
-import type { ChannelName, MessageHandler } from "../channels/types.js";
+import type { ChannelName, IncomingMessage, MessageHandler } from "../channels/types.js";
 import {
   upsertWorkerJob,
   updateWorkerJobStatus,
@@ -51,8 +51,13 @@ import type { TurnSpend } from "./llm-runtime/turn-spend.js";
 import { formatDuration, formatDurationKo } from "./format-duration.js";
 import { translate } from "./i18n.js";
 import { isSubagentTool } from "./llm-runtime/subagent-tools.js";
-import { createSteeringChannel } from "./steering.js";
+import { createSteeringChannel, isJobSide } from "./steering.js";
 import type { SteeringChannel, SteeringInput } from "./steering.js";
+import {
+  KEEP_WORKING, NOTICE_CAP_PER_JOB, NOTICE_MAX_CHARS, checkNotice, hasNotices, isNoticeJoining, managerNoticeText,
+  putNotice, sessionNoticeText, takeNotice, takeNotices,
+  type InboxItem, type JobNotice, type NoticeRoute,
+} from "./job-notice.js";
 import { runSubagentStopHooks } from "./entry/hook-runner.js";
 
 // Step 1 (2026-06-30) — 매니저 lifecycle 을 EventBus 에 발행한다. 매니저 활동(llm.activity,
@@ -363,6 +368,11 @@ export interface WorkerJobRecord {
    *  (판단 하나, 표현 둘 — 2026-10-23 한도 자동 이어가기 §3.6). 런타임 전용.
    */
   limitResume?: ResumeNote;
+  /**
+   * 이 작업자가 `notify_owner` 로 보낸 알림(최대 `NOTICE_CAP_PER_JOB`) — 카드·진행 알림·답 확정이 읽는다(2026-10-25). 런타임 전용 —
+   *  재시작하면 잡이 «중단» 으로 끝나므로 알림 상태도 같이 사라지는 게 맞다(기록은 이벤트·스레드 기록에 남는다, 설계 Q3).
+   */
+  notices?: JobNotice[];
 }
 
 /** 모듈 전역 레지스트리 — singleton 데몬 (scheduler inFlight 동형). */
@@ -743,6 +753,11 @@ export const awaitJobOutcome = async (
   timeoutMs: number,
   pollMs = 200,
   signals: readonly AbortSignal[] = [],
+  /**
+   * 깨우기 조건(2026-10-25, `notify_owner` 설계 §5.3) — 참이 되면 잡이 아직 돌아도 그 순간 상태로 돌아온다(≤ `pollMs`).
+   *  합류가 «기다리는 동안 소환자 앞 작업자 알림» 을 보려고 넘긴다. 미지정 = 종전 그대로.
+   */
+  wake?: () => boolean,
 ): Promise<WorkerJobRecord | undefined> => {
   // ★권리를 **건드리지 않는다** (2026-10-23) — 종전엔 완료·시한에서 jobId 로 지워 관찰자의 대기가 소환자의 권리를 풀었다(P2).
   //  해제는 권리를 얻은 호출의 몫이다(`releaseJobJoin`). 시한 초과·취소면 running 그대로 반환한다(호출자가 «진행 중» 으로 보고).
@@ -752,6 +767,7 @@ export const awaitJobOutcome = async (
     if (job === undefined) return undefined; // 모르는 잡 — 호출자가 «없음» 으로 보고한다.
     if (job.status !== "running") return job;
     if (Date.now() >= deadline || signals.some((s) => s.aborted)) return job;
+    if (wake?.() === true) return job;
     // 폴 간격을 기다리되 취소되면 바로 깬다(취소된 턴을 시한까지 붙잡지 않는다).
     await new Promise<void>((resolve) => {
       const wake = (): void => {
@@ -1073,6 +1089,81 @@ const describeEvidence = (job: WorkerJobRecord, ev: CheckinEvidence, now: number
 };
 
 /**
+ * **도는 소환자 매니저**의 jobId — 직속 소환자가 잡이고 지금 돌면 그 id, 아니면 `undefined`(세션이거나 소환자가 끝남).
+ * ★점검(`deliverCheckin`)과 작업자 알림(`notify_owner`)이 **같은 판정**을 쓴다(설계 §5.2 «판단을 두 벌 두지 않는다»).
+ */
+const runningSummonerJobId = (job: { threadKey: string }): string | undefined => {
+  const id = parentJobIdOf(job.threadKey);
+  return id !== undefined && jobs.get(id)?.status === "running" ? id : undefined;
+};
+
+/**
+ * 도는 소환자 매니저의 지시 채널에 **시스템 글**을 넣는다 — 점검·알림 공용(설계 §5.2). ★`resetStallClock:false` 가 이 함수의 이유다:
+ *  시스템 독백이 부모의 점검 시계를 밀면 굳은 부모가 영원히 안 죽는다(2026-08-23 2R F2). 시계를 미룰 권리는 판단을 준 쪽(`steer_worker`)에만.
+ *  안 닿으면(`absent`·`closed`) 호출자가 **소유 세션으로 올린다** — 그다음 갈래(점검=메인 턴 await·raw / 알림=수신함+줄 선 턴)는 각자다.
+ */
+const steerRunningSummoner = (parentId: string, msg: SteeringInput): "delivered" | "closed" | "absent" =>
+  steerJob(parentId, msg, { resetStallClock: false });
+
+/** 보고 좌표를 **소유 세션**으로 환원한 잡 — 소환자가 세션이면 그대로. 점검·알림 공용. */
+const ownerReportJob = (job: WorkerJobRecord): WorkerJobRecord => {
+  const owner = resolveOwnerThreadKey(job.threadKey);
+  return owner !== "" && owner !== job.threadKey ? { ...job, threadKey: owner } : job;
+};
+
+/**
+ * 소환자가 **메인 비서(세션)** 일 때 넣는 합성 턴 — 점검과 작업자 알림이 같이 쓴다(설계 §5.2, 2026-10-25 공유로 뽑음).
+ * `reportJob` 은 소유 세션으로 환원한 잡이다(`ownerReportJob`). 점검은 `beforeTurn` 없이 종전과 같은 값으로 부른다.
+ */
+const summonerTurnMessage = (
+  reportJob: WorkerJobRecord,
+  text: string,
+  turnOrigin: "worker-checkin" | "worker-notice",
+  beforeTurn?: () => string | null,
+): IncomingMessage => {
+  //  ★"그 배관을 쓴다" 고 적어놓고 **실제로는 안 썼다** (2026-08-23 2라운드 F1) — 종전엔 넉 장만 넘기고 `as never` 로 눌러
+  //   ⓐ점검 전문이 «사용자가 친 말» 로 영속 ⓑ`msg.reply` 가 없어 모델 판단이 버려짐 ⓒraw 로 세 번 알림. 계약을 눌러 끄지 말고 **채운다**.
+  const dest = destForJob(reportJob);
+  // 귀속은 완료 재주입과 같은 규칙으로 싣는다(이 턴의 답에 답글을 달아도 그 세션으로).
+  const reinjectReply = reacquireReply(dest, {
+    observe: false,
+    originThreadKey: notifySessionThreadKey(reportJob.threadKey),
+  });
+  // 세션-정체성 정규화 — 완료 재주입(`onWorkerComplete`)과 같은 규칙. 없으면 telegram發 잡의
+  // 합성 턴이 사용자 실세션과 다른 정체성으로 돌아 resume/transcript 가 갈린다.
+  const idChannel = canonicalSessionChannel(reportJob.threadKey, reportJob.channel);
+  const presenter = optionsPresenterFor(dest.channel, dest.target ?? null, reportJob.threadKey); // 고른 값은 물어본 스레드로
+  return {
+    channel: reportJob.channel,
+    channelUserId: reportJob.channelUserId,
+    threadKey: reportJob.threadKey,
+    ...(idChannel !== reportJob.channel
+      ? {
+          session: {
+            explicitSessionId: reportJob.threadKey,
+            ...(dest.target !== null ? { channelAddress: dest.target } : {}),
+          },
+        }
+      : {}),
+    // ★`synthetic: true` 가 두 가지를 동시에 닫는다: ①관측 발행 스킵(가짜 "나" 버블) ②`steerable(msg)` 가 false — 없으면 이 턴이
+    //  사용자의 **진행 중 턴에 끼어드는** steering 메시지가 된다(F1b). 그러면 «사용자가 마침 턴 중인가» 로 갈려 비결정적이다.
+    synthetic: true,
+    // ★출처 표식 — 진단 전용 (2026-09-21). `synthetic` 만으로는 완료 재주입과 구분되지 않는다. 요청엔 안 실린다.
+    turnOrigin,
+    receivedAt: Date.now(),
+    reply: reinjectReply,
+    // ★이 턴의 답도 같은 좌표로 나간다 — 중복 차단 대상.
+    replyTarget: { channel: dest.channel, target: dest.target ?? null },
+    // 이 턴의 사람 도달 좌표 = 잡의 보고 좌표 — 완료 재주입과 같은 규칙(`turnReachOf`).
+    ...turnReachOf(reportJob),
+    // 선택지도 같은 좌표로(완료 재주입과 같은 처방 — 없으면 «함께 보낼 채널» 에만 간다).
+    ...(presenter !== undefined ? { presentOptions: presenter } : {}),
+    ...(beforeTurn !== undefined ? { beforeTurn } : {}),
+    text,
+  };
+};
+
+/**
  * 점검 한 건을 **소환자에게** 넘긴다 — 직속 소환자가 먼저, 없으면 위로.
  *
  * ★사용자 지적: *"1회차 무활동을 측정했다는 건 그 측정한 주체가 소환자인 거잖아."* 그래서
@@ -1092,21 +1183,16 @@ const deliverCheckin = async (
   job: WorkerJobRecord,
   body: string,
 ): Promise<boolean> => {
-  const parentId = parentJobIdOf(job.threadKey);
+  const parentId = runningSummonerJobId(job);
   if (parentId !== undefined) {
-    const parent = jobs.get(parentId);
-    if (parent !== undefined && parent.status === "running") {
+    {
       // ★`resetStallClock: false` — 이건 **개입이 아니라 시스템 독백**이다 (2026-08-23
       //  2라운드 F2). 종전엔 배달 성공이 곧 부모의 `stallReports=0` + 앵커 리셋이라,
       //  자식이 하나라도 붙어 있으면 **부모의 무활동 시계가 영구히 0에 고정**됐다(실측:
       //  자식 있으면 5주기 내내 parent stall=0 / 없으면 2주기에 정리). 굳은 매니저 +
       //  굳은 자식 조합이 그물을 통째로 빠져나갔다. 시계를 미룰 권리는 **판단을 준 쪽**
       //  (`steer_worker` 도구)에만 있다.
-      const r = steerJob(
-        parentId,
-        { text: body, raw: body, ts: Date.now() },
-        { resetStallClock: false },
-      );
+      const r = steerRunningSummoner(parentId, { text: body, raw: body, ts: Date.now() });
       if (r === "delivered") {
         console.log(
           `worker-jobs: '${job.label}' 점검을 소환자 매니저 ${parentId} 에게 전달 — 다음 model-call 경계에서 판단`,
@@ -1126,75 +1212,23 @@ const deliverCheckin = async (
   //   "감사 주체는 언제나 소환자" 라는 원칙이 이 자리에서만 깨져 있었다.
   //  완료 통지(`onWorkerComplete`)가 이미 같은 판단을 한다 — done 은 메인 재주입, 실패는
   //  raw 직행. 점검도 그 배관을 그대로 쓴다(새 경로 0).
-  const owner = resolveOwnerThreadKey(job.threadKey);
-  const reportJob =
-    owner !== "" && owner !== job.threadKey ? { ...job, threadKey: owner } : job;
-  //  ★그런데 "그 배관을 쓴다" 고 적어놓고 **실제로는 안 썼다** (2026-08-23 2라운드 F1).
-  //   종전엔 `{channel, channelUserId, threadKey, text}` 넉 장만 넘기고 `as never` 로
-  //   컴파일러를 눌렀다. 라이브 귀결을 프로브로 재현하면 이렇다:
-  //     ⓐ `synthetic` 이 없어 점검 전문이 `channel.message.in` 으로 발행 → chat_log 에
-  //        **사용자가 친 말**로 영속(대시보드에 "나" 버블로 남는다)
-  //     ⓑ LLM 턴이 실제로 돌고(비용·도구), 끝에서 `msg.reply` 가 없어 TypeError →
-  //        **모델의 판단이 통째로 버려진다**
-  //     ⓒ 그 throw 를 여기서 잡아 raw 로 직행하며 `false` 를 반환 → 자동 종료가 여전히
-  //        무장 → 두 주기 뒤 "중단했습니다". 사용자에겐 같은 일로 알림이 **세 번** 간다
-  //   `as never` 를 떼면 `tsc` 가 즉시 `receivedAt`·`reply` 누락을 짚는다 — 그게 이 결함을
-  //   처음부터 막았을 검사다. 계약을 눌러 끄지 말고 **채운다**.
-  const dest = destForJob(reportJob);
-  // ★완료 통지는 여기서 `delivered` 를 추적해 **raw 안전망**을 건다. 점검엔 그게 없다 —
-  //  일부러다. 점검은 "계속 둘 만하면 아무 말도 안 해도 된다" 가 설계이므로 침묵이 정상
-  //  이고, 안전망을 걸면 소환자가 침묵을 택할 때마다 사용자에게 raw 가 나간다.
-  //  종전엔 `delivered` 플래그와 래퍼가 있었지만 **읽는 곳이 없었다**(2026-08-23 3라운드)
-  //  — 안전망이 있는 것처럼 읽히는 죽은 코드다. 없앤다. 없는 것은 없다고 적는다.
-  // 귀속은 완료 재주입과 같은 규칙으로 싣는다(점검 보고에 답글을 달아도 그 세션으로).
-  const reinjectReply = reacquireReply(dest, {
-    observe: false,
-    originThreadKey: notifySessionThreadKey(reportJob.threadKey),
-  });
-  // 세션-정체성 정규화 — 완료 재주입(`onWorkerComplete`)과 같은 규칙. 없으면 telegram發 잡의
-  // 점검 턴이 사용자 실세션과 다른 정체성으로 돌아 resume/transcript 가 갈린다.
-  const idChannel = canonicalSessionChannel(reportJob.threadKey, reportJob.channel);
+  const reportJob = ownerReportJob(job);
+  // ★완료 통지는 `delivered` 를 추적해 **raw 안전망**을 건다. 점검엔 그게 없다 — 일부러다. 점검은 "계속 둘 만하면 아무 말도
+  //  안 해도 된다" 가 설계이므로 침묵이 정상이고, 안전망을 걸면 소환자가 침묵을 택할 때마다 사용자에게 raw 가 나간다.
+  //  (종전엔 `delivered` 플래그와 래퍼가 있었지만 읽는 곳이 없었다 — 2026-08-23 3라운드에 없앴다.)
   const handler = mainHandler;
   if (handler !== undefined) {
     try {
-      await handler({
-        channel: reportJob.channel,
-        channelUserId: reportJob.channelUserId,
-        threadKey: reportJob.threadKey,
-        ...(idChannel !== reportJob.channel
-          ? {
-              session: {
-                explicitSessionId: reportJob.threadKey,
-                ...(dest.target !== null ? { channelAddress: dest.target } : {}),
-              },
-            }
-          : {}),
-        // ★`synthetic: true` 가 두 가지를 동시에 닫는다: ①관측 발행 스킵(가짜 "나" 버블)
-        //  ②`steerable(msg)` 가 false — 없으면 점검이 사용자의 **진행 중 턴에 끼어드는**
-        //  steering 메시지가 된다(F1b). 같은 커밋 주석이 매니저 경로에서 금지한 그 동작을
-        //  세션 경로에서 새로 만들 뻔했다. 게다가 "사용자가 마침 턴 중인가" 로 갈려
-        //  비결정적이었다.
-        synthetic: true,
-        // ★출처 표식 — 진단 전용 (2026-09-21). `synthetic` 만으로는 완료 재주입과
-        //  구분되지 않아 수치(도구·캐시)를 출처별로 가를 수 없었다. 요청엔 안 실린다.
-        turnOrigin: "worker-checkin" as const,
-        receivedAt: Date.now(),
-        reply: reinjectReply,
-        // ★점검 재주입도 같은 좌표로 나간다 — 중복 차단 대상.
-        replyTarget: { channel: dest.channel, target: dest.target ?? null },
-        // 이 턴의 사람 도달 좌표 = 잡의 보고 좌표 — 완료 재주입과 같은 규칙(`turnReachOf`).
-        ...turnReachOf(reportJob),
-        // 선택지도 같은 좌표로(완료 재주입과 같은 처방 — 없으면 «함께 보낼 채널» 에만 간다).
-        ...((): { presentOptions?: NonNullable<ReturnType<typeof optionsPresenterFor>> } => {
-          const p = optionsPresenterFor(dest.channel, dest.target ?? null, reportJob.threadKey); // 고른 값은 물어본 스레드로
-          return p !== undefined ? { presentOptions: p } : {};
-        })(),
-        text:
+      await handler(
+        summonerTurnMessage(
+          reportJob,
           `[백그라운드 작업 점검] 당신이 띄운 작업의 상태입니다. 그대로 옮기지 말고, 맥락을 ` +
-          `아는 당신이 판단해 **필요할 때만** 당신 인격으로 알리세요 — 계속 둘 만하면 아무 말도 ` +
-          `안 해도 됩니다. 그만둘 값이면 \`cancel_worker\`, 방향을 바꿀 거면 \`steer_worker\` ` +
-          `(지시를 주면 점검 시계가 초기화됩니다).\n\n${body}`,
-      });
+            `아는 당신이 판단해 **필요할 때만** 당신 인격으로 알리세요 — 계속 둘 만하면 아무 말도 ` +
+            `안 해도 됩니다. 그만둘 값이면 \`cancel_worker\`, 방향을 바꿀 거면 \`steer_worker\` ` +
+            `(지시를 주면 점검 시계가 초기화됩니다).\n\n${body}`,
+          "worker-checkin",
+        ),
+      );
       return true; // 메인 비서가 판단 중 — 코어는 안 죽인다.
     } catch (e) {
       console.error(
@@ -1242,8 +1276,17 @@ const maybeSendProgress = (job: WorkerJobRecord, ev: CheckinEvidence, now: numbe
   const outputs = ev.outputsSinceProgress;
   ev.outputsSinceProgress = undefined;
   const actions = actionsSince(ev.recent, since);
+  // ★답이 이어지지 않은 작업자 알림 — 머리줄 바로 아래 하네스 사실 줄(설계 §7.2). 한 알림은 **한 번만** 실린다(보낸 뒤 표시).
+  //  답 판정은 `answeredAt` 만 본다(`worker.steered` 의 답 시도 id 로 판정하지 않는다).
+  //  ★고르는 시점 = **본문을 조립하는 순간**(요약을 기다린 뒤) — 미리 골라 두면 그 사이 답을 받은 알림도 «막힘» 으로 나갔다(GPT R1 #1).
+  let openNotices: JobNotice[] = [];
+  const pickOpenNotices = (): readonly { at: number; text: string }[] => {
+    openNotices = (job.notices ?? []).filter((n) => n.answeredAt === undefined && n.progressShown !== true);
+    return openNotices.map((n) => ({ at: n.at, text: n.text }));
+  };
   void (async (): Promise<void> => {
     const composed = await composeProgressNotice({
+      notices: pickOpenNotices,
       errors,
       now,
       lastActivityAt: ev.lastRealActivityAt ?? job.startedAt,
@@ -1275,7 +1318,7 @@ const maybeSendProgress = (job: WorkerJobRecord, ev: CheckinEvidence, now: numbe
     // ★시스템 통지로 보낸다 — 비서의 답이 아니다(2026-10-14 아스트라 검토: 표식이 없어 기록에 일반 답처럼 남았다).
     //  무진전 재시도 알림과 같은 길(`deliverOutbound` notice:true). 완료·실패 보고(`notifyJobOwner`)는 그대로 둔다.
     const dest = destForJob(job);
-    await deliverOutbound({
+    const sent = await deliverOutbound({
       channel: dest.channel,
       target: dest.target ?? null,
       text,
@@ -1283,6 +1326,8 @@ const maybeSendProgress = (job: WorkerJobRecord, ev: CheckinEvidence, now: numbe
       notice: true,
       observeThreadKey: notifySessionThreadKey(job.threadKey),
     });
+    // 실렸다 — 다음 진행 알림엔 다시 안 싣는다(못 보냈으면 표시하지 않아 다음에 실린다).
+    if (sent.delivered !== false) for (const n of openNotices) if (n.answeredAt === undefined) n.progressShown = true;
   })().catch((e: unknown) => {
     console.error(`[job-progress] '${job.label}' (${job.jobId}) 알림 실패: ${e instanceof Error ? e.message : String(e)}`);
   });
@@ -1515,14 +1560,20 @@ export const getJobActivity = (
   lastActivityAt: number;
   inFlight: { tool: string; since: number }[];
   todos?: ReadonlyArray<{ content: string; status: string; activeForm?: string }>;
+  /** 최신 작업자 알림 — 카드 «막힘» 줄의 복원 재료. `worker.notice` payload 와 같은 이름 같은 모양(설계 §7.1). */
+  notice?: { noticeId: string; text: string; at: number; answeredAt?: number };
 } | undefined => {
   const ev = evidence.get(jobId);
   if (ev === undefined) return undefined;
+  const last = jobs.get(jobId)?.notices?.at(-1);
   return {
     lastActivityAt: ev.lastActivityAt,
     // 호출 단위 키는 내부 사정이라 밖으로 안 낸다 — 소비처가 원하는 건 "무슨 도구가 언제부터".
     inFlight: [...ev.inFlight.values()].map((f) => ({ tool: f.tool, since: f.at })),
     ...(ev.todos !== undefined ? { todos: ev.todos } : {}),
+    ...(last !== undefined
+      ? { notice: { noticeId: last.id, text: last.text, at: last.at, ...(last.answeredAt !== undefined ? { answeredAt: last.answeredAt } : {}) } }
+      : {}),
   };
 };
 
@@ -2230,6 +2281,14 @@ export const publishSteerAttempt = (info: {
   label?: string;
   /** 보낸 소환자 작업(`SteeringInput.from`) — 비면 사용자(메인 비서가 옮긴 말). */
   from?: string;
+  /** 지시가 아니라 **반송**이다 — 이 작업이 소환자 지시를 못 읽고 끝나 돌려준 것(`returnUnappliedToSummoner`). `from` 과 뜻을 겹쳐 쓰지 않는다. */
+  returnedBy?: string;
+  /** 작업 쪽 글(자식 결과·반송 — `SteeringInput.source`)이면 `"job"`. 소비처가 지시와 가른다(셸 대기의 «새 지시» 깨움 등 — `isJobSide`). */
+  source?: "job";
+  /** 작업자 알림의 **배달**(자식 → 소환자 매니저, `SteeringInput.noticeOf`) — 보낸 잡과 알림 id(설계 §18-8). */
+  noticeOf?: { jobId: string; noticeId: string };
+  /** 알림에 대한 **답 시도**(소환자 → 그 작업자)의 `notice_id` — 연결 식별자일 뿐, 답 확정은 `worker.notice{answered}` 가 말한다. */
+  answersNoticeId?: string;
 }): void => {
   try {
     const job = info.jobId !== undefined && info.jobId !== "" ? getJob(info.jobId) : undefined;
@@ -2241,6 +2300,13 @@ export const publishSteerAttempt = (info: {
         label: info.label ?? job?.label ?? "",
         outcome: info.outcome,
         ...(info.from !== undefined ? { fromJobId: info.from, fromLabel: getJob(info.from)?.label ?? "" } : {}),
+        ...(info.returnedBy !== undefined ? { returnedByJobId: info.returnedBy, returnedByLabel: getJob(info.returnedBy)?.label ?? "" } : {}),
+        ...(info.source === "job" ? { source: "job" } : {}),
+        // 알림 배달 — 보낸 잡의 이름까지(이벤트 `label` 은 **대상** 잡의 것이라 카드가 «'C' 의 알림» 을 그리려면 따로 든다).
+        ...(info.noticeOf !== undefined
+          ? { noticeOf: { jobId: info.noticeOf.jobId, noticeId: info.noticeOf.noticeId, label: getJob(info.noticeOf.jobId)?.label ?? "" } }
+          : {}),
+        ...(info.answersNoticeId !== undefined ? { answersNoticeId: info.answersNoticeId } : {}),
         // 지시 원문 — 길이 컷(이벤트/버퍼 바운드, worker.* 의 task/result 컷과 동형).
         message: info.message.slice(0, 500),
         ...(job !== undefined
@@ -2279,7 +2345,11 @@ export const steerJob = (
    * 시스템이 자기 점검 보고를 부모에게 넣는 경로만 false 를 준다 — 안 그러면 시스템이
    * 자기 시계를 스스로 미루고 굳은 잡이 영원히 안 죽는다(2026-08-23 2라운드 F2 실측).
    */
-  opts?: { resetStallClock?: boolean },
+  opts?: {
+    resetStallClock?: boolean;
+    /** 관측에 «반송» 으로 남긴다(`publishSteerAttempt` 의 같은 칸). */ returnedBy?: string;
+    /** 관측에 «알림 답 시도» 로 남긴다(`publishSteerAttempt` 의 같은 칸). */ answersNoticeId?: string;
+  },
 ): "delivered" | "closed" | "absent" => {
   const outcome = ((): "delivered" | "closed" | "absent" => {
     if (!WORKER_STEERING_ENABLED) return "absent";
@@ -2312,8 +2382,342 @@ export const steerJob = (
       if (ev !== undefined) ev.lastActivityAt = Date.now();
     }
   }
-  publishSteerAttempt({ jobId, message: msg.raw, outcome, ...(msg.from !== undefined ? { from: msg.from } : {}) });
+  publishSteerAttempt({
+    jobId, message: msg.raw, outcome,
+    ...(msg.from !== undefined ? { from: msg.from } : {}),
+    ...(opts?.returnedBy !== undefined ? { returnedBy: opts.returnedBy } : {}),
+    ...(isJobSide(msg) ? { source: "job" as const } : {}),
+    ...(msg.noticeOf !== undefined ? { noticeOf: msg.noticeOf } : {}),
+    ...(opts?.answersNoticeId !== undefined ? { answersNoticeId: opts.answersNoticeId } : {}),
+  });
   return outcome;
+};
+
+// ─── 작업자 알림 `notify_owner` (2026-10-25, 설계 `docs/decisions/2026-10-23-notify-owner-design.md`) ─────
+// 작업자가 소환자만 풀 수 있는 것을 **한 줄 알리고 계속 일한다.** 판단(형식·중복·상한·수신함)은 `job-notice.ts`, 여기는 배달 배선이다 —
+// 잡 맵·스티어·메인 핸들러가 여기 산다. ★작업자 도구 호출은 **아무것도 기다리지 않는다**: 갈래와 수신함 넣기는 동기, 메인 합성 턴은
+// 줄만 세우고(`void`) 기다리지 않는다 — 기다리면 그게 차단형이다(보류된 `ask_owner`).
+
+/** `worker.notice` 의 결과 어휘(설계 §8). 거절도 남긴다 — 남발·오용을 사후에 셀 수 있게. */
+export type NoticeOutcome = "sent" | "duplicate" | "cap" | "rejected" | "taken" | "skipped" | "answered";
+
+const publishNotice = (
+  job: WorkerJobRecord,
+  outcome: NoticeOutcome,
+  n?: JobNotice,
+  extra?: { route?: NoticeRoute; target?: string; redelivery?: boolean; reason?: string },
+): void => {
+  try {
+    getEventBus().publish({
+      type: "worker.notice",
+      ts: Date.now(),
+      payload: {
+        jobId: job.jobId,
+        label: job.label,
+        kind: job.kind,
+        threadKey: job.threadKey,
+        // 원 세션 — 대시보드 세션 스코프 필터가 worker.* 와 같은 근거로 판정.
+        ownerThreadKey: resolveOwnerThreadKey(job.threadKey),
+        outcome,
+        // ★카드 재료는 잡 레코드·목록 응답과 **같은 이름 같은 모양**(설계 §7.1 R3 #1) — `{noticeId, text, at, answeredAt?}`.
+        ...(n !== undefined
+          ? { noticeId: n.id, text: n.text, at: n.at, ...(n.answeredAt !== undefined ? { answeredAt: n.answeredAt } : {}) }
+          : {}),
+        ...(extra?.target !== undefined ? { target: extra.target } : {}),
+        ...(extra?.route !== undefined ? { route: extra.route } : {}),
+        ...(extra?.redelivery === true ? { redelivery: true } : {}),
+        ...(extra?.reason !== undefined ? { reason: extra.reason } : {}),
+      },
+    });
+  } catch {
+    /* 관측 발행 실패가 알림을 무르지 않는다. */
+  }
+};
+
+/** 로그 한 줄(1차 진단면 — 판정 재료를 싣는다, 설계 §8). */
+const logNotice = (job: WorkerJobRecord, n: JobNotice, what: string): void => {
+  console.log(
+    `[job-notice] '${job.label}' (${job.kind}:${job.jobId}) ${n.id} ${(job.notices ?? []).length}/${NOTICE_CAP_PER_JOB} · ` +
+      `target=${n.target === "" ? "-" : n.target} · ${what} · ${[...n.text].length}자`,
+  );
+};
+
+/** 꺼냈다 — 상태를 확정하고 한 번 발행한다. 이미 꺼낸 것을 다시 꺼낼 일은 수신함이 막는다(한 번 꺼내기). */
+const markNoticeTaken = (it: InboxItem, route: NoticeRoute): void => {
+  const job = jobs.get(it.jobId);
+  const n = job?.notices?.find((x) => x.id === it.noticeId);
+  if (job === undefined || n === undefined) return;
+  n.state = "taken";
+  n.route = route;
+  publishNotice(job, "taken", n, { route, target: it.threadKey, ...(it.redelivery === true ? { redelivery: true } : {}) });
+  logNotice(job, n, `taken route=${route}${it.redelivery === true ? " (재배달)" : ""}`);
+};
+
+const noticeItem = (job: WorkerJobRecord, n: JobNotice, threadKey: string, o: { note?: string; redelivery?: boolean }): InboxItem => ({
+  jobId: job.jobId,
+  noticeId: n.id,
+  threadKey,
+  label: job.label,
+  kind: job.kind,
+  text: n.text,
+  at: n.at,
+  ...(o.note !== undefined ? { note: o.note } : {}),
+  ...(o.redelivery === true ? { redelivery: true } : {}),
+});
+
+/**
+ * 도는 매니저의 지시 채널에 넣는다 — 점검과 같은 길(`resetStallClock:false` — 자식의 독백이 부모 점검 시계를 밀면 굳은 부모가 안 죽는다).
+ * 넣기 = 꺼내기다(스티어는 되돌릴 수 없다 — 설계 §5.2). ★결과 수신함이 아니다 — 그 함은 매니저 본 턴이 끝난 뒤에야 읽힌다.
+ */
+const steerNoticeToManager = (managerJobId: string, it: InboxItem): "delivered" | "closed" | "absent" => {
+  const r = steerRunningSummoner(managerJobId, {
+    text: managerNoticeText(it), raw: it.text, ts: Date.now(), source: "job", noticeOf: { jobId: it.jobId, noticeId: it.noticeId },
+  });
+  if (r === "delivered") markNoticeTaken(it, "steer");
+  return r;
+};
+
+/**
+ * 세션 비서의 합성 턴을 **줄 세운다**(기다리지 않는다). 차례가 오면 `beforeTurn` 이 그 알림을 꺼낸다 — 이미 합류가 가져갔으면
+ * 모델을 안 부르고 넘어간다(설계 §5.2 표).
+ */
+const enqueueNoticeTurn = (sender: WorkerJobRecord, it: InboxItem): void => {
+  const handler = mainHandler;
+  if (handler === undefined) {
+    console.warn(`[job-notice] '${sender.label}' ${it.noticeId} — 메인 핸들러 미등록: 합성 턴 없이 수신함에만(합류만 꺼낼 수 있다)`);
+    return;
+  }
+  const report = { ...sender, threadKey: it.threadKey };
+  const msg = summonerTurnMessage(report, sessionNoticeText(it), "worker-notice", () => {
+    const got = takeNotice(it.threadKey, it.jobId, it.noticeId);
+    if (got === undefined) {
+      const job = jobs.get(it.jobId);
+      const n = job?.notices?.find((x) => x.id === it.noticeId);
+      if (job !== undefined && n !== undefined) publishNotice(job, "skipped", n, { route: "turn", target: it.threadKey });
+      return "작업자 알림이 이미 다른 자리(합류)로 전달돼 건너뜀";
+    }
+    markNoticeTaken(got, "turn");
+    return null;
+  });
+  try {
+    // ★`queueHandler` 는 부른 그 자리에서 줄을 선다(동기) — 순서(«완료 → 알림») 가 이 호출 순서로 정해진다(설계 §5.5-3).
+    void Promise.resolve(handler(msg)).catch((e: unknown) => {
+      console.error(`[job-notice] '${sender.label}' ${it.noticeId} 알림 턴 실패: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  } catch (e) {
+    console.error(`[job-notice] '${sender.label}' ${it.noticeId} 알림 턴을 못 세움: ${e instanceof Error ? e.message : String(e)}`);
+  }
+};
+
+/**
+ * 받을 스레드 `T` 를 정해 배달한다(설계 §5.1·5.2). 반환 = 작업자에게 돌려줄 «어디로 갔나» 한 줄 + (재배달이면) 미뤄 세울 턴.
+ *  - 도는 소환자 매니저: 그 매니저 턴이 **합류 중**이면 수신함에만(합류가 꺼낸다), 아니면 곧바로 스티어. 스티어가 안 닿으면(`absent`·`closed`)
+ *    **그 자리에서 부모를 건너뛰고** 소유 세션으로 올린다(`T` 를 다시 구하지 않는다 — 같은 부모가 다시 나온다).
+ *  - 세션: 수신함에 넣고 **동시에** 합성 턴을 줄 세운다. 세션 턴이 합류 중이면 그 합류가 먼저 꺼낸다.
+ *  - 없음: 기록만.
+ */
+const routeNotice = (
+  job: WorkerJobRecord,
+  n: JobNotice,
+  o: { redelivery?: boolean; deferTurn?: boolean; announce?: boolean },
+): { where: string; enqueueTurn?: () => void } => {
+  let announced = o.announce !== true; // 첫 배달만 «sent» 를 한 번 낸다(재배달은 이미 냈다).
+  const announce = (): void => {
+    if (announced) return;
+    announced = true;
+    publishNotice(job, "sent", n, { target: n.target });
+  };
+  let note: string | undefined;
+  const parentId = runningSummonerJobId(job);
+  if (parentId !== undefined) {
+    const T = `worker:${parentId}`;
+    const pLabel = jobs.get(parentId)?.label ?? parentId;
+    n.target = T;
+    n.state = "queued";
+    announce();
+    const it = noticeItem(job, n, T, { ...(o.redelivery === true ? { redelivery: true } : {}) });
+    if (isNoticeJoining(T)) {
+      putNotice(it);
+      logNotice(job, n, "소환자 매니저가 합류 중 — 수신함(합류가 꺼냄)");
+      return { where: `당신을 기다리던 소환자 매니저 '${pLabel}' 에게 바로 보냈습니다(지금 당신을 기다리는 중).` };
+    }
+    const r = steerNoticeToManager(parentId, it);
+    if (r === "delivered") {
+      return { where: `소환자 매니저 '${pLabel}' 에게 보냈습니다 — 그 매니저의 다음 판단 시점에 봅니다.` };
+    }
+    console.warn(`[job-notice] '${job.label}' ${n.id} — 소환자 매니저 ${parentId} 에게 못 넣음(${r}) — 소유 세션으로 올린다`);
+    note = `(이 작업을 띄운 매니저 '${pLabel}' 에게 전할 수 없어 대화로 올렸습니다)`;
+  } else {
+    const pid = parentJobIdOf(job.threadKey);
+    // 소환자가 잡인데 이미 끝났다 — 기록만으로 두지 않고 위로 올린다(설계 §5.4: 기록만이면 10-23 의 2시간 20분이 그대로 재현된다).
+    if (pid !== undefined) note = `(이 작업을 띄운 매니저 '${jobs.get(pid)?.label ?? pid}' 는 이미 끝나 대화로 올렸습니다)`;
+  }
+  const owner = resolveOwnerThreadKey(job.threadKey);
+  if (owner === "" || parentJobIdOf(owner) !== undefined) {
+    n.target = "";
+    n.state = "recorded";
+    announce();
+    console.warn(`[job-notice] '${job.label}' (${job.kind}:${job.jobId}) ${n.id} — 받을 소환자를 못 찾아 기록만(thread=${job.threadKey})`);
+    return { where: "받을 소환자를 찾지 못해 기록만 남겼습니다 — 결과 보고 첫 줄에 적으세요." };
+  }
+  n.target = owner;
+  n.state = "queued";
+  announce();
+  const it = noticeItem(job, n, owner, { ...(note !== undefined ? { note } : {}), ...(o.redelivery === true ? { redelivery: true } : {}) });
+  const joining = isNoticeJoining(owner);
+  putNotice(it);
+  logNotice(job, n, `세션 ${owner} — ${joining ? "합류 중(합류가 꺼냄) · " : ""}합성 턴${o.deferTurn === true ? "(완료 턴 뒤로)" : ""}`);
+  const enqueue = (): void => enqueueNoticeTurn(job, it);
+  const where = joining
+    ? "당신을 기다리던 소환자(대화의 비서)에게 바로 보냈습니다."
+    : "대화의 비서에게 보냈습니다 — 비서가 다른 일을 하는 중이면 그 뒤에 봅니다.";
+  if (o.deferTurn === true) return { where, enqueueTurn: enqueue };
+  enqueue();
+  return { where };
+};
+
+/**
+ * `notify_owner` 도구 호출 한 번(설계 §4) — 신원 → 형식 → 중복 → 상한 → 기록 → 배달 → 반환. **never-throw**: 배달 실패는 «기록만» 으로.
+ * @param turnThreadKey 이 턴의 좌표(`worker:<id>`/`agent:<id>`) — 런타임이 만든 턴 입력이지 모델 인자가 아니다.
+ */
+export const notifyOwner = (turnThreadKey: string, message: unknown): string => {
+  const jobId = parentJobIdOf(turnThreadKey);
+  const job = jobId !== undefined ? jobs.get(jobId) : undefined;
+  if (job === undefined || job.status !== "running") {
+    console.warn(`[job-notice] 작업자 턴이 아닌 호출 거절 (thread=${turnThreadKey})`);
+    return "작업자 턴이 아닙니다 — 이 도구는 실행 중인 매니저·서브에이전트만 씁니다. 보내지 않았습니다.";
+  }
+  const prior = job.notices ?? [];
+  const c = checkNotice(prior, message);
+  if (c.kind === "rejected") {
+    publishNotice(job, "rejected", undefined, { reason: c.reason });
+    console.warn(`[job-notice] '${job.label}' (${job.kind}:${job.jobId}) 거절 — ${c.reason}(${c.chars}자)`);
+    return c.reason === "empty"
+      ? "빈 알림이라 보내지 않았습니다 — 무엇이 막혔고 무엇을 하면 풀리는지 한 줄로 쓰세요."
+      : `한 줄(${NOTICE_MAX_CHARS}자 이내)로 다시 보내세요 — ${c.chars}자라 보내지 않았습니다.`;
+  }
+  if (c.kind === "duplicate") {
+    publishNotice(job, "duplicate", c.prior);
+    logNotice(job, c.prior, "중복 — 배달 0 · 상한 미소모");
+    const mins = Math.max(0, Math.round((Date.now() - c.prior.at) / 60_000));
+    return (
+      `이미 ${mins}분 전에 같은 알림(${c.prior.id})을 보냈습니다(${c.prior.answeredAt !== undefined ? "답 있음" : "답 없음"}) — ` +
+      `다시 보내지 않았습니다. 계속 일하세요.`
+    );
+  }
+  if (c.kind === "cap") {
+    publishNotice(job, "cap");
+    console.warn(`[job-notice] '${job.label}' (${job.kind}:${job.jobId}) 상한 ${NOTICE_CAP_PER_JOB}회 — 거절`);
+    return `이 작업의 알림 상한(${NOTICE_CAP_PER_JOB}회)을 다 썼습니다 — 보내지 않았습니다. 결과 보고 첫 줄에 적으세요.`;
+  }
+  const n: JobNotice = { id: c.id, at: Date.now(), text: c.text, target: "", state: "recorded" };
+  job.notices = [...prior, n];
+  try {
+    const r = routeNotice(job, n, { announce: true });
+    return `알림 ${n.id} — ${r.where}\n${KEEP_WORKING}`;
+  } catch (e) {
+    console.error(`[job-notice] '${job.label}' ${n.id} 배달 실패 — 기록만: ${e instanceof Error ? e.message : String(e)}`);
+    return `알림 ${n.id} — 배달에 실패해 기록만 남겼습니다. 결과 보고 첫 줄에 적으세요.\n${KEEP_WORKING}`;
+  }
+};
+
+/** `T` 앞 대기 알림이 있나 — 합류(`wait_for_worker`)의 깨우기 조건. */
+export const hasNoticesFor = (threadKey: string): boolean => hasNotices(threadKey);
+
+/**
+ * 합류가 `T` 앞 알림을 **전부** 꺼낸다(설계 §5.3). ★꺼내기와 반환 사이에 `await` 가 없어야 한다 — 호출자(합류)가 꺼낸 그 동기 구간에서
+ * 반환 문자열을 만든다. 신호가 선 합류는 부르지 않는다(받을 턴이 이미 죽었다).
+ */
+export const takeNoticesForJoin = (threadKey: string): InboxItem[] => {
+  const items = takeNotices(threadKey);
+  for (const it of items) markNoticeTaken(it, "join");
+  return items;
+};
+
+/**
+ * 합류가 **꺼내지 않고 끝났을 때**(시한·중단·예외) 남은 `T` 앞 알림을 받을 자리로 넘긴다 — «결과를 잃지 않는 쪽으로 실패» 를 알림에도
+ * (`releaseJobJoin` 과 같은 규칙, 설계 §5.2). `T` 가 매니저면 그 스티어로(안 닿으면 소유 세션), 세션이면 이미 줄 선 합성 턴이 받는다.
+ * 같은 스레드의 다른 합류가 아직 있으면 그 합류가 꺼낸다.
+ */
+export const flushNoticeJoin = (threadKey: string): void => {
+  if (isNoticeJoining(threadKey) || !hasNotices(threadKey)) return;
+  const managerId = parentJobIdOf(threadKey);
+  if (managerId === undefined) return; // 세션 — 알림마다 합성 턴이 이미 줄 서 있다.
+  for (const it of takeNotices(threadKey)) {
+    const sender = jobs.get(it.jobId);
+    const n = sender?.notices?.find((x) => x.id === it.noticeId);
+    if (sender === undefined || n === undefined) continue;
+    const redo: InboxItem = { ...it, redelivery: true };
+    const r = steerNoticeToManager(managerId, redo);
+    if (r === "delivered") continue;
+    console.warn(`[job-notice] '${sender.label}' ${n.id} — 합류 미수령 뒤 매니저 ${managerId} 에게도 못 넣음(${r}) — 소유 세션으로`);
+    routeNoticeToOwner(sender, n, `(이 작업을 띄운 매니저 '${jobs.get(managerId)?.label ?? managerId}' 에게 전할 수 없어 대화로 올렸습니다)`);
+  }
+};
+
+/** 소유 세션으로 바로 올린다(부모 매니저를 건너뜀) — 합류 미수령 뒤 스티어마저 안 닿을 때. */
+const routeNoticeToOwner = (job: WorkerJobRecord, n: JobNotice, note: string): void => {
+  const owner = resolveOwnerThreadKey(job.threadKey);
+  if (owner === "" || parentJobIdOf(owner) !== undefined) {
+    n.target = "";
+    n.state = "recorded";
+    console.warn(`[job-notice] '${job.label}' ${n.id} — 받을 소환자를 못 찾아 기록만`);
+    return;
+  }
+  n.target = owner;
+  n.state = "queued";
+  const it = noticeItem(job, n, owner, { note, redelivery: true });
+  putNotice(it);
+  logNotice(job, n, `세션 ${owner} 로 올림(재배달)`);
+  enqueueNoticeTurn(job, it);
+};
+
+/**
+ * 막 끝나는 소환자 매니저의 **읽지 못한 알림**을 다시 배달한다(설계 §5.5). `deliverCompletion` 이 상태 마킹 **직후 동기로** 부른다 —
+ * 수신함엔 지금 넣고(완료 턴이 그 자식을 합류하면 즉시 꺼낸다), 세션 합성 턴은 돌려준 함수로 **완료 턴을 줄 세운 바로 다음**에 세운다.
+ * 보낸 작업자가 이미 끝났으면 다시 보내지 않는다(그 완료가 같은 환원으로 올라간다). 재배달은 상한·중복 계산에 안 든다.
+ */
+const redeliverLeftoverNotices = (leftover: readonly SteeringInput[]): (() => void) => {
+  const later: Array<() => void> = [];
+  for (const m of leftover) {
+    if (m.noticeOf === undefined) continue;
+    const sender = jobs.get(m.noticeOf.jobId);
+    const n = sender?.notices?.find((x) => x.id === m.noticeOf!.noticeId);
+    if (sender === undefined || n === undefined) continue;
+    if (sender.status !== "running") {
+      console.log(`[job-notice] '${sender.label}' ${n.id} — 소환자가 못 읽고 끝났지만 보낸 작업자도 끝나 재배달 안 함`);
+      continue;
+    }
+    try {
+      const r = routeNotice(sender, n, { redelivery: true, deferTurn: true });
+      if (r.enqueueTurn !== undefined) later.push(r.enqueueTurn);
+    } catch (e) {
+      console.error(`[job-notice] '${sender.label}' ${n.id} 재배달 실패: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  let fired = false;
+  return () => {
+    if (fired) return;
+    fired = true;
+    for (const f of later) f();
+  };
+};
+
+/** 이 잡의 알림 하나 — `steer_worker(notice_id)` 의 답 연결이 본다. */
+export const findJobNotice = (jobId: string, noticeId: string): JobNotice | undefined =>
+  jobs.get(jobId)?.notices?.find((n) => n.id === noticeId);
+
+/**
+ * 답 확정 — **`notice_id` 일치 AND 지시 전달(delivered)** 일 때만 호출자가 부른다(설계 §5.6 R2 #1). 화면은 이 발행의 `answeredAt` 만 본다.
+ */
+export const markNoticeAnswered = (jobId: string, noticeId: string): boolean => {
+  const job = jobs.get(jobId);
+  const n = job?.notices?.find((x) => x.id === noticeId);
+  if (job === undefined || n === undefined) return false;
+  if (n.answeredAt === undefined) n.answeredAt = Date.now();
+  publishNotice(job, "answered", n);
+  logNotice(job, n, "답 확정(notice_id · delivered)");
+  return true;
 };
 
 export interface WorkerAbort {
@@ -3204,6 +3608,7 @@ const deliverToSummoner = (
     jobId: parentId,
     message: text,
     outcome: ok ? "delivered" : "closed",
+    source: "job", // 결과다 — 지시가 아니다(셸 대기를 «새 지시» 로 깨우지 않는다 · 매니저는 결과를 거두기 턴에서야 읽는다)
   });
   return ok;
 };
@@ -3247,7 +3652,27 @@ const deliverCompletion = async (
   jobId: string,
   outcome: WorkerOutcome,
   lateUserMessages: readonly string[],
+  leftoverNotices: readonly SteeringInput[] = [],
 ): Promise<boolean | "parked"> => {
+  // ★막 끝나는 소환자의 읽지 못한 알림 — 상태 마킹 **직후 동기로** 다시 배달한다(설계 §5.5). 합성 턴은 완료 턴을 줄 세운 **바로 다음**에
+  //  (완료 턴이 없는 갈래면 그 갈래가 정해지는 즉시). 아래 `try/finally` 가 어느 경로로 끝나든 한 번은 세운다.
+  //  `fire` 는 한 번만 도는 함수다(`redeliverLeftoverNotices`) — 갈래가 먼저 부르고, 여기 finally 는 빠진 경로(예외)의 안전망이다.
+  const noticeTurns = { fire: (): void => {} };
+  try {
+    return await deliverCompletionInner(jobId, outcome, lateUserMessages, leftoverNotices, noticeTurns);
+  } finally {
+    noticeTurns.fire();
+  }
+};
+
+const deliverCompletionInner = async (
+  jobId: string,
+  outcome: WorkerOutcome,
+  lateUserMessages: readonly string[],
+  leftoverNotices: readonly SteeringInput[],
+  noticeTurns: { fire: () => void },
+): Promise<boolean | "parked"> => {
+  const queueNoticeTurns = (): void => noticeTurns.fire();
   // 1) 레지스트리 마킹. 단 이미 cancelled 면(cancelJob 이 abort 전 마킹) 그 status 보존 —
   //    abort 가 runRegionA 를 reject 시켜 여기로 error 가 와도 "실패" 아닌 "취소"로 통지.
   const existing = jobs.get(jobId);
@@ -3263,6 +3688,8 @@ const deliverCompletion = async (
     // ★한도 자동 이어가기 (2026-10-23 §3.6) — 마킹 **바로 다음, await 없이**: 합류 쪽이 상태를 읽을 때 이미 칸이 있다.
     noteJobLimitStop(jobId, outcome);
   }
+  // 읽지 못한 알림 재배달 — 마킹 직후, 같은 동기 구간(이 잡이 이제 running 이 아니므로 받을 스레드는 소유 세션이다).
+  if (leftoverNotices.length > 0) noticeTurns.fire = redeliverLeftoverNotices(leftoverNotices);
 
   const found = jobs.get(jobId);
   if (found === undefined) {
@@ -3279,9 +3706,10 @@ const deliverCompletion = async (
     console.log(
       `worker-jobs: '${found.label}'(${jobId}) 는 합류(wait_for_worker)가 선점 — 배달 보류(합류가 넘겨받으면 재주입 생략)`,
     );
+    queueNoticeTurns(); // 완료 턴이 없는 갈래 — 알림 턴을 지금 세운다.
     return "parked";
   }
-  return routeCompletion(found, jobId, outcome, lateUserMessages);
+  return routeCompletion(found, jobId, outcome, lateUserMessages, queueNoticeTurns);
 };
 
 /**
@@ -3293,6 +3721,11 @@ const routeCompletion = async (
   jobId: string,
   outcome: WorkerOutcome,
   lateUserMessages: readonly string[],
+  /**
+   * 읽지 못한 알림의 합성 턴을 세운다(설계 §5.5-3) — 메인 완료 턴 갈래면 그 턴을 **줄 세운 바로 다음**, 그 밖의 갈래(결과 수신함·연쇄 취소·
+   *  실패 raw·핸들러 없음)면 갈래가 정해지는 즉시. 한 번만 돈다(호출자가 보장). 보류를 닫는 경로는 알림이 없어 생략.
+   */
+  queueNoticeTurns: () => void = () => {},
 ): Promise<boolean> => {
   // ─── ① 소환자가 **돌고 있는 매니저**면 그 턴의 steering 큐로 (ADR 2026-08-19 §4) ────
   // 새 턴을 여는 아래 경로보다 **먼저** 본다: 매니저 좌표(`worker:<id>`)로 합성 유저턴을
@@ -3300,6 +3733,7 @@ const routeCompletion = async (
   // 별개 턴으로 새 나간다. 소환자가 세션이거나 매니저가 이미 끝났으면 false 로 떨어져
   // 아래 종전 경로로 간다(회귀 0).
   if (deliverToSummoner(found, outcome)) {
+    queueNoticeTurns();
     console.log(
       // ★낱말을 바로잡았다 (2026-09-01). 종전엔 «steering 큐로 전달» 이라고 찍었는데
       //  실제로는 **결과 수신함**(`jobResultChannels`)이다 — 바로 위 코드 주석이 그렇게
@@ -3319,6 +3753,7 @@ const routeCompletion = async (
   //  ★잡 기록·대시보드 이벤트는 그대로 남는다(publishWorkerLifecycle 은 markCancelled 안).
   //   지우는 게 아니라 **말하지 않는** 것이다 — 사용자가 이미 아는 사실이라서.
   if (isCascadeCancelled(found)) {
+    queueNoticeTurns();
     console.log(
       `worker-jobs: '${found.label}'(${jobId}) 연쇄 취소 — 상위 알림으로 갈음(개별 통지 생략)`,
     );
@@ -3355,6 +3790,7 @@ const routeCompletion = async (
       : found;
 
   if (mainHandler === undefined) {
+    queueNoticeTurns();
     console.error(
       `worker-jobs: 메인 핸들러 미등록 — 매니저 '${job.label}'(${jobId}) 완료 보고 불가`,
     );
@@ -3380,6 +3816,7 @@ const routeCompletion = async (
   // ★`failed` 만 raw 직행이다 (2026-08-15). `cancelled` 는 아래 재주입 경로로 간다 —
   //  근거는 buildCompletionPrompt 의 취소 분기 주석에.
   if (job.status !== "done" && job.status !== "cancelled") {
+    queueNoticeTurns(); // 실패 raw 갈래 — 완료 턴이 없다(마킹 직후와 같은 동기 구간).
     try {
       await baseReply(buildRawNotice(job));
     } catch (e) {
@@ -3480,7 +3917,11 @@ const routeCompletion = async (
   // await 은 매니저의 분리 promise 안이라 데몬 메인루프·폴러를 막지 않는다(매니저는 fire-and-forget).
   const handler = mainHandler;
   try {
-    await handler(synthetic);
+    // ★줄 서는 것과 기다리는 것을 가른다 — `handler` 는 부른 자리에서 줄을 세우므로(동기), 알림 턴을 **그 바로 뒤에** 세워
+    //  순서를 «완료 → 알림» 으로 고정한다. 완료 턴의 끝을 기다린 뒤에 세우면 그 턴이 자식을 합류하는 동안 알림이 합류를 못 깨운다(설계 §5.5 R1).
+    const turnP = handler(synthetic);
+    queueNoticeTurns();
+    await turnP;
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
     console.error(
@@ -3517,17 +3958,27 @@ export const onWorkerComplete = async (
   lateUserMessages: readonly string[] = [],
   /** 작업자가 끝나 반영 못 한 **소환자 작업의** 지시(`partitionSteering().summonerMessages`) — 사용자 것이 아니다. */
   lateSummonerMessages: readonly SteeringInput[] = [],
+  /** 이 매니저가 끝나 읽지 못한 **자식의 작업자 알림**(`noticeOf` 달린 작업 쪽 잔여, 설계 §5.5) — 아직 도는 자식이면 위로 다시 배달한다. */
+  leftoverNotices: readonly SteeringInput[] = [],
 ): Promise<void> => {
-  let carried: boolean | "parked";
+  let carried: boolean | "parked" = false;
+  let failed = false;
+  let failure: unknown;
   try {
-    carried = await deliverCompletion(jobId, outcome, lateUserMessages);
+    carried = await deliverCompletion(jobId, outcome, lateUserMessages, leftoverNotices);
+  } catch (e) {
+    failed = true;
+    failure = e;
   } finally {
     // ★반송은 결과 배달 **뒤** — 거두기 대기 중인 매니저는 결과함과 지시를 경주시키므로, 반송이 먼저 닿으면 결과 없는 턴을 한 번
     //  돈다(실패 분기는 결과를 `await import` 뒤에 넣는다 — 독립 검토 10-25 · 회귀 ⑥). 결과 배달이 던져도 반송은 한다.
     returnUnappliedToSummoner(jobId, lateSummonerMessages);
   }
   if (carried === "parked") return; // 늦은 지시는 보류를 닫는 쪽이 같은 규칙(`afterRoute`)으로 정한다.
+  // ★배달이 던져도 사용자의 늦은 지시는 «반영 못 했다» 로 알린다 — 반송과 같은 보장(독립 검토 10-25 B-4). 던진 자리는 메인 완료 턴 앞뿐이라
+  //  (재주입·안전망은 안에서 삼킨다) 그 지시는 어디에도 실리지 않았다 — 실린 것으로 보지 않는다. 오류는 종전대로 호출부에 올린다.
   await afterRoute(jobs.get(jobId), carried, lateUserMessages);
+  if (failed) throw failure;
 };
 
 /**
@@ -3542,9 +3993,10 @@ const returnUnappliedToSummoner = (jobId: string, msgs: readonly SteeringInput[]
     const text =
       `[작업 '${label}'(job_id ${jobId}) 이 끝나 당신이 보낸 지시가 반영되지 않았습니다 — 사용자 지시가 아닙니다]\n${lines}\n` +
       `필요하면 그 작업의 결과를 보고 다시 시키거나 직접 하세요.`;
-    // `from` = 돌려보낸 작업 — 없으면 관측(`worker.steered`)이 사용자 지시로 그려졌다(대시보드 «지시 추가» · 독립 검토 10-25).
-    //  분류는 `source:"job"` 이 먼저라 결과 묶음 그대로다(`partitionSteering`) — 다시 반송되지 않는다.
-    const r = steerJob(from, { text, raw: text, ts: Date.now(), source: "job", from: jobId }, { resetStallClock: false });
+    // 관측은 «반송» 으로(`returnedBy`) — 없으면 대시보드가 사용자 «지시 추가» 로 그렸고, `from` 에 돌려보낸 작업을 실으면 «'조사' 의 지시»
+    //  (자식이 매니저에게 지시)로 그려졌다(독립 검토 10-25 두 번). ★`from`(보낸 소환자) 은 싣지 않는다 — 이 글은 지시가 아니고, `source:"job"`
+    //  이라 결과 묶음이다(`partitionSteering` — 다시 반송되지 않는다 · 거두기 대기도 결과로 깨운다).
+    const r = steerJob(from, { text, raw: text, ts: Date.now(), source: "job" }, { resetStallClock: false, returnedBy: jobId });
     console[r === "delivered" ? "log" : "warn"](
       `worker-jobs: '${label}'(${jobId}) 가 반영 못 한 소환자 지시 ${String(msgs.filter((m) => m.from === from).length)}건을 ` +
         `보낸 작업 ${from} 에게 돌려줌 — ${r}${r === "delivered" ? "" : "(보낸 작업도 끝남 — 사용자에게 돌리지 않는다)"}`,

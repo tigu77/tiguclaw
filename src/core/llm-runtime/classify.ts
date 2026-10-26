@@ -139,7 +139,8 @@ export const judgeContradiction = async (
 export const summarizeJobProgress = async (prompt: string, ctx: { jobId: string }): Promise<string | undefined> => {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 30_000);
-  const finish = beginSummaryUsage(`worker:${ctx.jobId}`, "internal", "job-progress");
+  // 모델은 시작 때 모른다(등급 풀·폴백) — 어댑터가 보고한 것을 끝에 싣는다. `adapter: "internal"` 은 이 경로의 표식이다(실제 어댑터는 출력에 없다).
+  const finish = beginSummaryUsage(`worker:${ctx.jobId}`, "internal");
   try {
     const output = await runRegionA(
       {
@@ -154,11 +155,15 @@ export const summarizeJobProgress = async (prompt: string, ctx: { jobId: string 
       { specs: cheapInternalTierSpecs() },
     );
     const u = output.usage;
-    finish(true, u === undefined ? undefined : {
+    // 비었는지는 기록 함수가 판단한다(한 곳).
+    const model = output.model ?? undefined;
+    finish(true, u === undefined ? { model } : {
+      model,
       inputTokens: u.inputTokensTotal ?? u.inputTokens,
       outputTokens: u.outputTokensTotal ?? u.outputTokens,
       ...(u.cachedTokensTotal ?? u.cachedTokens) !== undefined ? { cachedTokens: (u.cachedTokensTotal ?? u.cachedTokens) as number } : {},
       ...(u.requests !== undefined ? { requests: u.requests } : {}),
+      ...(u.requestUsageEntries !== undefined ? { requestUsageEntries: u.requestUsageEntries } : {}),
     });
     return output.text;
   } catch {

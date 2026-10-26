@@ -485,7 +485,7 @@
           if (h && typeof h.version === "string") {
             appVersion = h.version;
             appAssets = typeof h.assets === "string" ? h.assets : appAssets;
-            if (sub) sub.textContent = i18n("app.subWithVersion", { sub: i18n("app.sub"), version: h.version });
+            if (sub) sub.textContent = i18n("app.subWithVersion", { version: h.version }); // 브랜드 옆 부제 = 버전만.
             if (currentView === "overview") setTimeout(showOverview, 0);
           }
           // 시작시각은 서버가 안 준다 → 모른다고 표시한다(경과시간 미표시).

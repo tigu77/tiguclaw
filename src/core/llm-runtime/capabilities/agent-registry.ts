@@ -28,6 +28,7 @@
 import { untrustedDelegationNote } from "../../project-trust.js";
 import { activePluginDirs } from "../../plugins/active-dirs.js";
 import { coreMcpServer } from "./_core-server.js";
+import { joinNoticeBlock, NOTICE_ID_DESCRIBE } from "../../job-notice.js";
 import { tierDescription, unresolvableTierText } from "./tier-description.js";
 import { getEventBus } from "../../eventbus.js";
 import { DAEMON_SUBAGENT_TOOL } from "../subagent-tools.js";
@@ -883,8 +884,11 @@ export const createSpawnAgentMcpServer = (
         // lazy import — capabilities → worker-jobs circular 회피(이 파일의 다른 경로와 동형).
         // ★`SUBAGENT_TIMEOUT_MS` 를 **안 쓴다** — 그건 «자식을 죽이는 시계» 이고 기본이
         //  `Infinity` 다(2026-09-03 P-A 실측). 여기는 «부모가 기다리는 시계» 라 유한해야 한다.
-        const { awaitJobOutcome, claimJobJoin, releaseJobJoin, JOIN_WAIT_TIMEOUT_MS, jobLimitResumeLine } =
-          await import("../../worker-jobs.js");
+        const {
+          awaitJobOutcome, claimJobJoin, releaseJobJoin, JOIN_WAIT_TIMEOUT_MS, jobLimitResumeLine,
+          hasNoticesFor, takeNoticesForJoin, flushNoticeJoin,
+        } = await import("../../worker-jobs.js");
+        const { beginNoticeJoin, endNoticeJoin } = await import("../../job-notice.js");
         const capMs =
           args.timeout_seconds !== undefined && Number.isFinite(args.timeout_seconds)
             ? Math.max(1000, Math.round(args.timeout_seconds * 1000))
@@ -902,6 +906,13 @@ export const createSpawnAgentMcpServer = (
         const handed = new Set<string>(); // 응답에 «최종 상태» 로 실은 작업 — 그것만 «넘겨받음» 이다.
         let returned = false;
         const deadline = Date.now() + capMs;
+        // ★이 턴(`T` = 부른 턴의 좌표)이 합류 중이라고 등록한다(2026-10-25 `notify_owner` 설계 §5.3). 그동안 `T` 앞으로 온 작업자 알림은
+        //  스티어·메인 턴이 아니라 **이 합류가** 꺼내 맨 위에 싣고 곧바로 돌아온다 — 기다리던 id 와 무관하게. `finally` 에서 내리고,
+        //  꺼내지 않고 끝났으면(시한·중단·예외) 남은 알림을 받을 자리로 넘긴다(결과를 잃지 않는 쪽으로 실패).
+        const joinThread = typeof parentInput.threadKey === "string" ? parentInput.threadKey : "";
+        beginNoticeJoin(joinThread);
+        const noticeWaiting = (): boolean => joinThread !== "" && hasNoticesFor(joinThread);
+        let woke = false;
         // ★**자식별로 조립한다** (2026-09-14). 종전엔 본문을 그대로 이어 붙였고, 어댑터
         //  진입 cap 이 **묶음 전체**에 걸려 가운데 자식이 통째로 사라졌다(실측: 18,169자 →
         //  표식 9개 중 5개, 둘째 자식 전멸). 자르는 자리를 자식별로 옮기고 머리에 명세를
@@ -909,13 +920,22 @@ export const createSpawnAgentMcpServer = (
         const entries: JoinEntry[] = [];
         try {
         for (const id of args.job_ids) {
-          const left = Math.max(0, deadline - Date.now());
-          const job = await awaitJobOutcome(id, left, undefined, signals);
+          // 알림으로 깨어났으면 나머지 id 는 **기다리지 않고** 지금 상태로 적는다(시한 0).
+          const left = woke ? 0 : Math.max(0, deadline - Date.now());
+          const job = await awaitJobOutcome(id, left, undefined, signals, noticeWaiting);
+          if (!woke && noticeWaiting() && !signals.some((s) => s.aborted)) woke = true;
           if (job !== undefined && job.status !== "running") handed.add(id);
           if (job === undefined) {
             entries.push({ jobId: id, label: "(알 수 없음)", status: "그런 작업이 없습니다(이미 정리됐거나 잘못된 id).", body: "" });
           } else if (job.status === "running") {
-            entries.push({ jobId: id, label: job.label, status: "⏳ 아직 진행 중 — 시한이 지나 기다리기를 멈췄습니다(작업은 계속 됩니다).", body: "" });
+            entries.push({
+              jobId: id,
+              label: job.label,
+              status: woke
+                ? "⏳ 아직 진행 중 — 작업자 알림이 와서 일찍 돌아왔습니다(작업은 계속 됩니다). 결과가 필요하면 다시 wait_for_worker."
+                : "⏳ 아직 진행 중 — 시한이 지나 기다리기를 멈췄습니다(작업은 계속 됩니다).",
+              body: "",
+            });
           } else if (job.status === "done") {
             entries.push({ jobId: id, label: job.label, status: "✅ 완료", body: job.result ?? "(결과 없음)" });
           } else if (job.status === "cancelled") {
@@ -929,7 +949,10 @@ export const createSpawnAgentMcpServer = (
         if (signals.some((s) => s.aborted)) {
           return { content: [{ type: "text" as const, text: "wait_for_worker 취소됨 — 기다리기를 멈췄습니다. 끝난 작업의 결과는 소환자 보고로 갑니다." }], isError: true };
         }
-        const text = packJoinResponse(entries);
+        // ★알림은 **신호가 안 선 동안에만**, 그리고 꺼낸 뒤 반환까지 `await` 없이 꺼낸다(설계 §5.3) — 중단된 합류는 꺼내지 않는다.
+        const notices = joinThread !== "" ? takeNoticesForJoin(joinThread) : [];
+        const body = packJoinResponse(entries);
+        const text = notices.length > 0 ? `${joinNoticeBlock(notices)}\n\n${body}` : body;
         returned = true; // 위 취소 확인부터 여기까지 동기 구간이라 그 사이에 취소가 끼지 못한다.
         return okText(text);
         } finally {
@@ -937,6 +960,9 @@ export const createSpawnAgentMcpServer = (
           //  여기를 지난다. 결과를 살아 있는 채로 넘긴 작업만 «넘겨받음» — 나머지(취소·예외·시한 «진행 중»)는 보류된 배달이
           //  소환자 보고로 간다. 이 집합은 결과를 잃지 않는 쪽으로 실패해야 한다.
           claims.forEach((c, i) => releaseJobJoin(c, { handedOff: returned && handed.has(args.job_ids[i]!) }));
+          // 합류 등록을 내리고, 못 꺼낸 알림은 받을 자리로(매니저면 스티어, 세션이면 줄 선 합성 턴이 이미 있다).
+          endNoticeJoin(joinThread);
+          flushNoticeJoin(joinThread);
         }
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -1048,6 +1074,7 @@ export const createSpawnAgentMcpServer = (
       message: z.string().min(1).describe("자식 작업에 전달할 지시."),
       label: z.string().optional().describe("대상 작업의 label — 당신이 띄운 작업 안에서만 찾습니다."),
       job_id: z.string().optional().describe("대상 작업의 jobId(spawn_agent 가 돌려준 값) — 당신이 띄운 작업만 됩니다."),
+      notice_id: z.string().optional().describe(NOTICE_ID_DESCRIBE),
     },
     // lazy import — 이 파일의 다른 경로와 같은 이유(capabilities → worker 쪽 순환·부작용 회피).
     async (args) => (await import("./worker-registry.js")).steerChildJob(parentInput, args),

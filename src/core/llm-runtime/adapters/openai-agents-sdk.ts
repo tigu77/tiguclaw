@@ -97,6 +97,7 @@ import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import { createNotifyOwnerMcpServer } from "../capabilities/notify-owner-mcp.js";
 import { createToolRecallMcpServer } from "../capabilities/tool-recall-mcp.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
@@ -662,6 +663,12 @@ export const runOpenAi = async (
         "send-file",
       ),
     );
+  }
+
+  // notify_owner(2026-10-25) — 자기 잡이 있는 턴(매니저·서브)만. 판정은 팩토리 한 곳(claude/codex 와 같은 조건, 설계 §6).
+  const notifyOwnerServer = toolsNone ? undefined : createNotifyOwnerMcpServer(input);
+  if (notifyOwnerServer !== undefined) {
+    mcpServers.push(await adaptClaudeMcpServer(notifyOwnerServer, "notify-owner"));
   }
 
   // 앞선 도구 결과 다시 읽기(2026-09-30) — codex 와 같은 도구. 대화를 클로저로 잡는다(세션 정체성 채널).

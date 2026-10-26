@@ -219,11 +219,18 @@
         const nodesOf = (node, k) =>
           [node, ...(node.querySelectorAll ? node.querySelectorAll("[data-" + k + "]") : [])].filter((n) => n.dataset && n.dataset[k] !== undefined);
         const find = (k, v, ok) => items.filter((it) => it && it.node && nodesOf(it.node, k).some((n) => n.dataset[k] === v && ok(n)));
-        if (id !== null) { const hit = find("id", id, () => true); if (hit.length > 0) return hit[0]; }
+        // 행 id 는 두 표식으로 산다 — 평범한 이력 행 `data-id`, 답 행이 합쳐진 이력 세그먼트 말풍선 `data-rowid`(커서 축이 아니다).
+        if (id !== null) { const hit = [...find("id", id, () => true), ...find("rowid", id, () => true)]; if (hit.length > 0) return hit[0]; }
         if (turn !== null) { const hit = find("turn", turn, () => true); if (hit.length > 0) return hit[0]; }
         if (strongOnly === true) return null;
         if (ts !== null) {
-          const hit = find("ts", ts, (n) => id === null || n.dataset.id === undefined || n.dataset.id === id);
+          // 시각은 화면 시각(`data-ts`)과 실시간 답 말풍선의 행 시각(`data-rowts`) 둘 다 본다 — 턴 표식 없이 완료된 실시간 답을 고르려면 필요하다.
+          const sameRow = (n) => id === null || ((n.dataset.id === undefined || n.dataset.id === id) && (n.dataset.rowid === undefined || n.dataset.rowid === id));
+          // 후보는 답글을 달 수 있는 노드 — 자기 `.chat-message` 의 호스트(답글 메뉴가 `at` 을 읽는 그 노드, reply.js `messageCtxFromEl`)뿐이다.
+          //  같은 ms 의 도구 카드·단계 줄은 원문이 아니다(2026-10-25: 중간 세그먼트와 뒤 도구 단계가 같은 ms 면 후보가 둘이 되어 원문을 못 찾았다).
+          const isHost = (n) => !!n.querySelectorAll && [...n.querySelectorAll(".chat-message")].some((m) => m.closest(".ev.local, .turn-group") === n);
+          const cand = (n) => isHost(n) && sameRow(n);
+          const hit = [...new Set([...find("ts", ts, cand), ...find("rowts", ts, cand)])];
           if (hit.length === 1) return hit[0];
         }
         return null;
@@ -402,7 +409,7 @@
         //  실제 응답 모델이 실려 있는데(활동 API 실측 364/364), 종전엔 여기서 떨어뜨려
         //  **새로고침 후 답변 버블에 모델이 하나도 안 보였다**(사용자 신고 "카드들에 제대로
         //  안 되고 있다"). 도구 런 카드에만 넣고 *가장 흔한 답변 버블*을 빠뜨린 누락이다.
-        return buildHistoryDiv({
+        const div = buildHistoryDiv({
           ts: a.ts, role: "assistant", text: a.text,
           ...(typeof a.model === "string" && a.model.trim() !== "" ? { model: a.model.trim() } : {}),
           // 강도·비용은 세그먼트가 아니라 **답변 행**이 싣는다 — 병합이 그 행을 버리기 전에 여기로 옮겨 둔다(아래).
@@ -410,6 +417,14 @@
           ...(a.spend ? { spend: a.spend } : {}),
           ...(typeof a.turnId === "string" && a.turnId ? { turnId: a.turnId } : {}),
         });
+        // ★답글 좌표 (2026-10-25) — 실시간 세그먼트 말풍선과 같은 표식. `data-ts` 는 활동 시각이라 행 조회에 쓰지 않는다(`data-seg`, reply.js).
+        //  답 행이 이 말풍선으로 합쳐졌으면 그 행 id 를 `data-rowid` 로 — `data-id` 는 가상화 복합 커서의 둘째 축이라(같은 ms 행·활동을 다시 받아
+        //  세그먼트가 중복 생성된다, 설계 R1) 거기 넣지 않는다. 읽는 곳 = 답글 메뉴(`messageCtxFromEl`)·원문 고르기(`replyTargetPick`).
+        if (div) {
+          div.dataset.seg = "1";
+          if (typeof a.rowId === "number") div.dataset.rowid = String(a.rowId);
+        }
+        return div;
       };
 
       // 메시지+활동 → 시간순 병합 후 연속된 같은 턴(threadKey·seq 증가)의 활동을 turn 으로 묶은
@@ -535,6 +550,8 @@
                   ...(it.m.spend ? { spend: it.m.spend } : {}),
                   // 완료 턴 표식도 — 버려지는 이 행이 싣는다(메뉴가 세그먼트 버블에서 찾는다).
                   ...(typeof it.m.turnId === "string" && it.m.turnId ? { turnId: it.m.turnId } : {}),
+                  // 이 행의 id 도 — 세그먼트 말풍선에 단 답글이 행 id 로 저장되게(2026-10-25). 커서 축(`data-id`)이 아니라 `data-rowid` 로 간다(아래).
+                  ...(typeof it.m.id === "number" ? { rowId: it.m.id } : {}),
                 };
                 if (Object.keys(meta).length > 0) lastTextUnit.act = { ...lastTextUnit.act, ...meta };
               }

@@ -1397,6 +1397,8 @@
       .bg-job-status { font-size:0.625rem; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:0.625rem; color:var(--text-dim); font-family:var(--font-mono); }
       .bg-job-todo { font-size:0.6875rem; color:var(--text-dim); margin-top:3px; }
+      .bg-job-notice { font-size:0.6875rem; color:var(--warn); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .bg-job-notice.answered { color:var(--text-dim); }
       .bg-job-todo-head { font-weight:700; cursor:pointer; user-select:none; display:flex; align-items:baseline; gap:4px; min-width:0; }
       .bg-job-todo-head > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .bg-job-todo-head:hover { color:var(--text); }

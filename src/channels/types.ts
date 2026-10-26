@@ -67,6 +67,8 @@ export type TurnOrigin =
   | "subagent"
   | "worker-completion"
   | "worker-checkin"
+  /** 작업자가 `notify_owner` 로 보낸 알림을 세션 비서에게 넣은 턴(2026-10-25) — 진단용. */
+  | "worker-notice"
   | "synthetic-other"
   /** 가지 결론 정리 턴 — 끼워넣기(steering)를 받지 않는다(그 사이 친 말이 결론에 섞인다). */
   | "fork-carry"

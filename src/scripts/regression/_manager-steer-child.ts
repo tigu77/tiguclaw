@@ -43,6 +43,13 @@ registerChannelOutbound(CH, { deliver: async (_t: unknown, text: string) => { se
 const reinjected: string[] = [];
 wj.__setMainHandlerForTest(async (m) => { reinjected.push(m.text); await m.reply?.("보고"); });
 const steered: Array<Record<string, unknown>> = [];
+/** 매니저가 못 읽은 작업 쪽 글을 버렸다는 로그 — 시나리오마다 따로 센다(전체 출력에서 세면 한 경로가 빠져도 다른 경로 줄로 채워졌다, 독립 검토 10-25 C-6). */
+let dropLogs = 0;
+const origLog = console.log;
+console.log = (...a: unknown[]) => {
+  if (/가 끝나 읽지 못한 작업 쪽 글 1건\(반송 등\)을 버림/.test(a.map(String).join(" "))) dropLogs += 1;
+  origLog(...a);
+};
 getEventBus().subscribe((ev) => { if (ev.type === "worker.steered") steered.push(ev.payload as Record<string, unknown>); });
 
 const S = "dashboard:regr-mgr-steer-s";
@@ -67,7 +74,12 @@ const out: Record<string, unknown> = {};
   const mainWorkers = toolsOf(createWorkerMcpServer({ threadKey: S, channel: CH, text: "" } as never));
   const st = mainWorkers.steer_worker;
   const fp = createHash("sha256").update(JSON.stringify([st?.description, st?.inputSchema])).digest("hex").slice(0, 16);
-  out.exposure = { mainAgents, mgrAgents, mainWorkers: Object.keys(mainWorkers), mainSteerFingerprint: fp };
+  // ★`notice_id` 를 뺀 지문 — 2026-10-25 `notify_owner` 가 메인 도구 면에 **선택 인자 하나만** 더했다(설계 §18-1, 의도된 계약 변경).
+  //  그 하나를 빼면 변경 전 지문과 같아야 한다 = 설명·기존 인자 셋의 의미는 그대로다.
+  const shape = ((st?.inputSchema as { shape?: Record<string, unknown> } | undefined)?.shape ?? {}) as Record<string, unknown>;
+  const { notice_id: _added, ...rest } = shape;
+  const fpWithoutNotice = createHash("sha256").update(JSON.stringify([st?.description, rest])).digest("hex").slice(0, 16);
+  out.exposure = { mainAgents, mgrAgents, mainWorkers: Object.keys(mainWorkers), mainSteerFingerprint: fp, mainSteerFingerprintWithoutNotice: fpWithoutNotice, schemaKeys: Object.keys(shape) };
 }
 
 // ── ② 직속 자식만 — 형제·형제의 자식(동명)·부모·다른 대화·끝난/취소·알고 있는 jobId ──────────────────
@@ -154,6 +166,7 @@ const out: Record<string, unknown> = {};
 const MANAGER_TEXT = /매니저의 (이른|늦은) 지시|반영되지 않았습니다/;
 const lateScenario = async (opts: { rotate: boolean; userControl: boolean; fail?: boolean }) => {
   wj.__resetJobsForTest(); steered.length = 0; sent.length = 0; reinjected.length = 0;
+  const drop0 = dropLogs;
   const P = job("지휘", S);
   let C = "";
   let calls = 0;
@@ -205,8 +218,14 @@ const lateScenario = async (opts: { rotate: boolean; userControl: boolean; fail?
     anchorKept: anchorBefore !== undefined && anchorAfter === anchorBefore,
     pStatus: wj.getJob(P)?.status, cStatus: C === "" ? null : wj.getJob(C)?.status,
     bounce: bounce.map((p) => p.outcome),
-    // 반송의 표시 갈래 — 돌려보낸 작업이 실린다(없으면 대시보드가 사용자 «지시 추가» 로 그린다).
-    bounceFromChild: bounce.length > 0 && bounce.every((p) => p.fromJobId === C && p.fromLabel === "조사"),
+    // 반송의 표시 갈래 — «반송» 칸에 돌려보낸 작업이 실린다 · 보낸 쪽(`from`) 칸은 비어 있다(실리면 «'조사' 의 지시» — 자식이 매니저에게 지시한
+    //  것처럼 그려진다 · 둘 다 없으면 사용자 «지시 추가», 독립 검토 10-25 두 번).
+    bounceFromChild: bounce.length > 0 && bounce.every((p) => p.returnedByJobId === C && p.returnedByLabel === "조사" && p.fromJobId === undefined),
+    // 작업 쪽 글 표식 — 반송·자식 결과 배달은 `source:"job"`(셸 대기가 «새 지시» 로 깨지 않게), 매니저가 자식에 낸 지시는 없음(지시다).
+    jobSideMarked: bounce.every((p) => p.source === "job") &&
+      (() => { const res = steered.filter((p) => p.jobId === P && String(p.message).startsWith("[백그라운드 서브에이전트 '조사'")); return res.length === 1 && res[0]!.source === "job"; })() &&
+      steered.filter((p) => p.jobId === C && p.outcome === "delivered").every((p) => p.source === undefined && p.fromJobId === P),
+    dropLogs: dropLogs - drop0,
     bouncedEarly: bounce.some((p) => String(p.message).includes("매니저의 이른 지시")),
     bouncedLate: bounce.some((p) => String(p.message).includes("매니저의 늦은 지시")),
     userLateNotices: sent.filter((t) => t.includes(LATE_HEAD)).length,
@@ -263,7 +282,8 @@ const reapScenario = async (how: "ok" | "fail" | "cancel") => {
   childGo = true;
   await until(() => wj.getJob(P)?.status !== "running");
   const first = harvests[0];
-  const head = { ok: "완료] 결과", fail: "실패]", cancel: "'조사'" }[how];
+  // 갈래마다 **그 갈래에만** 있는 문구 — 취소를 `'조사'` 로 재면 머리말에 늘 있어 취소 본문을 안 쟀다(독립 검토 10-25 C-7).
+  const head = { ok: "완료] 결과", fail: "실패]", cancel: "**중지됨**" }[how];
   return {
     cStatus: wj.getJob(C)?.status, pStatus: wj.getJob(P)?.status, harvests: harvests.length,
     firstHasResult: first !== undefined && first.text.includes("[백그라운드 서브에이전트 '조사'") && first.text.includes(head),
@@ -276,7 +296,7 @@ out.reap = { ok: await reapScenario("ok"), fail: await reapScenario("fail"), can
 // ── ⑦ 반송 보존 — 합류가 결과를 선점(보류)해도 · 결과 배달이 던져도 반송은 간다 / 매니저 **옛 채널**에 남은 반송도 «버림» 이 로그에 ──
 {
   const late = (from: string): SteeringInput => ({ text: "지시", raw: "매니저의 늦은 지시", ts: Date.now(), from });
-  const bouncedTo = (P: string, C: string): number => drain(P).filter((m) => m.source === "job" && m.from === C && m.text.includes("반영되지 않았습니다")).length;
+  const bouncedTo = (P: string, C: string): number => drain(P).filter((m) => m.source === "job" && m.from === undefined && m.text.includes(`job_id ${C}`) && m.text.includes("반영되지 않았습니다")).length;
   // (a) 합류 보류 — 소환자가 wait_for_worker 로 권리를 쥔 채 자식이 끝난다(배달은 "parked")
   wj.__resetJobsForTest(); steered.length = 0; sent.length = 0; reinjected.length = 0;
   const P = withChannel(job("지휘", S));
@@ -286,14 +306,16 @@ out.reap = { ok: await reapScenario("ok"), fail: await reapScenario("fail"), can
   const parked = bouncedTo(P, C);
   wj.releaseJobJoin(claim, { handedOff: true });
   // (b) 결과 배달이 던진다 — 결과함 push 실패를 주입
-  wj.__resetJobsForTest(); steered.length = 0;
+  wj.__resetJobsForTest(); steered.length = 0; sent.length = 0;
   const P2 = withChannel(job("지휘", S));
   const C2 = job("조사", `worker:${P2}`, "agent");
   const box = createSteeringChannel();
   box.push = () => { throw new Error("결과 배달 실패 주입"); };
   wj.setJobResultChannel(P2, box);
-  const threw = await wj.onWorkerComplete(C2, { result: "자식 결과" }, [], [late(P2)]).then(() => false, () => true);
+  const threw = await wj.onWorkerComplete(C2, { result: "자식 결과" }, ["사용자의 늦은 지시"], [late(P2)]).then(() => false, () => true);
   const thrown = bouncedTo(P2, C2);
+  // 같은 출구의 사용자 늦은 지시 — 배달이 던져도 «반영 못 했다» 통지가 간다(반송만 보장하던 비대칭, 독립 검토 10-25 B-4).
+  const thrownUserNotice = sent.filter((t) => t.includes(LATE_HEAD) && t.includes("사용자의 늦은 지시")).length;
   wj.clearJobResultChannel(P2);
   // (c) 매니저 옛 채널 — 어댑터가 반송을 꺼내 쥔 사이 채널이 교체되고, 장부가 옛 채널에 되돌린 뒤 매니저가 끝난다
   wj.__resetJobsForTest(); steered.length = 0; sent.length = 0; reinjected.length = 0;
@@ -313,9 +335,55 @@ out.reap = { ok: await reapScenario("ok"), fail: await reapScenario("fail"), can
   await until(() => wj.getJob(P3)?.status !== "running");
   await sleep(30);
   out.keep = {
-    claimed: claim !== undefined, parked, threw, thrown, rotatedOld,
+    claimed: claim !== undefined, parked, threw, thrown, thrownUserNotice, rotatedOld,
     oldRebounce: steered.filter((p) => p.jobId === C3).length,
     oldToUser: sent.filter((t) => /반영되지 않았습니다|매니저의 늦은 지시/.test(t)).length + reinjected.filter((t) => /반영되지 않았습니다|매니저의 늦은 지시/.test(t)).length,
+  };
+}
+
+// ── ⑧ 반송은 결과다 — 다른 자식을 기다리는 대기를 반송이 깨워도 «지시 도착» 턴으로 열지 않는다(독립 검토 10-25 B-3) ─────────────
+//  재현: 거두기 턴 안에서 자식 C 에 지시를 얹고 합류(wait_for_worker)로 결과를 받는다 → C 는 지시를 못 읽고 끝나 반송은 매니저 지시 채널로,
+//  결과함엔 없다 → 그 턴이 끝나고 다른 자식 D 를 기다리는 대기가 반송으로 깬다. 종전엔 그 턴이 «지시 도착 — 먼저 반영 · cancel_worker 로 정리» 였다.
+{
+  wj.__resetJobsForTest(); steered.length = 0;
+  const P = job("지휘", S);
+  let dGo = false;
+  let calls = 0;
+  const harvests: string[] = [];
+  const spawn = (label: string, run: () => Promise<RegionASdkOutput>): string => {
+    const id = job(label, `worker:${P}`, "agent");
+    startDetachedAgent({
+      jobId: id, agent: { name: label, description: "", filePath: "", source: "builtin" } as never, def: "", prompt: label, targetCwd: process.cwd(),
+      parentInput: { threadKey: `worker:${P}`, channel: CH, text: "", workerDepth: 1 } as never, abort: wj.createJobAbort(id), __runForTest: run,
+    });
+    return id;
+  };
+  runWorkerJob(wj.getJob(P) as never, async (input: RegionASdkInput): Promise<RegionASdkOutput> => {
+    calls += 1;
+    if (calls === 1) {
+      spawn("대기", async () => { await until(() => dGo); return { text: "D 결과" } as RegionASdkOutput; });
+      spawn("빠름", async () => { await sleep(20); return { text: "E 결과" } as RegionASdkOutput; });
+      return { text: "매니저 본 턴" } as RegionASdkOutput;
+    }
+    harvests.push(input.text);
+    if (calls === 2) {
+      const C = withChannel(job("조사", `worker:${P}`, "agent"));
+      await toolsOf(createSpawnAgentMcpServer(managerInput(P))).steer_worker!.handler({ label: "조사", message: "매니저의 늦은 지시" }, {});
+      const claim = wj.claimJobJoin(C, `worker:${P}`);
+      await wj.onWorkerComplete(C, { result: "C 결과" }, [], drain(C));
+      wj.releaseJobJoin(claim, { handedOff: true });
+      return { text: "거두기 턴 1" } as RegionASdkOutput; // 지시 채널(반송)을 안 읽고 끝난다
+    }
+    dGo = true;
+    return { text: "거두기 턴" } as RegionASdkOutput;
+  });
+  await until(() => wj.getJob(P)?.status !== "running");
+  const woke = harvests[1];
+  out.wake = {
+    harvests: harvests.length, pStatus: wj.getJob(P)?.status,
+    asResult: woke !== undefined && woke.startsWith("[백그라운드 작업 결과 도착]") && woke.includes("반영되지 않았습니다"),
+    asInstruction: harvests.some((t) => t.includes("지시 도착") || t.includes("〔기다리는 중 도착한 지시〕")),
+    head: woke?.slice(0, 60) ?? null,
   };
 }
 

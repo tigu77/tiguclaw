@@ -138,6 +138,11 @@ const BUILTIN_CAPABILITY_CATALOG: Record<string, BuiltinCapabilityMeta> = {
     whenToUse:
       "여러 옵션 중 사용자가 클릭/선택하게 하고 싶을 때(채널이 렌더를 지원하는 턴에서만 활성).",
   },
+  "notify-owner": {
+    summary: "작업자(매니저·서브에이전트)가 소환자에게 막힌 것을 한 줄 알리고 계속 일한다(비차단·작업당 3회).",
+    whenToUse:
+      "실행 중에 소환자만 풀어 줄 수 있는 것(공유 자원 잠금·사용자 결정·범위 밖 일)이 생겼을 때(작업자 턴에서만 활성).",
+  },
   "reply-intent": {
     summary: "이번 응답을 트리거 메시지의 직접 답글로 마킹.",
     whenToUse: "여러 화제가 섞여 있어 어느 메시지에 답하는지 명확히 해야 할 때.",

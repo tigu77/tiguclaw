@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Managers and agents can send a one-line notice about a blocker that only whoever started the job can clear, and keep working.** The notice goes to the conversation or manager that started the job. The job's card in the background panel shows the latest notice, and for a manager started from a conversation, an unanswered notice is also included once in its progress update. The answer reaches the job as an instruction, and each job can send up to three notices.
+
+### Changed
+
+- **The dashboard header shows only the version next to the name.**
+
+### Fixed
+
+- **With OpenAI models, once a manager job had run, the main conversation failed to answer with a «Duplicate tool names» error; if the main conversation ran first, managers could not send instructions to their subagents.**
+- **In the dashboard, «↩ original» on a reply to an assistant answer could not be clicked.** This applies to replies sent from this version on.
+- **An instruction a subagent returned unread was shown in the background panel as an instruction from that subagent.** It now shows as returned unread.
+- **A subagent's result or a returned instruction reached its manager as if it were a new instruction.** A manager waiting on shell output stopped waiting because of it, or handled it as an instruction to apply.
+- **When a remote MCP server's saved sign-in was tied to a different authorization server, every call shortly before the token expired retried the refresh, and nothing was logged.** It now logs once that you will need to sign in again after the token expires.
+
 ## [0.76.0] - 2026-10-25
 
 ### Added

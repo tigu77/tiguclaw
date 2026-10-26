@@ -72,6 +72,7 @@ import { toolSlowWarnMs } from "../tool-watchdog.js";
 // 셸의 원 세션 환원 — 매니저·서브가 띄운 셸은 threadKey 가 잡 좌표(worker:/agent:)라 세션 키가
 // 아니다. 잡 레지스트리를 보는 코어가 환원해서 관측면에 실어 준다(대시보드 추측 제거).
 import { resolveOwnerThreadKey } from "../../worker-jobs.js";
+import { isJobSide, isNoticeDelivery } from "../../steering.js";
 import { buildChildEnv } from "../../external-mcp.js";
 import {
   insertBgShell as insertBgShellDb,
@@ -1137,17 +1138,21 @@ const READ_CACHE_MIN_BYTES = 1024;
  *  Claude Code 는 끝나면 깨워 주고 조건 감시가 있다 — 그 빈칸이다(원칙 1).
  * ★멈춤은 시간이 아니라 **진전**으로 본다 — 오래 걸려도 출력이 늘면 느린 것이고, 출력이 그대로면 멈춘 것일 수 있다.
  *  그래서 «N초째 새 출력 없음» 은 **끊는 신호가 아니라 깨워서 보게 하는 신호**다(조용히 컴파일하는 정상 작업도 있다).
- * 우선순위: 종료 → 조건 일치 → 새 지시 → 출력 없음 → 대기 상한. 아무것도 아니면 계속 기다린다(undefined).
+ * 우선순위: 종료 → 조건 일치 → 새 지시 → 작업자 알림 → 출력 없음 → 대기 상한. 아무것도 아니면 계속 기다린다(undefined).
+ * ★작업자 알림(2026-10-25, `notify_owner` 설계 §18-5 ②) — 자식이 이 매니저에게 알림을 보내면 대기만 **일찍 돌아온다**(셸은 끊지 않는다).
+ *  지시와 사유를 따로 적는다(«새 지시» 로 읽히면 안 된다). 결과·반송은 여전히 깨우지 않는다.
  * ★`until` 은 **글자 그대로**다(정규식 아님 — 적대 검토 F1: 모델이 쓴 정규식을 1MB 출력에 200ms 마다 돌려 데몬 이벤트 루프가
  *  초 단위로 섰다, `.*(a|b)` 40KB 에 2.4초 · `(a+)+$` 29자에 18초). 조각이 들어올 때 각 바이트를 한 번만 훑는다.
  */
-export type ShellWaitVerdict = "exited" | "matched" | "steered" | "idle" | "timeout";
+export type ShellWaitVerdict = "exited" | "matched" | "steered" | "noticed" | "idle" | "timeout";
 export const shellWaitVerdict = (st: {
   running: boolean;
   /** 찾던 글자가 새 출력에 나왔나(조각이 들어올 때 이미 판정됨). */
   matched: boolean;
   /** 이 대화(매니저)에 새 지시가 들어왔나 — 기다리느라 지시를 못 듣는 일이 없게(적대 검토 F4). */
   steered?: boolean;
+  /** 이 매니저에게 자식의 작업자 알림이 들어왔나(`isNoticeDelivery`). */
+  noticed?: boolean;
   now: number;
   waitStartedAt: number;
   /** 대기 중 출력이 마지막으로 늘어난 시각(대기 시작 시각으로 시작). */
@@ -1158,6 +1163,7 @@ export const shellWaitVerdict = (st: {
   if (!st.running) return "exited";
   if (st.matched) return "matched";
   if (st.steered === true) return "steered";
+  if (st.noticed === true) return "noticed";
   if (st.idleMs !== undefined && st.now - st.lastGrowthAt >= st.idleMs) return "idle";
   if (st.now - st.waitStartedAt >= st.waitMs) return "timeout";
   return undefined;
@@ -1789,11 +1795,17 @@ const makeFileOpsTools = (
         }
         s.waiters.add(waiter);
         let steered = false;
+        let noticed = false;
         const unsub = getEventBus().subscribe((ev) => {
-          const pl = ev.payload as { threadKey?: unknown; synthetic?: unknown; jobId?: unknown; text?: unknown; outcome?: unknown };
+          const pl = ev.payload as { threadKey?: unknown; synthetic?: unknown; jobId?: unknown; text?: unknown; outcome?: unknown; source?: unknown; noticeOf?: unknown };
           // 진짜 지시만 — 합성 알림·슬래시 명령(/logs·/stop 등 대화 밖 처리)·다른 대화로 간 steer 는 이 턴에 안 닿는다(적대 검토 2R N3).
           if (ev.type === "channel.message.in" && pl.threadKey === threadKey && pl.synthetic !== true && !(typeof pl.text === "string" && pl.text.trimStart().startsWith("/"))) steered = true;
-          else if (ev.type === "worker.steered" && pl.outcome === "delivered" && typeof pl.jobId === "string" && pl.jobId !== "" && `worker:${pl.jobId}` === threadKey) steered = true;
+          // 매니저면 그 잡에 온 **지시**로도 — 작업 쪽 글(자식 결과·반송)은 지시가 아니다(`isJobSide`, 독립 검토 10-25: 반송이 «새 지시» 로 깨웠다).
+          else if (ev.type === "worker.steered" && pl.outcome === "delivered" && typeof pl.jobId === "string" && pl.jobId !== "" && `worker:${pl.jobId}` === threadKey) {
+            // 종류는 `steering.ts` 의 판정 둘로 가른다 — 지시는 «새 지시», 작업자 알림은 «작업자 알림», 그 밖의 작업 쪽 글은 깨우지 않는다.
+            if (!isJobSide(pl)) steered = true;
+            else if (isNoticeDelivery(pl)) noticed = true;
+          }
         });
         try {
           const waitStartedAt = Date.now();
@@ -1809,6 +1821,7 @@ const makeFileOpsTools = (
               running: s.status === "running",
               matched: waiter.hit !== undefined,
               steered,
+              noticed,
               now,
               waitStartedAt,
               lastGrowthAt,
@@ -1848,6 +1861,7 @@ const makeFileOpsTools = (
           verdict === "exited" ? "끝남"
           : verdict === "matched" ? `새 출력에 '${matchedNeedle ?? ""}' 가 나옴 — 아직 실행 중일 수 있음`
           : verdict === "steered" ? "이 대화에 새 지시가 들어옴 — 셸은 아직 실행 중일 수 있음"
+          : verdict === "noticed" ? "작업자 알림이 들어옴(지시 아님 — 알림 본문은 다음 판단 시점에 보임) — 셸은 아직 실행 중일 수 있음"
           : verdict === "idle" ? `${args.idle_seconds}초째 새 출력 없음 — 멈췄을 수 있음(입력 대기·창·잠금?). 끊지 않았다`
           : verdict === "disabled" ? "기다리지 않음 — 느림 경고 기준(TOOL_SLOW_WARN_MS)이 5초 이하라 대기를 쓸 수 없다"
           : `${Math.round(waitMs / 1000)}초 대기 상한 — 아직 실행 중(다시 기다리려면 한 번 더 부르세요)`;

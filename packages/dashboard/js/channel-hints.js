@@ -450,6 +450,14 @@
           if (card && !card.interrupted && card.sawTextSegment && vtIndex.has(card.group)) {
             if (card.replyMsg) card.replyMsg.classList.remove("streaming"); // 혹시 남은 커서 정리.
             if (turnId) card.group.dataset.turn = turnId;
+            // ★답 행 좌표는 그 답을 보여 주는 **마지막 텍스트 말풍선**에(2026-10-25 — 종전엔 묶음에 턴 id 만 붙어 답글이 `{text}` 만 저장됐다).
+            //  `data-rowts` = 이 이벤트 시각 = 대화 기록 행 시각(아래 승격 분기와 같은 규칙) — 행 조회 좌표다. 말풍선 `data-ts`(세그먼트 시각, 화면·정렬)는
+            //  **바꾸지 않는다**: 완료 전에 골라 둔 답글 좌표와 시각 없는 묶음의 정렬이 그 값을 쓴다(설계 R2). 턴 id 도 말풍선에 — 묶음이 뒤 도구 카드면 고르기가 그 카드로 간다(R1).
+            const tb = card.lastTextBubble;
+            if (tb) {
+              if (ev.ts != null) tb.dataset.rowts = String(ev.ts);
+              if (turnId) tb.dataset.turn = turnId;
+            }
             card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
             completeTurnGroup(thread);
             localChatCount += 1;

@@ -604,8 +604,8 @@ export const check: RegressionCheck = {
     const agentCode = stripSrcComments(await readFile(new URL("../../core/llm-runtime/capabilities/agent-registry.ts", import.meta.url), "utf8"));
     const passes = (c: string): string => c.match(/onWorkerComplete\([^)]*\)/g)?.join(" · ") ?? "(호출 없음)";
     out.push(assert(
-      "★두 러너(매니저·서브)가 늦게 온 지시를 onWorkerComplete 에 넘기고, 따로 통지하지 않는다(판정 한 곳)",
-      /onWorkerComplete\(job\.jobId, outcome, pendingSteerNotice, pendingSummonerSteers\)/.test(code) && /onWorkerComplete\(o\.jobId, outcome, pendingSteerNotice, pendingSummonerSteers\)/.test(agentCode) &&
+      "★두 러너(매니저·서브)가 늦게 온 지시를 onWorkerComplete 에 넘기고, 따로 통지하지 않는다(판정 한 곳) · 매니저는 못 읽은 작업자 알림도 넘긴다(2026-10-25)",
+      /onWorkerComplete\(job\.jobId, outcome, pendingSteerNotice, pendingSummonerSteers, pendingNotices\)/.test(code) && /onWorkerComplete\(o\.jobId, outcome, pendingSteerNotice, pendingSummonerSteers\)/.test(agentCode) &&
         !/lateNotice|이미 끝난 뒤|had already finished/.test(code) && !/lateNotice|이미 끝난 뒤|had already finished/.test(agentCode),
       { worker: passes(code), agent: passes(agentCode) },
     ));

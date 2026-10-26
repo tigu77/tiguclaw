@@ -313,10 +313,149 @@ export const check: RegressionCheck = {
           elsewhereRuns.push({ which, expired, posted: as.refreshCalls - rs2, status: await oauth.mcpOAuthStatus(key), token: t !== undefined && as.access.has(t) });
         }
       }
-      as.expiresIn = 3600;
       out.push(assert("★⑬ 다른 인가 서버에 묶인 토큰·클라이언트 — refresh 요청 0건 · 만료 전이면 그 토큰을 그대로(상태 유지) · 만료됐으면 «로그인 필요»",
         elsewhereRuns.length === 4 && elsewhereRuns.every((x) => x.posted === 0 && (x.expired ? x.status === "login-needed" && !x.token : x.status === "authorized" && x.token)),
         JSON.stringify(elsewhereRuns)));
+      // 같은 상황(만료 전 · 갱신 창 안)을 여러 번 읽는다 — 첫 감지에 경고 한 줄(만료 시각과 함께), 그 뒤엔 갱신 작업(탐색)을 다시 돌리지 않는다.
+      //  401 이 오면(강제 갱신) 그 칸을 건너뛰어 바로 «로그인 필요». ★없을 때: 만료 5분 전부터 호출마다 갱신 작업이 다시 돌고(탐색 캐시가 없으면
+      //  호출마다 탐색 2회), 만료 순간까지 로그가 0줄이었다(독립 검토 10-25 B-5 — 실측).
+      {
+        await loginFresh(key);
+        const e = recOf(key)!;
+        e.r.tokens.issuer = "http://127.0.0.1:1/";
+        delete e.r.discovery; // 탐색 캐시 없음 — 반복이 네트워크로 드러나는 모양
+        writeFileSync(e.f, JSON.stringify(e.r));
+        const realFetch = globalThis.fetch;
+        let probes = 0;
+        globalThis.fetch = ((u: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+          if (String(u instanceof Request ? u.url : u).includes("/.well-known/")) probes += 1;
+          return realFetch(u, init);
+        }) as typeof fetch;
+        const l0 = logs.length;
+        let toks: Array<string | undefined> = [];
+        let probesAfterFirst = -1;
+        try {
+          toks.push(await oauth.mcpAccessToken(key));
+          const p1 = probes;
+          toks.push(await oauth.mcpAccessToken(key), await oauth.mcpAccessToken(key));
+          probesAfterFirst = probes - p1;
+        } finally {
+          globalThis.fetch = realFetch;
+        }
+        const warned = logs.slice(l0).filter((x) => x.includes("다른 인가 서버에 묶여") && x.includes("만료("));
+        await oauth.noteMcpUnauthorized(key, toks[0]);
+        const afterUnauthorized = await oauth.mcpAccessToken(key);
+        toks = toks.map((t) => (t === undefined ? undefined : as.access.has(t) ? "ok" : "unknown"));
+        out.push(assert("★⑬ 다른 인가 서버 · 만료 전 반복 읽기 — 경고 1줄(만료 시각) · 첫 읽기 뒤 탐색 0회 · 토큰 그대로 · 401 이 오면 바로 «로그인 필요»",
+          warned.length === 1 && probesAfterFirst === 0 && toks.every((t) => t === "ok") && afterUnauthorized === undefined &&
+            (await oauth.mcpOAuthStatus(key)) === "login-needed",
+          JSON.stringify({ warned: warned.length, probesAfterFirst, toks, afterUnauthorized: afterUnauthorized !== undefined, status: await oauth.mcpOAuthStatus(key) })));
+      }
+      // 만료 경계 — 갱신하지 않고 «아직 유효하면 그 토큰» 을 쓰는 두 분기(refresh 없음 · 다른 인가 서버)에서, 시계를 «k 번째 읽기부터 만료» 로 바꿔
+      //  가며 쓸어 본다. 어느 순간 만료돼도 **토큰을 주거나, 아니면 «로그인 필요» 로 적는다** — 둘 다 아닌 결과(헤더 없이 연결 · 상태는 «인증됨»)는
+      //  없다. ★없을 때: 유효 판정을 두 번 읽어 그 사이 만료되면 기록·로그 없이 undefined 로 빠졌다(독립 검토 10-25 A-2).
+      {
+        const sweep = async (which: "noRefresh" | "elsewhere"): Promise<{ bad: number[]; gave: number; marked: number }> => {
+          const bad: number[] = [];
+          let gave = 0;
+          let marked = 0;
+          for (let k = 0; k <= 12; k++) {
+            as.noRefresh = which === "noRefresh";
+            await loginFresh(key);
+            as.noRefresh = false;
+            const e = recOf(key)!;
+            if (which === "elsewhere") {
+              e.r.tokens.issuer = "http://127.0.0.1:1/";
+              writeFileSync(e.f, JSON.stringify(e.r));
+            }
+            const exp = e.r.expiresAt as number;
+            const realNow = Date.now;
+            let reads = 0;
+            Date.now = () => (reads++ < k ? exp - 1 : exp + 1);
+            let t: string | undefined;
+            try {
+              t = await oauth.mcpAccessToken(key);
+            } finally {
+              Date.now = realNow;
+            }
+            const st = await oauth.mcpOAuthStatus(key);
+            if (t !== undefined) gave += 1;
+            else if (st === "login-needed") marked += 1;
+            else bad.push(k);
+          }
+          return { bad, gave, marked };
+        };
+        const nr = await sweep("noRefresh");
+        const el = await sweep("elsewhere");
+        out.push(assert("★만료 경계 — refresh 없음 · 다른 인가 서버 두 분기 모두, 어느 순간 만료돼도 «토큰» 아니면 «로그인 필요»(둘 다 아닌 결과 0) · 쓸기가 양쪽 결과를 다 지난다",
+          nr.bad.length === 0 && el.bad.length === 0 && nr.gave > 0 && nr.marked > 0 && el.gave > 0 && el.marked > 0,
+          JSON.stringify({ noRefresh: nr, elsewhere: el })));
+        // 정확히 만료 시각 — 그 순간부터 쓰지 않는다(두 분기 같은 규칙). ★없을 때: 위 쓸기는 만료 ±1ms 만 지나, 유효 판정 `>` 를 `>=` 로 넓혀
+        //  만료 시각의 토큰을 내주고 «로그인 필요» 도 안 남기는 변이가 전체 초록으로 살아남았다(독립 재확증 10-25).
+        const atExpiry = async (which: "noRefresh" | "elsewhere"): Promise<{ token: boolean; status: string }> => {
+          as.noRefresh = which === "noRefresh";
+          await loginFresh(key);
+          as.noRefresh = false;
+          const e = recOf(key)!;
+          if (which === "elsewhere") {
+            e.r.tokens.issuer = "http://127.0.0.1:1/";
+            writeFileSync(e.f, JSON.stringify(e.r));
+          }
+          const exp = e.r.expiresAt as number;
+          const realNow = Date.now;
+          Date.now = () => exp;
+          let t: string | undefined;
+          try {
+            t = await oauth.mcpAccessToken(key);
+          } finally {
+            Date.now = realNow;
+          }
+          return { token: t !== undefined, status: await oauth.mcpOAuthStatus(key) };
+        };
+        const xr = { noRefresh: await atExpiry("noRefresh"), elsewhere: await atExpiry("elsewhere") };
+        out.push(assert("★만료 경계 — 지금이 정확히 만료 시각이면 두 분기 모두 토큰을 주지 않고 «로그인 필요»",
+          Object.values(xr).every((x) => !x.token && x.status === "login-needed"),
+          JSON.stringify(xr)));
+        // 같은 경계를 **갱신 작업을 거치지 않는 지름길**에서도 — 다른 인가 서버에 묶인 같은 토큰의 재읽기 · 갱신이 일시 실패한 뒤 재시도
+        //  대기 창 안의 읽기. 둘째 읽기만 정확히 만료 시각(또는 1ms 전). ★없을 때: 위 단언은 새 로그인 뒤 한 번만 읽어 지름길의 유효 판정을
+        //  `>=`·`> +1` 로 바꿔도 전체 초록이었다(독립 변이 사냥 10-26 — 구멍 2, 재사냥 — 다른 서버 지름길의 1ms 전 1).
+        const readTwice = async (which: "elsewhere" | "backoff", second: number): Promise<{ first: boolean; token: boolean; status: string }> => {
+          await loginFresh(key);
+          const e = recOf(key)!;
+          if (which === "elsewhere") {
+            e.r.tokens.issuer = "http://127.0.0.1:1/";
+            writeFileSync(e.f, JSON.stringify(e.r));
+          }
+          const exp = e.r.expiresAt as number;
+          const realNow = Date.now;
+          if (which === "backoff") as.refreshMode = "server_error";
+          let first: string | undefined;
+          let t: string | undefined;
+          try {
+            Date.now = () => exp - 1000; // 갱신 창 안 · 아직 유효 — 지름길 상태(다른 서버 기억 · 일시 실패 시각)를 만든다
+            first = await oauth.mcpAccessToken(key);
+            Date.now = () => exp + second;
+            t = await oauth.mcpAccessToken(key);
+          } finally {
+            Date.now = realNow;
+            as.refreshMode = "ok";
+          }
+          return { first: first !== undefined, token: t !== undefined, status: await oauth.mcpOAuthStatus(key) };
+        };
+        const sr = {
+          elsewhereAt: await readTwice("elsewhere", 0),
+          elsewhereBefore: await readTwice("elsewhere", -1),
+          backoffAt: await readTwice("backoff", 0),
+          backoffBefore: await readTwice("backoff", -1),
+        };
+        await loginFresh(key); // 지름길 기억(다른 서버·일시 실패 시각)을 남기지 않는다 — forgetMcpOAuth 가 지운다
+        out.push(assert("★만료 경계(지름길) — 다른 인가 서버 재읽기·갱신 일시 실패 뒤 대기 창: 정확히 만료 시각엔 토큰 없음(다른 서버는 «로그인 필요»), 1ms 전엔 그 토큰",
+          sr.elsewhereAt.first && !sr.elsewhereAt.token && sr.elsewhereAt.status === "login-needed" &&
+            sr.elsewhereBefore.first && sr.elsewhereBefore.token && sr.elsewhereBefore.status === "authorized" &&
+            sr.backoffAt.first && !sr.backoffAt.token && sr.backoffBefore.first && sr.backoffBefore.token,
+          JSON.stringify(sr)));
+      }
+      as.expiresIn = 3600;
 
       // ⑭ 자원 지시자(RFC 8707) — 경로 없는 자원(`http://host:port`)에서 로그인과 우리 갱신이 **같은 문자열**을 보낸다. 인가 서버는 문자 그대로 비교한다.
       //  ★없을 때: SDK 1.32 `auth()` 는 메타데이터 문자열을 그대로, 우리 갱신은 `selectResourceURL` 의 `URL.href`(끝 `/` 붙음)를 보내 invalid_target

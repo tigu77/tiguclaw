@@ -20,6 +20,11 @@ import {
   setSteerChannel,
   clearSteerChannel,
   steerJob,
+  registerJob,
+  setJobResultChannel,
+  clearJobResultChannel,
+  onWorkerComplete,
+  __resetJobsForTest,
 } from "../../core/worker-jobs.js";
 import { createSteeringChannel } from "../../core/steering.js";
 import { getEventBus } from "../../core/eventbus.js";
@@ -63,6 +68,9 @@ interface SteerPayload {
   ts?: number;
   fromJobId?: string;
   fromLabel?: string;
+  returnedByJobId?: string;
+  returnedByLabel?: string;
+  source?: string;
 }
 interface JobCard {
   label: string;
@@ -177,6 +185,36 @@ export const check: RegressionCheck = {
       ["j3"],
     );
     const fromStep = fromMgr.cards.get("j3")?.stepsEl.children[0];
+    // 반송 — 자식이 소환자 지시를 못 읽고 끝나 돌려준 것. 지시가 아니다(«'조사' 의 지시» 로 그리면 자식이 매니저에게 지시한 것처럼 읽힌다, 독립 검토 10-25).
+    const returned = renderSteers(
+      [{ jobId: "m1", label: "지휘", message: "[작업 '조사' … 반영되지 않았습니다]", outcome: "delivered", ts: 500, returnedByJobId: "j3", returnedByLabel: "조사" }],
+      ["m1"],
+    );
+    const returnedStep = returned.cards.get("m1")?.stepsEl.children[0];
+    // ★실제 생산 payload — 자식 C 가 매니저 P 의 지시를 못 읽고 끝난다: 결과는 P 의 결과 수신함으로(`deliverToSummoner`), 반송은 P 의 지시 채널로
+    //  (`returnUnappliedToSummoner`). 둘 다 작업 쪽 글이다 — 손으로 만든 payload 만 그리면 생산자가 표식을 빼도 초록이다(독립 검토 10-25 R2).
+    __resetJobsForTest();
+    const real: SteerPayload[] = [];
+    const unsubReal = getEventBus().subscribe((e: { type: string; payload?: unknown }) => {
+      if (e.type === "worker.steered") real.push((e.payload ?? {}) as SteerPayload);
+    });
+    const dest = { channel: "regr-steerobs" as never, target: "c" };
+    const P = registerJob({ label: "지휘", task: "지휘", threadKey: "dashboard:regr-steerobs", channel: "regr-steerobs" as never, channelUserId: "u", notifyDest: dest, kind: "worker", detached: true } as never);
+    const C = registerJob({ label: "조사", task: "조사", threadKey: `worker:${P}`, channel: "regr-steerobs" as never, channelUserId: "u", notifyDest: dest, kind: "agent", detached: true } as never);
+    const pSteer = createSteeringChannel();
+    setSteerChannel(P, pSteer);
+    setJobResultChannel(P, createSteeringChannel());
+    try {
+      await onWorkerComplete(C, { result: "자식 결과" }, [], [{ text: "지시", raw: "B만 봐", ts: Date.now(), from: P }]);
+    } finally {
+      if (typeof unsubReal === "function") unsubReal();
+      clearJobResultChannel(P);
+      clearSteerChannel(P);
+      __resetJobsForTest();
+    }
+    const realOnP = real.filter((p) => p.jobId === P);
+    const realDrawn = renderSteers(realOnP, [P]);
+    const realLines = (realDrawn.cards.get(P)?.stepsEl.children ?? []).map((el) => stepText(el));
 
     // 대상을 못 고른 시도(no-target) + 서버도 모르는 옛 jobId → 카드를 지어내지 않는다.
     const ghost = renderSteers([
@@ -233,6 +271,20 @@ export const check: RegressionCheck = {
         stepText(fromStep ?? mkEl()).includes("'지휘' 의 지시") && !stepText(fromStep ?? mkEl()).includes("지시 추가") &&
           stepText(liveStep ?? mkEl()).includes("지시 추가"),
         stepText(fromStep ?? mkEl()) || "(스텝 0)",
+      ),
+      assert(
+        "★반송은 반송으로 그린다(«'조사' 가 반영 못 하고 돌려줌») — «의 지시»·«지시 추가» 가 아니다",
+        stepText(returnedStep ?? mkEl()).includes("'조사' 가 반영 못 하고 돌려줌") &&
+          !stepText(returnedStep ?? mkEl()).includes("의 지시") && !stepText(returnedStep ?? mkEl()).includes("지시 추가"),
+        stepText(returnedStep ?? mkEl()) || "(스텝 0)",
+      ),
+      assert(
+        "★실제 생산 payload — 자식 결과는 «결과 도착» · 반송은 «'조사' 가 반영 못 하고 돌려줌» · 어느 것도 «지시 추가»·«의 지시» 가 아니다",
+        realOnP.length === 2 && realLines.length === 2 &&
+          realLines.some((t) => t.includes("결과 도착") && t.includes("자식 결과")) &&
+          realLines.some((t) => t.includes("'조사' 가 반영 못 하고 돌려줌") && t.includes("B만 봐")) &&
+          realLines.every((t) => !t.includes("지시 추가") && !t.includes("의 지시")),
+        JSON.stringify(realLines).slice(0, 300),
       ),
       assert(
         "★근거 없는 잡 카드를 지어내지 않는다(유령 0)",

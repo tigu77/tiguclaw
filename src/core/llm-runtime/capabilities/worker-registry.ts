@@ -24,11 +24,14 @@
  */
 import { untrustedDelegationNote } from "../../project-trust.js";
 import { coreMcpServer } from "./_core-server.js";
+import { answerHead, NOTICE_ID_DESCRIBE } from "../../job-notice.js";
 import { tierDescription, unresolvableTierText } from "./tier-description.js";
 import path from "node:path";
 import { z } from "zod";
 import {
   createSteeringChannel,
+  isJobSide,
+  isNoticeDelivery,
   partitionSteering,
   shouldKeepReaping,
   type SteeringChannel,
@@ -69,6 +72,8 @@ import {
   turnReachOf,
   parentJobIdOf,
   failureOutcome,
+  findJobNotice,
+  markNoticeAnswered,
   type WorkerOutcome,
 }
 from "../../worker-jobs.js";
@@ -120,6 +125,28 @@ const errText = (text: string) => ({
   content: [{ type: "text" as const, text }],
   isError: true,
 });
+
+/**
+ * 거두기 턴의 입력 — 결과 · 작업자 알림 · 지시를 **세 묶음으로 가른다**(2026-10-25, 설계 §18-4·18-5 ③).
+ * ★작업자 알림은 작업 쪽 글이지만(사용자 지시가 아니다) 결과처럼 «참고 증거» 로 읽히면 안 된다 — 소환자가 풀어 줄 수 있으면 답해야 하는 글이라
+ *  «〔작업자 알림〕» 묶음으로 따로 싣는다. 지시는 «〔기다리는 중 도착한 지시〕». 종류 판정은 `isNoticeDelivery`(steering.ts) 한 곳.
+ */
+export const harvestTurnText = (task: string, arrived: readonly SteeringInput[], steers: readonly SteeringInput[]): string => {
+  const results = arrived.filter((m) => !isNoticeDelivery(m));
+  const notices = arrived.filter((m) => isNoticeDelivery(m));
+  const head =
+    results.length > 0
+      ? `[백그라운드 작업 결과 도착]\n\n`
+      : steers.length > 0
+        ? `[자식 작업을 기다리는 중 지시 도착 — 아래 지시를 먼저 반영하세요. 더 기다릴 필요가 없으면 남은 자식을 cancel_worker 로 정리하고 마무리하세요]\n\n`
+        : `[자식 작업을 기다리는 중 작업자 알림 도착 — 풀어 줄 수 있으면 steer_worker(job_id, message, notice_id) 로 답하고, 아니면 계속 기다리면 됩니다]\n\n`;
+  const blocks = [
+    ...(results.length > 0 ? [results.map((m) => m.raw).join("\n\n")] : []),
+    ...(notices.length > 0 ? [`〔작업자 알림〕\n${notices.map((m) => m.text).join("\n\n")}\n〔/작업자 알림〕`] : []),
+    ...(steers.length > 0 ? [`〔기다리는 중 도착한 지시〕\n${steers.map((m) => m.text).join("\n\n")}\n〔/지시〕`] : []),
+  ];
+  return head + `원래 맡은 일: "${task}"\n\n` + `${HARVEST_SCOPE_GUIDANCE}\n\n` + blocks.join("\n\n");
+};
 
 /**
  * 매니저 1잡 실행 — daemon `startWorkerJob` 이 fire-and-forget 호출.
@@ -181,6 +208,8 @@ export const runWorkerJob = (
     let pendingSteerNotice: string[] = [];
     /** 같은 창에 도착한 소환자 작업의 지시 — 사용자 것이 아니다(`partitionSteering().summonerMessages`). */
     let pendingSummonerSteers: SteeringInput[] = [];
+    /** 자식이 보낸 작업자 알림 중 이 매니저가 못 읽은 것 — 완료 배달이 위로 다시 보낸다(설계 §5.5). */
+    let pendingNotices: SteeringInput[] = [];
     try {
       const { runRegionA, resolveModelChain } =
         __runForTest === undefined
@@ -325,6 +354,8 @@ export const runWorkerJob = (
            *  입력에 실으면 어댑터와 무관하다. 턴이 실패하면 채널에 되돌려 finally 의 «반영 못 한 지시» 통지가 받는다.
            */
           const steers: SteeringInput[] = [];
+          /** 대기 중 지시 채널에서 꺼낸 것 전부(도착 순) — 턴이 실패하면 그대로 되돌린다(아래 catch). */
+          const fromSteer: SteeringInput[] = [];
           if (arrived.length === 0) {
             const live = listLiveChildJobs(`worker:${job.jobId}`);
             console.log(
@@ -352,10 +383,14 @@ export const runWorkerJob = (
             abort.signal.removeEventListener("abort", stopWaiting);
             const [gotResult, gotSteer] = await Promise.all([pResult, pSteer]);
             if (gotResult !== undefined) arrived.push(gotResult);
-            if (gotSteer !== undefined) steers.push(gotSteer);
+            if (gotSteer !== undefined) fromSteer.push(gotSteer);
             arrived.push(...resultBox.drain()); // 같은 순간 도착분 합류.
             // 지시로 깨어났으면 그 뒤에 쌓인 지시도 같이 — 도착 순서 그대로(앞의 것이 먼저 꺼내졌다).
-            if (steers.length > 0 && steerCh !== undefined) steers.push(...steerCh.drain());
+            if (fromSteer.length > 0 && steerCh !== undefined) fromSteer.push(...steerCh.drain());
+            // ★작업 쪽 글(`isJobSide` — 자식이 돌려준 반송)은 지시가 아니라 **결과 묶음**이다(`partitionSteering` 과 같은 판정). 지시로 두면
+            //  반송만으로 «지시 도착 — 먼저 반영하세요 · 남은 자식을 cancel_worker 로 정리» 턴이 열렸다(독립 검토 10-25 B-3 — 합류로 결과를 받은
+            //  자식의 반송이 다른 자식을 기다리는 대기를 깨운 재현).
+            for (const m of fromSteer) (isJobSide(m) ? arrived : steers).push(m);
           }
           if (arrived.length === 0 && steers.length === 0) break; // 채널 종료·취소 — 안전망(유령좌표 환원)이 받는다.
           rounds += 1;
@@ -406,16 +441,7 @@ export const runWorkerJob = (
               // ★`job.task` 를 **다시 싣는다.** 거두기 턴은 원 요청에서 멀고(도구 수십 회
               //  뒤) codex 는 히스토리를 압축하므로, 완료조건이 맥락에서 흐려질 수 있다.
               //  판단 기준을 눈앞에 두는 것이 이 장치의 전부다.
-              text:
-                (arrived.length === 0
-                  ? `[자식 작업을 기다리는 중 지시 도착 — 아래 지시를 먼저 반영하세요. 더 기다릴 필요가 없으면 남은 자식을 cancel_worker 로 정리하고 마무리하세요]\n\n`
-                  : `[백그라운드 작업 결과 도착]\n\n`) +
-                `원래 맡은 일: "${job.task}"\n\n` +
-                `${HARVEST_SCOPE_GUIDANCE}\n\n` +
-                arrived.map((m) => m.raw).join("\n\n") +
-                (steers.length === 0
-                  ? ""
-                  : `${arrived.length > 0 ? "\n\n" : ""}〔기다리는 중 도착한 지시〕\n${steers.map((m) => m.text).join("\n\n")}\n〔/지시〕`),
+              text: harvestTurnText(job.task, arrived, steers),
               threadKey: `worker:${job.jobId}`,
               turnOrigin: "worker",
               channel: job.channel,
@@ -447,8 +473,8 @@ export const runWorkerJob = (
             //  실패가 «완료» 로 보고돼 대시보드·부모 매니저·통지가 전부 오독한다
             //  ([[feedback_scope_of_a_fix]] 조건반전→도달 입력 전수). 실패는 실패로 두고,
             //  **이미 완성된 본 보고서를 그 안에 실어** 잃지 않게만 한다.
-            // 실은 지시는 되돌린다 — 턴이 못 받았으니 finally 의 «반영 못 한 지시» 통지가 받는다(조용히 사라지지 않게).
-            if (steers.length > 0) steerCh?.restore(steers);
+            // 지시 채널에서 꺼낸 것은 되돌린다 — 턴이 못 받았으니 finally 가 출처대로(사용자 «반영 못 한 지시» 통지 · 작업 쪽 글 «버림» 로그) 받는다.
+            if (fromSteer.length > 0) steerCh?.restore(fromSteer);
             harvestFailure = e instanceof Error ? e.message : String(e);
             if (e instanceof Error) harvestFailureName = e.name;
             const caught = failureOutcome(e);
@@ -523,9 +549,17 @@ export const runWorkerJob = (
         }
         // 작업 쪽 글(자식이 돌려보낸 반송)은 사용자에게 돌리지 않는다 — 다만 버린다는 사실은 남긴다. 반송 쪽 로그는 «delivered» 라
         //  이 줄이 없으면 로그만으로 «전달됐다» 로 읽힌다(독립 검토 10-25).
-        if (parts.jobResults.length > 0) {
+        // ★작업자 알림은 버리지 않는다(설계 §5.5·§18-6) — 아직 도는 자식의 알림이면 `onWorkerComplete` 가 위로 다시 배달한다.
+        pendingNotices = parts.jobResults.filter((m) => isNoticeDelivery(m));
+        const dropped = parts.jobResults.length - pendingNotices.length;
+        if (dropped > 0) {
           console.log(
-            `worker-registry: '${job.label}'(${job.jobId}) 가 끝나 읽지 못한 작업 쪽 글 ${String(parts.jobResults.length)}건(반송 등)을 버림 — 사용자 지시가 아니라 통지하지 않음`,
+            `worker-registry: '${job.label}'(${job.jobId}) 가 끝나 읽지 못한 작업 쪽 글 ${String(dropped)}건(반송 등)을 버림 — 사용자 지시가 아니라 통지하지 않음`,
+          );
+        }
+        if (pendingNotices.length > 0) {
+          console.log(
+            `worker-registry: '${job.label}'(${job.jobId}) 가 끝나 읽지 못한 작업자 알림 ${String(pendingNotices.length)}건 — 완료 배달이 소유 세션으로 다시 보낸다`,
           );
         }
         if (leftover.length > 0) {
@@ -542,7 +576,7 @@ export const runWorkerJob = (
     // 막지 않는다(매니저 격리 유지).
     // ★늦게 온 지시도 넘긴다 — 싣거나 통지하는 판단은 onWorkerComplete 한 곳이다(2026-10-02).
     try {
-      await onWorkerComplete(job.jobId, outcome, pendingSteerNotice, pendingSummonerSteers);
+      await onWorkerComplete(job.jobId, outcome, pendingSteerNotice, pendingSummonerSteers, pendingNotices);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(
@@ -844,6 +878,7 @@ export const createWorkerMcpServer = (
         .optional()
         .describe("대상 자식 작업의 label. 이 대화 안에서 우선 식별."),
       job_id: z.string().optional().describe("대상 자식 작업의 jobId. label로 찾지 못하면 사용하며, 정확한 ID는 대화 범위 밖에서도 조회."),
+      notice_id: z.string().optional().describe(NOTICE_ID_DESCRIBE),
     },
     async (args) => steerChildJob(parentInput, args),
   );
@@ -965,7 +1000,7 @@ export const createWorkerMcpServer = (
  */
 export const steerChildJob = async (
   parentInput: Pick<RegionASdkInput, "threadKey">,
-  args: { message: string; label?: string; job_id?: string },
+  args: { message: string; label?: string; job_id?: string; notice_id?: string },
 ): Promise<ReturnType<typeof okText> | ReturnType<typeof errText>> => {
   try {
     if (
@@ -978,6 +1013,9 @@ export const steerChildJob = async (
     let target: WorkerJobRecord | undefined;
     let msg: SteeringInput;
     const callerJobId = parentJobIdOf(parentInput.threadKey);
+    // 답 시도 식별자는 **어느 갈래보다 먼저** 정한다 — 대상을 못 찾은 시도(이미 끝난 작업에 답)도 어느 알림에 대한 답이었는지 기록에 남는다(GPT R1 #3, 설계 §8).
+    const noticeId = args.notice_id !== undefined && args.notice_id.trim() !== "" ? args.notice_id.trim() : undefined;
+    const attemptOf = noticeId !== undefined ? { answersNoticeId: noticeId } : {};
     if (callerJobId !== undefined) {
       // ── 호출자가 **작업**(매니저) — 직속 자식만. 넓히지 않고, 남의 작업 존재도 흘리지 않는다 ──
       const caller = getJob(callerJobId);
@@ -996,6 +1034,7 @@ export const steerChildJob = async (
           message: args.message,
           outcome: "no-target",
           from: callerJobId,
+          ...attemptOf,
         });
         console.warn(
           `[steer] '${caller.label}'(${callerJobId}) 의 지시 — 실행 중인 직속 자식에서 대상을 못 찾음 ` +
@@ -1037,6 +1076,7 @@ export const steerChildJob = async (
             label: args.label,
             message: args.message,
             outcome: "other-session",
+            ...attemptOf,
           });
           return okText(
             `'${args.label}' 작업은 **다른 대화**에서 돌고 있어요. 이 대화에서는 지시를 전달하지 않았습니다 — 그 대화에서 보내주세요.`,
@@ -1051,6 +1091,7 @@ export const steerChildJob = async (
           ...(args.label !== undefined && args.label !== "" ? { label: args.label } : {}),
           message: args.message,
           outcome: "no-target",
+          ...attemptOf,
         });
         return okText(
           `지정하신 작업을 찾지 못했어요(이미 끝났거나 이름이 다를 수 있습니다). list_workers 로 확인해 주세요. 지시는 전달되지 않았습니다.`,
@@ -1062,19 +1103,32 @@ export const steerChildJob = async (
         ts: now,
       };
     }
-    const outcome = steerJob(target.jobId, msg);
+    // ★«답» 은 **명시로만** 잇는다(설계 §5.6 R1 #4) — `notice_id` 가 그 잡의 알림과 맞고 **전달됐을 때만** 답 확정(R2 #1).
+    //  안 맞으면 지시는 그대로 전하되 잇지 않았다고 말한다. 시간 순서(«알림 뒤 첫 지시») 로는 잇지 않는다.
+    const notice = noticeId !== undefined ? findJobNotice(target.jobId, noticeId) : undefined;
+    if (notice !== undefined) msg = { ...msg, text: answerHead(notice.id) + msg.text };
+    const outcome = steerJob(target.jobId, msg, noticeId !== undefined ? { answersNoticeId: noticeId } : undefined);
+    const answered = notice !== undefined && outcome === "delivered" && markNoticeAnswered(target.jobId, notice.id);
+    const answerNote =
+      noticeId === undefined
+        ? ""
+        : notice === undefined
+          ? ` 그런 알림이 없습니다(notice_id ${noticeId}) — 답으로 잇지 않았습니다.`
+          : answered
+            ? ` 알림 ${notice.id} 에 대한 답으로 기록했습니다.`
+            : ` 알림 ${notice.id} 은 미해결로 남습니다.`;
     if (outcome === "delivered") {
       return okText(
-        `'${target.label}' 작업에 지시를 전달했어요. 작업의 다음 판단 시점에 반영됩니다(지금 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤).`,
+        `'${target.label}' 작업에 지시를 전달했어요. 작업의 다음 판단 시점에 반영됩니다(지금 오래 걸리는 도구를 실행 중이면 그게 끝난 뒤).${answerNote}`,
       );
     }
     if (outcome === "closed") {
       return okText(
-        `'${target.label}' 작업이 방금 끝나서 지시가 반영되지 않았어요. 결과를 보고 필요하면 다시 시켜주세요.`,
+        `'${target.label}' 작업이 방금 끝나서 지시가 반영되지 않았어요. 결과를 보고 필요하면 다시 시켜주세요.${answerNote}`,
       );
     }
     return okText(
-      `'${target.label}' 작업에 지시를 전달할 수 없었어요(작업 스티어 비활성 또는 이미 종료). 지시는 반영되지 않았습니다.`,
+      `'${target.label}' 작업에 지시를 전달할 수 없었어요(작업 스티어 비활성 또는 이미 종료). 지시는 반영되지 않았습니다.${answerNote}`,
     );
   } catch (e) {
     return errText(e instanceof Error ? e.message : String(e));

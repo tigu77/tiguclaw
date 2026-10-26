@@ -109,6 +109,12 @@ export const REACH = {
   "send-file": "subagent",
   "prompt-options": "subagent",
   /**
+   * `notify_owner` — 작업자가 소환자에게 한 줄 알리고 계속 일한다(2026-10-25). ★**호출부 예외**: 메인엔 등록되지 않는다 —
+   *  사다리가 아니라 **정체**(이 턴에 자기 잡이 있나)가 정한다(`createNotifyOwnerMcpServer` 가 없으면 `undefined`). 사다리는 «가장 깊은 칸»
+   *  만 적을 수 있어 «메인 제외·매니저와 서브 포함» 을 못 적는다 — `external-mcp` 처럼 예외를 표에 우겨넣지 않고 호출부에 남긴다.
+   */
+  "notify-owner": "subagent",
+  /**
    * 플러그인이 낸 도구(`extraMcpServers`).
    * ★**오늘의 답을 명시로 적어 둔다** — 종전엔 조건 없는 spread 라 "전부" 가 *생략*으로
    *  표현돼 있었고, 그러면 그게 결정인지 빠뜨림인지 코드만 봐선 모른다. 매니페스트에

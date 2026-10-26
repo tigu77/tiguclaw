@@ -58,7 +58,8 @@
       <button id="menu-toggle" class="hdr-btn" type="button" aria-label="메뉴 열기" title="메뉴" data-i18n-attrs="aria-label=hdr.menu.aria;title=common.menu">☰</button>
       <!-- 브랜드 마크 — favicon 과 **같은 파일**을 쓴다(브라우저 탭과 헤더가 어긋날 여지 0). -->
       <div class="brand"><img class="brand-icon" src="/icon.png" alt="" width="32" height="32" /><span data-i18n="app.brand">티구클로</span></div>
-      <div class="sub" id="app-sub" data-i18n="app.sub">대시보드</div>
+      <!-- 부제 = 버전만(2026-10-25 사용자 결정 — «대시보드 ·» 를 뺐다). 버전을 알기 전·health 실패 땐 비어 있다(빈 구분점 없음). -->
+      <div class="sub" id="app-sub"></div>
       <div class="spacer"></div>
       <!-- ★오른쪽 패널 두 문(2026-10-20) — **어느 화면에서나** 연다(종전 백그라운드 버튼은 채팅 헤더에만 있었다). 순서 = 패널 순서. -->
       <button id="bg-toggle" type="button" aria-label="백그라운드 작업" title="백그라운드 작업" data-i18n-attrs="aria-label=bg.title;title=bg.title">

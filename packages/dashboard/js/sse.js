@@ -592,6 +592,12 @@
           handleWorkerSteered(p, ts);
           return;
         }
+        // 작업자 알림(2026-10-25 `notify_owner`) — 이것도 상태 전이가 아니다. 범용 분기로 흘리면 status 없는 payload 가
+        //  잡 상태를 덮으므로 스티어와 같은 자리에서 먼저 가로채 카드 «막힘» 줄로만 보낸다.
+        if (ev.type === "worker.notice") {
+          if (typeof window.setJobNotice === "function") window.setJobNotice(ev.payload || {});
+          return;
+        }
         // ★서브에이전트가 도구를 한 번도 안 쓰고 끝났다 — 품질 신호(생애주기 아님).
         //  실측(2026-08-07): 파일을 읽으라 시켰는데 5초/도구 0회로 값을 지어냈다. 정상 건은
         //  9~30회 쓴다. 단정하지 않고 **보고 있는 세션에만** 한 줄 남긴다(사람이 결과를

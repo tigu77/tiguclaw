@@ -200,6 +200,12 @@ const forceRefresh = new Map<string, string>();
 const forcedToken = new Map<string, string>();
 /** 일시 실패한 시각 — `REFRESH_RETRY_AFTER_MS` 안에서는 다시 갱신하지 않는다. */
 const refreshFailedAt = new Map<string, number>();
+/**
+ * 다른 인가 서버에 묶여 갱신하지 않기로 한 **액세스 토큰** — 같은 토큰이면 판정이 같으므로 만료까지 갱신 작업(기록 다시 읽기·캐시 없으면 탐색)을
+ *  다시 돌리지 않고, 경고도 그 토큰에 한 번만 낸다(독립 검토 10-25 B-5: 만료 5분 전부터 호출마다 다시 돌고 만료 순간까지 로그 0줄).
+ * ★시간 백오프(`refreshFailedAt`)를 쓰지 않는다 — 그러면 그 사이 401(강제 갱신)이 와도 «로그인 필요» 판정이 최대 1분 밀린다. 강제 갱신·만료는 이 칸을 건너뛴다.
+ */
+const boundElsewhereToken = new Map<string, string>();
 
 /**
  * 연결이 인증으로 거절됐다(사용자 인증 헤더 없이) — 갱신할 수 있으면 다음 읽기가 한 번 갱신하고(그 갱신이 거절되면 그때 «로그인 필요»),
@@ -390,7 +396,9 @@ const startRefresh = (k: McpOAuthKey, fetchFn: typeof fetch | undefined): Promis
     const stillValid = (): string | undefined =>
       !forced && rec.tokens !== undefined && rec.expiresAt !== undefined && rec.expiresAt > Date.now() ? rec.tokens.access_token : undefined;
     if (rec.tokens.refresh_token === undefined || rec.client === undefined) {
-      if (stillValid() !== undefined) return stillValid();
+      // 한 번 재서 쓴다 — 두 번 재면 그 사이 만료될 때 «로그인 필요» 기록·로그 없이 undefined 로 빠진다(독립 검토 10-25 A-2).
+      const valid = stillValid();
+      if (valid !== undefined) return valid;
       if (gen0 === genOf(k)) await markMcpLoginNeeded(k, gen0);
       return undefined;
     }
@@ -405,7 +413,16 @@ const startRefresh = (k: McpOAuthKey, fetchFn: typeof fetch | undefined): Promis
       if (boundElsewhere(rec.tokens.issuer, issuer) || boundElsewhere(rec.client.issuer, issuer)) {
         // 만료 전이면 그 액세스 토큰은 그대로 쓴다 — refresh 가 없는 위 분기와 같은 규칙(SDK 전송도 액세스 토큰은 발급 서버를 안 보고 401 까지 쓴다).
         //  ★없을 때: 갱신 창(만료 `REFRESH_SKEW_MS` 전)에 들어서는 순간 잘 되던 연결을 먼저 끊었다(독립 검토 10-25).
-        if (stillValid() !== undefined) return stillValid();
+        const valid = stillValid(); // 한 번 재서 쓴다(위 분기와 같은 이유).
+        if (valid !== undefined) {
+          if (boundElsewhereToken.get(h) !== valid) {
+            console.warn(
+              `mcp-oauth: '${k.name}' 저장된 인증이 다른 인가 서버에 묶여 있어 갱신하지 않음 — 지금 토큰은 만료(${new Date(rec.expiresAt!).toISOString()})까지 쓰고, 그 뒤엔 다시 로그인이 필요합니다.`,
+            );
+          }
+          boundElsewhereToken.set(h, valid);
+          return valid;
+        }
         forceRefresh.delete(h);
         if (gen0 === genOf(k)) await markMcpLoginNeeded(k, gen0);
         console.warn(`mcp-oauth: '${k.name}' 저장된 인증이 다른 인가 서버에 묶여 있어 갱신하지 않음 — 다시 로그인이 필요합니다.`);
@@ -467,6 +484,11 @@ export const mcpAccessToken = async (k: McpOAuthKey, fetchFn?: typeof fetch): Pr
   if (!forced && (rec.expiresAt === undefined || rec.expiresAt > Date.now() + REFRESH_SKEW_MS)) return rec.tokens.access_token;
   const validNow = (): string | undefined =>
     !forced && rec.tokens !== undefined && rec.expiresAt !== undefined && rec.expiresAt > Date.now() ? rec.tokens.access_token : undefined;
+  // 같은 토큰이 다른 인가 서버에 묶인 것을 이미 봤다 — 만료 전이면 갱신 작업 없이 그대로(강제 갱신은 `validNow` 가 undefined 라 아래로 간다).
+  if (boundElsewhereToken.get(h) === rec.tokens.access_token) {
+    const valid = validNow();
+    if (valid !== undefined) return valid;
+  }
   const failedAt = refreshFailedAt.get(h);
   if (!refreshing.has(h) && failedAt !== undefined && Date.now() - failedAt < REFRESH_RETRY_AFTER_MS) return validNow();
   return waitAtMost(refreshing.get(h) ?? startRefresh(k, fetchFn), REFRESH_WAIT_MS, validNow);
@@ -491,7 +513,7 @@ export const forgetMcpOAuth = async (file: string, name: string): Promise<number
       if (path.resolve(r.file) !== abs || r.name !== name) continue;
       const k = { file: r.file, name: r.name, url: r.url };
       generations.set(keyHash(k), (generations.get(keyHash(k)) ?? 0) + 1);
-      for (const m of [forceRefresh, forcedToken, refreshFailedAt]) m.delete(keyHash(k));
+      for (const m of [forceRefresh, forcedToken, refreshFailedAt, boundElsewhereToken]) m.delete(keyHash(k));
       dropAttemptsFor(k);
       await fs.rm(path.join(storeDir(), f), { force: true });
       removed += 1;

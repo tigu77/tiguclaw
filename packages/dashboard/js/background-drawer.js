@@ -414,6 +414,43 @@
         }
         el.style.display = "";
       };
+      // ★작업자 알림 «막힘» 줄(2026-10-25, `notify_owner` 설계 §7.1) — 재료는 서버 잡 레코드·`worker.notice` payload·목록 응답의
+      //  `activity.notice` 와 **같은 이름 같은 모양** `{noticeId, text, at, answeredAt?}`. «답 받음» 은 `answeredAt` 만 본다
+      //  (`worker.steered` 의 답 시도로 판정하지 않는다 — 전달 실패한 답도 시도로 남기 때문). 본문은 모델 글이라 textContent 로만.
+      const renderNotice = (entry) => {
+        const el = entry && entry.noticeEl;
+        if (!el) return;
+        const n = entry.notice;
+        if (!n || typeof n.text !== "string") { el.style.display = "none"; el.textContent = ""; return; }
+        const answered = typeof n.answeredAt === "number";
+        const text = i18n(answered ? "bg.notice.answered" : "bg.notice.blocked", { text: n.text, ago: fmtAgo(Number(n.at) || Date.now()) });
+        if (el.textContent !== text) el.textContent = text;
+        el.classList.toggle("answered", answered);
+        el.style.display = "";
+      };
+      /**
+       * 최신 알림만 든다 — 같은 알림이면 답 확정(`answeredAt`)을 잃지 않게 합친다(replay·하이드레이션 순서 무관).
+       * ★«최신» 은 시각이 아니라 **서버가 매긴 순번**(`n1`·`n2`·`n3`)으로 본다 — 같은 밀리초에 난 두 알림이면 시각으로는 못 가려,
+       *  옛 알림의 답 이벤트가 최신 미해결 막힘을 덮었다(GPT R1 #2 재현).
+       */
+      const noticeSeq = (id) => { const m = /^n(\d+)$/.exec(String(id || "")); return m ? Number(m[1]) : 0; };
+      const mergeNotice = (entry, n) => {
+        if (!entry || !n || typeof n.noticeId !== "string" || typeof n.text !== "string") return;
+        const cur = entry.notice;
+        if (cur && noticeSeq(n.noticeId) < noticeSeq(cur.noticeId)) return; // 더 오래된 알림은 덮지 않는다.
+        const answeredAt = typeof n.answeredAt === "number" ? n.answeredAt : cur && cur.noticeId === n.noticeId ? cur.answeredAt : undefined;
+        entry.notice = { noticeId: n.noticeId, text: n.text, at: n.at, ...(typeof answeredAt === "number" ? { answeredAt } : {}) };
+        renderNotice(entry);
+      };
+      // SSE `worker.notice` 가 부른다(sse.js — 범용 `worker.*` 상태 분기 **앞**에서 가로챈다: status 없는 payload 가 잡 상태를 덮지 않게).
+      //  거절·중복·상한은 줄을 바꾸지 않는다(`noticeId` 없거나 이미 그린 알림).
+      window.setJobNotice = (p) => {
+        if (!p || !p.jobId) return;
+        if (p.outcome === "rejected" || p.outcome === "cap") return;
+        if (!jobCards.has(p.jobId) && !p.label) return; // 지어낼 근거가 없으면 카드를 만들지 않는다(유령 금지 — steered 와 같은 규칙).
+        const entry = ensureJobCard(p.jobId, { ...p }); // steered 와 같이 통째 전달(status 칸이 없어 상태는 안 바뀐다).
+        mergeNotice(entry, p);
+      };
       // SSE `todo.update` 가 부른다(sse.js) — 잡 좌표(worker:/agent:<jobId>)가 아니면 무시(메인 대화는 도구 카드로 이미 보인다).
       window.setJobTodos = (p) => {
         const m = p && typeof p.threadKey === "string" ? /^(?:worker|agent):(.+)$/.exec(p.threadKey) : null;
@@ -1011,6 +1048,10 @@
           const todoEl = document.createElement("div");
           todoEl.className = "bg-job-todo";
           todoEl.style.display = "none";
+          // 작업자 알림 «막힘: … · N분 전» — 작업자가 notify_owner 를 썼을 때만(renderNotice).
+          const noticeEl = document.createElement("div");
+          noticeEl.className = "bg-job-notice";
+          noticeEl.style.display = "none";
           // ★소속 세션 배지 (2026-08-06) — "이 잡을 어느 대화가 띄웠나". 종전엔 원시 좌표
           //  (`dashboard:1784…`)만 있어 사람이 읽을 수 없었고, 스코프 필터로 거를 수는 있어도
           //  전체를 볼 땐 구분이 안 됐다. 이름은 공유 해석기(서버 정본)에서 가져오고,
@@ -1045,7 +1086,7 @@
           const steps = document.createElement("div"); steps.className = "bg-job-steps";
           const result = document.createElement("div"); result.className = "bg-job-result"; result.style.display = "none";
           detail.appendChild(task); detail.appendChild(steps); detail.appendChild(result);
-          el.appendChild(top); el.appendChild(meta); el.appendChild(todoEl); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
+          el.appendChild(top); el.appendChild(meta); el.appendChild(noticeEl); el.appendChild(todoEl); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
           // 텍스트 드래그는 접기로 안 친다(2026-09-10 적대 검토 P-4) — 이 머리줄엔
           // `user-select:none` 이 없어 라벨을 끌어 고를 수 있다.
           onToggleClick(top, () => { setJobOpen(jobId, entry); });
@@ -1066,6 +1107,7 @@
             doingEl, // "지금 무엇을 하는 중" 한 줄(서버 activity).
             todoEl, // 할 일 «▾ 📋 2/5» — 누르면 항목 전부(모델이 적었을 때만). 펼침 상태는 entry.todoOpen.
             todos: null,
+            noticeEl, notice: null, // 작업자 알림 «막힘» 줄 — mergeNotice 가 채운다.
             activity: null, // { lastActivityAt, inFlight:[{tool,since}] } — /api/worker-jobs.
             // ★경과시간 기준은 **서버가 준 잡 시작 시각**이다 (2026-08-20 적대 검토 C).
             //  종전엔 무조건 `Date.now()`(카드가 생긴 시각)라, 2시간째 자식을 기다리는
@@ -1322,6 +1364,8 @@
           entry.todos = p.activity.todos;
           renderTodos(entry);
         }
+        // 작업자 알림 — 목록 응답(`activity.notice`)으로 새로고침 뒤에도 같은 줄(답 확정 전·후 둘 다).
+        if (p.activity && typeof p.activity === "object" && p.activity.notice) mergeNotice(entry, p.activity.notice);
         // ★잡 상태는 **단조**다 — running → 종료, 되돌아가지 않는다 (2026-07-28).
         //  종전엔 마지막 이벤트가 무조건 이겨서, 재연결 replay 가 흘린 옛 worker.started 가
         //  이미 끝난 카드를 **다시 "진행 중"으로 되돌렸고** 그 뒤로 갱신할 이벤트가 없어
@@ -1672,7 +1716,14 @@
         const lab = document.createElement("span");
         // 소환자 작업(매니저)이 보낸 지시면 보낸 쪽을 밝힌다 — «지시 추가» 만 있으면 사용자가 보낸 것으로 읽힌다(2026-10-25).
         lab.className = "bg-step-label bg-steer";
-        lab.textContent = p.fromJobId ? i18n("bg.steer.addFrom", { v: p.fromLabel || p.fromJobId }) : i18n("bg.steer.add");
+        // 작업 쪽 글(`source:"job"` — 자식 결과·반송)은 지시가 아니다(2026-10-25 독립 검토): 반송은 «'X' 가 반영 못 하고 돌려줌»(보낸 쪽 `from` 과
+        //  뜻을 겹치지 않는 칸), 그 밖의 작업 쪽 글(자식 결과)은 «결과 도착». 지시만 «지시 추가»/«'X' 의 지시».
+        //  작업자 알림의 **배달**(자식 → 이 매니저, `noticeOf`)은 «'C' 의 알림» — 답 지시(`answersNoticeId`)는 지시 라벨 그대로다(설계 §18-8).
+        lab.textContent = p.returnedByJobId
+          ? i18n("bg.steer.returnedBy", { v: p.returnedByLabel || p.returnedByJobId })
+          : p.noticeOf && typeof p.noticeOf === "object" ? i18n("bg.steer.notice", { v: p.noticeOf.label || p.noticeOf.jobId || "?" })
+          : p.source === "job" ? i18n("bg.steer.result")
+          : p.fromJobId ? i18n("bg.steer.addFrom", { v: p.fromLabel || p.fromJobId }) : i18n("bg.steer.add");
         line.appendChild(icon); line.appendChild(lab);
         if (p.message) {
           const d = document.createElement("span");
@@ -1782,6 +1833,7 @@
             const ago = fmtAgo(e.startTs);
             if (e.agoEl.textContent !== ago) e.agoEl.textContent = ago;
           }
+          if (e.notice) renderNotice(e); // «막힘 · N분 전» 도 같은 시계로 늙는다(문자열이 같으면 no-op).
           // ★스텝 시각도 같은 시계에 얹는다(새 타이머 0). 두 축이 다르다:
           //  - `.bg-step-ago`(언제) — **끝난 카드도 늙는다**. 분 단위라 대부분 no-op(문자열 비교).
           //  - `.dur-badge.running`(지금 몇 초째) — 도는 도구만. 잡이 끝나면 표식이 걷힌다.

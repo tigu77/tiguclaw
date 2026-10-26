@@ -69,7 +69,29 @@ export interface SteeringInput {
    *  자식이 읽기 전에 끝나면 이 지시는 «방금 보내신 지시» 로 사용자에게 가면 안 되고 보낸 작업에게 돌아간다(`partitionSteering`).
    */
   from?: string;
+  /**
+   * 이 글이 **작업자 알림의 배달**이다 — 자식 `jobId` 가 `notify_owner` 로 보낸 `noticeId` (2026-10-25, 설계 §18-8).
+   * ★`source:"job"` 과 함께만 쓴다 — 알림은 사용자 지시가 아니다. 종류 판정은 `isNoticeDelivery` 한 곳.
+   */
+  noticeOf?: { jobId: string; noticeId: string };
 }
+
+/**
+ * **작업 쪽 글인가** — 자식 결과·반송처럼 작업이 넣은 시스템 글(`source:"job"`)은 지시가 아니다. 판정은 여기 한 곳이다:
+ *  `partitionSteering`(잔여 분류) · 거두기 대기의 깨움 분류(`worker-registry.ts`) · 셸 대기의 «새 지시» 깨움(`worker.steered` payload 의 같은 칸,
+ *  `file-ops-mcp.ts`)이 같이 쓴다(2026-10-25 독립 검토 — 같은 판정이 세 자리에 흩어지면 하나만 고쳐 갈린다).
+ */
+export const isJobSide = (m: { source?: unknown }): boolean => m.source === "job";
+
+/**
+ * **작업자 알림의 배달인가** — 작업 쪽 글 중 `notify_owner` 가 넣은 것(2026-10-25, 설계 §18-5 ① 종류 판정).
+ * ★세 종류를 가르는 판정은 여기 둘(`isJobSide` · 이것)뿐이다: 지시(사용자·소환자) / 작업자 알림 / 그 밖의 작업 쪽 글(결과·반송).
+ *  알림도 `isJobSide` 는 참이다(사용자 지시가 아니다 — 잔여 분류는 `jobResults`). 정책은 소비처가 정한다:
+ *  셸 대기는 «작업자 알림이 들어옴» 으로 깨우고(결과·반송은 안 깨운다), 거두기 턴은 «〔작업자 알림〕» 묶음으로 따로 싣는다.
+ *  `SteeringInput` 과 `worker.steered` payload 가 같은 칸(`source`·`noticeOf`)을 쓴다.
+ */
+export const isNoticeDelivery = (m: { source?: unknown; noticeOf?: unknown }): boolean =>
+  isJobSide(m) && typeof m.noticeOf === "object" && m.noticeOf !== null;
 
 /**
  * 큐에서 걷은 것을 **출처로 가른다** (2026-08-19).
@@ -90,7 +112,7 @@ export const partitionSteering = (
   const userMessages: SteeringInput[] = [];
   const summonerMessages: SteeringInput[] = [];
   for (const m of msgs) {
-    if (m.source === "job") jobResults.push(m);
+    if (isJobSide(m)) jobResults.push(m);
     else if (m.from !== undefined) summonerMessages.push(m);
     else userMessages.push(m);
   }

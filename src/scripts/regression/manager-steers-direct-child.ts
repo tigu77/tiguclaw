@@ -12,6 +12,8 @@
  *  ⑤ 늦게 도착 — 자식이 못 읽고 끝나면(성공·실패 · 교체된 옛 채널 잔여 포함) 보낸 매니저에게 돌아가고, 매니저도 못 읽고 끝나도
  *     사용자 통지로 둔갑하지 않는다.
  *  ⑥ 순서 — 거두기 대기 중인 매니저의 첫 깨움이 자식 결과를 갖는다(반송은 결과 뒤 · 같은 깨움) — 성공·실패·취소.
+ *  ⑦ 보존 — 합류 보류·배달 예외에도 반송은 가고, 배달 예외 때 사용자의 늦은 지시도 «반영 못 했다» 로 간다.
+ *  ⑧ 반송은 결과다 — 반송만으로 깬 대기는 «결과 도착» 턴이다(«지시 도착 · cancel_worker 로 정리» 가 아니다).
  *
  * 등급: 동작 검사(실제 핸들러·채널·러너·완료 출구, 모델 호출 0). 전역 핸들러를 거므로 자식 프로세스.
  */
@@ -23,8 +25,13 @@ import { assert, assertIsolated, spawnWithin, type Assertion, type RegressionChe
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CHILD = path.join(HERE, "_manager-steer-child.ts");
 const REPO = path.resolve(HERE, "../../..");
-/** 메인 `steer_worker` 의 설명+스키마 지문 — 이 변경 전 HEAD(18fe3b48)와 같은 값. 메인 도구 면을 바꾸면 여기가 빨개진다. */
-const MAIN_STEER_FINGERPRINT = "984702331f281c76";
+/**
+ * 메인 `steer_worker` 의 설명+스키마 지문. 메인 도구 면을 바꾸면 여기가 빨개진다.
+ * ★2026-10-25 `notify_owner`(설계 §18-1)가 **의도적으로** 선택 인자 `notice_id` 하나를 더했다 — 그 변경으로 갱신했다(종전 984702331f281c76).
+ *  대신 «그 하나를 뺀 지문» 이 변경 전(e9969e1e)과 같다는 것을 함께 잰다(실측 d0e71c55d0a52c6c) — 설명·기존 인자 셋의 의미는 그대로다.
+ */
+const MAIN_STEER_FINGERPRINT = "ed924c18bd4a841c";
+const MAIN_STEER_FINGERPRINT_BEFORE_NOTICE = "d0e71c55d0a52c6c";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type R = Record<string, any>;
@@ -54,7 +61,12 @@ export const check: RegressionCheck = {
         show(ex.mainWorkers) === show(["run_in_background", "list_workers", "list_all_workers", "steer_worker", "cancel_worker"]),
         show(ex.mainWorkers),
       ),
-      assert("① ★메인 steer_worker 설명·스키마가 변경 전과 바이트 단위로 같다(지문)", ex.mainSteerFingerprint === MAIN_STEER_FINGERPRINT, ex.mainSteerFingerprint),
+      assert("① ★메인 steer_worker 설명·스키마 지문(notice_id 추가 뒤 값)", ex.mainSteerFingerprint === MAIN_STEER_FINGERPRINT, ex.mainSteerFingerprint),
+      assert(
+        "① ★메인 steer_worker 의 변경은 선택 인자 notice_id 하나뿐 — 그것을 뺀 지문이 변경 전(e9969e1e)과 같다 · 인자 이름 넷",
+        ex.mainSteerFingerprintWithoutNotice === MAIN_STEER_FINGERPRINT_BEFORE_NOTICE && JSON.stringify(ex.schemaKeys) === JSON.stringify(["message", "label", "job_id", "notice_id"]),
+        { fp: ex.mainSteerFingerprintWithoutNotice, keys: ex.schemaKeys },
+      ),
       assert("① 세 어댑터가 `agents` 서버를 같은 조건으로 붙인다(노출 판단은 팩토리 한 곳)", adapters.every(([, ok]) => ok), show(adapters)),
       assert("② 직속 자식 label → 1건 전달 · 형제의 같은 이름 자식엔 0", di.got === 1 && di.gotC2 === 0 && String(di.r1).includes("전달했어요"), show({ got: di.got, gotC2: di.gotC2, r1: di.r1 })),
       assert("② 직속 자식 job_id → 1건 전달", di.gotById === 1 && String(di.r2).includes("전달했어요"), show({ gotById: di.gotById, r2: di.r2 })),
@@ -86,19 +98,14 @@ export const check: RegressionCheck = {
         const v = d[k] as R;
         const how = { late: "그대로", lateRotated: "교체된 채널 — 옛 채널 잔여까지", lateFailed: "자식이 실패로 끝남" }[k];
         return assert(
-          `⑤ ★늦게 도착(${how}) — 자식이 못 읽고 끝나면 보낸 매니저에게 반송 1(점검 시계는 안 민다 · 돌려보낸 작업이 실려 사용자 지시로 안 그려진다) · 매니저도 못 읽고 끝나도 사용자에게 0`,
+          `⑤ ★늦게 도착(${how}) — 자식이 못 읽고 끝나면 보낸 매니저에게 반송 1(점검 시계는 안 민다 · «반송» 으로 그려진다 — 사용자 지시·«자식의 지시» 아님) · 매니저도 못 읽고 끝나도 사용자에게 0 · «버림» 로그 1`,
           v.pStatus === "done" && v.cStatus === (k === "lateFailed" ? "failed" : "done") && show(v.bounce) === show(["delivered"]) && v.bouncedLate === true &&
-            v.bounceFromChild === true &&
+            v.bounceFromChild === true && v.dropLogs === 1 && v.jobSideMarked === true &&
             v.userLateNotices === 0 && v.managerTextToUser === 0 && v.anchorKept === true &&
             (k === "lateRotated" ? v.rotated === true && v.bouncedEarly === true : v.rotated === false),
           show(v),
         );
       }),
-      assert(
-        "⑤ 매니저가 반송을 못 읽고 끝나면 «버림» 이 로그에 남는다(반송 쪽 «delivered» 만으로 전달로 읽히지 않게) — 늦게 도착 세 경우",
-        (r.out.match(/가 끝나 읽지 못한 작업 쪽 글 1건\(반송 등\)을 버림/g) ?? []).length >= 3,
-        `버림 로그 ${String((r.out.match(/읽지 못한 작업 쪽 글/g) ?? []).length)}줄`,
-      ),
       ...(["ok", "fail", "cancel"] as const).map((how) => {
         const v = d.reap?.[how] as R | undefined;
         const name = { ok: "성공", fail: "실패", cancel: "취소" }[how];
@@ -109,8 +116,8 @@ export const check: RegressionCheck = {
         );
       }),
       assert(
-        "⑦ ★반송 보존 — 합류가 결과를 선점(보류)해도 · 결과 배달이 던져도 보낸 매니저에게 1건(돌려보낸 작업 실림)",
-        d.keep?.claimed === true && d.keep?.parked === 1 && d.keep?.threw === true && d.keep?.thrown === 1,
+        "⑦ ★반송 보존 — 합류가 결과를 선점(보류)해도 · 결과 배달이 던져도 보낸 매니저에게 1건 · 던질 때 사용자의 늦은 지시도 «반영 못 했다» 1건",
+        d.keep?.claimed === true && d.keep?.parked === 1 && d.keep?.threw === true && d.keep?.thrown === 1 && d.keep?.thrownUserNotice === 1,
         show(d.keep),
       ),
       assert(
@@ -118,6 +125,11 @@ export const check: RegressionCheck = {
         d.keep?.rotatedOld === true && d.keep?.oldRebounce === 0 && d.keep?.oldToUser === 0 &&
           /'지휘옛채널'\([^)]+\) 가 끝나 읽지 못한 작업 쪽 글 1건/.test(r.out),
         show({ keep: d.keep, log: (r.out.match(/'지휘옛채널'[^\n]*/) ?? [""])[0].slice(0, 120) }),
+      ),
+      assert(
+        "⑧ ★반송은 결과다 — 다른 자식을 기다리는 대기를 반송이 깨우면 «결과 도착» 턴(반송 본문 포함)이고 «지시 도착» 턴이 아니다",
+        d.wake?.asResult === true && d.wake?.asInstruction === false && d.wake?.pStatus === "done",
+        show(d.wake),
       ),
       assert(
         "⑤ 대조 — 사용자(메인)의 늦은 지시는 종전대로 사용자에게 «이미 끝난 뒤» 통지 1 · 매니저 글은 섞이지 않는다",

@@ -104,7 +104,7 @@ export const check: RegressionCheck = {
     const ctx = vm.createContext({
       i18n, Number, Math, JSON, Object, String, cardByThread, Map, document: { createElement: () => el() }, renderedMsgKeys: new Set(), msgKey: (ts: number, r: string) => `${ts}|${r}`,
       // 버블 빌더의 입력만 본다 — 병합 결과가 **버블까지** 가는지(적대 검토 G4: 넘기는 단계를 되돌려도 초록이었다).
-      renderedActivityKeys: new Set(), actKey: (...k: unknown[]) => k.join("|"), buildHistoryDiv: (e: unknown) => e,
+      renderedActivityKeys: new Set(), actKey: (...k: unknown[]) => k.join("|"), buildHistoryDiv: (e: unknown) => ({ ...(e as object), dataset: {} }), // 입력 그대로 + 빌더가 표식을 다는 자리(dataset).
     });
     vm.runInContext(
       [fn(token, "fmtTokens"), fn(token, "effortOf"), fn(token, "modelWithEffort"), fn(token, "renderModelLabel"), fn(token, "setTurnModel"), fn(token, "setTurnEffort"),

@@ -194,6 +194,16 @@ export const check: RegressionCheck = {
       setTimeout(() => getEventBus().publish({ type: "worker.steered", ts: Date.now(), payload: { jobId: "regr-job", outcome: "other-session", message: "x" } }), 200);
       const rwo = await pwo;
       out.push(assert("남의 대화 메시지·합성 알림·슬래시 명령·전달 안 된 steer 로는 깨우지 않는다", /깨운 이유: 1초 대기 상한/.test(ro.text) && /깨운 이유: 1초 대기 상한/.test(rwo.text), { ro: ro.text.slice(0, 40), rwo: rwo.text.slice(0, 40) }));
+      // 작업 쪽 글(자식 결과·반송 — payload `source:"job"`, 생산자가 싣는지는 `manager-steers-direct-child` 가 잰다)은 지시가 아니다 — 깨우지 않는다.
+      //  ★없을 때: 자식이 반송한 글·결과 배달이 매니저의 셸 대기를 «이 대화에 새 지시가 들어옴» 으로 깨웠다(독립 검토 10-25 재현).
+      const wj = await launch(KEEP, wTools);
+      const pwj = timed({ bash_id: wj, wait_seconds: 1 }, {}, wTools);
+      setTimeout(() => {
+        getEventBus().publish({ type: "worker.steered", ts: Date.now(), payload: { jobId: "regr-job", outcome: "delivered", source: "job", returnedByJobId: "c", message: "반송" } });
+        getEventBus().publish({ type: "worker.steered", ts: Date.now(), payload: { jobId: "regr-job", outcome: "delivered", source: "job", message: "[백그라운드 서브에이전트 'x' 완료] 결과" } });
+      }, 200);
+      const rwj = await pwj;
+      out.push(assert("★작업 쪽 글(자식 결과·반송)의 steer 로는 깨우지 않는다 — 지시가 아니다", /깨운 이유: 1초 대기 상한/.test(rwj.text), rwj.text.slice(0, 60)));
 
       // F3 — 이 호출이 취소되면(MCP 요청 취소) 바로 놓고, 출력은 소비하지 않는다 — 다음 BashOutput 이 그대로 받는다.
       const fm = mark();

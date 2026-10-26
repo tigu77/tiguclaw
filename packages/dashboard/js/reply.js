@@ -111,13 +111,17 @@
           el: host,
           // 완료 턴 표식 id — 저장이 확인된 비서 답(라이브·복원 같은 값, 턴 묶음이면 묶음에). 없으면 «여기까지로 갈라내기» 가 안 뜬다.
           turn: (() => { const t = msg.closest ? msg.closest("[data-turn]") : null; return t ? t.dataset.turn : ""; })(),
-          // 답글 대상 — 이력 말풍선의 행 id 우선, 없으면 정확한 시각·보낸 쪽(`data-type`).
+          // 답글 대상 — 행 id(이력 행 `data-id` · 답 행이 합쳐진 이력 세그먼트 `data-rowid`) 우선, 없으면 **행** 시각·보낸 쪽(`data-type`).
+          //  행 시각 = 실시간 완료 답의 `data-rowts`, 그다음 `data-ts` — 단 세그먼트 말풍선(`data-seg`)의 `data-ts` 는 활동 시각이라 행 조회에 쓰지 않는다
+          //  (같은 ms 의 다른 비서 행 한 건을 원문으로 저장했다, 2026-10-25 설계 R1). 그때는 화면 좌표(`at`)만 간다.
           replyRef: (() => {
             const ds = host && host.dataset ? host.dataset : {};
             const role = ds.type === "channel.message.in" ? "user" : ds.type === "channel.message.out" ? "assistant" : undefined;
-            const id = ds.id ? Number(ds.id) : NaN;
+            const rawId = ds.id || ds.rowid;
+            const id = rawId ? Number(rawId) : NaN;
             if (Number.isInteger(id) && id > 0) return { id, ...(role ? { role } : {}) };
-            const ts = tsAttr ? Number(tsAttr) : NaN;
+            const rowTs = ds.rowts || (ds.seg === "1" ? null : tsAttr);
+            const ts = rowTs ? Number(rowTs) : NaN;
             return Number.isFinite(ts) ? { ts, ...(role ? { role } : {}) } : null;
           })(),
           // 그 말풍선의 화면 시각 — 답글 카드의 «↩ 원문» 이동 좌표(위 replyRef 와 달리 행으로 바꾸지 않는다).

@@ -121,6 +121,7 @@ import { createMaintenanceMcpServer } from "../capabilities/maintenance-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
+import { createNotifyOwnerMcpServer } from "../capabilities/notify-owner-mcp.js";
 import { createToolRecallMcpServer } from "../capabilities/tool-recall-mcp.js";
 import { recordTokenDensity, tokenDensityOf } from "../../../store/token-density.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
@@ -868,6 +869,11 @@ export const runOpenAiCodex = async (
         )
       : undefined;
   if (sendFileBridge !== undefined) allBridges.push(sendFileBridge);
+  // notify_owner(2026-10-25) — 자기 잡이 있는 턴(매니저·서브)만. 판정은 팩토리 한 곳(claude/openai 와 같은 조건, 설계 §6).
+  const notifyOwnerServer = createNotifyOwnerMcpServer(input);
+  const notifyOwnerBridge =
+    notifyOwnerServer !== undefined ? await adaptClaudeMcpServer(notifyOwnerServer, "notify-owner") : undefined;
+  if (notifyOwnerBridge !== undefined) allBridges.push(notifyOwnerBridge);
   // 앞선 도구 결과 다시 읽기(2026-09-30) — 이력이 요약돼도 원문(`turn_items`)을 되찾는 길. 대화를 클로저로 잡는다(세션 정체성 채널).
   const toolRecallBridge = await adaptClaudeMcpServer(
     createToolRecallMcpServer(input),
@@ -954,6 +960,11 @@ export const runOpenAiCodex = async (
     // send-file — 채널 전송 클로저가 있을 때만 등록 (claude 어댑터 조건부 주입과 parity).
     if (sendFileBridge !== undefined) {
       await registerBridgeTools(sendFileBridge, toolBridgeMap, mcpTools);
+    }
+
+    // notify_owner — 자기 잡이 있는 턴만(팩토리가 정한다).
+    if (notifyOwnerBridge !== undefined) {
+      await registerBridgeTools(notifyOwnerBridge, toolBridgeMap, mcpTools);
     }
 
     // prompt-options(축1) — 채널 렌더 클로저가 있을 때만 등록 (claude 어댑터와 parity).

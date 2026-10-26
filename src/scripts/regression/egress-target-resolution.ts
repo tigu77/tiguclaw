@@ -14,7 +14,7 @@
  *  불가능했고(그 파일은 import 만으로 데몬이 뜬다), 그래서 refcount 모듈만 검사한 채
  *  배포했다. 검사 못 하는 자리에 있던 것이 정확히 깨졌다 — 모듈로 뽑은 뒤 이 검사가 생겼다.
  */
-import { resolveEgressTargets } from "../../core/egress-targets.js";
+import { resolveEgressTargets, resolveTurnEgressTargets } from "../../core/egress-targets.js";
 import type { ChannelOutbound } from "../../core/channel-outbound.js";
 import type { Assertion, RegressionCheck } from "./_framework.js";
 
@@ -176,6 +176,63 @@ const run = async (): Promise<Assertion[]> => {
       name: "같은 채널이어도 좌표가 다르면 보낸다(사람 단위로 판정)",
       ok: other.length === 1 && other[0]?.target === "owner-chat-1",
       got: other.map((t) => `${t.channel}:${t.target}`).join(",") || "★막혔다",
+    });
+  }
+  // ── ★답 좌표가 있으면 인입 채널 **이름**으로 빼지 않는다 (2026-10-26 라이브) ─────────
+  //  대시보드 대화의 파일 감시 답이 텔레그램에 안 갔다(실패 로그 0 — 시도 자체가 없음). 대화 안 트리거의 `channel` 은
+  //  그 대화의 마지막 채널(그날은 텔레그램)이고 답은 감시 목적지(대시보드)로 나가는데, 이름 비교가 텔레그램을 «이미 답함» 으로 뺐다.
+  //  아래 넷이 «같은 채널·다른 대상» 까지 갈라 잰다 — 이름 비교를 `replyTarget.channel === channel` 일 때만 남기는 식으로는 ②④ 가 빨갛다.
+  {
+    const lastTg = { lastChannel: "telegram", lastChannelTarget: "chat-77" };
+    const tgIn = (replyTarget: { channel: string; target: string | null } | undefined) =>
+      resolveEgressTargets(
+        { channel: "telegram", threadKey: "dashboard:abc", egressChannels: ["telegram"], ...(replyTarget !== undefined ? { replyTarget } : {}) },
+        deps(lastTg),
+      );
+    const show = (r: Awaited<ReturnType<typeof resolveEgressTargets>>): string => r.map((t) => `${t.channel}:${t.target}`).join(",") || "(없음)";
+    const toDash = await tgIn({ channel: "http-bridge", target: "dashboard:abc" });
+    out.push({
+      name: "★①마지막 인입이 텔레그램이어도 답이 대시보드로 가면 텔레그램(그 대화의 좌표)에 사본 1건",
+      ok: toDash.length === 1 && toDash[0]?.target === "chat-77",
+      got: `${show(toDash)} (기대 telegram:chat-77 — 비면 10-26 사고 재발)`,
+    });
+    const otherChat = await tgIn({ channel: "telegram", target: "chat-X" });
+    const sameChat = await tgIn({ channel: "telegram", target: "chat-77" });
+    out.push({
+      name: "★②같은 채널·다른 대상: 답 telegram:X · 대화 좌표 telegram:77 → 77 에 1건 · ③같은 좌표면 0건(중복 0)",
+      ok: otherChat.length === 1 && otherChat[0]?.target === "chat-77" && sameChat.length === 0,
+      got: `다른 대상=${show(otherChat)} (기대 telegram:chat-77) · 같은 좌표=${show(sameChat)} (기대 없음)`,
+    });
+    // 답 좌표 null = 그 채널 기본 좌표(owner-chat-1) — 대화 좌표가 다르면 그쪽에 1건, 같으면 0건.
+    const nullOther = await tgIn({ channel: "telegram", target: null });
+    const nullSame = await resolveEgressTargets(
+      { channel: "telegram", threadKey: "dashboard:abc", egressChannels: ["telegram"], replyTarget: { channel: "telegram", target: null } },
+      deps({ lastChannel: "telegram", lastChannelTarget: "owner-chat-1" }),
+    );
+    out.push({
+      name: "★④답 좌표 null(기본 owner-chat-1) · 대화 좌표 chat-77 → chat-77 에 1건 · 대화 좌표도 owner-chat-1 이면 0건",
+      ok: nullOther.length === 1 && nullOther[0]?.target === "chat-77" && nullSame.length === 0,
+      got: `다름=${show(nullOther)} (기대 telegram:chat-77) · 같음=${show(nullSame)} (기대 없음)`,
+    });
+    // 답 좌표 없는 일반 텔레그램 인입 — 답은 인입 채널로 이미 나간다. ★위 «인입 채널 자신» 검사는 http-bridge 가 outbound 없음으로
+    //  먼저 빠져 이름 비교를 지워도 초록이었다 — 실제로 egress 에 오는 채널(텔레그램)로 다시 건다.
+    // ★턴 입구(서버 설정 ∪ 메시지) 그대로 — 메시지에 실린 답 좌표가 해석까지 간다. 종전엔 이 합성이 `index.ts` 안이라 답 좌표를 떨어뜨리는
+    //  변이가 전체 초록으로 살아남았다(10-26 변이 사냥).
+    const viaTurn = await resolveTurnEgressTargets(
+      { channel: "telegram", threadKey: "dashboard:abc", replyTarget: { channel: "http-bridge", target: "dashboard:abc" } },
+      () => ["telegram"],
+      deps(lastTg),
+    );
+    out.push({
+      name: "★①′ 턴 입구에서도(설정 telegram · 메시지엔 채널 없음) 대시보드로 간 감시 답의 텔레그램 사본 1건",
+      ok: viaTurn.length === 1 && viaTurn[0]?.target === "chat-77",
+      got: `${show(viaTurn)} (기대 telegram:chat-77 — 비면 답 좌표가 해석까지 못 갔다)`,
+    });
+    const plainTg = await tgIn(undefined);
+    out.push({
+      name: "★⑤답 좌표 없는 텔레그램 인입의 답은 텔레그램에 다시 안 간다(이름 비교 유지)",
+      ok: plainTg.length === 0,
+      got: `${show(plainTg)} (기대 없음 — 있으면 같은 채팅에 두 번)`,
     });
   }
   {

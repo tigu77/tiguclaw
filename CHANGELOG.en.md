@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The dashboard header shows only the version next to the name.**
+- **The assistant's built-in guidelines now have it look through other conversations only when you point to one or ask to connect it.** Words like "earlier" or "that" alone no longer send it searching, and if the current request is enough it just goes ahead. An approval given in an earlier conversation is not treated as approval for this one.
 
 ### Fixed
 
@@ -23,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An instruction a subagent returned unread was shown in the background panel as an instruction from that subagent.** It now shows as returned unread.
 - **A subagent's result or a returned instruction reached its manager as if it were a new instruction.** A manager waiting on shell output stopped waiting because of it, or handled it as an instruction to apply.
 - **When a remote MCP server's saved sign-in was tied to a different authorization server, every call shortly before the token expired retried the refresh, and nothing was logged.** It now logs once that you will need to sign in again after the token expires.
+- **With "also send to Telegram" on, answers from a file watch, schedule or timer set in a dashboard conversation did not reach Telegram.** This happened when that conversation had last been used from Telegram.
+- **After reloading a dashboard conversation, a tool step could show another turn's output.** In conversations where several turns used tools, an expanded tool step showed the output of the tool at the same position in an earlier turn. Existing history now shows the right output when reopened.
 
 ## [0.76.0] - 2026-10-25
 

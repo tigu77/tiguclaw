@@ -74,22 +74,35 @@ const run = async (): Promise<Assertion[]> => {
 
   // ── ③ ★핸들러가 메시지 값과 서버 설정을 **합집합**으로 쓴다 ────────────────
   //  이게 없으면 서버가 만든 합성 메시지(매니저 완료 재주입)는 영원히 fan-out 을 못 탄다.
+  //  ★글자 대조에서 동작으로 (2026-10-26) — 합성을 `egress-targets.ts` 로 옮겨 진짜 함수를 부른다. 핸들러는 그 함수를 부르는지만 본다.
   {
-    const src = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
-    const usesSettings = src.includes("readEgressChannels()");
-    const unions =
-      /new Set\(\[\s*\.\.\.\(msg\.egressChannels \?\? \[\]\),\s*\.\.\.egressFromSettings/.test(
-        src,
-      );
+    const { resolveTurnEgressTargets } = await import("../../core/egress-targets.js");
+    const deps = {
+      getOutbound: (n: string) => (n === "telegram" || n === "cli" ? { deliver: async () => {}, defaultOutboundTarget: () => `${n}-owner` } : undefined),
+      getSessionMeta: () => null,
+    };
+    const base = { channel: "http-bridge", threadKey: "dashboard:abc" };
+    const names = async (m: Record<string, unknown>, settings: string[]): Promise<string> =>
+      (await resolveTurnEgressTargets({ ...base, ...m } as never, () => settings, deps)).map((t) => t.channel).join(",");
+    const synthetic = await names({}, ["telegram"]);
+    const both = await names({ egressChannels: ["cli"] }, ["telegram"]);
+    const dup = await names({ egressChannels: ["telegram"] }, ["telegram"]);
     out.push({
-      name: "★턴이 서버 설정을 읽는다(파생 발화가 fan-out 을 타는 근거)",
-      ok: usesSettings,
-      got: usesSettings ? "readEgressChannels() 사용" : "★서버 설정을 안 읽음",
+      name: "★턴이 서버 설정을 읽는다 — 메시지에 아무것도 없는 합성 발화도 fan-out 을 탄다",
+      ok: synthetic === "telegram",
+      got: synthetic || "★비었다(서버 설정을 안 읽음)",
     });
     out.push({
-      name: "★메시지 값과 합집합이다(컴포저 값도 계속 유효)",
-      ok: unions,
-      got: unions ? "합집합 배선 확인" : "★합집합 아님(한쪽만 쓰고 있다)",
+      name: "★메시지 값과 합집합이다(컴포저 값도 계속 유효) · 같은 채널은 한 번",
+      ok: both === "cli,telegram" && dup === "telegram",
+      got: `합집합=${both} (기대 cli,telegram) · 중복=${dup} (기대 telegram)`,
+    });
+    const src = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
+    const wired = /resolveTurnEgressTargets\(msg, \(\) => readEgressChannels\(\),/.test(src);
+    out.push({
+      name: "★핸들러가 메시지를 통째로 이 함수에 넘기고 서버 설정을 읽게 한다(배선)",
+      ok: wired,
+      got: wired ? "배선 확인" : "★핸들러가 다른 길로 egress 를 정한다",
     });
   }
 

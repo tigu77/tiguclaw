@@ -197,7 +197,7 @@ import {
 } from "./core/channel-activity.js";
 import {
   egressSourcePrefix,
-  resolveEgressTargets,
+  resolveTurnEgressTargets,
   type EgressTarget,
 } from "./core/egress-targets.js";
 import { withEgressPromptOptions } from "./core/prompt-options-egress.js";
@@ -833,18 +833,12 @@ const maybeSuggestNextMessage = (
 };
 
 /** 이 턴의 답을 «함께 보낼» 좌표 — 서버 설정 ∪ 메시지가 실어온 것(보내는 쪽이 `noEgress` 로 끌 수 있다). 근거는 핸들러의 egress 주석. */
-const resolveTurnEgress = async (msg: IncomingMessage): ReturnType<typeof resolveEgressTargets> => {
-  const egressFromSettings = msg.noEgress === true ? [] : readEgressChannels();
-  const egressUnion =
-    msg.noEgress === true
-      ? []
-      : [...new Set([...(msg.egressChannels ?? []), ...egressFromSettings])];
-  return resolveEgressTargets({ ...msg, egressChannels: egressUnion }, {
+const resolveTurnEgress = (msg: IncomingMessage): ReturnType<typeof resolveTurnEgressTargets> =>
+  resolveTurnEgressTargets(msg, () => readEgressChannels(), {
     getOutbound: getChannelOutbound,
     getSessionMeta: (threadKey) =>
       getSessionChannelMeta(SESSION_STORAGE_CHANNEL, threadKey),
   });
-};
 
 const handler: MessageHandler = async (msg) => {
   // ★인증값은 **입구에서** 따라간다 (2026-09-29 전체 검토) — `runRegionA` 입구만으로는 그보다 먼저 자격을 읽는 곳

@@ -19,6 +19,7 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { triggerRunLine } from "../../core/prompt-assembly.js";
+import { resolveEgressTargets } from "../../core/egress-targets.js";
 import { createPluginHost } from "../../core/plugins/host.js";
 import { __resetJobsForTest, registerJob } from "../../core/worker-jobs.js";
 import { deleteSession, initStore, isConversationLive, saveSession, setThreadArchived } from "../../store/sessions.js";
@@ -135,6 +136,29 @@ export const check: RegressionCheck = {
           JSON.stringify(mt?.notifyDest) === JSON.stringify({ channel: "telegram", target: null }) &&
           String(m?.text).startsWith("〔파일 감시 #77 실행 · change /w/answers.json — 사용자가 쓴 말이 아니다〕\n"),
         JSON.stringify({ dash: { ch: m?.channel, addr: m?.channelAddress, nd: m?.notifyDest }, tg: { ch: mt?.channel, addr: mt?.channelAddress, nd: mt?.notifyDest }, text: String(m?.text).slice(0, 40) }),
+      ),
+    );
+    // ★이음매 — 파사드가 **실제로 만든 메시지**를 진짜 egress 해석에 넣는다(2026-10-26 라이브). 대화 안 트리거의 `channel` 은 실행 좌표(위 단언)라
+    //  마지막 인입이 텔레그램인 대시보드 대화의 감시 답이 텔레그램 사본을 못 탔다. 두 모듈은 각자 멀쩡했고 이음매에서 났다.
+    const egressOf = async (destChannel: string, destTarget: string | null) => {
+      const f = loadFacade({ row: { ...liveRow, destChannel, destTarget }, sessions: new Set([ORIGIN]), delivered: true,
+        meta: { lastChannel: "telegram", lastChannelTarget: "7777" }, onTurn: async (mm) => { if (mm.beforeTurn?.() === null) await mm.reply("답"); } });
+      await f.fire(ORIGIN, { channel: destChannel, target: destTarget });
+      const sent = f.seen.msgs[0] as unknown as Parameters<typeof resolveEgressTargets>[0] | undefined;
+      if (sent === undefined) return "★턴 없음";
+      const r = await resolveEgressTargets({ ...sent, egressChannels: ["telegram"] }, {
+        getOutbound: (n) => (n === "telegram" ? { deliver: async () => {}, defaultOutboundTarget: () => "owner" } : undefined),
+        getSessionMeta: () => ({ lastChannel: "telegram", lastChannelTarget: "7777" }),
+      });
+      return `${f.seen.sends.map((s) => `${String(s.channel)}:${String(s.target)}`).join(",")} + 사본[${r.map((t) => `${t.channel}:${t.target}`).join(",")}]`;
+    };
+    const toDash = await egressOf("http-bridge", ORIGIN);
+    const toSameTg = await egressOf("telegram", "7777");
+    out.push(
+      assert(
+        "★★마지막 인입이 텔레그램인 대화의 감시 답: 목적지가 대시보드면 대시보드 + 텔레그램 사본 1건 · 목적지가 그 텔레그램 좌표면 사본 0(중복 0)",
+        toDash === `http-bridge:${ORIGIN} + 사본[telegram:7777]` && toSameTg === "telegram:7777 + 사본[]",
+        JSON.stringify({ toDash, toSameTg }),
       ),
     );
     // 턴이 실패 안내로 끝나면 실패로 돌려준다(그물 G-2).

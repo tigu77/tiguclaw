@@ -73,7 +73,7 @@ export interface EgressResolveDeps {
 }
 
 export interface EgressResolveInput {
-  /** 인입 채널 — 자기 자신은 egress 대상이 아니다(이미 별도 경로로 응답). */
+  /** 인입 채널 — 답 좌표(`replyTarget`)가 없으면 자기 자신은 egress 대상이 아니다(이미 별도 경로로 응답). */
   channel: string;
   /**
    * `reply` 가 실제로 나가는 좌표(있으면). 이름이 달라도 **여기와 같은 좌표면 건너뛴다** —
@@ -85,6 +85,20 @@ export interface EgressResolveInput {
 }
 
 /**
+ * **이 턴의** egress 좌표 — 서버 설정 ∪ 메시지가 실어온 것, 보내는 쪽이 `noEgress` 로 끌 수 있다(근거는 핸들러의 egress 주석).
+ * ★`index.ts` 에서 옮겼다 (2026-10-26 변이 사냥) — 거기선 메시지(답 좌표 포함)가 해석까지 그대로 가는지 검사할 수 없어, 답 좌표를 떨어뜨리거나
+ *  `noEgress` 를 넘어서는 변이가 전체 스위트 초록으로 살아남았다. 설정은 끄지 않았을 때만 읽는다(종전과 같다).
+ */
+export const resolveTurnEgressTargets = (
+  msg: Omit<EgressResolveInput, "egressChannels"> & { egressChannels?: string[] | undefined; noEgress?: boolean | undefined },
+  readSettingsChannels: () => string[],
+  deps: EgressResolveDeps,
+): Promise<EgressTarget[]> => {
+  const egressChannels = msg.noEgress === true ? [] : [...new Set([...(msg.egressChannels ?? []), ...readSettingsChannels()])];
+  return resolveEgressTargets({ ...msg, egressChannels }, deps);
+};
+
+/**
  * 좌표 체인: ①세션 `last_channel_target`(단 `last_channel === ch` 일 때만 — 타 채널
  * 좌표 오용 방지) → ②채널의 `defaultOutboundTarget()`(sync|async 둘 다).
  */
@@ -94,7 +108,11 @@ export const resolveEgressTargets = async (
 ): Promise<EgressTarget[]> => {
   const out: EgressTarget[] = [];
   for (const ch of input.egressChannels ?? []) {
-    if (ch === input.channel) continue;
+    // 이름 비교는 답 좌표를 모를 때의 근사다 — 일반 인입은 인입 채널로 답하니 이름이 곧 배달지다.
+    // ★답 좌표가 있으면 이름으로 빼지 않는다(2026-10-26 라이브: 대시보드 대화의 파일 감시 답이 텔레그램에 안 갔다).
+    //  그때 `channel` 은 실행 좌표(대화의 마지막 채널·잡을 띄운 채널)라, 마지막 인입이 텔레그램이면 대시보드로 간 답을
+    //  «텔레그램에 이미 답함» 으로 오인했다. 겹침 판정은 아래 좌표 비교 한 곳이 맡는다.
+    if (input.replyTarget === undefined && ch === input.channel) continue;
     const outbound = deps.getOutbound(ch);
     // outbound-capable 만 — `defaultOutboundTarget` 표명이 곧 "좌표를 아는 채널".
     if (outbound === undefined || outbound.defaultOutboundTarget === undefined) {

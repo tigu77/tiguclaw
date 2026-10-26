@@ -62,13 +62,23 @@ export const historyActivities = (
       scope.set(scopeThreadKey, Number.POSITIVE_INFINITY);
       for (const a of lineageChain(SESSION_STORAGE_CHANNEL, scopeThreadKey)) scope.set(a.key, a.forkedAt);
     }
-    const raw = listEvents({ types: ["llm.activity"], sinceTs, limit: 3000 });
-    // 1차 파싱 — start 스텝은 out 으로, end 이벤트의 output 은 (threadKey|adapter|seq) 맵으로
-    // 모아 뒤에 시작 스텝에 병합(라이브의 phase:end→스텝 주석과 동형). durationMs 는 이력 불필요.
+    // ★발행 순서로 훑는다 — `listEvents` 는 id DESC 다. 끝 이벤트의 출력을 **그 실행의** 시작 스텝에 붙이려면 순서가 필요하다.
+    const raw = listEvents({ types: ["llm.activity"], sinceTs, limit: 3000 }).reverse();
+    // end 이벤트의 output 은 같은 **실행 구간**의 같은 seq 시작 스텝에 붙인다(라이브의 phase:end→스텝 주석과 동형). durationMs 는 이력 불필요.
+    // ★`seq` 는 run() 지역 카운터라(`types.ts` RegionAActivityPayload.seq) 턴마다 0부터 다시 센다 (2026-10-26 라이브).
+    //  종전엔 `대화|어댑터|seq` 전역 맵이라 seq 0 스텝 30개가 전부 가장 오래된 seq 0 출력을 달고 나왔고, 텍스트 세그먼트에도 붙었다.
+    //  구간 = (원래 대화 키·어댑터)별로 seq 가 앞보다 커지지 않으면 새 실행 — 같은 대화의 실행은 줄(`enqueueThreadTurn`)이 앞 작업이 끝난 뒤에야
+    //  시작하므로 섞이지 않는다. 짝을 못 찾은 끝(시작이 창 밖·앞 구간)은 어디에도 안 붙인다.
     const out: HistoryActivity[] = [];
-    const endOutputs = new Map<string, unknown>();
-    const rawKeyOf = new WeakMap<HistoryActivity, string>();
-    const okey = (tk: string, adapter: string, seq: number) => tk + "|" + adapter + "|" + seq;
+    const runs = new Map<string, { lastSeq: number; open: Map<number, HistoryActivity> }>();
+    const runOf = (key: string, seq: number, isStart: boolean) => {
+      let r = runs.get(key);
+      if (isStart && (r === undefined || seq <= r.lastSeq)) {
+        r = { lastSeq: seq, open: new Map() };
+        runs.set(key, r);
+      } else if (isStart && r !== undefined) r.lastSeq = seq;
+      return r;
+    };
     for (const e of raw) {
       if (e.ts > newestTs) continue;
       let p: {
@@ -90,10 +100,14 @@ export const historyActivities = (
       } catch {
         continue;
       }
+      const rawTk = typeof p.threadKey === "string" ? p.threadKey : "";
+      const seq = typeof p.seq === "number" ? p.seq : 0;
+      const adapter = typeof p.adapter === "string" ? p.adapter : "";
+      // 실행 구간은 그리지 않는 활동("turn")까지 세어 나눈다 — 같은 카운터에서 seq 를 받는다. 원래 대화 키로(가지·부모 seq 가 겹쳐도 안 섞이게).
+      const run = runOf(rawTk + "|" + adapter, seq, p.phase !== "end");
       // 2026-07-13 인터리브 — "tool" 외에 "text"(도구 경계 텍스트 세그먼트)도 이력에 admit.
       // "turn"(coarse floor) 은 여전히 제외 — 렌더 대상 아님(기존과 동일).
       if (p.kind !== "tool" && p.kind !== "text") continue;
-      const rawTk = typeof p.threadKey === "string" ? p.threadKey : "";
       // ★손 목록이 갈려 있었다 (2026-09-05 적대 검토) — 셋만 적어 `scheduler:`·`endpoint:`
       //  가 빠졌고, 그래서 스케줄·엔드포인트 도구 스텝이 채팅 이력에 섞였다. 코어 정본을 쓴다.
       if (isDerivedThread(rawTk)) {
@@ -108,8 +122,6 @@ export const historyActivities = (
         if (until === undefined || e.ts > until) continue;
         tk = scopeThreadKey!;
       }
-      const seq = typeof p.seq === "number" ? p.seq : 0;
-      const adapter = typeof p.adapter === "string" ? p.adapter : "";
       // ★실제 응답 모델을 이력 투영에 포함 (2026-07-27). 종전엔 여기서 버려져, 라이브 SSE 에는
       //  모델이 보이는데 **새로고침하면 사라지고** 전체활동 뷰엔 아예 안 나왔다(같은 데이터인데
       //  경로에 따라 달라지는 것 = 관측을 믿을 수 없게 만든다). 없으면 키 자체를 생략(거짓값 금지).
@@ -130,8 +142,12 @@ export const historyActivities = (
         continue;
       }
       if (p.phase === "end") {
-        // 실행시간 주석 이벤트 — 스텝은 아니나 output 이 있으면 시작 스텝에 병합.
-        if (p.output !== undefined && p.output !== null) endOutputs.set(okey(rawTk, adapter, seq), p.output); // 원래 대화 키 — 가지·부모 스텝의 seq 가 겹쳐도 섞이지 않게
+        // 실행시간 주석 이벤트 — 스텝은 아니나 output 이 있으면 **이 실행 구간의** 같은 seq 시작 스텝에 병합(끝 하나 ↔ 시작 하나).
+        const started = run?.open.get(seq);
+        if (started !== undefined) {
+          run!.open.delete(seq);
+          if (p.output !== undefined && p.output !== null) started.output = p.output;
+        }
         continue;
       }
       const step: HistoryActivity = {
@@ -146,18 +162,11 @@ export const historyActivities = (
         ...(p.diff !== undefined && p.diff !== null ? { diff: p.diff } : {}),
         ...(typeof p.plan === "string" ? { plan: p.plan } : {}),
       };
-      rawKeyOf.set(step, rawTk);
+      run?.open.set(seq, step);
       out.push(step);
     }
-    // 2차 — end output 을 대응 시작 스텝에 병합.
-    if (endOutputs.size > 0) {
-      for (const s of out) {
-        const o = endOutputs.get(okey(rawKeyOf.get(s) ?? s.threadKey, s.adapter, s.seq));
-        if (o !== undefined) s.output = o;
-      }
-    }
     // ★ASC 로 돌려준다 (2026-07-30) — `entries`(ASC, 위 sinceTs 주석)와 **같은 방향**이어야
-    //  한다. listEvents 는 `ORDER BY id DESC` 라 여기까지 최신순인데, 소비처는 ASC 를
+    //  한다. listEvents 는 `ORDER BY id DESC` 라(위에서 뒤집어 훑는다) 시각 기준으로 다시 맞춘다. 소비처는 ASC 를
     //  가정한다: `tabs.js` 의 진행 중 턴 분할이 배열 끝에서부터 seq 증가 구간을 되짚어
     //  "마지막 turn" 을 찾는다(DESC 면 가장 오래된 1건만 집어 재개가 깨진다).
     //  `groupMergedItems` 는 자체 정렬이라 무영향 — 즉 지금까지 이 뒤집힘이 드러난 곳이

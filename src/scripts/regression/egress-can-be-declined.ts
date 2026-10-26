@@ -29,24 +29,34 @@ export const check: RegressionCheck = {
     const idx = readSourceSync("src/index.ts");
     const types = readSourceSync("src/channels/types.ts");
     const chat = readSourceSync("plugins/http-bridge/routes-chat.ts");
-    const at = idx.indexOf("const egressFromSettings");
-    const blk = at < 0 ? "" : idx.slice(at, at + 700);
+    const core = readSourceSync("src/core/egress-targets.ts");
+    // ★글자 대조에서 동작으로 (2026-10-26 변이 사냥) — 종전엔 `index.ts` 의 합집합 블록 글자만 봐서, 해석 호출에서 `msg.egressChannels ?? …` 로
+    //  `noEgress` 를 넘어서는 변이가 전체 초록으로 살아남았다. 합성을 `egress-targets.ts` 로 옮겨 진짜 함수를 부른다.
+    const { resolveTurnEgressTargets } = await import("../../core/egress-targets.js");
+    let settingsReads = 0;
+    const declined = await resolveTurnEgressTargets(
+      { channel: "http-bridge", threadKey: "dashboard:probe", noEgress: true, egressChannels: ["telegram"] },
+      () => { settingsReads += 1; return ["telegram"]; },
+      { getOutbound: () => ({ deliver: async () => {}, defaultOutboundTarget: () => "owner" }), getSessionMeta: () => null },
+    );
+    const at = core.indexOf("export const resolveTurnEgressTargets");
+    const blk = at < 0 ? "" : core.slice(at, at + 600);
 
     return [
       assert(
-        "★배선 블록을 찾았다(0이면 아래는 미검사다)",
+        "★배선 블록을 찾았다(0이면 아래 이름 판정은 미검사다)",
         blk !== "",
         blk === "" ? "★못 찾음" : `${blk.length}자`,
       ),
       assert(
-        "★★`noEgress` 면 **설정값도** 안 탄다 — 메시지 쪽만 비우면 설정에 telegram 이 있는 한 그대로 간다(그게 원래 결함이다)",
-        /msg\.noEgress === true \? \[\] : readEgressChannels\(\)/.test(blk),
-        /readEgressChannels/.test(blk) ? "설정도 차단" : "★설정이 그대로 합쳐진다",
+        "★★`noEgress` 면 메시지가 실어온 채널도 **서버 설정도** 안 탄다 — 대상 0 · 설정은 읽지도 않는다",
+        declined.length === 0 && settingsReads === 0,
+        `대상 ${declined.length}개 · 설정 읽음 ${settingsReads}회 (기대 0·0)`,
       ),
       assert(
-        "★★합집합 자체가 **빈 배열**이 된다 — 좌표 해석·활동 표시까지 통째로 no-op",
-        /noEgress === true\s*\?\s*\[\]/.test(blk.replace(/\s+/g, " ")),
-        /\[\]/.test(blk) ? "빈 배열" : "★합집합이 남는다",
+        "★핸들러가 이 함수로 egress 를 정한다(배선)",
+        /resolveTurnEgressTargets\(msg, /.test(idx),
+        /resolveTurnEgressTargets\(msg, /.test(idx) ? "배선 확인" : "★핸들러가 다른 길로 정한다",
       ),
       assert(
         "★계약이 타입에 있다 — 채널 무관(브리지만의 것이 아니다)",

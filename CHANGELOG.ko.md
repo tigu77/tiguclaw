@@ -8,14 +8,20 @@
 
 ## [Unreleased]
 
+## [0.78.0] - 2026-10-27
+
+### 추가
+- 백그라운드 자식 작업 카드에 부모 매니저 카드로 바로 이동하는 버튼을 추가했습니다.
+- 이번 버전부터 기록된 선택지의 질문·보기·설명도 대화 검색으로 찾을 수 있습니다.
+
 ### 변경
 - 내부 작업 알림은 자동 진행 보고와 카드의 상시 요약에 노출하지 않고, 작업 상세에서 확인하도록 변경했습니다.
 - 대화 입력창의 정보 패널이 펼쳐졌을 때 접기 버튼을 오른쪽 위에 표시합니다.
 - Codex 무진전 중단 로그에 본문 없이 항목 종류·상태·수신 시각을 기록해 진단을 보강했습니다.
-
 - 텔레그램에서 답변 사본·자동 작업 알림과 다른 대화의 응답·선택지에 출처 대화를 표시합니다.
 
 ### 수정
+- 텔레그램 선택지 메시지에 일반 답글을 달면 질문한 대화로 돌아가며, 대시보드의 답글 인용에서 선택지 원문으로 이동할 수 있습니다.
 - 텔레그램에서 제시한 선택지가 대시보드에도 표시되며, 여러 채널에서 같은 질문에 답해도 한 번만 처리합니다.
 
 ## [0.77.0] - 2026-10-26
@@ -2713,7 +2719,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...HEAD
+[0.78.0]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...v0.75.0

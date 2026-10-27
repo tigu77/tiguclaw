@@ -8,14 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.78.0] - 2026-10-27
+
+### Added
+- Background child-job cards now include a button to jump directly to their parent manager's card.
+- Newly recorded choice prompts are searchable by their question, option labels, and notes.
+
 ### Changed
-- Internal worker notices now stay out of automatic progress reports and persistent card summaries; they remain available in job details.
+- Internal worker notices now stay out of automatic progress reports and always-visible card summaries; they remain available in job details.
 - The chat composer's expanded information panel now places its collapse button in the upper-right corner.
 - Codex no-progress timeout logs now record item types, states, and receipt times without item contents to aid diagnosis.
-
 - Telegram now labels copied replies, automatic job updates, and replies or choice prompts from another conversation with their source conversation.
 
 ### Fixed
+- Regular replies to Telegram choice messages now return to the conversation that asked the question, and dashboard reply quotes link to the original choice prompt.
 - Choice prompts shown in Telegram also appear in the dashboard, and answers to the same prompt are processed only once across channels.
 
 ## [0.77.0] - 2026-10-26
@@ -1163,7 +1169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...HEAD
+[0.78.0]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/tigu77/tiguclaw/compare/v0.74.0...v0.75.0

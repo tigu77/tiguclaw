@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.78.0] - 2026-10-27
+## [0.78.0] - 2026-10-28
 
 ### Added
 - Background child-job cards now include a button to jump directly to their parent manager's card.

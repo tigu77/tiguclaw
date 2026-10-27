@@ -225,7 +225,8 @@
       };
 
       // reply = { text, ref? } — 답글 원문과 대상(없으면 답글 아님).
-      const sendChatMessage = async (text, attachments, reply) => {
+      // promptId — 선택지 답일 때 그 질문의 발급 id(서버가 «한 질문의 답은 한 번» 을 판정, 2026-10-26). 없으면 일반 글.
+      const sendChatMessage = async (text, attachments, reply, promptId) => {
         // ★★**보낼 방을 여기서 고정한다** (2026-09-20, 회사돌쇠 검토 ②). `await` 뒤에
         //  `activeThreadKey` 를 다시 읽으면, 보내는 사이 탭을 옮겼을 때 **다른 방의 기록**을
         //  조회해 «도착 안 했다» 로 읽는다(실측 재현: A 에 보냈는데 `threadKey=room-B` 를 조회).
@@ -259,6 +260,7 @@
               text,
               threadKey: sentTo,
               correlationId,
+              ...(typeof promptId === "string" && promptId !== "" ? { promptId } : {}),
               ...(attachments && attachments.length ? { attachments } : {}),
               ...(reply && reply.text ? { replyToText: reply.text } : {}),
               ...(reply && reply.text && reply.ref ? { replyToRef: reply.ref } : {}),
@@ -282,7 +284,10 @@
             // ★**신고의 원인은 «말을 안 해준다» 가 아니었다**(2026-09-16 2차 정정). 같은
             //  신고를 그렇게 읽고 `tellUser` 를 켰는데 증상이 그대로였다 — 진짜 원인은
             //  **504 를 거절로 읽어 되돌린 것**이다. 자세한 사슬은 `util.js` 의 그 함수 주석.
-            const act = sendRejectionAction(Date.now() - t0, r.status, data);
+            // ★`busy` = 전송 **전에** 이 탭이 바빴나 — 닫힌 선택지의 답 거절(2026-10-26)은 이번 전송이 켠 작업 표시만 끈다(판정은 그 함수).
+            const act = sendRejectionAction(Date.now() - t0, r.status, data, busy);
+            // 닫힌 선택지의 답은 큐에 안 들어갔다 — 바쁠 때 만든 «대기 중» 버블은 큐 취소와 같은 모양으로 접는다.
+            if (act.closed) foldRejectedQueuedBubble(correlationId);
             // ★★**5xx 는 «안 받았다» 가 아니라 «모른다» 다** (2026-09-20, 회사돌쇠 검토 ①).
             //  대시보드 프록시는 브리지 요청 뒤 응답을 못 받으면 `accepted` 없는 **502** 를
             //  낸다 — 그 안엔 «접속 전 실패» 와 «처리는 시작됐는데 응답만 유실» 이 **섞여
@@ -300,7 +305,10 @@
             //  그 사이 메시지는 큐에서 그대로 실행된다. 오류로 붉게 띄우면 사용자가 다시
             //  보내게 되고 그게 곧 중복 전송이다. 무슨 일인지는 말하되 격을 가른다.
             if (act.tellUser) {
-              if (act.stillRunning) {
+              if (act.closed) {
+                // 오류가 아니다 — 같은 질문을 다른 곳에서 이미 답했거나 만료됐다(서버 문구).
+                renderLocalChat("info", data.error || ("HTTP " + r.status));
+              } else if (act.stillRunning) {
                 renderLocalChat("info", i18n("chat.send.stillRunning"));
               } else {
                 renderLocalChat("error", data.error || ("HTTP " + r.status));
@@ -361,5 +369,5 @@
         }
         return { ok: true };
       };
-      const submitOptionValue = (value) => sendChatMessage(value);
+      const submitOptionValue = (value, promptId) => sendChatMessage(value, undefined, undefined, promptId);
 

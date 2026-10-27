@@ -16,12 +16,14 @@ import { getPaths } from "../../src/core/paths.js";
 import { translate } from "../../src/core/i18n.js";
 import { getAllCommands } from "../../src/core/entry/command-registry.js";
 import { getEventBus } from "../../src/core/eventbus.js";
-import { resolveSessionId } from "../../src/core/threadkey.js";
+import { resolveSessionId, routedReplySession } from "../../src/core/threadkey.js";
 import { resolveReplyRouting } from "./reply-routing.js";
-import { getMostRecentTelegramChatId, getThreadName } from "../../src/store/sessions.js";
+import { getMostRecentTelegramChatId } from "../../src/store/sessions.js";
 import { recordOutboundMessage } from "../../src/store/outbound-messages.js";
 import { chatIdForChannelMessage, replyTargetInThread } from "../../src/store/chat-log.js";
-import { egressSourcePrefix } from "../../src/core/egress-targets.js";
+import { withSessionLabel } from "../../src/core/egress-targets.js";
+import { outboundSessionLabel } from "../../src/core/outbound.js";
+import { claimPromptAnswer, promptReplySession } from "../../src/core/prompt-answer-claims.js";
 import { deliverDocument, sendDocumentTo } from "./send-document.js";
 import { ownerCandidateRoutes, recordBlockedSender } from "./owner-candidates.js";
 
@@ -404,11 +406,9 @@ export const replyAndRecord = async (
   // ★라벨 합성을 **이 안**에 둔다 (2026-09-04). 호출부에서 `prefix + out` 로 만들면
   //  «계산해놓고 안 붙이는» 변이가 조용히 통과한다(실측: 그 변이로 2,810건이 전부 초록).
   //  여기 있으면 스텁 send 로 **붙는 것 자체를 잰다**.
+  // 갈렸을 때만(그 세션이 기본 세션이어도 — 2026-10-26 확정 기준: 다른 세션으로 연결된 후속 응답엔 표시).
   const replied = opts?.repliedSession;
-  const prefix =
-    replied === undefined || replied === null
-      ? ""
-      : egressSourcePrefix(replied, getThreadName(replied));
+  const prefix = replied === undefined || replied === null ? "" : outboundSessionLabel(replied);
   // 청크 전부를 묶는다 — 사용자는 어느 청크에든 답장할 수 있다(sendFormatted 와 같은 이유). 뒤에서 늦게 간 청크도 같다.
   const bind = (ids: number[]): void => {
     const now = Date.now();
@@ -416,7 +416,7 @@ export const replyAndRecord = async (
   };
   // 보낸 id 를 돌려준다 — 핸들러가 송신 이벤트에 실어 대화 기록 행에 묶는다(답글 원문을 정확히 짚는 재료, 2026-10-19).
   //  늦게 간 청크(onLateIds)는 이벤트 뒤라 행에 못 묶는다 — 그 청크에 단 답글은 인용만 간다.
-  const sentIds = await sendFormatted(send, prefix + out, {
+  const sentIds = await sendFormatted(send, withSessionLabel(prefix, out), {
       chatKey: chatId,
       onLateIds: bind,
       ...(opts?.replyToMessageId !== undefined ? { replyToMessageId: opts.replyToMessageId } : {}),
@@ -442,6 +442,8 @@ interface PromptOptionEntry {
   value: string;
   /** 물어본 세션(egress 로 물었을 때만). undefined = 이 대화의 기본 세션(현행). */
   session?: string;
+  /** 질문 발급 id(`prompt-answer-claims.ts`) — 같은 질문의 답은 어느 채널에서든 한 번만 처리한다. 없으면(슬래시) 종전 그대로. */
+  promptId?: string;
 }
 const promptOptionMap = new Map<string, PromptOptionEntry>();
 let promptOptionSeq = 0;
@@ -451,9 +453,13 @@ let promptOptionSeq = 0;
  *  표식이 다르면 옛 버튼은 표에 없어 «만료» 안내로 빠진다. callback_data 64바이트 안이다(6+수 자).
  */
 const promptOptionBoot = Math.floor(Math.random() * 36 ** 5).toString(36).padStart(5, "0");
-const storePromptOption = (value: string, session?: string): string => {
+const storePromptOption = (value: string, session?: string, promptId?: string): string => {
   const id = `o${promptOptionBoot}${(promptOptionSeq++).toString(36)}`;
-  promptOptionMap.set(id, session === undefined ? { value } : { value, session });
+  promptOptionMap.set(id, {
+    value,
+    ...(session !== undefined ? { session } : {}),
+    ...(promptId !== undefined ? { promptId } : {}),
+  });
   while (promptOptionMap.size > PROMPT_OPTION_CAP) {
     const oldest = promptOptionMap.keys().next().value;
     if (oldest === undefined) break;
@@ -494,40 +500,64 @@ const pickExt = (mime: string | undefined, filePath: string | undefined): string
 //  dashboard:X → 답 dashboard:default). ★갈리지 않은 턴엔 **싣지 않는다**(null) — 실으면 클릭이 명시 세션을 달고 들어가
 //  `/sessions` 의 «세션 선택기가 있는 채널» 가드에 걸려 **세션 목록 버튼이 전부 거절됐다**(같은 날 릴리스 적대 검토 F1, 실측).
 //  안 실으면 클릭은 그때의 바인딩을 따른다 — 갈리지 않은 턴에선 그게 물어본 세션이다.
+// ★`labelSession` = 이 턴이 **바인딩과 갈린** 세션(답글·다른 세션 선택지로 연결) — 그때만 질문 앞에 `[세션 이름]`(2026-10-26 확정 기준:
+//  다른 세션으로 연결된 후속 선택지엔 표시, 현재 세션 직접 선택지엔 생략). 갈리지 않으면 null.
 const buildPresentOptions =
-  (ctx: Context, session: string | null): NonNullable<IncomingMessage["presentOptions"]> =>
+  (ctx: Context, session: string | null, labelSession: string | null, originThreadKey: string): NonNullable<IncomingMessage["presentOptions"]> =>
   async (question, options, opts) =>
     renderOptions(
       (text, extra) => ctx.reply(text, extra),
       question,
       options,
-      { ...opts, ...(session !== null ? { replyToSession: session } : {}) },
+      {
+        ...opts,
+        chatId: String(ctx.chat?.id ?? ""),
+        originThreadKey,
+        ...(session !== null ? { replyToSession: session } : {}),
+        ...(labelSession !== null ? { labelSession } : {}),
+      },
     );
 
 /**
  * 선택지 렌더 본체 — **보내는 방법만** 주입받는다(ctx.reply / api.sendMessage).
  * 인입(ctx 있는 턴)과 egress(좌표만 아는 턴)가 같은 판단을 두 벌 갖지 않게 하는 자리다.
  */
-const renderOptions = async (
+export const renderOptions = async (
   send: (
     text: string,
     extra: { reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] } },
   ) => Promise<unknown>,
   question: string,
   options: { label: string; value: string }[],
-  opts?: { note?: string; replyToSession?: string },
-): Promise<{ ok: true } | { ok: false; error: string }> => {
+  opts?: { note?: string; replyToSession?: string; labelSession?: string; promptId?: string; chatId?: string; originThreadKey?: string },
+): Promise<{ ok: true; channelRefs?: (ChannelMessageRef & { channel: string })[] } | { ok: false; error: string }> => {
   try {
     const inline_keyboard = options.map((o) => [
-      // 값과 함께 **물어본 세션**을 들고 있는다(있을 때만) — 클릭이 그 세션으로 돌아가게.
-      { text: o.label, callback_data: storePromptOption(o.value, opts?.replyToSession) },
+      // 값과 함께 **물어본 세션**·질문 id 를 들고 있는다(있을 때만) — 클릭이 그 세션으로 돌아가고, 답은 한 번만 처리되게.
+      { text: o.label, callback_data: storePromptOption(o.value, opts?.replyToSession, opts?.promptId) },
     ]);
-    const prompt =
+    const body =
       opts?.note !== undefined && opts.note.trim() !== ""
         ? `${question}\n\n${opts.note}`
         : question;
-    await send(prompt, { reply_markup: { inline_keyboard } });
-    return { ok: true as const };
+    // 세션 라벨 — 판정은 호출부(인입=갈림, 좌표=출처 세션), 이름 규칙은 코어 한 곳(`outboundSessionLabel`).
+    const prompt = withSessionLabel(outboundSessionLabel(opts?.labelSession), body);
+    const sent = await send(prompt, { reply_markup: { inline_keyboard } });
+    // 일반 답글도 원 질문 세션으로 돌아온다 — 콜백의 1회 선택 수명과는 별개인 기존 영속 발원 기록.
+    const message = sent as { message_id?: unknown; chat?: { id?: unknown } } | null;
+    const chatId = opts?.chatId ?? message?.chat?.id;
+    const origin = opts?.originThreadKey ?? opts?.replyToSession;
+    if (origin !== undefined && typeof message?.message_id === "number" &&
+        (typeof chatId === "string" || typeof chatId === "number") && String(chatId) !== "") {
+      recordOutboundMessage("telegram", String(chatId), message.message_id, origin, Date.now());
+    }
+    return {
+      ok: true as const,
+      ...(typeof message?.message_id === "number" &&
+          (typeof chatId === "string" || typeof chatId === "number") && String(chatId) !== ""
+        ? { channelRefs: [{ channel: "telegram", address: String(chatId), messageIds: [message.message_id] }] }
+        : {}),
+    };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
   }
@@ -781,11 +811,12 @@ export default class TelegramChannel implements Channel {
       deliver: async (
         target: string | null,
         text: string,
+        opts?: { labelSession?: string },
       ): Promise<{ messageIds: number[] }> => {
         if (target === null || target.trim() === "") {
           throw new Error("telegram target required (chatId)");
         }
-        return { messageIds: await sendOutgoing(target, text) };
+        return { messageIds: await sendOutgoing(target, withSessionLabel(outboundSessionLabel(opts?.labelSession), text)) };
       },
       defaultOutboundTarget: (): string | null => {
         const owner = [...parseAllowedTelegramIds()][0];
@@ -798,8 +829,8 @@ export default class TelegramChannel implements Channel {
         target: string | null,
         question: string,
         options: { label: string; value: string }[],
-        opts?: { note?: string },
-      ): Promise<{ ok: true } | { ok: false; error: string }> => {
+        opts?: { note?: string; replyToSession?: string; labelSession?: string; promptId?: string },
+      ): ReturnType<NonNullable<ChannelOutbound["presentOptionsTo"]>> => {
         if (target === null || target.trim() === "") {
           return { ok: false as const, error: "telegram target required (chatId)" };
         }
@@ -811,7 +842,7 @@ export default class TelegramChannel implements Channel {
           (text, extra) => api.sendMessage(target, text, extra),
           question,
           options,
-          opts,
+          { ...opts, chatId: target },
         );
       },
       // 파일 1개 — 인입 ctx 없이 **좌표만으로**(매니저 완료 보고 턴이 결과물을 붙일 수 있게, 2026-09-30).
@@ -954,8 +985,8 @@ export default class TelegramChannel implements Channel {
           : undefined;
       // ★답장으로 세션이 갈렸으면 **답에 그 세션을 적는다** (2026-09-04 정태님 신고:
       //  "답글로 보냈을 때 응답에 세션 이름이 안 붙더라"). 합성은 `replyAndRecord` 안에
-      //  있고 판정은 core 의 `egressSourcePrefix` 하나다 — 기본 세션이면 "" 라서 평소
-      //  대화는 글자 하나 안 바뀐다. 여기선 **신호만** 넘긴다.
+      //  있고 이름 규칙은 core 의 `outboundSessionLabel` 하나다 — 갈리지 않은 평소 대화는 글자 하나
+      //  안 바뀐다(갈린 세션이 기본 세션이어도 붙는다, 2026-10-26). 여기선 **신호만** 넘긴다.
       const msg: IncomingMessage = {
         channel: "telegram",
         channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
@@ -997,7 +1028,7 @@ export default class TelegramChannel implements Channel {
           sendDocumentTo(ctx.api, ctx.chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
         // 축1 선택지 제시 — inline keyboard 로 1회 렌더 후 즉시 반환(비차단). 사용자 선택은
         // callback_query 핸들러가 *다음 인바운드*로 흘려보낸다(같은 chat=같은 thread·인격).
-        presentOptions: buildPresentOptions(ctx, routedSession),
+        presentOptions: buildPresentOptions(ctx, routedSession, routedSession, sessionId),
       };
       // 텔레그램 "입력 중…" 표시. 한 번 보내면 5 초 유지 → 4 초 간격 갱신.
       // 응답 지연 동안 사용자가 비서가 살아있다는 신호를 받는다.
@@ -1120,7 +1151,7 @@ export default class TelegramChannel implements Channel {
             sendAttachment: (filePath, opts) =>
               sendDocumentTo(ctx.api, ctx.chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
             // 축1 선택지 제시 — message:text 핸들러와 동일(parity). inline keyboard 1회 렌더.
-            presentOptions: buildPresentOptions(ctx, routedSession),
+            presentOptions: buildPresentOptions(ctx, routedSession, routedSession, sessionId),
           };
           // ── 비차단 발사 (text 핸들러·cli.ts 동형) ─────────────────────────
           // 폴러는 턴을 *기다리지 않는다*. await handler 로 직렬화하면 사진+긴 캡션 한 턴이
@@ -1167,6 +1198,17 @@ export default class TelegramChannel implements Channel {
       }
       // 1회용 — 복원 즉시 제거(중복 클릭 = 중복 메시지 방지 + 맵 위생).
       promptOptionMap.delete(id);
+      // ★한 질문의 답은 한 번만 (2026-10-26) — 같은 질문이 대시보드에도 살아 있다. 이미 다른 곳(또는 이 질문의 다른 보기)에서
+      //  답했거나 대장에서 빠졌으면 처리하지 않고 한 줄로 알린다. 질문 id 가 없는 보기(슬래시 선택지)는 종전 그대로.
+      if (entry?.promptId !== undefined) {
+        const claim = claimPromptAnswer(entry.promptId);
+        if (claim !== "ok") {
+          await ctx
+            .reply(translate(claim === "answered" ? "srv.options.alreadyAnswered" : "srv.options.expired"))
+            .catch(() => {});
+          return;
+        }
+      }
       const chat = ctx.chat;
       if (chat === undefined) return; // 채팅 컨텍스트 없는 콜백(이론상) — 안전 종료.
       // 선택값을 사용자 발화로 에코(텍스트 흐름과 시각 정합). 부수 UX라 실패해도 무시.
@@ -1180,7 +1222,10 @@ export default class TelegramChannel implements Channel {
       //  resolveSessionId 를 우회할 뿐 아무것도 저장하지 않는다). 다음 일반 메시지는 원래대로.
       //  없으면(인바운드 텔레그램 턴이 물은 경우) 종전 그대로 — 그땐 두 값이 같다.
       const chatId = String(chat.id);
-      const sessionId = resolveSessionId("telegram", chatId, entry?.session);
+      const callbackSession = entry?.session ?? (entry?.promptId !== undefined ? promptReplySession(entry.promptId) : undefined);
+      const sessionId = resolveSessionId("telegram", chatId, callbackSession);
+      // 다른 세션의 선택지를 눌러 그 세션으로 이어졌나 — 답글 라우팅과 같은 판정(바인딩과 갈렸을 때만 라벨, 2026-10-26 확정 기준).
+      const routedSession = routedReplySession(callbackSession, resolveSessionId("telegram", chatId));
       const msg: IncomingMessage = {
         channel: "telegram",
         channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
@@ -1188,16 +1233,17 @@ export default class TelegramChannel implements Channel {
         channelAddress: chatId,
         session: {
           channelAddress: chatId,
-          ...(entry?.session !== undefined ? { explicitSessionId: entry.session } : {}),
+          ...(callbackSession !== undefined ? { explicitSessionId: callbackSession } : {}),
         },
         text: value,
         receivedAt: Date.now(),
         // 답글 송신 — 공통 흐름(이 경로는 답글 대상 미부착).
         reply: async (out: string, _opts?: ReplyOptions): Promise<ChannelMessageRef> =>
-          replyAndRecord((chunk, extra) => ctx.reply(chunk, extra), sessionId, chatId, out),
-        // 아웃바운드 첨부·후속 선택지 — 같은 chat 컨텍스트라 message:text 와 동일하게 지원.
-        sendAttachment: (filePath, opts) => sendDocumentTo(ctx.api, chat.id, filePath, { ...opts, recordSession: sessionId }),
-        presentOptions: buildPresentOptions(ctx, entry?.session ?? null),
+          replyAndRecord((chunk, extra) => ctx.reply(chunk, extra), sessionId, chatId, out, { repliedSession: routedSession }),
+        // 아웃바운드 첨부·후속 선택지 — 같은 chat 컨텍스트라 message:text 와 동일하게 지원(라벨도 같은 판정).
+        sendAttachment: (filePath, opts) =>
+          sendDocumentTo(ctx.api, chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
+        presentOptions: buildPresentOptions(ctx, callbackSession ?? null, routedSession, sessionId),
       };
       // typing heartbeat — 선택 후 후속 턴 동안 살아있음 신호. message:text 동형.
       void ctx.replyWithChatAction("typing").catch(() => {});

@@ -593,7 +593,7 @@
           return;
         }
         // 작업자 알림(2026-10-25 `notify_owner`) — 이것도 상태 전이가 아니다. 범용 분기로 흘리면 status 없는 payload 가
-        //  잡 상태를 덮으므로 스티어와 같은 자리에서 먼저 가로채 카드 «막힘» 줄로만 보낸다.
+        //  잡 상태를 덮으므로 스티어와 같은 자리에서 먼저 가로채 작업의 접이식 상세로만 보낸다.
         if (ev.type === "worker.notice") {
           if (typeof window.setJobNotice === "function") window.setJobNotice(ev.payload || {});
           return;

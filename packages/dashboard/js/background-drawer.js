@@ -441,6 +441,7 @@
         const answeredAt = typeof n.answeredAt === "number" ? n.answeredAt : cur && cur.noticeId === n.noticeId ? cur.answeredAt : undefined;
         entry.notice = { noticeId: n.noticeId, text: n.text, at: n.at, ...(typeof answeredAt === "number" ? { answeredAt } : {}) };
         renderNotice(entry);
+        updateChev(entry); // 알림만 있어도 기존 상세 보기로 열 수 있다.
       };
       // SSE `worker.notice` 가 부른다(sse.js — 범용 `worker.*` 상태 분기 **앞**에서 가로챈다: status 없는 payload 가 잡 상태를 덮지 않게).
       //  거절·중복·상한은 줄을 바꾸지 않는다(`noticeId` 없거나 이미 그린 알림).
@@ -886,7 +887,7 @@
             const jid = node.dataset ? node.dataset.jobId : null;
             if (!jid) continue;
             const entry = jobCards.get(jid);
-            if (entry && entry.status !== "running") { bgUnobserveCard(node); node.remove(); jobCards.delete(jid); removed = true; break; }
+            if (entry && entry.status !== "running") { bgUnobserveCard(node); node.remove(); jobCards.delete(jid); syncParentLinks(jid); removed = true; break; }
           }
           if (!removed) break; // 전부 running 이면 중단.
         }
@@ -894,7 +895,7 @@
       // 펼침 어포던스 — 작업(task)/스텝/결과(result) 중 하나라도 있으면 카드를 펼칠 수 있다.
       // (도구 안 쓴 잡은 스텝 0 이어도 task/result 로 내용을 보여줘 "눌러도 빈" 문제 해소.)
       const updateChev = (entry) => {
-        const hasDetail = entry.stepCount > 0 || entry.hasTask || entry.hasResult;
+        const hasDetail = entry.stepCount > 0 || entry.hasTask || entry.hasResult || !!entry.notice;
         if (!hasDetail) { entry.chevEl.style.display = "none"; entry.el.classList.remove("has-detail"); return; }
         entry.chevEl.style.display = "";
         entry.el.classList.add("has-detail");
@@ -927,6 +928,17 @@
         s.add(id);
         const parent = jobCards.get(id);
         return parent ? jobOwnerSession(parent.threadKey, s) : "";
+      };
+      /** 그 잡 **자기** 좌표인가 — 활동(`handleWorkerActivity`)이 싣는 값이라 부모 링크가 아니다. */
+      const isOwnJobCoord = (jobId, tk) => tk === "worker:" + jobId || tk === "agent:" + jobId;
+      /**
+       * 이 카드를 띄운 **매니저**의 jobId — threadKey 가 `worker:<부모>` 일 때만. 없으면 "".
+       * ★`agent:<부모>` 는 서브에이전트가 띄운 것이라(서버 `agent-registry.ts` 의 실행 좌표) 매니저가 아니다.
+       * ★자기 좌표(`worker:<자기>`)는 부모가 아니다 — 활동-선도 카드가 생성 때 들고 있다.
+       */
+      const parentManagerId = (jobId, tk) => {
+        const m = typeof tk === "string" ? /^worker:(.+)$/.exec(tk) : null;
+        return m && m[1] !== jobId ? m[1] : "";
       };
       // 매니저 라벨 접두 — 서브에이전트("🤖 <name>")와 대칭 표기용(아래 ensureJobCard 참조).
       // 아이콘은 공용 `kindIcon`(util.js) — 여기 다시 만들면 두 벌이 된다.
@@ -982,6 +994,29 @@
         el.title = i18n("bg.ownerSession.title", { tk });
         el.style.display = "";
         if (raw) raw.style.display = "none"; // 이름이 있으면 좌표는 툴팁에만.
+      };
+      /**
+       * «↖ 부모 매니저» 버튼 (2026-10-26) — 매니저가 띄운 자식 카드에서 그 매니저 카드로 간다.
+       * 이름은 부모 카드의 `entry.label`(setJobLabel 이 정한 값) 그대로 — 표시 규칙을 두 벌 두지 않는다.
+       * ★부모 카드가 없거나(목록 상한 밖·새로고침 뒤 미수신) 이름이 아직 없으면 **숨긴다** — 세션 배지와 같은 규칙
+       *  (지어내지 않는다). 어느 경로로 와도(라이브·새로고침) 같은 결과가 되고, 갈 곳 없는 버튼을 두지 않는다.
+       */
+      const updateParentBtn = (jobId, entry) => {
+        const el = entry && entry.parentBtnEl;
+        if (!el) return;
+        const pid = parentManagerId(jobId, entry.threadKey);
+        const parent = pid ? jobCards.get(pid) : undefined;
+        const name = parent && parent.hasLabel ? parent.label : "";
+        if (name === "") { el.style.display = "none"; return; }
+        el.textContent = "↖ " + name;
+        el.title = i18n("bg.parentManager.title", { name });
+        el.style.display = "";
+      };
+      /** 이 잡 자신과 **이 잡을 부모로 둔 카드**의 버튼을 다시 맞춘다 — 부모가 늦게 오거나 이름이 바뀌거나 빠질 때(멱등). */
+      const syncParentLinks = (jobId) => {
+        for (const [id, e] of jobCards) {
+          if (id === jobId || parentManagerId(id, e.threadKey) === jobId) updateParentBtn(id, e);
+        }
       };
 
       const ensureJobCard = (jobId, opts) => {
@@ -1048,7 +1083,7 @@
           const todoEl = document.createElement("div");
           todoEl.className = "bg-job-todo";
           todoEl.style.display = "none";
-          // 작업자 알림 «막힘: … · N분 전» — 작업자가 notify_owner 를 썼을 때만(renderNotice).
+          // 내부 알림은 상시 줄 대신 기존 접이식 상세에서만 확인한다(renderNotice).
           const noticeEl = document.createElement("div");
           noticeEl.className = "bg-job-notice";
           noticeEl.style.display = "none";
@@ -1071,6 +1106,17 @@
             }
           });
           meta.appendChild(sessBadge);
+          // «↖ 부모 매니저» — 매니저가 띄운 자식에만(updateParentBtn). 누르면 부모 카드로 간다:
+          //  공통 «그 카드로»(revealBgCard)를 **펼치지 않고** 탄다(위젯 경로와 같다 — 부모 카드의 펼침 상태 보존).
+          const parentBtn = document.createElement("button");
+          parentBtn.type = "button";
+          parentBtn.className = "bg-job-parent"; parentBtn.style.display = "none";
+          parentBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const pid = entry ? parentManagerId(jobId, entry.threadKey) : "";
+            if (pid) revealBgCard(jobRevealTarget(pid));
+          });
+          meta.appendChild(parentBtn);
           // 항상 보이는 한 줄 작업 요약(이름 아래·1줄 truncate) — 같은 이름 서브 여러 개도 구분되게.
           // 전문은 펼침 영역(bg-job-task)에. task 없으면 숨김.
           const summary = document.createElement("div"); summary.className = "bg-job-summary"; summary.style.display = "none";
@@ -1085,8 +1131,8 @@
           const task = document.createElement("div"); task.className = "bg-job-task"; task.style.display = "none";
           const steps = document.createElement("div"); steps.className = "bg-job-steps";
           const result = document.createElement("div"); result.className = "bg-job-result"; result.style.display = "none";
-          detail.appendChild(task); detail.appendChild(steps); detail.appendChild(result);
-          el.appendChild(top); el.appendChild(meta); el.appendChild(noticeEl); el.appendChild(todoEl); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
+          detail.appendChild(task); detail.appendChild(noticeEl); detail.appendChild(steps); detail.appendChild(result);
+          el.appendChild(top); el.appendChild(meta); el.appendChild(todoEl); el.appendChild(summary); el.appendChild(live); el.appendChild(err); el.appendChild(detail);
           // 텍스트 드래그는 접기로 안 친다(2026-09-10 적대 검토 P-4) — 이 머리줄엔
           // `user-select:none` 이 없어 라벨을 끌어 고를 수 있다.
           onToggleClick(top, () => { setJobOpen(jobId, entry); });
@@ -1099,7 +1145,7 @@
           updateBgJump();
           entry = {
             el, labelEl: label, statusEl: st, chevEl: chev, taskEl: task, stepsEl: steps,
-            sessBadgeEl: sessBadge, rawTkEl: rawTk,
+            sessBadgeEl: sessBadge, rawTkEl: rawTk, parentBtnEl: parentBtn,
             resultEl: result, errEl: err, kindBadgeEl: kindBadge,
             liveEl: live, elapsedEl: elapsed, agoEl: ago, lastStepEl: laststep, tierBadgeEl: tierBadge, summaryEl: summary,
             modelBadgeEl: modelBadge, modelSeen: "", // 실제 응답 모델(활동 이벤트에서 채움).
@@ -1168,9 +1214,11 @@
         if (opts && typeof opts.startedAt === "number" && entry.startTs !== opts.startedAt) entry.startTs = opts.startedAt;
         // 세션 스코프 threadKey 갱신(멱등) — 활동-선도 카드(worker:/agent: 의사값만 있던 카드)에
         // 나중에 lifecycle 이 진짜 원 세션 threadKey 를 실어 오면 반영. 이미 같으면 no-op.
+        // ★자기 좌표는 덮지 않는다 (2026-10-26) — 활동이 실어 오는 `worker:`/`agent:<자기>` 가 라이프사이클이 세운
+        //  부모 링크(`worker:<부모>`)·세션 키를 매 활동마다 지웠다(미니 DOM 재현). 자기 좌표는 환원하면 어차피 «미상» 이다.
         {
           const realTk = realSessionThreadKey(opts && opts.threadKey);
-          if (realTk && entry.threadKey !== realTk) {
+          if (realTk && entry.threadKey !== realTk && !isOwnJobCoord(jobId, realTk)) {
             entry.threadKey = realTk;
             entry.el.dataset.threadkey = realTk;
             entry.el.classList.toggle("bg-in-scope", isBgInScope(entry.threadKey, entry.ownerTk));
@@ -1228,7 +1276,7 @@
         //  진짜 세션 키가 와도 갱신되지 않았다**. 세션 키가 아닌 동안엔 계속 업그레이드한다.
         const incomingTk = realSessionThreadKey(opts && opts.threadKey);
         const isSessionKey = (t) => typeof t === "string" && t !== "" && !/^(?:worker|agent):/.test(t);
-        if (incomingTk !== "" && !isSessionKey(entry.threadKey)) {
+        if (incomingTk !== "" && !isOwnJobCoord(jobId, incomingTk) && !isSessionKey(entry.threadKey)) {
           entry.threadKey = incomingTk;
           entry.el.dataset.threadkey = incomingTk;
           entry.el.classList.toggle("bg-in-scope", isBgInScope(incomingTk, entry.ownerTk));
@@ -1278,6 +1326,7 @@
           entry.taskEl.textContent = i18n("bg.task.full", { v: opts.task });
           entry.taskTruncated = false;
         }
+        syncParentLinks(jobId); // 부모 링크·라벨이 방금 정해졌을 수 있다 — 자신과 자식 버튼을 맞춘다.
         return entry;
       };
       /**
@@ -1812,7 +1861,9 @@
         // 진행 중 라이브 줄의 "마지막 스텝"(현재 무엇을 하는 중) 갱신 — 펼치지 않아도 보이게.
         {
           const lbl = skill ? i18n("bg.step.skillBadge", { name: skill.name }) : (p.label || p.kind || i18n("bg.activity"));
-          entry.lastStep = (!skill && p.detail) ? lbl + " · " + p.detail : lbl;
+          // 내부 알림 원문은 상세 타임라인에만 둔다. 다른 도구의 현재 활동 상세는 그대로 표시한다.
+          const showDetail = !skill && p.detail && !/^(?:mcp__.+__)?notify_owner$/.test(p.label || "");
+          entry.lastStep = showDetail ? lbl + " · " + p.detail : lbl;
           if (entry.lastStepEl) entry.lastStepEl.textContent = entry.lastStep;
         }
         updateChev(entry);

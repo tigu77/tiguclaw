@@ -18,7 +18,8 @@ import type { IncomingMessage } from "../channels/types.js";
 import { getEventBus } from "./eventbus.js";
 import { recordOutboundMessage } from "../store/outbound-messages.js";
 import { channelRefsField } from "./event-persist.js";
-import { notifySessionThreadKey } from "../store/sessions.js";
+import { getThreadName, notifySessionThreadKey } from "../store/sessions.js";
+import { sessionLabelPrefix } from "./egress-targets.js";
 import { checkWidgetAttachments } from "./widget-attachment.js";
 import {
   getChannelOutbound,
@@ -99,7 +100,27 @@ export interface OutboundInput {
    *  코어는 채널명으로 분기하지 않는다).
    */
   notice?: boolean;
+  /**
+   * **이 말에 붙일 세션 라벨의 세션** (2026-10-26 텔레그램 세션 라벨 기준). 물리 발송 글 앞에만 `[세션 이름] ` 을 붙인다 —
+   *  관측(대시보드)은 세션 탭이 이미 구분하므로 본문을 바꾸지 않는다. 미지정 = 라벨 없음(종전).
+   * ★«언제 붙이나» 는 호출부가 정한다 — 출처 세션이 있는 사본·자동 알림만 넘긴다. 출처가 없는 시스템 알림(업데이트·재시작·
+   *  자가 점검 등)은 넘기지 않는다: `observeThreadKey` 의 기본 세션은 **표시** 자리이지 출처가 아니다(지어내지 않는다).
+   */
+  labelSession?: string;
 }
+
+/**
+ * 세션 라벨 한 줄 — 이름 조회까지(판정은 `sessionLabelPrefix` 하나). 조회 실패는 라벨 없이 간다 — 라벨 때문에 배달이 죽으면 그게 더 나쁘다.
+ * 텔레그램 채널(인입 답·선택지·파일 캡션)도 이 함수를 부른다 — 이름 규칙이 두 벌이면 갈린다.
+ */
+export const outboundSessionLabel = (session: string | null | undefined): string => {
+  if (session === undefined || session === null || session === "") return "";
+  try {
+    return sessionLabelPrefix(session, getThreadName(session));
+  } catch {
+    return "";
+  }
+};
 
 // 관측(channel.message.out) 발행 — 대시보드 chat_log·라이브 SSE 가 이걸 받아 능동 발신도
 // 일반 답글처럼 보여준다(원칙 #4). best-effort: 관측 발행 실패가 실제 전송을 무르지 않는다.
@@ -248,7 +269,11 @@ export const deliverOutbound = async (
       : null);
 
   // 물리 발송(deliver 있는 채널만) — telegram=sendOutgoing. 관측-전용(http-bridge)은 스킵.
-  const sent = o.deliver !== undefined ? await o.deliver(resolved, text) : undefined;
+  // 라벨 메타만 넘긴다 — 텔레그램 표시 정책을 다른 채널 글에 강제하지 않는다.
+  const sent =
+    o.deliver !== undefined
+      ? await o.deliver(resolved, text, input.labelSession !== undefined ? { labelSession: input.labelSession } : undefined)
+      : undefined;
 
   // ★"이 메시지는 어느 세션 것" 기록 (2026-08-10) — 그 메시지에 **답장하면 그 세션으로**
   //  라우팅하기 위한 재료. egress 로 한 대화방에 여러 세션의 답이 섞여 오면서 필요해졌다.
@@ -343,6 +368,8 @@ export const attachmentSenderFor = (
   target: string | null,
   /** 이 파일을 낸 세션 — 글 발송의 `originThreadKey` 와 같다(답글이 그 세션으로 돌아오게). */
   originThreadKey?: string,
+  /** 캡션 라벨의 세션 — 글 발송의 `labelSession` 과 같다(없으면 라벨 없음). */
+  labelSession?: string,
 ): IncomingMessage["sendAttachment"] | undefined => {
   const o = getChannelOutbound(channel);
   const deliver = o?.deliverAttachment;
@@ -353,6 +380,7 @@ export const attachmentSenderFor = (
     return deliver(resolved, filePath, {
       ...(opts?.caption !== undefined ? { caption: opts.caption } : {}),
       ...(originThreadKey !== undefined ? { originThreadKey } : {}),
+      ...(labelSession !== undefined ? { labelSession } : {}),
     });
   };
 };
@@ -368,6 +396,8 @@ export const optionsPresenterFor = (
   target: string | null,
   /** 물어본 세션 — 고른 값이 돌아갈 자리(`replyToSession`). */
   originThreadKey?: string,
+  /** 질문 라벨의 세션 — 글 발송의 `labelSession` 과 같다(없으면 라벨 없음). */
+  labelSession?: string,
 ): IncomingMessage["presentOptions"] | undefined => {
   const o = getChannelOutbound(channel);
   const present = o?.presentOptionsTo;
@@ -378,6 +408,10 @@ export const optionsPresenterFor = (
     return present(resolved, question, options, {
       ...(opts?.note !== undefined ? { note: opts.note } : {}),
       ...(originThreadKey !== undefined ? { replyToSession: originThreadKey } : {}),
+      ...(labelSession !== undefined ? { labelSession } : {}),
+      // 관측 래퍼가 준 표식은 그대로 렌더러까지 — 재조립하다 떨어뜨리면 이중 발행·소비 누락이 된다.
+      ...(opts?.promptId !== undefined ? { promptId: opts.promptId } : {}),
+      ...(opts?.observedByCore === true ? { observedByCore: true } : {}),
     });
   };
 };

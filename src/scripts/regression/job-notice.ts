@@ -187,12 +187,35 @@ export const check: RegressionCheck = {
     // ⑨ 진행 알림
     const pr = d.progress as R;
     out.push(assert(
-      "⑨ ★진행 알림 — 미해결 알림이 머리줄 **바로 다음** 첫 줄(«⛔ 막힘(07:46): …») · 답 확정 알림은 없음 · 무관한 지시 뒤에도 실림 · 두 번째 진행 알림엔 안 실림 · 전달 실패한 답 뒤에도 실림 · 요약 프롬프트엔 없음 · ★요약을 기다리는 사이 답이 오면 안 실림",
-      typeof pr.expectedLine === "string" && pr.expectedLine.startsWith("⛔") && pr.lineAfterHead === pr.expectedLine && pr.answeredShown === false &&
-        pr.second?.length === 1 && !String(pr.second[0]).includes("⛔") &&
-        String(pr.failed?.[0]).split("\n")[1]?.startsWith("⛔") && String(pr.failed?.[0]).includes("실패한 답의 막힘") && pr.inPrompt === false &&
-        pr.raced?.length === 1 && !String(pr.raced[0]).includes("⛔") && pr.racedAnswered === true,
+      "⑨ 진행 알림은 일반 요약을 계속 보내되 내부 알림 원문/막힘 줄을 자동 중계하지 않는다 — 첫/반복/무관 지시/실패 답/요약 중 답 모두 · 요약 프롬프트에도 없음",
+      [pr.first, pr.second, pr.failed, pr.raced].every((xs) => xs?.length === 1 && String(xs[0]).startsWith("⏳") &&
+        String(xs[0]).includes("요약: 진행 중") && !/⛔|미해결 막힘|답받을 막힘|실패한 답의 막힘|요약 중 답받는 막힘/.test(String(xs[0]))) && pr.inPrompt === false,
       show(pr),
+    ));
+    out.push(assert(
+      "⑨ 내부 알림의 본문/배달/미답은 보존되고 실제 답만 확정한다 — 진행 보고가 answeredAt/progressShown을 위조하지 않는다",
+      pr.internal === true && pr.racedAnswered === true &&
+        show(pr.states) === show([{ text: "미해결 막힘", answered: false, shown: false }, { text: "답받을 막힘", answered: true, shown: false }]) &&
+        show(pr.failedState) === show([{ text: "실패한 답의 막힘", answered: false, shown: false }]),
+      show({ internal: pr.internal, racedAnswered: pr.racedAnswered, states: pr.states, failed: pr.failedState }),
+    ));
+    const pdx = d.progressDetail as R[];
+    out.push(assert(
+      "⑨ 상세 우회도 차단 — 요약기 미등록/실패/정상 × bare/MCP 이름표: 기계 본문과 모델 입력에 notify_owner 원문 없음 · 일반 진행/다른 도구 상세/오류 사실은 유지",
+      pdx?.length === 9 && pdx.every((x) => x.delivered === true && x.sent.length === 1 && String(x.sent[0]).startsWith("⏳") &&
+        !String(x.sent[0]).includes(x.text) && !String(x.sent[0]).includes("⛔") && !String(x.promptText).includes(x.text) &&
+        /오류로 끝났습니다|ended in an error/.test(x.sent[0]) &&
+        (x.mode === "summary" ? String(x.sent[0]).includes("일반 진행 요약 유지") && String(x.promptText).includes("path=notify_owner-contract.md") :
+          String(x.sent[0]).includes("path=notify_owner-contract.md")) &&
+        (x.mode === "none" ? x.promptText === "" : String(x.promptText).includes(x.label))),
+      pdx,
+    ));
+    out.push(assert(
+      "⑨ 상세 경계는 파생 보고만 변경 — 원본 이벤트와 recent 스냅샷(detail/오류/key/다른 도구) 불변 · 내부 원문/배달/미답 보존 · 자동 표시나 가짜 답 없음",
+      pdx?.length === 9 && pdx.every((x) => x.detail === `message=${x.text}` && x.raw === x.detail &&
+        x.recentUnchanged === true && x.recentDetail === x.detail && x.recentError === true && x.recentKey === "#11" && x.otherDetail === "path=notify_owner-contract.md" &&
+        x.noticeText === x.text && x.unanswered === true && x.shown === false && x.internal === true),
+      pdx?.map((x) => ({ label: x.label, mode: x.mode, raw: x.raw, recentDetail: x.recentDetail, recentUnchanged: x.recentUnchanged, text: x.noticeText, internal: x.internal, unanswered: x.unanswered, shown: x.shown })),
     ));
 
     // ⑫ 거두기 · 18-5 셸
@@ -213,8 +236,8 @@ export const check: RegressionCheck = {
     const sentP = an.payloads?.sent as R;
     const ansP = an.payloads?.answered as R;
     const jid = String(sentP?.jobId ?? "");
-    const lineOf = (id: string): { text: string; display: string; answered: boolean; status: string } =>
-      dash.run(`(() => { const e = jobCards.get(${JSON.stringify(id)}); return e ? { text: e.noticeEl.textContent, display: e.noticeEl.style.display, answered: e.noticeEl.classList.contains("answered"), status: e.status } : null; })()`) as never;
+    const lineOf = (id: string): R =>
+      dash.run(`(() => { const e = jobCards.get(${JSON.stringify(id)}); return e ? { text: e.noticeEl.textContent, display: e.noticeEl.style.display, answered: e.noticeEl.classList.contains("answered"), status: e.status, inDetail: e.noticeEl.parentNode.classList.contains("bg-job-detail"), collapsed: !e.el.classList.contains("open"), reachable: e.el.classList.contains("has-detail") } : null; })()`) as never;
     dash.run(`handleWorkerEvent(${JSON.stringify({ jobId: jid, threadKey: "dashboard:regr-notice-s", kind: "worker", label: "답받을작업", status: "running" })}, "10:00")`);
     dash.run(`renderEvent(${JSON.stringify({ type: "worker.notice", ts: Date.now(), payload: sentP })})`);
     const afterSent = lineOf(jid);
@@ -239,6 +262,46 @@ export const check: RegressionCheck = {
       "⑩ ★새로고침 — 실제 목록 응답(`activity.notice`)으로 같은 줄(답 확정 전 «막힘» · 후 «답 받음»)",
       hydBefore.text.includes("막힘: 둘째 막힘") && hydBefore.answered === false && hydAfter.text.includes("막힘(답 받음): 둘째 막힘") && hydAfter.answered === true,
       show({ hydBefore, hydAfter, before: before?.activity, after: after?.activity }),
+    ));
+    const states = [afterSent, afterFailedAnswer, afterAnswered, hydBefore, hydAfter];
+    out.push(assert(
+      "⑩ 알림 상시 줄 제거 — 실시간 미답/실패한 답/답 전달 및 목록 복원 모두 기존 접이식 상세 안에 있고 기본 접힘 · 알림만 있어도 상세 접근 가능",
+      states.every((x) => x.inDetail === true && x.collapsed === true && x.reachable === true),
+      states,
+    ));
+    const toggles = dash.run(`(() => {
+      const e = jobCards.get(${JSON.stringify(jid)}), open = () => e.el.classList.contains("open"), result = [];
+      e.el.querySelector(".bg-job-top").click(); result.push(open());
+      e.el.querySelector(".bg-job-top").click(); result.push(open());
+      builtinHandlers.get("job.toggleDetail")({ targetId: ${JSON.stringify(jid)} }); result.push(open());
+      builtinHandlers.get("job.toggleDetail")({ targetId: ${JSON.stringify(jid)} }); result.push(open());
+      return { result, reply: e.stepsEl.textContent };
+    })()`) as R;
+    dash.run(`handleWorkerEvent(${JSON.stringify({ ...after, jobId: "hyd-done", status: "done", completedAt: Date.now() })}, "10:00")`);
+    const hydDone = lineOf("hyd-done");
+    out.push(assert(
+      "⑩ 기존 헤더/메뉴 상세 열기·닫기 유지 · 답 시도 본문 타임라인 보존 · 완료 스냅샷에서도 알림은 접힌 상세에 보존(읽음/해결 상태 신설 없음)",
+      show(toggles.result) === show([true, false, true, false]) && String(toggles.reply).includes("x") &&
+        hydDone.status === "done" && hydDone.inDetail === true && hydDone.collapsed === true && hydDone.reachable === true && hydDone.answered === true && hydDone.text === hydAfter.text,
+      { toggles, hydDone },
+    ));
+    const lastSteps: R[] = [];
+    for (const label of ["notify_owner", "mcp__notify-owner__notify_owner"]) {
+      const id = `activity-${label}`;
+      const detail = "message=상세에서만 확인할 내부 알림";
+      const activity = { type: "llm.activity", ts: Date.now(), payload: { jobId: id, threadKey: `worker:${id}`, kind: "tool", label, detail, seq: 1 } };
+      dash.run(`renderEvent(${JSON.stringify(activity)})`);
+      // 새로고침/재연결에서 같은 activity 재생도 같은 표시 경로를 탄다.
+      dash.run(`renderEvent(${JSON.stringify(activity)})`);
+      lastSteps.push(dash.run(`(() => { const e = jobCards.get(${JSON.stringify(id)}); return { last: e.lastStep, displayed: e.lastStepEl.textContent, timeline: e.stepsEl.textContent, count: e.stepCount }; })()`) as R);
+    }
+    dash.run(`renderEvent(${JSON.stringify({ type: "llm.activity", ts: Date.now(), payload: { jobId: "activity-read", threadKey: "worker:activity-read", kind: "tool", label: "Read", detail: "path=notify_owner-contract.md", seq: 1 } })})`);
+    const otherStep = dash.run(`jobCards.get("activity-read").lastStep`) as string;
+    out.push(assert(
+      "⑩ lastStep 우회도 차단 — bare/MCP notify_owner 상세만 상시 표시 제외 · 원본 타임라인/재생 중복 방지/일반 활동과 다른 도구 상세 보존",
+      lastSteps.length === 2 && lastSteps.every((x) => x.last === x.displayed && !x.last.includes("상세에서만") && x.last.includes("notify_owner") && x.timeline.includes("message=상세에서만 확인할 내부 알림") && x.count === 1) &&
+        otherStep.includes("path=notify_owner-contract.md"),
+      { lastSteps, otherStep },
     ));
     // ★같은 밀리초에 난 두 알림 — 옛 알림(n1)의 답 이벤트가 최신 미해결(n2)을 덮지 않는다(GPT R1 #2 재현 모양). 최신은 서버 순번.
     const seqBase = { jobId: "seq-job", label: "순번", kind: "worker", threadKey: "dashboard:regr-notice-s" };

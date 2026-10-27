@@ -16,7 +16,7 @@
  *  판정하고, 없으면 텍스트(번호 목록)로 폴백한다. 새 채널은 인터페이스만 구현하면 붙는다.
  */
 import type { ChannelOutbound } from "./channel-outbound.js";
-import type { IncomingMessage } from "../channels/types.js";
+import type { ChannelMessageRef, IncomingMessage } from "../channels/types.js";
 import { translate } from "./i18n.js";
 
 export interface PromptOptionsEgressTarget {
@@ -79,11 +79,19 @@ export const withEgressPromptOptions = (
   return async (question, options, opts) => {
     const errors: string[] = [];
     let rendered = 0;
+    const channelRefs: (ChannelMessageRef & { channel: string })[] = [];
+    // 관측 래퍼(`prompt-options-observe.ts`)가 실어 준 표식 — 모든 렌더러에 그대로 넘긴다(떨어뜨리면 이중 발행·소비 누락).
+    const marks = {
+      ...(opts?.promptId !== undefined ? { promptId: opts.promptId } : {}),
+      ...(opts?.observedByCore === true ? { observedByCore: true } : {}),
+    };
     if (inbound !== undefined) {
       try {
         const r = await inbound(question, options, opts);
-        if (r.ok) rendered++;
-        else errors.push(`인입: ${r.error}`);
+        if (r.ok) {
+          rendered++;
+          if (r.channelRefs !== undefined) channelRefs.push(...r.channelRefs);
+        } else errors.push(`인입: ${r.error}`);
       } catch (e) {
         errors.push(`인입: ${describe(e)}`);
       }
@@ -94,9 +102,14 @@ export const withEgressPromptOptions = (
           const r = await t.outbound.presentOptionsTo(t.target, question, options, {
             ...(opts?.note !== undefined ? { note: opts.note } : {}),
             replyToSession: deps.originThreadKey,
+            // «대시보드 사본·그 밖의 선택지» 는 물어본 세션 라벨을 단다(기본 세션 포함 — 2026-10-26 확정 기준). 글 사본과 같은 세션.
+            labelSession: deps.originThreadKey,
+            ...marks,
           });
-          if (r.ok) rendered++;
-          else errors.push(`${t.channel}: ${r.error}`);
+          if (r.ok) {
+            rendered++;
+            if (r.channelRefs !== undefined) channelRefs.push(...r.channelRefs);
+          } else errors.push(`${t.channel}: ${r.error}`);
           continue;
         }
         // 선택지 UI 미지원 채널 — 질문이 아예 안 가는 것보단 텍스트가 낫다.
@@ -117,7 +130,7 @@ export const withEgressPromptOptions = (
       );
     }
     return rendered > 0
-      ? { ok: true as const }
+      ? { ok: true as const, ...(channelRefs.length > 0 ? { channelRefs } : {}) }
       : {
           ok: false as const,
           error: errors.length > 0 ? errors.join(" / ") : "렌더 대상이 없습니다",

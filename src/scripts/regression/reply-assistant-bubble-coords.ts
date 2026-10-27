@@ -96,7 +96,7 @@ const screen = (tk: string) => {
   const replyJs = src("packages/dashboard/js/reply.js");
   run(section(replyJs, "      const chatReplyEl = document.getElementById(\"chat-reply\");", "      // 메시지 카드 hover 시"));
   run(section(replyJs, "      const messageCtxFromEl = (msg) => {", "      registerBuiltinHandler(\"message.copy\""));
-  run(section(replyJs, "      const sendChatMessage = async (text, attachments, reply) => {", "      const submitOptionValue"));
+  run(section(replyJs, "      const sendChatMessage = async (text, attachments, reply, promptId) => {", "      const submitOptionValue"));
   const renderEvent = run<(e: unknown) => void>("renderEvent");
   const bubbles = (): any[] => vtItems.flatMap((it) => [it.node, ...it.node.querySelectorAll(".chat-message")]).filter((n) => n.classList?.contains("chat-message"));
   return {

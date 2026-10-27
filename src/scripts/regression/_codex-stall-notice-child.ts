@@ -25,10 +25,14 @@ const completedText = (text: string): string =>
   data({ type: "response.completed", response: { id: "resp", usage: { input_tokens: 10, output_tokens: 3 } } });
 
 /** 매달리는 스트림 — 생존 신호(in_progress)·SSE 주석·추론 요약 조각만 주기적으로 흘린다(진전 아님). abort 되면 오류로 끝난다. */
-const hanging = (signal: AbortSignal | undefined, firstText = false): ReadableStream<Uint8Array> =>
+const hanging = (signal: AbortSignal | undefined, firstText = false, request = 1): ReadableStream<Uint8Array> =>
   new ReadableStream<Uint8Array>({
     start(c) {
       c.enqueue(enc.encode(data({ type: "response.created", response: { id: "r" } })));
+      const reasoning = { type: "reasoning", id: SECRET, status: "in_progress", encrypted_content: SECRET };
+      c.enqueue(enc.encode(data({ type: "response.output_item.added", item: reasoning }) +
+        (request === 1 ? data({ type: "response.output_item.added", item: reasoning }) : "") +
+        data({ type: "response.output_item.done", item: { ...reasoning, status: "completed" } })));
       // 답 조각 하나를 낸 뒤 멈춘다 — «진전 뒤 무진전»(마지막 진전 종류가 로그에 남아야 한다).
       if (firstText) c.enqueue(enc.encode(data({ type: "response.output_item.added", item: { type: "message", id: "m0", role: "assistant" } }) + data({ type: "response.output_text.delta", delta: "앞 " })));
       let n = 0;
@@ -67,7 +71,7 @@ const slowText = (signal: AbortSignal | undefined): ReadableStream<Uint8Array> =
     },
   });
 
-type Plan = ("hang" | "hangAfterText" | "ok" | "slow")[];
+type Plan = ("hang" | "hangAfterText" | "ok" | "slow" | "fetchRetry")[];
 
 const run = async (): Promise<void> => {
   initStore();
@@ -87,11 +91,14 @@ const run = async (): Promise<void> => {
   const turns: Record<string, unknown> = {};
   const turn = async (name: string, plan: Plan, cancelAtMs?: number): Promise<void> => {
     let call = 0;
-    (globalThis as unknown as { fetch: unknown }).fetch = fakeNetwork(async (_u: string, init: { signal?: AbortSignal }) => {
+    const bodies: string[] = [];
+    (globalThis as unknown as { fetch: unknown }).fetch = fakeNetwork(async (_u: string, init: { signal?: AbortSignal; body?: string }) => {
       const step = plan[Math.min(call, plan.length - 1)];
       call += 1;
-      if (step === "hang") return new Response(hanging(init.signal), { status: 200 });
-      if (step === "hangAfterText") return new Response(hanging(init.signal, true), { status: 200 });
+      bodies.push(init.body ?? "");
+      if (step === "fetchRetry") return new Response("unavailable", { status: 503 });
+      if (step === "hang") return new Response(hanging(init.signal, false, call), { status: 200 });
+      if (step === "hangAfterText") return new Response(hanging(init.signal, true, call), { status: 200 });
       if (step === "slow") return new Response(slowText(init.signal), { status: 200 });
       return new Response(completedText("완료"), { status: 200 });
     });
@@ -104,7 +111,7 @@ const run = async (): Promise<void> => {
     } catch (e) {
       outcome = e === ac.signal.reason ? "cancelled" : `threw:${e instanceof Error ? e.name : String(e)}`;
     }
-    turns[name] = { stalls: stalls.slice(s0), logs: logs.slice(l0), outcome, calls: call };
+    turns[name] = { stalls: stalls.slice(s0), logs: logs.slice(l0), outcome, calls: call, requestedModels: bodies.map((b) => JSON.parse(b).model), sameBody: bodies.every((b) => b === bodies[0]) };
   };
 
   // ① 같은 요청이 두 번 연달아 멈춘 뒤 세 번째에 끝남 → 이번 요청 1/2 → 2/2 · 결과=완료
@@ -121,6 +128,9 @@ const run = async (): Promise<void> => {
   await turn("afterText", ["hangAfterText", "ok"]);
   // ⑦ 재시도가 시작된 뒤 그 스트림 도중 취소 → 결과=실패(취소) — 종전엔 결과 줄이 없었다
   await turn("cancelInRetry", ["hang", "hang", "ok"], 700 + 300 + 400);
+
+  // ⑧ 503 전송 재시도 후 두 번 무진전: 실제 전송순번은 2,3 (스톨 순번 1,2 아님).
+  await turn("fetchRetry", ["fetchRetry", "hang", "hang", "ok"]);
 
   console.warn = ow; console.log = ol;
   console.log(JSON.stringify({ turns }));

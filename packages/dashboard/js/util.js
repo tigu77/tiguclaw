@@ -112,7 +112,7 @@
        *  문장**이다 — *"모를 땐 지우지도, 되돌리지도 않는다."* 504 가 그 칸인데 다른
        *  길로 갔던 것이다.
        */
-      const sendRejectionAction = (elapsedMs, status, body) => {
+      const sendRejectionAction = (elapsedMs, status, body, wasBusy) => {
         // ★상수를 **안에** 둔다 — 회귀가 이 함수만 떼어 실행하므로, 바깥 이름을 참조하면
         //  «검사 자체가 던진다». 판정에 필요한 것은 전부 이 안에 있어야 한다.
         const IMMEDIATE_MS = 10000; // 이 안에 실패하면 «즉시 실패»(긴 턴이 아니다).
@@ -129,6 +129,11 @@
         //  방향이 안전한 쪽이다(중복 전송은 보이고 되돌릴 수 있지만, 소실은 둘 다 아니다).
         const b = body && typeof body === "object" ? body : {};
         const accepted = b.accepted === true;
+        // ★닫힌 선택지의 답 거절 (2026-10-26) — 서버는 턴을 시작하지 않았다. 되돌릴 글은 없고(버튼 값),
+        //  작업 표시는 **이번 전송이 켠 것만** 끈다: 전송 전에 이미 돌던 턴(첫 답이 처리 중)의 표시는 그 턴이 끝낼 몫이다.
+        if (b.code === "prompt-closed") {
+          return { restore: false, tellUser: true, stillRunning: false, clearWorking: wasBusy !== true, status: s, closed: true };
+        }
         return {
           restore: !accepted, // 받았다고 **말한** 것만 안 되돌린다.
           tellUser: true, // 명시적 거절은 시간과 무관하게 말한다.

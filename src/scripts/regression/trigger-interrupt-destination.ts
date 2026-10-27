@@ -72,7 +72,8 @@ export const check: RegressionCheck = {
             if (name.endsWith("/thread-reset.js")) return { applyRunHistory: () => null };
             // 스케줄 목적지로 묶는 선택지·파일 통로(2026-10-01) — 이 검사는 중단 통지만 본다. 통로는 «없음».
             if (name.endsWith("/i18n.js")) return { translate: (k: string) => k }; // 실패 사유 문구(2026-10-21 카탈로그 키) — 키 그대로
-            if (name.endsWith("/core/outbound.js")) return { optionsPresenterFor: () => undefined, attachmentSenderFor: () => undefined };
+            if (name.endsWith("/core/outbound.js")) return { optionsPresenterFor: () => undefined, attachmentSenderFor: () => undefined, sessionOfDestination: () => "dashboard:default" };
+        if (name.endsWith("/prompt-options-observe.js")) return { withPromptOptionsObservation: (p: unknown) => p };
             if (name === "./dispatcher.js") return { dispatch: async (value: any) => { dispatches.push(value); } };
             if (name === "./mcp.js") return { setSchedulerLifecycleHooks: () => {}, setFileWatchLifecycleHooks: () => {} };
             if (name === "./runner.js" || name === "./watcher.js") return load(path.resolve(path.dirname(filename), name.replace(/\.js$/, ".ts")));

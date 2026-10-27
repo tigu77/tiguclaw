@@ -187,6 +187,7 @@ import {
   collectTurnItems,
   newSseObservation,
   parseCodexSseObserved,
+  newCodexItemObservation,
   compatibleReplayOutput,
   formatCodexDebugInput,
   type CodexProgressKind,
@@ -1889,6 +1890,7 @@ export const runOpenAiCodex = async (
         // ★이 시도에 온 이벤트 종류별 개수 + 마지막 진전 — 무진전으로 끊겨도 남는다(2026-10-05). 종전엔 «청크 97개» 만 남아
         //  그게 생존 신호인지 진행 이벤트인지, 긴 추론인지 정체인지 가를 수 없었다(회사돌쇠 10-05 · 맥 돌쇠 9~10월 spinning 19건).
         const iterEvents = new Map<string, number>();
+        const iterItems = newCodexItemObservation();
         let lastProgressKind: CodexProgressKind | undefined;
         let lastProgressAt = 0;
         const iterStart = Date.now();
@@ -2080,6 +2082,7 @@ export const runOpenAiCodex = async (
           (kind) => {
             iterEvents.set(kind, (iterEvents.get(kind) ?? 0) + 1);
           },
+          iterItems,
         );
         if (typeof sseResult.lastEvent === "string") lastSseEvent = sseResult.lastEvent;
         {
@@ -2242,6 +2245,13 @@ export const runOpenAiCodex = async (
           const turnSignal: AbortSignal | undefined = input.abortSignal;
           if (turnSignal?.aborted === true) throw turnSignal.reason ?? e;
           continue;
+        }
+        // 마지막 소진/취소와 겹친 중단도 기록. 모델은 요청값이지 서버가 제공한 모델 관측이 아니다.
+        if (reason instanceof IdleTimeoutError) {
+          console.warn(`[codex-stall-items] ${JSON.stringify({
+            threadKey: input.threadKey, iteration, requestOrdinal: attemptedRequests,
+            requestedModel: model, items: iterItems.snapshot(),
+          })}`);
         }
         // 무진전(IdleTimeoutError = no-progress 타이머)이고 매니저/턴 예산이 아직 살아있고
         // 재시도 여유가 있으면 → turn 을 죽이지 말고 *같은 body(같은 대화 컨텍스트)로* 스텝

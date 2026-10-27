@@ -33,6 +33,7 @@
         const div = document.createElement("div");
         div.className = "ev local prompt-options";
         div.dataset.type = "prompt.options";
+        if (rawTs != null) div.dataset.ts = String(rawTs); // 공통 관측 시각 그대로 — live 답글 원문 이동.
         const head = document.createElement("div");
         const tsEl = document.createElement("span");
         tsEl.className = "ts"; tsEl.textContent = ts;
@@ -88,7 +89,7 @@
           if (v === "") { otherInput.focus(); return; }
           applyPick(v);
           poSave(poKey, v);
-          submitOptionValue(v);
+          submitOptionValue(v, payload.promptId);
         };
         otherSend.addEventListener("click", submitOther);
         // Enter 규칙은 메인 입력창(perf.js)과 같다 — Shift+Enter 줄바꿈 · 한글 조합 중 Enter 는 조합 확정 · 터치 기기는 버튼으로 보낸다.
@@ -111,7 +112,7 @@
             if (chosen) return;
             applyPick(val);
             poSave(poKey, val);       // 선택 영속(리로드 복원용)
-            submitOptionValue(val);
+            submitOptionValue(val, payload.promptId); // 질문 id — 다른 채널에서 이미 답했으면 서버가 거절한다
           });
           btnWrap.appendChild(btn);
         }

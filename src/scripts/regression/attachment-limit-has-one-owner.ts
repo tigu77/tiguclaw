@@ -454,12 +454,12 @@ export const check: RegressionCheck = {
       ),
       assert(
         "화면이 그 판정을 **쓴다**(인라인 조건으로 다시 짜지 않는다)",
-        /sendRejectionAction\(Date\.now\(\) - t0, r\.status, data\)/.test(replyCode) &&
+        /sendRejectionAction\(Date\.now\(\) - t0, r\.status, data(, busy)?\)/.test(replyCode) &&
           /act\.tellUser/.test(replyCode) &&
           // ★상태 코드를 화면에서 **다시** 해석하지 않는다 — 판정은 순수 함수 한 곳이다.
           //  여기에 `r.status === 504` 같은 게 생기면 권위가 둘이 되어 갈린다.
           !/r\.status\s*[=!]==?\s*\d/.test(replyCode),
-        `호출 ${/sendRejectionAction\(Date\.now\(\) - t0, r\.status, data\)/.test(replyCode)} · 사용 ${/act\.tellUser/.test(replyCode)} · 재해석 ${/r\.status\s*[=!]==?\s*\d/.test(replyCode)}`,
+        `호출 ${/sendRejectionAction\(Date\.now\(\) - t0, r\.status, data(, busy)?\)/.test(replyCode)} · 사용 ${/act\.tellUser/.test(replyCode)} · 재해석 ${/r\.status\s*[=!]==?\s*\d/.test(replyCode)}`,
       ),
       assert(
         "★**서버가 «받았다» 고 말한 것만 안 되돌린다** — 등급으로 추측하지 않는다 (P-1)",

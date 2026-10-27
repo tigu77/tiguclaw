@@ -1397,7 +1397,7 @@
       .bg-job-status { font-size:0.625rem; font-weight:800; white-space:nowrap; color:var(--text-mute); }
       .bg-job-meta { font-size:0.625rem; color:var(--text-dim); font-family:var(--font-mono); }
       .bg-job-todo { font-size:0.6875rem; color:var(--text-dim); margin-top:3px; }
-      .bg-job-notice { font-size:0.6875rem; color:var(--warn); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      .bg-job-notice { font-size:0.6875rem; color:var(--warn); margin-top:3px; white-space:pre-wrap; overflow-wrap:anywhere; }
       .bg-job-notice.answered { color:var(--text-dim); }
       .bg-job-todo-head { font-weight:700; cursor:pointer; user-select:none; display:flex; align-items:baseline; gap:4px; min-width:0; }
       .bg-job-todo-head > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1413,11 +1413,13 @@
       .bg-job-meta .bg-job-usage { font-family:var(--font-ui); margin-left:8px; }
       /* 소속 세션 배지 — 전체활동의 .aav-session-badge 와 같은 색 언어(같은 뜻이니 같은 모양).
          클릭 가능하므로 hover 를 준다. 이름을 모르면 JS 가 아예 숨긴다(지어내지 않음). */
-      .bg-job-session { display:inline-block; margin-left:6px; font-family:var(--font-mono); font-size:0.59375rem; font-weight:800;
+      /* «↖ 부모 매니저»(.bg-job-parent)도 같은 모양 — 둘 다 «눌러서 그쪽으로» 다. 버튼이라 줄높이만 되돌린다. */
+      .bg-job-session, .bg-job-parent { display:inline-block; margin-left:6px; font-family:var(--font-mono); font-size:0.59375rem; font-weight:800;
         padding:1px 7px; border-radius:999px; background:rgb(var(--accent-rgb) / .12); border:1px solid rgb(var(--accent-rgb) / .28);
         color:var(--text); white-space:nowrap; max-width:150px; overflow:hidden; text-overflow:ellipsis;
         vertical-align:middle; cursor:pointer; }
-      .bg-job-session:hover { background:rgb(var(--accent-rgb) / .22); border-color:rgb(var(--accent-rgb) / .45); }
+      .bg-job-parent { line-height:inherit; }
+      .bg-job-session:hover, .bg-job-parent:hover { background:rgb(var(--accent-rgb) / .22); border-color:rgb(var(--accent-rgb) / .45); }
       .bg-job-err { font-size:0.6875rem; color:var(--danger-soft); word-break:break-word; }
       /* 위험 동작 버튼(셸 카드 ⏹ Kill) — danger 톤(cm-danger 과 정합, var(--bad)), 컴팩트.
          모바일 터치타깃 확보(min 28px). 잡 카드 중지는 ⋯ 메뉴로 옮겨 이 버튼을 안 쓴다(2026-10-14). */
@@ -1829,7 +1831,7 @@
       /* ── 입력창 위 정보 한 번에 접기 — 모든 폭 (2026-10-24 — docs/decisions/2026-10-24-mobile-composer-info-collapse.md §12) ──
          사용자 «데스크탑이든 어디든 다같이». 한 레이아웃을 모든 폭에 쓰고, 폭에 따라 다른 것은 진행 표시 자리 하나다
          (모바일 = 요약 상자째 맨 위 · 데스크톱 = 요약 상자가 늘 display:contents 라 폼 아래 그 자리, 아래 미디어 블록).
-         ★격자 두 칸: 줄은 전부 한 행 전체(span 2), 펼침 때만 태그 줄(1칸)과 토글(2칸)이 한 행을 나눠 쓴다. `span 2` 인 이유:
+         ★격자 두 칸: 줄은 전부 한 행 전체(span 2), 펼침 때 토글은 패널 우상단에 고정한다. `span 2` 인 이유:
          절대 위치 자식(#chat-jump·#chat-slash·📤 팝오버)은 «span 만 있는 배치 = auto 두 줄» 이라 기준 상자가 안쪽 여백 상자
          그대로다(줄 번호를 주면 12px 밀린다 — §11 변이 실측). 입력 기록 알약은 내용만큼 폭(justify-self:start). */
       #chat { display:grid; grid-template-columns:minmax(0,1fr) auto; }
@@ -1851,11 +1853,10 @@
       .cit-caret { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; font-size:1.5rem; line-height:1; transition:transform .15s; }
       .cit-caret::before { content:"▾"; }
       #chat.info-collapsed .cit-caret { transform:rotate(180deg); }
-      /* 펼침 — 토글은 태그 줄 오른쪽 칸(같은 행, 격자 칸이 나뉘어 칩과 겹칠 수 없다). ★행 높이는 태그 줄이 정한다 — 토글은 그 높이로
-         늘어나고(stretch) 화살표는 위쪽에 둔다(태그 줄이 여러 줄로 펼쳐져도 첫 행 오른쪽). 최소 높이를 따로 주면 행이 그만큼 커진다.
-         ★풀린 요약 상자의 자식은 DOM 상 #chat 직계가 아니라 `#chat > *` 를 못 받는다 — 칸을 명시한다(§11 설계 R1 D1). */
-      #chat:not(.info-collapsed) > #chat-context { grid-column:1; order:-2; }
-      #chat:not(.info-collapsed) #chat-info-toggle { grid-column:2; order:-2; align-self:stretch; align-items:flex-start; min-height:0; margin:0 0 8px; padding:2px 2px 0 8px; color:var(--text-dim); }
+      /* 펼침 — 태그 행이 아니라 패널(#chat) 우상단에 고정한다. 태그와 모바일 진행 표시는 오른쪽에 버튼 자리를 비워
+         긴 이름·여러 줄 태그와 겹치지 않는다. 접힘의 펼치기 버튼은 기존 흐름에 그대로 둔다. */
+      #chat:not(.info-collapsed) > #chat-context { grid-column:span 2; order:-2; margin-right:40px; }
+      #chat:not(.info-collapsed) #chat-info-toggle { position:absolute; top:12px; right:12px; align-items:flex-start; min-height:0; margin:0; padding:2px 2px 0 8px; color:var(--text-dim); }
       #chat:not(.info-collapsed) #chat-info-toggle:hover { color:var(--text); }
       /* 태그 줄을 아직 안 그렸으면(첫 렌더 전 빈 DOM) 토글만 담은 행이 생긴다 — 그동안은 숨긴다(§11 설계 R1 D2). 접힘의 펼치기 버튼엔 안 걸린다. */
       #chat:not(.info-collapsed) > #chat-context:empty ~ #chat-summary > #chat-info-toggle { display:none; }
@@ -2214,10 +2215,10 @@
         #chat-summary #chat-status > * { flex:none; }
         #chat-summary #chat-status > .chat-work-label { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
         /* ── 펼침 = 요약 상자를 푼다 (2026-10-24 갱신 2, 사용자 실기 «입력 정보 ▾» 혼자 한 줄 → 결정 문서 §11) ──
-           요약 전용 행을 없애고 토글은 태그 줄 오른쪽 칸(전역 규칙), 진행 표시는 작업 중일 때만 맨 위 전폭 한 줄(대기 중엔 행 없음).
+           요약 전용 행을 없애고 토글은 패널 우상단(전역 규칙), 진행 표시는 작업 중일 때만 맨 위 한 줄(버튼 여백 제외, 대기 중엔 행 없음).
            ★풀린 상자의 자식은 DOM 상 #chat 직계가 아니라 `#chat > *` 를 못 받는다 — 칸을 명시한다(설계 R1 D1). */
         #chat:not(.info-collapsed) > #chat-summary { display:contents; }
-        #chat:not(.info-collapsed) #chat-status { grid-column:span 2; order:-3; margin:0 0 4px; }
+        #chat:not(.info-collapsed) #chat-status { grid-column:span 2; order:-3; margin:0 40px 4px 0; }
         #chat:not(.info-collapsed) #chat-status:not(.working) { display:none; }
         #chat-form { order:2; flex-wrap:wrap; }
         /* 입력필드를 도구 버튼들 위 전용 행으로 — textarea 전폭 첫 행, 📎·🎤·(egress)·전송 아래 행.

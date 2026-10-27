@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { savedScreenNote } from "./_saved-screen-reference.js";
 import { beginSummaryUsage } from "../auxiliary-usage.js";
 /**
@@ -297,6 +298,56 @@ export const mergeSseObservation = (
 /** 진전 종류 — 무진전 가드의 타이머를 되돌리는 이벤트(답 텍스트·도구 호출 시작·도구 인자). 진단 로그에 «마지막 진전» 으로 실린다. */
 export type CodexProgressKind = "text" | "tool_call" | "tool_args";
 
+/** 중단 진단 전용: 공급자 문자열은 고정 버킷으로, ID는 유계 내부 해시로만 보관한다.
+ * 중복은 같은 ID/같은 lifecycle 재관측이며 내용 중복 판정이 아니다. */
+export const newCodexItemObservation = () => {
+  const kinds = ["reasoning", "message", "function_call", "web_search_call", "computer_call", "local_shell_call"] as const;
+  const statuses = ["in_progress", "completed", "incomplete", "failed"] as const;
+  type Kind = typeof kinds[number] | "other";
+  type Status = typeof statuses[number] | "other" | "absent";
+  type Bucket = { added: number; done: number; lastAddedAt: number; lastDoneAt: number; duplicateObservations: number; statuses: Record<Status, number> };
+  const items = new Map<Kind, Bucket>();
+  const ids = new Map<string, number>(); // 최대128개, added=1/done=2. 원문/해시는 snapshot에 싣지 않는다.
+  let untrackedObservations = 0;
+  return {
+    observe(phase: "added" | "done", raw: unknown): void {
+      const item = raw !== null && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      const kind: Kind = kinds.find((k) => k === item.type) ?? "other";
+      const status: Status = item.status === undefined ? "absent" : statuses.find((s) => s === item.status) ?? "other";
+      let bucket = items.get(kind);
+      if (bucket === undefined) {
+        bucket = { added: 0, done: 0, lastAddedAt: 0, lastDoneAt: 0, duplicateObservations: 0,
+          statuses: { in_progress: 0, completed: 0, incomplete: 0, failed: 0, other: 0, absent: 0 } };
+        items.set(kind, bucket);
+      }
+      bucket[phase] += 1;
+      bucket[phase === "added" ? "lastAddedAt" : "lastDoneAt"] = Date.now();
+      bucket.statuses[status] += 1;
+      if (typeof item.id !== "string" || item.id.length === 0 || item.id.length > 256) {
+        untrackedObservations += 1;
+        return;
+      }
+      const key = createHash("sha256").update(item.id).digest("hex");
+      const seen = ids.get(key);
+      if (seen === undefined && ids.size >= 128) {
+        untrackedObservations += 1;
+        return;
+      }
+      const bit = phase === "added" ? 1 : 2;
+      if (((seen ?? 0) & bit) !== 0) bucket.duplicateObservations += 1;
+      ids.set(key, (seen ?? 0) | bit);
+    },
+    snapshot() {
+      return {
+        kinds: Object.fromEntries([...items].map(([kind, bucket]) => [kind, { ...bucket, statuses: { ...bucket.statuses } }])),
+        trackedItems: ids.size,
+        untrackedObservations,
+        duplicateCoverage: "bounded-item-id" as const,
+      };
+    },
+  };
+};
+
 export const parseCodexSse = async (
   body: ReadableStream<Uint8Array>,
   // 유휴 타임아웃 heartbeat — chunk 수신마다 호출(타이머 reset). 미지정 = no-op
@@ -334,6 +385,8 @@ export const parseCodexSse = async (
   // 이벤트 하나마다 그 종류 — `data:` 없는 SSE 주석은 `(주석)` (2026-10-05). 종류별 개수(`eventCounts`)는 **정상 종료 때만** 돌아와서,
   //  무진전으로 끊긴 요청에 무엇이 왔는지(생존 신호인가·진행 이벤트인가)가 로그에 남을 수 없었다. 관측 전용 · 미지정 = no-op.
   onEvent?: (kind: string) => void,
+  // 시도별 중단 진단. 진전 콜백과 독립이며 본문을 보관하지 않는다.
+  itemObservation?: ReturnType<typeof newCodexItemObservation>,
 ): Promise<CodexSseResult> => {
   /** 마지막으로 본 SSE 이벤트 타입 — 빈 응답이 completed 없이 끊겼는지 판별용. */
   let lastEvent = "(없음)";
@@ -418,6 +471,9 @@ export const parseCodexSse = async (
           if (typeof event.type === "string") {
             eventCounts[event.type] = (eventCounts[event.type] ?? 0) + 1;
             onEvent?.(event.type);
+          }
+          if (event.type === "response.output_item.added" || event.type === "response.output_item.done") {
+            itemObservation?.observe(event.type === "response.output_item.added" ? "added" : "done", event.item);
           }
           // 진단(gated) — codex 백엔드가 흘리는 SSE event.type 실측용. "생각 중"에 어떤
           // 이벤트(reasoning delta vs 무이벤트 keep-alive)가 오는지 = progress-aware 가드

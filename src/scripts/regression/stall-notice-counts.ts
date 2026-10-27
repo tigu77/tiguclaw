@@ -15,7 +15,7 @@ import { registerChannelOutbound } from "../../core/channel-outbound.js";
 import { __resetJobsForTest, registerJob, registerWorkerHandler, stallNoticeText } from "../../core/worker-jobs.js";
 import { assert, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
 
-type Turn = { stalls: { attempt?: number; maxRetries?: number; stallId?: string; kind?: string; events?: Record<string, number>; lastProgressKind?: string; noProgressMs?: number }[]; logs: string[]; outcome: string };
+type Turn = { stalls: { attempt?: number; maxRetries?: number; stallId?: string; kind?: string; events?: Record<string, number>; lastProgressKind?: string; noProgressMs?: number }[]; logs: string[]; outcome: string; sameBody?: boolean; requestedModels: string[] };
 
 export const check: RegressionCheck = {
   name: "stall-notice-counts",
@@ -27,7 +27,7 @@ export const check: RegressionCheck = {
     const r = await spawnWithin(90_000, "무진전 재개 e2e", ["--import", "tsx", child], { stdio: ["ignore", "pipe", "pipe"], env: process.env });
     const line = r.out.trim().split("\n").filter((l) => l.startsWith("{")).pop() ?? "{}";
     const turns = ((): Record<string, Turn> => { try { return (JSON.parse(line) as { turns?: Record<string, Turn> }).turns ?? {}; } catch { return {}; } })();
-    const t = (k: string): Turn => turns[k] ?? { stalls: [], logs: [], outcome: "missing" };
+    const t = (k: string): Turn => turns[k] ?? { stalls: [], logs: [], outcome: "missing", requestedModels: [] };
     const allLogs = Object.values(turns).flatMap((x) => x.logs).join("\n");
 
     // ② 매니저 알림 — 실제 구독자(registerWorkerHandler 가 부팅 때 거는 것)
@@ -55,7 +55,24 @@ export const check: RegressionCheck = {
     const nums = (s: string) => /this request (\d)\/2 · (\d+) retr(?:y|ies) so far/.exec(s)?.slice(1).join(",");
     const lognums = (s: string) => /이번 요청 (\d)\/2 · 작업 누적 (\d+)회/.exec(s)?.slice(1).join(",");
 
+    const itemLogs = (name: string) => t(name).logs.filter((l) => l.startsWith("[codex-stall-items] ")).map((l) => JSON.parse(l.slice("[codex-stall-items] ".length)) as {
+      requestOrdinal: number; requestedModel: string; threadKey: string; iteration: number;
+      items: { trackedItems: number; untrackedObservations: number; kinds: Record<string, { added: number; done: number; lastAddedAt: number; lastDoneAt: number; duplicateObservations: number; statuses: Record<string, number> }> };
+    });
+    const itemTwice = itemLogs("twice"), itemExhaust = itemLogs("exhaust");
     return [
+      assert("★실제 중단 로그에 종류/상태/시각·요청 상관키·요청모델을 기록하며 시도마다 초기화", itemTwice.length === 2 &&
+        itemTwice.map((x) => x.requestOrdinal).join(",") === "1,2" && itemTwice.every((x) => x.threadKey === "regr:stall:twice" && x.iteration === 0 && x.requestedModel === t("twice").requestedModels[x.requestOrdinal - 1]) &&
+        itemTwice[0]?.items.kinds.reasoning?.added === 2 && itemTwice[0]?.items.kinds.reasoning?.duplicateObservations === 1 &&
+        itemTwice[1]?.items.kinds.reasoning?.added === 1 && itemTwice[1]?.items.kinds.reasoning?.done === 1 &&
+        itemTwice[1]?.items.kinds.reasoning?.duplicateObservations === 0 && itemTwice[1]?.items.kinds.reasoning?.statuses.completed === 1 &&
+        itemTwice.every((x) => x.items.kinds.reasoning!.lastDoneAt >= x.items.kinds.reasoning!.lastAddedAt && x.items.trackedItems === 1 && x.items.untrackedObservations === 0), itemTwice),
+      assert("★전송 재시도와 스톨 재시도를 구별한 실제 fetch순번·요청모델·반복번호", itemLogs("fetchRetry").length === 2 &&
+        itemLogs("fetchRetry").map((x) => x.requestOrdinal).join(",") === "2,3" &&
+        itemLogs("fetchRetry").every((x) => x.iteration === 0 && x.requestedModel === t("fetchRetry").requestedModels[x.requestOrdinal - 1]), itemLogs("fetchRetry")),
+      assert("★마지막 소진과 백오프 전 취소 중단도 snapshot·요청body는 재시도마다 동일", itemExhaust.length === 3 &&
+        itemExhaust.map((x) => x.requestOrdinal).join(",") === "1,2,3" && itemLogs("cancel").length === 1 &&
+        t("twice").sameBody === true && t("exhaust").sameBody === true && itemLogs("progress").length === 0, { exhaust: itemExhaust.length, sameBody: t("twice").sameBody }),
       assert(
         "★같은 요청이 연달아 멈추면 이번 요청 1/2 → 2/2, 세 번째에 끝나면 «재시도 결과=완료» · 다음 요청은 다시 1/2",
         t("twice").stalls.map((s) => s.attempt).join(",") === "1,2" && t("twice").logs.some((l) => l.includes("재시도 결과=완료")) &&

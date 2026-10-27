@@ -1128,11 +1128,12 @@ const summonerTurnMessage = (
   const reinjectReply = reacquireReply(dest, {
     observe: false,
     originThreadKey: notifySessionThreadKey(reportJob.threadKey),
+    ...jobSessionLabel(reportJob.threadKey),
   });
   // 세션-정체성 정규화 — 완료 재주입(`onWorkerComplete`)과 같은 규칙. 없으면 telegram發 잡의
   // 합성 턴이 사용자 실세션과 다른 정체성으로 돌아 resume/transcript 가 갈린다.
   const idChannel = canonicalSessionChannel(reportJob.threadKey, reportJob.channel);
-  const presenter = optionsPresenterFor(dest.channel, dest.target ?? null, reportJob.threadKey); // 고른 값은 물어본 스레드로
+  const presenter = optionsPresenterFor(dest.channel, dest.target ?? null, reportJob.threadKey, jobSessionLabel(reportJob.threadKey).labelSession); // 고른 값은 물어본 스레드로
   return {
     channel: reportJob.channel,
     channelUserId: reportJob.channelUserId,
@@ -1275,18 +1276,14 @@ const maybeSendProgress = (job: WorkerJobRecord, ev: CheckinEvidence, now: numbe
   ev.errorsSinceProgress = 0;
   const outputs = ev.outputsSinceProgress;
   ev.outputsSinceProgress = undefined;
-  const actions = actionsSince(ev.recent, since);
-  // ★답이 이어지지 않은 작업자 알림 — 머리줄 바로 아래 하네스 사실 줄(설계 §7.2). 한 알림은 **한 번만** 실린다(보낸 뒤 표시).
-  //  답 판정은 `answeredAt` 만 본다(`worker.steered` 의 답 시도 id 로 판정하지 않는다).
-  //  ★고르는 시점 = **본문을 조립하는 순간**(요약을 기다린 뒤) — 미리 골라 두면 그 사이 답을 받은 알림도 «막힘» 으로 나갔다(GPT R1 #1).
-  let openNotices: JobNotice[] = [];
-  const pickOpenNotices = (): readonly { at: number; text: string }[] => {
-    openNotices = (job.notices ?? []).filter((n) => n.answeredAt === undefined && n.progressShown !== true);
-    return openNotices.map((n) => ({ at: n.at, text: n.text }));
-  };
+  // 내부 알림 본문은 소환자가 판단해 전달한다. 진행 보고용 사본에서만 상세를 빼고 원본 기록은 보존한다.
+  const actions = actionsSince(ev.recent, since).map((a) => {
+    if (!/^(?:mcp__.+__)?notify_owner$/.test(a.tool)) return a;
+    const { detail, ...action } = a;
+    return action;
+  });
   void (async (): Promise<void> => {
     const composed = await composeProgressNotice({
-      notices: pickOpenNotices,
       errors,
       now,
       lastActivityAt: ev.lastRealActivityAt ?? job.startedAt,
@@ -1318,16 +1315,15 @@ const maybeSendProgress = (job: WorkerJobRecord, ev: CheckinEvidence, now: numbe
     // ★시스템 통지로 보낸다 — 비서의 답이 아니다(2026-10-14 아스트라 검토: 표식이 없어 기록에 일반 답처럼 남았다).
     //  무진전 재시도 알림과 같은 길(`deliverOutbound` notice:true). 완료·실패 보고(`notifyJobOwner`)는 그대로 둔다.
     const dest = destForJob(job);
-    const sent = await deliverOutbound({
+    await deliverOutbound({
       channel: dest.channel,
       target: dest.target ?? null,
       text,
       label: "worker",
       notice: true,
       observeThreadKey: notifySessionThreadKey(job.threadKey),
+      ...jobSessionLabel(job.threadKey),
     });
-    // 실렸다 — 다음 진행 알림엔 다시 안 싣는다(못 보냈으면 표시하지 않아 다음에 실린다).
-    if (sent.delivered !== false) for (const n of openNotices) if (n.answeredAt === undefined) n.progressShown = true;
   })().catch((e: unknown) => {
     console.error(`[job-progress] '${job.label}' (${job.jobId}) 알림 실패: ${e instanceof Error ? e.message : String(e)}`);
   });
@@ -1585,12 +1581,12 @@ export const __checkinTickForTest = (now?: number): void => checkinTick(now);
 /** 검사용 — 그 잡의 점검 증거 중 이월돼야 하는 필드(무활동 분기 뒤에도 남는가). */
 export const __checkinEvidenceForTest = (
   jobId: string,
-): { recent: number; todos: number; todosAt?: number; outputs?: string; lastProgressAt?: number; activeSinceProgress?: boolean } | undefined => {
+): { recent: number; actions: readonly ProgressAction[]; todos: number; todosAt?: number; outputs?: string; lastProgressAt?: number; activeSinceProgress?: boolean } | undefined => {
   const ev = evidence.get(jobId);
   return ev === undefined
     ? undefined
     : {
-        recent: ev.recent.length, todos: ev.todos?.length ?? 0, todosAt: ev.todosAt,
+        recent: ev.recent.length, actions: ev.recent.map((a) => ({ ...a })), todos: ev.todos?.length ?? 0, todosAt: ev.todosAt,
         outputs: ev.outputsSinceProgress === undefined ? undefined : `${ev.outputsSinceProgress.writes}/${ev.outputsSinceProgress.commits}`,
         lastProgressAt: ev.lastProgressAt, activeSinceProgress: ev.activeSinceProgress,
       };
@@ -3001,6 +2997,7 @@ import { attachmentSenderFor, deliverOutbound, optionsPresenterFor } from "./out
 import type { ReplyOptions } from "../channels/types.js";
 import {
   canonicalSessionChannel,
+  isHumanSessionKey,
   isUserConversationThread,
   notifySessionThreadKey,
   telegramTargetFor,
@@ -3033,9 +3030,19 @@ const deriveTargetFromThreadKey = (
  * 동일 로직 — 같은 걸 두 번 구현 X). 덕분에 매니저 완료 통지도 대시보드 chat_log 에 뜬다
  * (예전엔 raw 발송이라 안 보였음). 미지원 채널·발송 실패는 deliverOutbound 가 정직 처리.
  */
+/**
+ * 잡 보고·알림의 **세션 라벨** — 잡을 띄운 사람 대화(부모 매니저를 따라 올라간 원 세션)일 때만 (2026-10-26 텔레그램 세션 라벨 기준).
+ * ★표시 세션(`notifySessionThreadKey`)을 쓰지 않는 이유: 그건 스케줄 등 내부 스레드를 **기본 세션에 보여 주는** 자리라, 라벨로 쓰면
+ *  출처 없는 알림에 «기본 세션» 을 지어낸다. 원 세션이 사람 대화가 아니면 라벨 없음(종전 그대로).
+ */
+export const jobSessionLabel = (threadKey: string): { labelSession?: string } => {
+  const owner = resolveOwnerThreadKey(threadKey);
+  return owner !== "" && isHumanSessionKey(owner) ? { labelSession: owner } : {};
+};
+
 const reacquireReply = (
   dest: WorkerNotifyDest,
-  opts?: { observe?: boolean; sessionThreadKey?: string; originThreadKey?: string },
+  opts?: { observe?: boolean; sessionThreadKey?: string; originThreadKey?: string; labelSession?: string },
 ): ((text: string, opts?: ReplyOptions) => Promise<void>) => {
   // observe(기본 true) — 우회 통지(handler 미경유: failed/cancelled·done 안전망·부팅 복구)는
   // 자체가 유일 발신이라 관측 발행 필요(대시보드 가시성 유지). observe:false 는 done 재주입
@@ -3058,6 +3065,8 @@ const reacquireReply = (
       ...(opts?.originThreadKey !== undefined
         ? { originThreadKey: opts.originThreadKey }
         : {}),
+      // 잡 보고는 «자동 알림» — 출처 세션 라벨(기본 세션 포함, 2026-10-26 확정 기준). 출처가 사람 대화가 아니면 넘어오지 않는다.
+      ...(opts?.labelSession !== undefined ? { labelSession: opts.labelSession } : {}),
     });
     // ★«못 보냄» 을 성공으로 넘기지 않는다 (2026-10-20 회사돌쇠). 미등록 채널은 던지지 않고 `delivered:false` 를 **돌려주는데**
     //  (outbound.ts), 이 래퍼가 그 값을 버려 완료 보고의 `trackedReply` 가 «보냄» 으로 표시했고 → raw 안전망이 꺼졌다
@@ -3197,6 +3206,7 @@ const subscribeWorkerStallNotify = (): void => {
       label: "worker",
       notice: true, // 인프라 통지 — 비서 발화 아님(렌더 구분).
       observeThreadKey: notifySessionThreadKey(job.threadKey),
+      ...jobSessionLabel(job.threadKey),
     }).catch(() => {
       /* 통지 실패는 재개에 영향 0 */
     });
@@ -3296,6 +3306,7 @@ const subscribeWorkerToolSlowNotify = (): void => {
       label: "worker",
       notice: true, // 인프라 통지 — 비서 발화 아님(렌더 구분).
       observeThreadKey: notifySessionThreadKey(job.threadKey),
+      ...jobSessionLabel(job.threadKey),
     }).catch(() => {
       /* 통지 실패는 작업에 영향 0 */
     });
@@ -3802,6 +3813,7 @@ const routeCompletion = async (
   const dest = destForJob(job);
   const baseReply = reacquireReply(dest, {
     sessionThreadKey: notifySessionThreadKey(job.threadKey),
+    ...jobSessionLabel(job.threadKey),
   });
 
   // ─── 실패 — LLM 무경유 raw 통지로 *결정* 전달 (actionable, deadlock-free) ──────
@@ -3846,6 +3858,7 @@ const routeCompletion = async (
   const reinjectReply = reacquireReply(dest, {
     observe: false,
     originThreadKey: notifySessionThreadKey(job.threadKey),
+    ...jobSessionLabel(job.threadKey),
   });
   let delivered = false;
   const trackedReply = async (
@@ -3869,12 +3882,12 @@ const routeCompletion = async (
   // 가 last_channel_target 을 null 로 덮어쓰지 않게(telegram chatId 보존).
   const idChannel = canonicalSessionChannel(job.threadKey, job.channel);
   // 파일도 글 보고와 같은 발원 세션으로 묶는다 — 파일에 답글을 달면 매니저를 띄운 세션으로 돌아온다.
-  const completionSendAttachment = attachmentSenderFor(dest.channel, dest.target ?? null, notifySessionThreadKey(job.threadKey));
+  const completionSendAttachment = attachmentSenderFor(dest.channel, dest.target ?? null, notifySessionThreadKey(job.threadKey), jobSessionLabel(job.threadKey).labelSession);
   // 선택지도 같은 좌표로 — 없으면 이 턴의 선택지가 «함께 보낼 채널» 에만 가고 이 대화엔 안 뜬다(2026-10-01).
   //  ★고른 값이 돌아갈 자리는 **물어본 스레드**(job.threadKey — 이 완료 턴이 도는 곳)다. 표시 세션(`notifySessionThreadKey`)을
   //   넘기면 내부 스레드 잡(스케줄 등)의 버튼 답이 질문 없는 기본 세션에 떨어진다 — egress 도 같은 턴에서 msg.threadKey 를 넘긴다
   //   (적대 검토: 한 턴 안에서 두 규칙이 갈렸다).
-  const completionPresentOptions = optionsPresenterFor(dest.channel, dest.target ?? null, job.threadKey);
+  const completionPresentOptions = optionsPresenterFor(dest.channel, dest.target ?? null, job.threadKey, jobSessionLabel(job.threadKey).labelSession);
   const synthetic = {
     channel: job.channel,
     channelUserId: job.channelUserId,
@@ -4094,7 +4107,7 @@ export const notifyJobOwner = async (
       threadKey: job.threadKey,
       notifyDest: job.notifyDest,
     }),
-    { sessionThreadKey: notifySessionThreadKey(job.threadKey) },
+    { sessionThreadKey: notifySessionThreadKey(job.threadKey), ...jobSessionLabel(job.threadKey) },
   );
   await reply(text);
 };
@@ -4136,7 +4149,7 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
           threadKey: job.threadKey,
           notifyDest: (job as { notifyDest?: WorkerNotifyDest }).notifyDest,
         }),
-        { sessionThreadKey: notifySessionThreadKey(job.threadKey) },
+        { sessionThreadKey: notifySessionThreadKey(job.threadKey), ...jobSessionLabel(job.threadKey) },
       );
       await reply(text);
     } catch (e) {

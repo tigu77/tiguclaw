@@ -12,7 +12,6 @@
  *  표시와 배달이 **같은 좌표**를 쓰게 한다.
  */
 import type { ChannelOutbound } from "./channel-outbound.js";
-import { DEFAULT_SESSION_ID } from "./threadkey.js";
 
 /**
  * **이 사본이 어느 세션에서 왔나** — 붙일 접두 (2026-08-28).
@@ -27,9 +26,11 @@ import { DEFAULT_SESSION_ID } from "./threadkey.js";
  *  **조용한 실패**(등록을 놓치면 영영 안 감)를 끌고 온다. 라벨은 아무것도 막지 않으므로
  *  조용한 실패가 없다. 진짜 차단이 필요해지는 조건은 로드맵에 따로 서 있다.
  *
- * ★**기본 세션엔 안 붙는다** — 평소 사용은 글자 하나 안 바뀐다. 라벨이 매번 붙으면 그게
- *  배경 소음이 되고, 그러면 진짜 이상할 때 아무도 안 본다([[feedback_logs_must_stand_alone]]
- *  의 *"반복은 세라"* 와 같은 결).
+ * ★★**«언제 붙이나» 는 여기서 정하지 않는다** (2026-10-26 정태님 확정 기준,
+ *  `docs/decisions/2026-10-26-telegram-session-label-policy.md`). 종전엔 «기본 세션이면 ""» 를 여기서 판정했는데,
+ *  확정 기준은 «현재 텔레그램 세션의 직접 대화만 생략 · 사본·자동 알림·그 밖의 선택지는 **기본 세션도** 표시» 다.
+ *  기본 세션인지가 아니라 **이 메시지가 그 대화방의 직접 대화인가**가 기준이고, 그건 호출부만 안다
+ *  (텔레그램 인입 = 바인딩과 갈렸나, 그 밖 = 출처 세션을 명시로 넘겼나). 그래서 이 함수는 **무엇을 붙이나**만 정한다.
  *
  * ★첫 발화에서 파생하지 않는다 — 그건 **대화 내용을 다른 채널 라벨로 흘리는** 짓이다.
  *
@@ -45,17 +46,27 @@ const shortenIds = (key: string): string =>
     m.slice(0, 8),
   );
 
-export const egressSourcePrefix = (
-  originThreadKey: string | undefined,
+export const sessionLabelPrefix = (
+  session: string | undefined,
   name: string | null | undefined,
 ): string => {
-  if (originThreadKey === undefined || originThreadKey === "") return "";
-  if (originThreadKey === DEFAULT_SESSION_ID) return "";
+  if (session === undefined || session === "") return "";
   const custom = name?.trim();
   // 이름을 붙였으면 그게 이긴다 — 사람이 고른 말이 기계 키보다 낫다.
   if (custom !== undefined && custom !== "") return `[${custom}] `;
-  return `[${shortenIds(originThreadKey)}] `;
+  return `[${shortenIds(session)}] `;
 };
+
+/** 기존 사본 라벨 정책(텔레그램 외 채널 불변): 기본 대화는 생략한다. */
+export const egressSourcePrefix = (session: string | undefined, name: string | null | undefined): string =>
+  session === "dashboard:default" ? "" : sessionLabelPrefix(session, name);
+
+/**
+ * 글 앞에 라벨을 **한 번만** 붙인다 — 이미 그 라벨로 시작하면 그대로(한 메시지에 중복 표시 금지, 확정 기준).
+ * 라벨이 비면 글 그대로.
+ */
+export const withSessionLabel = (prefix: string, text: string): string =>
+  prefix === "" || text.startsWith(prefix) ? text : prefix + text;
 
 export interface EgressTarget {
   channel: string;

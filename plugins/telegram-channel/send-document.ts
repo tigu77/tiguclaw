@@ -8,14 +8,14 @@
  * ★**파일도 글 답장과 같은 세션 정보를 싣는다** (2026-09-30 정태님 — «파일 전송에도 세션 정보를 넣고 메시지도 같이»):
  *  ①보낸 메시지 id 를 세션에 묶는다(`recordOutboundMessage`) — 파일에 답글을 달면 그 파일을 보낸 세션으로 간다.
  *   종전엔 id 를 버려 «발원 세션을 못 찾았습니다» 로 지금 묶인 세션에 떨어졌다(글 답장은 09-04 에 고친 것).
- *  ②다른 세션의 것이면 캡션 앞에 `[세션명]` — 글에 붙는 표시와 같은 판정(`egressSourcePrefix`).
+ *  ②다른 세션의 것이면 캡션 앞에 `[세션명]` — 글에 붙는 표시와 같은 함수(`outboundSessionLabel`) — 붙일지는 호출부가 정한다(2026-10-26).
  *  ③설명은 캡션으로 **파일과 한 메시지**. 캡션 한도(1,024자)를 넘으면 앞부분은 캡션, 나머지는 바로 뒤 글 메시지
  *   (그 메시지도 세션에 묶는다).
  */
 import { InputFile, type Context } from "grammy";
-import { egressSourcePrefix } from "../../src/core/egress-targets.js";
+import { withSessionLabel } from "../../src/core/egress-targets.js";
+import { outboundSessionLabel } from "../../src/core/outbound.js";
 import { recordOutboundMessage } from "../../src/store/outbound-messages.js";
-import { getThreadName } from "../../src/store/sessions.js";
 
 type Api = Pick<Context["api"], "sendDocument" | "sendMessage">;
 
@@ -41,14 +41,6 @@ const cut = (s: string, max: number): [string, string] => {
   return [s.slice(0, n).trimEnd(), s.slice(n).trimStart()];
 };
 
-const labelFor = (session: string | null | undefined): string => {
-  if (session === undefined || session === null || session === "") return "";
-  try {
-    return egressSourcePrefix(session, getThreadName(session));
-  } catch {
-    return ""; // 이름을 못 읽으면 표시 없이 간다 — 표시 때문에 전송이 죽으면 그게 더 나쁘다.
-  }
-};
 
 export const sendDocumentTo = async (
   api: Api,
@@ -56,7 +48,8 @@ export const sendDocumentTo = async (
   filePath: string,
   opts?: DocumentSession,
 ): Promise<{ ok: true } | { ok: false; error: string }> => {
-  const full = labelFor(opts?.labelSession) + (opts?.caption ?? "");
+  // 라벨은 글과 같은 함수·같은 판정(이름 규칙은 코어 한 곳, 중복 접두 금지).
+  const full = withSessionLabel(outboundSessionLabel(opts?.labelSession), opts?.caption ?? "");
   const [caption, rest] = cut(full, CAPTION_MAX);
   const ids: number[] = [];
   try {
@@ -86,7 +79,7 @@ export const deliverDocument = async (
   api: Api | undefined,
   target: string | null,
   filePath: string,
-  opts?: { caption?: string; originThreadKey?: string },
+  opts?: { caption?: string; originThreadKey?: string; labelSession?: string },
 ): Promise<{ ok: true } | { ok: false; error: string; unavailable?: true }> => {
   if (target === null || target.trim() === "") {
     return { ok: false, error: "telegram target required (chatId)", unavailable: true };
@@ -94,8 +87,8 @@ export const deliverDocument = async (
   if (api === undefined) return { ok: false, error: "telegram bot not started", unavailable: true };
   return sendDocumentTo(api, target, filePath, {
     ...(opts?.caption !== undefined ? { caption: opts.caption } : {}),
-    ...(opts?.originThreadKey !== undefined
-      ? { recordSession: opts.originThreadKey, labelSession: opts.originThreadKey }
-      : {}),
+    ...(opts?.originThreadKey !== undefined ? { recordSession: opts.originThreadKey } : {}),
+    // 라벨은 호출부가 정한 세션만(2026-10-26) — 귀속 세션은 표시용 기본 세션일 수 있어 그대로 라벨로 쓰면 출처를 지어낸다.
+    ...(opts?.labelSession !== undefined ? { labelSession: opts.labelSession } : {}),
   });
 };

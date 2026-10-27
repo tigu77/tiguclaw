@@ -1,0 +1,20 @@
+{
+  "included": [
+    "src/product.ts",
+    "plugins/tool.mts",
+    "packages/tool.mjs",
+    "bin/tool.mjs",
+    "_workspace/probe.mjs",
+    "_workspace/hunt/evidence.ts",
+    "_workspace/clones-extra/probe.ts",
+    "src/clones/product.ts",
+    "src/_workspace/clones/product.ts"
+  ],
+  "excluded": [
+    "_workspace/clones/mut-test/src/bad.ts",
+    "src/node_modules/tool/bad.ts",
+    "packages/dist/bad.mts",
+    "_workspace/rt-old/bad.mjs"
+  ],
+  "badSource": "const p = new URL(\"./x\", import.meta.url).pathname;\nconst shim = path.join(\"node_modules\", \".bin\", \"tsx\");\nspawnSync(shim);\n"
+}

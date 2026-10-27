@@ -9,6 +9,8 @@
  * 이 인터페이스만 구현하면 UI·코어 재작업 0 으로 라우팅에 자동 등장.
  */
 
+import type { ChannelMessageRef } from "../channels/types.js";
+
 export interface ChannelOutbound {
   /**
    * 물리 발송. 없으면(=undefined) 관측-전용 채널(http-bridge/대시보드처럼 SSE 가 배달).
@@ -20,6 +22,8 @@ export interface ChannelOutbound {
   deliver?: (
     target: string | null,
     text: string,
+    /** 채널 고유 표시 정책용 출처 — 글을 바꾸는 것은 채널 책임(텔레그램만 새 기준 적용). */
+    opts?: { labelSession?: string },
   ) => Promise<void | { messageIds?: (string | number)[] }>;
   /**
    * 채널이 아는 기본 배달 좌표(target 미지정 시). telegram=owner chatId, slack=기본 채널.
@@ -50,8 +54,14 @@ export interface ChannelOutbound {
        *  들고 있다가** 다음 인바운드에 실어주기만 한다(바인딩 변경 0 — 그 클릭 한 번만).
        */
       replyToSession?: string;
+      /** 질문 앞에 붙일 세션 라벨의 세션 — 글의 `labelSession` 과 같은 뜻(호출부가 정한다, 없으면 라벨 없음). */
+      labelSession?: string;
+      /** 이 질문의 발급 id(`prompt-answer-claims.ts`) — 채널은 보기와 함께 들고 있다가 답이 오면 소비 판정에 쓴다. */
+      promptId?: string;
+      /** 관측(`prompt.options`)은 코어 래퍼가 발행한다 — 관측 채널은 직접 발행하지 않는다(`prompt-options-observe.ts`). */
+      observedByCore?: boolean;
     },
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  ) => Promise<{ ok: true; channelRefs?: (ChannelMessageRef & { channel: string })[] } | { ok: false; error: string }>;
   /**
    * 파일 **1개** 전송 — `deliver`(텍스트)의 파일 판(版) (2026-09-30).
    *
@@ -68,8 +78,10 @@ export interface ChannelOutbound {
     filePath: string,
     opts?: {
       caption?: string;
-      /** 이 파일을 낸 세션 — 채널이 답글 라우팅·표시에 쓴다(글의 `originThreadKey` 와 같은 뜻). */
+      /** 이 파일을 낸 세션 — 채널이 답글 라우팅에 쓴다(글의 `originThreadKey` 와 같은 뜻). */
       originThreadKey?: string;
+      /** 캡션 앞에 붙일 세션 라벨의 세션 — 글의 `labelSession` 과 같은 뜻(호출부가 정한다, 없으면 라벨 없음). */
+      labelSession?: string;
     },
   ) => Promise<{ ok: true } | { ok: false; error: string; unavailable?: true }>;
   /**

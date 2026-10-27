@@ -13,8 +13,9 @@
  *  조용한 실패가 없다.
  *
  * 지키는 것 넷:
- *  ① 기본 세션엔 **안 붙는다** — 평소 사용이 글자 하나도 안 바뀐다(라벨이 배경 소음이 되면
- *     진짜 이상할 때 아무도 안 본다).
+ *  ① ★2026-10-26 개정(정태님 확정 기준 `docs/decisions/2026-10-26-telegram-session-label-policy.md`): 종전 «기본 세션엔
+ *     안 붙는다» 를 걷었다 — 기준은 기본 세션인지가 아니라 **그 대화방의 직접 대화인가**다(사본·자동 알림·그 밖의 선택지는
+ *     기본 세션도 표시). 직접 대화 생략은 호출부 신호(⑥⑦ «갈렸나», 출처 세션 명시)가 지키고, 이 함수는 무엇을 붙이나만 정한다.
  *  ② 이름 있는 세션은 그 이름으로, 없으면 **세션 키**로(2026-09-02 개정 — `unknown` 은
  *     아는 것을 버리는 말이었다. 실측: `[unknown]` 21건 중 18건이 개발 프로브인데 어느
  *     것인지 알 길이 없었다).
@@ -34,7 +35,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { egressSourcePrefix } from "../../core/egress-targets.js";
+import { sessionLabelPrefix, withSessionLabel } from "../../core/egress-targets.js";
 import { DEFAULT_SESSION_ID } from "../../core/threadkey.js";
 import {
   assert,
@@ -56,92 +57,82 @@ export const check: RegressionCheck = {
 
     out.push(
       assert(
-        "★★기본 세션엔 라벨이 **안 붙는다** — 평소 사용은 글자 하나 안 바뀐다(매번 붙으면 배경 소음이 되고, 그러면 진짜일 때 아무도 안 본다)",
-        egressSourcePrefix(DEFAULT_SESSION_ID, null) === "" &&
-          egressSourcePrefix(DEFAULT_SESSION_ID, "공통") === "",
-        `기본(무명)="${egressSourcePrefix(DEFAULT_SESSION_ID, null)}" · 기본(유명)="${egressSourcePrefix(DEFAULT_SESSION_ID, "공통")}"`,
+        "★★기본 세션도 라벨 **대상**이다 — 붙일지는 호출부가 정하고(2026-10-26 확정 기준: 사본·자동 알림·그 밖의 선택지는 기본 세션 포함), 이 함수는 무엇을 붙이나만 정한다",
+        sessionLabelPrefix(DEFAULT_SESSION_ID, "공통") === "[공통] " &&
+          sessionLabelPrefix(DEFAULT_SESSION_ID, null) === `[${DEFAULT_SESSION_ID}] `,
+        `기본(유명)="${sessionLabelPrefix(DEFAULT_SESSION_ID, "공통")}" · 기본(무명)="${sessionLabelPrefix(DEFAULT_SESSION_ID, null)}"`,
       ),
     );
     out.push(
       assert(
         "★이름이 있으면 그 이름으로 — 여러 세션이 한 대화방에 섞여 와도 어느 것인지 안다",
-        egressSourcePrefix("dashboard:abc", "핫딜알리미") === "[핫딜알리미] ",
-        JSON.stringify(egressSourcePrefix("dashboard:abc", "핫딜알리미")),
+        sessionLabelPrefix("dashboard:abc", "핫딜알리미") === "[핫딜알리미] ",
+        JSON.stringify(sessionLabelPrefix("dashboard:abc", "핫딜알리미")),
       ),
     );
     out.push(
       assert(
         "★★이름이 없으면 **세션 키**를 쓴다 — `unknown` 은 아는 것을 버리는 말이었다(어느 프로브인지 알 길이 없었다)",
-        egressSourcePrefix("dashboard:bundle-probe", null) === "[dashboard:bundle-probe] " &&
-          egressSourcePrefix("dashboard:bundle-probe", "  ") === "[dashboard:bundle-probe] " &&
-          !egressSourcePrefix("dashboard:bundle-probe", null).includes("unknown"),
-        JSON.stringify(egressSourcePrefix("dashboard:bundle-probe", null)),
+        sessionLabelPrefix("dashboard:bundle-probe", null) === "[dashboard:bundle-probe] " &&
+          sessionLabelPrefix("dashboard:bundle-probe", "  ") === "[dashboard:bundle-probe] " &&
+          !sessionLabelPrefix("dashboard:bundle-probe", null).includes("unknown"),
+        JSON.stringify(sessionLabelPrefix("dashboard:bundle-probe", null)),
       ),
     );
     out.push(
       assert(
         "★UUID 는 앞 8자만 — 폰 알림 한 줄에 36자를 넣으면 본문이 안 보인다(줄여도 찾을 수 있다)",
-        egressSourcePrefix("worker:3f74a2f5-d5a9-4ee8-a77e-8fb24ac765ae", null) ===
+        sessionLabelPrefix("worker:3f74a2f5-d5a9-4ee8-a77e-8fb24ac765ae", null) ===
           "[worker:3f74a2f5] " &&
-          egressSourcePrefix("scheduler:21", null) === "[scheduler:21] ",
-        JSON.stringify(egressSourcePrefix("worker:3f74a2f5-d5a9-4ee8-a77e-8fb24ac765ae", null)),
+          sessionLabelPrefix("scheduler:21", null) === "[scheduler:21] ",
+        JSON.stringify(sessionLabelPrefix("worker:3f74a2f5-d5a9-4ee8-a77e-8fb24ac765ae", null)),
       ),
     );
     out.push(
       assert(
         "★★라벨이 **대화 내용에서 파생되지 않는다** — 파생하면 첫 발화가 다른 채널의 라벨로 새어 나간다(표시명 파생과 일부러 다르게 둔다)",
-        !egressSourcePrefix("dashboard:x", null).includes("안녕") &&
-          // 키만 쓴다 — 키는 사람·코드가 고른 **식별자**지 대화 내용이 아니다.
-          egressSourcePrefix("dashboard:x", null) === "[dashboard:x] ",
-        egressSourcePrefix("dashboard:x", null),
+        !sessionLabelPrefix("dashboard:x", null).includes("안녕") &&
+          sessionLabelPrefix("dashboard:x", null) === "[dashboard:x] ",
+        sessionLabelPrefix("dashboard:x", null),
       ),
     );
     out.push(
       assert(
         "좌표를 모르면 아무 말도 안 한다(모르는 것을 아는 것처럼 말하지 않는다)",
-        egressSourcePrefix(undefined, null) === "" && egressSourcePrefix("", null) === "",
-        `undefined="${egressSourcePrefix(undefined, null)}" · 빈문자="${egressSourcePrefix("", null)}"`,
+        sessionLabelPrefix(undefined, null) === "" && sessionLabelPrefix("", null) === "",
+        `undefined="${sessionLabelPrefix(undefined, null)}" · 빈문자="${sessionLabelPrefix("", null)}"`,
+      ),
+    );
+    out.push(
+      assert(
+        "★한 메시지에 **중복 표시 금지** — 이미 그 라벨로 시작하면 다시 안 붙이고, 라벨이 비면 글 그대로",
+        withSessionLabel("[A] ", "[A] 본문") === "[A] 본문" &&
+          withSessionLabel("[A] ", "본문") === "[A] 본문" &&
+          withSessionLabel("", "본문") === "본문",
+        [withSessionLabel("[A] ", "[A] 본문"), withSessionLabel("[A] ", "본문"), withSessionLabel("", "본문")].join(" | "),
       ),
     );
 
-    // ── ④ 배선 — egress 사본에만 붙는다 ───────────────────────────────────
-    const idx = readFileSync(path.join(REPO, "src/index.ts"), "utf8");
-    const fan = /const fanOutEgress = async \([\s\S]{0,1600}?\n\};/.exec(idx);
+    // ── ④⑤ 호출 자리 **전수** — 이름 규칙은 `outboundSessionLabel` 한 함수, 부르는 파일은 셋뿐 ─────
+    // ★종전엔 `egressSourcePrefix` 를 세 곳이 직접 불렀다(이름 조회·실패 삼킴까지 각자). 2026-10-26 이름 규칙을 코어 한 함수로
+    //  모았다 — 새 자리가 생기면 «언제 붙이나» 계약(현재 세션 직접 대화는 생략 · 출처 없는 알림엔 안 지어냄)을 다시 봐야 한다.
+    const callers = listLabelCallers();
     out.push(
       assert(
-        "★라벨을 붙이는 자리가 **egress fan-out 한 곳**이다 — 성공·실패 경로가 둘 다 이 함수를 지나므로 한 곳이면 둘 다 덮인다",
-        fan !== null &&
-          /egressSourcePrefix\(/.test(fan[0]) &&
-          /text: prefix \+ text/.test(fan[0]),
-        fan === null ? "fanOutEgress 를 못 찾음" : "fanOutEgress 안에서 붙임",
-      ),
-    );
-    const outsideFan = idx
-      .split("const fanOutEgress")
-      .filter((_, i) => i !== 1)
-      .join("");
-    out.push(
-      assert(
-        "★`src/index.ts` 안에서는 fan-out **밖에서 안 부른다**(인입 응답엔 이미 문맥이 있다)",
-        !/egressSourcePrefix\(/.test(outsideFan),
-        /egressSourcePrefix\(/.test(outsideFan) ? "★fan-out 밖에서도 붙인다" : "fan-out 전용",
-      ),
-    );
-
-    // ── ⑤ 호출 자리 **전수** — 파일 하나만 보면 게이트가 조용히 눈이 먼다 ─────
-    // ★종전 ④는 index.ts 만 봤다. 라벨을 채널 플러그인에서 부르면 초록인 채로 통과했다.
-    //  그래서 «어디서 부르든» 을 소스 전수로 세고, 허용된 자리만 남긴다.
-    const callers = listPrefixCallers();
-    out.push(
-      assert(
-        "★★라벨을 부르는 자리는 **egress fan-out · 텔레그램 인입 응답 · 텔레그램 파일 캡션** 셋뿐이다 — 새 자리가 생기면 계약(기본 세션 제외·신호가 무엇인가)을 다시 봐야 한다",
-        // 2026-09-30 파일 캡션 추가(정태님 «파일 전송에도 세션 정보»): 계약 재확인 — 기본 세션은 egressSourcePrefix 가 빼고,
-        //  신호는 인입 턴이면 글 답장과 같은 routedSession, 좌표 발송(매니저 보고)이면 fan-out 과 같은 발원 세션이다.
-        callers.length === 3 &&
-          callers.includes("src/index.ts") &&
+        "★★라벨을 짓는 자리는 **텔레그램 채널 · 텔레그램 파일 캡션** 둘뿐이다(타 채널 글 불변)",
+        callers.length === 2 &&
           callers.includes("plugins/telegram-channel/index.ts") &&
           callers.includes("plugins/telegram-channel/send-document.ts"),
         callers.join(", ") || "(호출 자리 없음)",
+      ),
+    );
+    const idx = readFileSync(path.join(REPO, "src/index.ts"), "utf8");
+    const fan = /const fanOutEgress = async \([\s\S]{0,2400}?\n\};/.exec(idx);
+    out.push(
+      assert(
+        "★대시보드 사본은 새 라벨 세션 메타를 넘기되 타 채널의 기존 사본 접두어는 보존한다",
+        fan !== null && /labelSession: originThreadKey/.test(fan[0]) && /text: prefix \+ text/.test(fan[0]),
+        fan === null ? "fanOutEgress 를 못 찾음" : "labelSession 으로 넘김",
       ),
     );
 
@@ -153,7 +144,7 @@ export const check: RegressionCheck = {
       path.join(REPO, "plugins/telegram-channel/index.ts"),
       "utf8",
     );
-    const prefixDecl = /egressSourcePrefix\(\s*([A-Za-z_$][\w$]*)/.exec(tg);
+    const prefixDecl = /outboundSessionLabel\(\s*([A-Za-z_$][\w$]*)/.exec(tg);
     out.push(
       assert(
         "★★인입 응답 라벨의 신호는 **답장이 바꾼 세션**이다 — `sessionId` 를 넘기면 채널↔세션 바인딩이 생기는 순간 모든 답에 라벨이 붙는다",
@@ -227,10 +218,10 @@ export const check: RegressionCheck = {
 };
 
 /**
- * `egressSourcePrefix` 를 **부르는 파일 전수** — 이름을 손으로 적지 않는다
- * ([[feedback_hand_maintained_lists]]). 정의 파일과 이 검사 자신은 뺀다.
+ * `outboundSessionLabel` 를 **부르는(또는 정의하는) 파일 전수** — 이름을 손으로 적지 않는다
+ * ([[feedback_hand_maintained_lists]]). 검사 파일은 뺀다.
  */
-const listPrefixCallers = (): string[] => {
+const listLabelCallers = (): string[] => {
   const roots = ["src", "plugins", "packages"];
   const hits: string[] = [];
   const skip = new Set(["node_modules", "dist", ".git"]);
@@ -240,9 +231,8 @@ const listPrefixCallers = (): string[] => {
       const rel = `${dir}/${e.name}`;
       if (e.isDirectory()) walk(rel);
       else if (e.name.endsWith(".ts") || e.name.endsWith(".js")) {
-        if (rel.endsWith("core/egress-targets.ts")) continue;
         if (rel.includes("scripts/regression/")) continue;
-        if (/egressSourcePrefix\(/.test(readFileSync(path.join(REPO, rel), "utf8"))) {
+        if (/outboundSessionLabel\(/.test(readFileSync(path.join(REPO, rel), "utf8"))) {
           hits.push(rel);
         }
       }

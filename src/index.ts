@@ -101,12 +101,12 @@ import {
   clearSessionModelOverride,
   getMostRecentTelegramChatId,
   getSessionChannelMeta,
+  getThreadName,
   telegramTargetFor,
   getSessionModelOverride,
   initStore,
   setSessionModelOverride,
   SESSION_STORAGE_CHANNEL,
-  getThreadName,
 } from "./store/sessions.js";
 // 컨텍스트 리셋 — `/clear` 가 claude(세션)·codex/openai(재전송 히스토리 경계·롤링 요약)를
 // 모두 끊는다. 세 걸음은 `thread-reset.ts` 한 곳(스케줄 이력 정책과 공유).
@@ -201,6 +201,7 @@ import {
   type EgressTarget,
 } from "./core/egress-targets.js";
 import { withEgressPromptOptions } from "./core/prompt-options-egress.js";
+import { withPromptOptionsObservation } from "./core/prompt-options-observe.js";
 import { readEgressChannels } from "./core/settings.js";
 import { catalogModelKeys, modelCapsFor } from "./core/llm-runtime/model-catalog.js";
 import { providerAuthAvailable } from "./core/llm-runtime/provider-availability.js";
@@ -779,15 +780,9 @@ const fanOutEgress = async (
    */
   copyOf?: OutCoords,
 ): Promise<void> => {
-  // ★**어디서 온 사본인지 말해준다** (2026-08-28). 판정은 `egressSourcePrefix` 한 곳에 있고
-  //  여기선 이름만 조회해 넘긴다. 기본 세션이면 빈 문자열이라 평소 사용은 무변화다.
-  //  (조회 실패는 삼킨다 — 라벨 때문에 배달이 죽으면 그게 더 나쁘다.)
+  // 타 채널 사본은 기존 라벨 정책을 유지한다. 텔레그램만 자기 송신 경계에서 새 기준(기본 세션 포함)을 적용한다.
   let prefix = "";
-  try {
-    prefix = egressSourcePrefix(originThreadKey, getThreadName(originThreadKey ?? ""));
-  } catch {
-    /* 이름을 못 읽으면 라벨 없이 간다 */
-  }
+  try { prefix = egressSourcePrefix(originThreadKey, getThreadName(originThreadKey ?? "")); } catch { /* 라벨 실패는 배달을 막지 않는다 */ }
   for (const t of targets) {
     try {
       await deliverOutbound({
@@ -796,6 +791,7 @@ const fanOutEgress = async (
         // null 이면(해석 실패) deliverOutbound 가 한 번 더 시도한다.
         target: t.target,
         text: prefix + text,
+        ...(originThreadKey !== undefined ? { labelSession: originThreadKey } : {}),
         bus,
         // ★이 복사본도 **어느 세션이 낸 말인지**는 안다 (2026-08-11 실사고). 표시
         //  (observeThreadKey)는 그대로 두고 귀속만 싣는다 — 안 실으면 사용자가 텔레그램에서
@@ -1275,22 +1271,29 @@ const handler: MessageHandler = async (msg) => {
   // 답이 가는 곳이면 질문도 간다. 종전엔 선택지가 **인입 채널 클로저 하나**뿐이라,
   // 대시보드에서 시킨 작업 도중 뜬 질문이 텔레그램엔 영영 안 갔다(사용자 보고).
   // 정책·폴백은 전부 core/prompt-options-egress.ts — 여기선 좌표와 배달 통로만 준다.
-  const presentOptionsForTurn = withEgressPromptOptions(
-    msg.presentOptions,
-    egressTargets,
-    {
-      deliverText: async (t, text) => {
-        await deliverOutbound({
-          channel: t.channel,
-          target: t.target,
-          text,
-          bus,
-          originThreadKey: msg.threadKey,
-        });
+  // ★관측은 코어 래퍼가 한 번 낸다(2026-10-26) — 어느 채널에서 시작한 턴이든 그 턴의 답이 보이는 세션(`msg.threadKey`)에
+  //  `prompt.options` 1건. 종전엔 http-bridge 가 직접 그릴 때만 떠서 텔레그램발 턴의 선택지가 대시보드에 0건이었다.
+  const presentOptionsForTurn = withPromptOptionsObservation(
+    withEgressPromptOptions(
+      msg.presentOptions,
+      egressTargets,
+      {
+        deliverText: async (t, text) => {
+          await deliverOutbound({
+            channel: t.channel,
+            target: t.target,
+            text,
+            bus,
+            originThreadKey: msg.threadKey,
+            // 선택지 텍스트 사본도 «그 밖의 선택지» — 물어본 세션 라벨(글 사본과 같은 세션).
+            labelSession: msg.threadKey,
+          });
+        },
+        // 답이 돌아와야 할 자리 = 물어본 세션. 채널이 보기와 함께 들고 있다가 실어준다.
+        originThreadKey: msg.threadKey,
       },
-      // 답이 돌아와야 할 자리 = 물어본 세션. 채널이 보기와 함께 들고 있다가 실어준다.
-      originThreadKey: msg.threadKey,
-    },
+    ),
+    { channel: msg.channel, threadKey: msg.threadKey, bus },
   );
   // mid-turn steering 채널 등록(ADR 2026-07-16 §5) — flag on 일 때만 생성·등록·주입한다.
   // ★flag off = steeringCh 미생성 + steering 필드 미주입 = route input 현행 동일(회귀 0).
@@ -1312,11 +1315,10 @@ const handler: MessageHandler = async (msg) => {
     {
       ...msg,
       ...(effectiveText === msg.text ? {} : { text: effectiveText }),
-      // egress 가 없으면 이 값은 msg.presentOptions **그 자체**다(래핑 0 = 회귀 0).
+      // 선택지 통로가 없는 턴(인입 클로저·egress 둘 다 없음)이면 undefined — 도구 미등록(종전 그대로).
       ...(presentOptionsForTurn !== undefined
         ? { presentOptions: presentOptionsForTurn }
         : {}),
-      // egress 가 없으면 이 값은 msg.presentOptions **그 자체**다(래핑 0 = 회귀 0).
 
     },
     {

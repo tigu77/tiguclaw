@@ -5,7 +5,7 @@
  *  낙관 버블을 발행하고, 비서에게 넘긴다. **인입의 유일한 문**이라 여기서 새면 대화가 샌다.
  */
 import { AttachmentError } from "./attachments.js";
-import { publishPromptOptions } from "./prompt-options-publish.js";
+import { publishPromptOptions } from "../../src/core/prompt-options-publish.js";
 import { HANDLER_TIMEOUT_MS } from "./route-ctx.js";
 import type { Attachment, IncomingMessage } from "../../src/channels/types.js";
 import { getAssistantName } from "../../src/core/identity.js";
@@ -44,6 +44,7 @@ import { historyActivities } from "./history-activities.js";
 import { BODY_LIMIT_ATTACHMENTS, readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
 import { translate } from "../../src/core/i18n.js";
+import { claimPromptAnswer, promptReplySession } from "../../src/core/prompt-answer-claims.js";
 
 export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
   const { req, res } = ctx;
@@ -79,6 +80,20 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
     writeJson(res, 400, { error: translate("srv.chat.empty") });
     return;
   }
+  // ★선택지 답이면 **핸들러·큐·끼워넣기 전에** 소비 판정 (2026-10-26) — 같은 질문이 텔레그램에도 살아 있다. 이미 답했거나 대장에서
+  //  빠진 질문이면 처리하지 않는다. `code` 로 화면이 일반 거절과 가른다(진행 중인 첫 답의 작업 표시를 끄지 않게 — `sendRejectionAction`).
+  //  질문 id 가 없는 글(직접 친 말·슬래시 선택지·이 변경 전 기록)은 종전 그대로.
+  if (typeof body.promptId === "string" && body.promptId !== "") {
+    const claim = claimPromptAnswer(body.promptId);
+    if (claim !== "ok") {
+      writeJson(res, 409, {
+        error: translate(claim === "answered" ? "srv.options.alreadyAnswered" : "srv.options.expired"),
+        code: "prompt-closed",
+        reason: claim,
+      });
+      return;
+    }
+  }
   // 채널/세션 분리(ADR 2026-07-15 §D1/§D2) — 대시보드는 활성 탭 세션 id 를 body.threadKey
   // 로 명시 전달(explicitSessionId → resolveSessionId passthrough). 비-대시보드 http
   // default(threadKey 미부여)는 기본 세션(DEFAULT_SESSION_ID)으로 수렴. channelAddress =
@@ -86,14 +101,11 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
   // 로 세팅(직렬 큐/`/cancel-queued`/`/stop` 정합) + session 으로 route 가 canonical
   // (http-bridge, sessionId) 로 정규화. 세션 id 는 채널 무관 — telegram/cli 기본 세션과 공유.
   const explicitSessionId =
-    typeof body.threadKey === "string" && body.threadKey.trim() !== ""
+    (typeof body.promptId === "string" ? promptReplySession(body.promptId) : undefined) ??
+    (typeof body.threadKey === "string" && body.threadKey.trim() !== ""
       ? body.threadKey.trim()
-      : undefined;
-  const threadKey = resolveSessionId(
-    ctx.channelName,
-    explicitSessionId,
-    explicitSessionId,
-  );
+      : undefined);
+  const threadKey = resolveSessionId(ctx.channelName, explicitSessionId, explicitSessionId);
   const channelUserId =
     typeof body.userId === "string" && body.userId.trim() !== ""
       ? body.userId
@@ -107,18 +119,22 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
   // 재진입). 비차단: 이벤트 1회 publish 후 즉시 {ok:true}. bus 미연결(observer 미부착)
   // 환경에선 렌더 경로가 없으므로 {ok:false} → MCP 도구가 텍스트 제시로 graceful 폴백.
   const bus = ctx.bus;
+  // ★LLM 턴이면 관측은 코어 래퍼가 낸다(`observedByCore`, 2026-10-26) — 여기서도 내면 같은 질문이 두 번 그려진다.
+  //  표식이 없는 호출(슬래시 선택지)만 직접 그린다 — 그 선택지는 이 채널에만 묻는 것이다.
   const presentOptions: IncomingMessage["presentOptions"] = async (
     question,
     options,
     presentOpts,
   ) =>
-    publishPromptOptions(bus, {
-      channel: ctx.channelName,
-      threadKey,
-      question,
-      options,
-      ...(presentOpts?.note !== undefined ? { note: presentOpts.note } : {}),
-    });
+    presentOpts?.observedByCore === true
+      ? { ok: true as const }
+      : publishPromptOptions(bus, {
+          channel: ctx.channelName,
+          threadKey,
+          question,
+          options,
+          ...(presentOpts?.note !== undefined ? { note: presentOpts.note } : {}),
+        });
   // 답글 인용(대시보드 등) — body.replyToText 를 중립 필드로 실어 보낸다. 길이(앞·끝 남기기)는 코어
   //  `withReplyQuote` 한 곳이 정한다(2026-10-06 — 종전엔 채널마다 앞 1,500자만 남겨 긴 답의 끝이 잘렸다).
   //  여기 상한은 요청 본문 크기 방어일 뿐이다.

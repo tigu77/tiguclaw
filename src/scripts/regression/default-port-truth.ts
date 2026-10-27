@@ -103,8 +103,11 @@ export const wrongPortsInLine = (
     //  (다른 포트의 기본값이면 첫 인스턴스와 부딪히는 예시다). 그 줄의 다른 숫자는 계속 대조한다.
     //  ★첫 판은 줄 전체를 건너뛰었고(적대 검토 F1), 둘째 판은 «기본값 숫자가 어딘가 있으면» 이라
     //   «3101 이 기본값입니다 (7010 은 옛 값)» 이 통과했다(재검토 F-D). 판정은 아래 픽스처가 고정한다.
+    // PowerShell의 프로세스 env 대입도 같은 계약: 짝맞는 따옴표(또는 무인용) 값 하나만.
+    // bare override 허용이나 줄 전체 면제가 아니다 — 정본 기본값 설명/인접 숫자 검사는 그대로다.
     const assigned = named && !both
       ? new RegExp(`^\\s*(?:#\\s*)?(?:export\\s+)?${env}\\s*=\\s*(\\d{4,5})\\b`).exec(l)?.[1]
+        ?? new RegExp(`^\\s*\\$env:${env}\\s*=\\s*(['"]?)(\\d{4,5})\\1(?:\\s*(?:#|$))`).exec(l)?.[2]
       : undefined;
     const statesDefault = new RegExp(`(?:기본|default)\\s*${want}\\b`, "i").test(l);
     if (assigned !== undefined && statesDefault && ![...truth.values()].includes(assigned)) {
@@ -286,6 +289,24 @@ export const check: RegressionCheck = {
         { fxOk, fxStale: fxStale.filter((x) => x.wrong.length === 0).map((x) => x.l) },
       ),
     );
+    const psOk = [
+      `$env:HTTP_BRIDGE_PORT = '18471' # 검증 전용 override; 제품 기본 ${b}`,
+      `$env:DASHBOARD_PORT = "18470" # default ${dsh}`,
+      `$env:HTTP_BRIDGE_PORT = 18471 # 기본 ${b}`,
+      `  $env:HTTP_BRIDGE_PORT = '7021' # 기본 ${b}`,
+    ];
+    const psWrong: [string, string?][] = [
+      [`Write-Output '$env:HTTP_BRIDGE_PORT = 18471 # 기본 ${b}'`], // 문자열 내용은 대입 아님
+      [`$env:HTTP_BRIDGE_PORT = '18471'`], // bare는 POSIX와 마찬가지로 계속 거절
+      [`$env:HTTP_BRIDGE_PORT = '18471' # 기본 ${b} · 열기 http://localhost:3000`],
+      [`$env:HTTP_BRIDGE_PORT = '3000' # 이게 기본값입니다 (${b} 은 옛 값)`],
+      [`$env:DASHBOARD_PORT = '${b}' # 기본 ${dsh} 과 겹치지 않게`, "DASHBOARD_PORT"],
+      [`$env:HTTP_BRIDGE_PORT = '18471" # 기본 ${b}`], // 짝 안 맞는 따옴표도 면제 아님
+    ];
+    out.push(assert("★PowerShell도 동일한 명시 override 계약: 정본 기본 설명 필수·인접 URL/잘못된 기본 주장/충돌/오인용은 거절",
+      psOk.every((l, i) => fx(l, i === 1 ? "DASHBOARD_PORT" : "HTTP_BRIDGE_PORT").length === 0) &&
+      psWrong.every(([l, env]) => fx(l, env).length > 0), { psOk: psOk.map((l, i) => fx(l, i === 1 ? "DASHBOARD_PORT" : "HTTP_BRIDGE_PORT")),
+        missed: psWrong.filter(([l, env]) => fx(l, env).length === 0) }));
     return out;
   },
 };

@@ -17,7 +17,7 @@
 import type { ChannelName, IncomingMessage, TurnOrigin } from "../channels/types.js";
 import type { TriggerRun } from "./llm-runtime/types.js";
 import { attachmentSenderFor, deliverOutbound, optionsPresenterFor } from "./outbound.js";
-import { mainMessageHandler } from "./worker-jobs.js";
+import { mainMessageHandler, jobSessionLabel } from "./worker-jobs.js";
 import { getSessionChannelMeta, isConversationLive, SESSION_STORAGE_CHANNEL } from "../store/sessions.js";
 
 export interface TriggerInSessionInput {
@@ -74,6 +74,8 @@ export const runTriggerInSession = async (i: TriggerInSessionInput): Promise<Tri
   let replied = 0;
   let failed: string | undefined;
   let dest = first.dest;
+  // 대화 안 트리거의 결과·선택지·파일은 «자동 알림» — 만든 대화의 세션 라벨(기본 세션 포함, 2026-10-26 확정 기준).
+  const label = jobSessionLabel(i.origin);
   const run: TriggerRun = { ...i.triggerRun, inOrigin: true };
   const textOf = (spec: TriggerTurnSpec): string => `〔${i.marker} — 사용자가 쓴 말이 아니다〕\n${spec.text}`;
   const msg: IncomingMessage = {
@@ -103,7 +105,7 @@ export const runTriggerInSession = async (i: TriggerInSessionInput): Promise<Tri
     reply: async (text, opts) => {
       if (opts?.turnFailed === true) failed = text;
       else replied += text.length;
-      const r = await deliverOutbound({ channel: dest.channel, target: dest.target, text, label: i.label, observe: false, originThreadKey: i.origin });
+      const r = await deliverOutbound({ channel: dest.channel, target: dest.target, text, label: i.label, observe: false, originThreadKey: i.origin, ...label });
       if (r.delivered === false) throw new Error(`배달 실패 — ${r.reason}`);
     },
   };
@@ -113,8 +115,8 @@ export const runTriggerInSession = async (i: TriggerInSessionInput): Promise<Tri
     const ch = d.channel as ChannelName;
     msg.notifyDest = { channel: ch, target: d.target };
     msg.replyTarget = { channel: ch, target: d.target };
-    const sendAttachment = attachmentSenderFor(ch, d.target, i.origin);
-    const presentOptions = optionsPresenterFor(ch, d.target, i.origin);
+    const sendAttachment = attachmentSenderFor(ch, d.target, i.origin, label.labelSession);
+    const presentOptions = optionsPresenterFor(ch, d.target, i.origin, label.labelSession);
     if (sendAttachment !== undefined) msg.sendAttachment = sendAttachment; else delete msg.sendAttachment;
     if (presentOptions !== undefined) msg.presentOptions = presentOptions; else delete msg.presentOptions;
   };

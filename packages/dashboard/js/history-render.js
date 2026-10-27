@@ -14,7 +14,12 @@
           const okey = `${entry.ts}|${entry.threadKey || ""}`;
           if (renderedPromptOptionKeys.has(okey)) return null;
           renderedPromptOptionKeys.add(okey);
-          return build(entry.data || {}, fmtTime(entry.ts), entry.ts) || null;
+          const div = build(entry.data || {}, fmtTime(entry.ts), entry.ts) || null;
+          if (div) {
+            div.dataset.ts = String(entry.ts);
+            if (typeof entry.id === "number") div.dataset.id = String(entry.id);
+          }
+          return div;
         }
         const isOut = entry.role === "assistant";
         // 시스템 통지 — 라이브(renderChannelMessage) 파리티. 새로고침해도 구분이 유지돼야

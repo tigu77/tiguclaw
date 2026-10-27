@@ -37,7 +37,7 @@ import { getChannelPresence } from "../../src/core/channel-registry.js";
 import type { Observer } from "../../src/core/observers/types.js";
 import { safeUnsubscribe, type EventBus } from "../../src/core/eventbus.js";
 import { portListenFailure } from "../../src/core/port-hint.js";
-import { publishPromptOptions } from "./prompt-options-publish.js";
+import { publishPromptOptions } from "../../src/core/prompt-options-publish.js";
 import {
   verifyToken,
   type BridgeTokenRole,
@@ -153,6 +153,8 @@ class HttpBridge implements Channel, Observer {
     // 선택지 — 좌표(=세션 threadKey)로 그 대화에 띄운다. 인입 턴과 같은 발행(2026-10-01): 종전엔 이게 없어 매니저 완료 보고처럼
     //  인입 없는 턴의 선택지가 텔레그램에만 가고 대시보드엔 안 떴다(회사돌쇠 실사용 «간혹 텔레그램에만»).
     presentOptionsTo: async (target, question, options, opts) => {
+      // ★관측 래퍼를 지난 호출이면 그 턴의 세션에 코어가 이미 낸다(2026-10-26) — 대상이 달라도 여기선 안 낸다(소유권은 경로로).
+      if (opts?.observedByCore === true) return { ok: true as const };
       const threadKey = target ?? opts?.replyToSession ?? null;
       if (threadKey === null) return { ok: false as const, error: translate("srv.options.noTarget") };
       return publishPromptOptions(this.bus, {

@@ -402,7 +402,7 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
   killAllBgShells?.();
 }
 
-// ── ⑨ 진행 알림 — 미해결은 머리줄 다음 첫 줄 · 답 확정은 없음 · 무관한 지시·실패한 답 뒤에도 실림 · 한 번만 · 요약 프롬프트에 없음 ─────
+// ── ⑨ 진행 알림 — 내부 알림 원문은 자동 중계하지 않음 · 내부 배달/답 상태와 일반 진행은 그대로 ─────
 {
   reset();
   setProgressNoticeSettings({ enabled: true, intervalMinutes: 10 });
@@ -419,7 +419,6 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
   const t0 = Date.now();
   await notify(M, "미해결 막힘");
   await notify(M, "답받을 막힘");
-  wj.getJob(M)!.notices![0]!.at = new Date(2026, 9, 23, 7, 46).getTime(); // 시각 표기 확인용(07:46)
   // n2 에 답(확정) · n1 엔 무관한 지시(답 아님) · n1 에 실패한 답은 아래 별도 작업에서
   const mainSteer = toolsOf(createWorkerMcpServer(mainInput())).steer_worker!.handler;
   await mainSteer({ job_id: M, message: "답", notice_id: "n2" }, {});
@@ -438,7 +437,7 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
   wj.__checkinTickForTest(t0 + 23 * MIN);
   await sleep(120);
   const second = sent.slice(first.length);
-  // 전달 실패한 답 뒤에도 실린다 — 채널 없는 작업
+  // 전달 실패한 답은 내부 미답으로 유지되지만 사용자 진행 보고에는 중계하지 않는다 — 채널 없는 작업
   const F = job("진행실패답", S);
   const t1 = Date.now();
   await notify(F, "실패한 답의 막힘");
@@ -448,7 +447,7 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
   wj.__checkinTickForTest(t1 + 11 * MIN);
   await sleep(120);
   const failed = sent.slice();
-  // ★요약을 기다리는 사이 답이 도착하면 그 알림은 실리지 않는다(GPT R1 #1 — 미리 골라 두면 «막힘» 으로 나갔다).
+  // 요약 중 도착한 실제 답도 정상 확정한다 — 자동 진행 보고의 비노출과는 별개다.
   const RG = withChannel(job("진행경합", S));
   const t2 = Date.now();
   await notify(RG, "요약 중 답받는 막힘");
@@ -464,16 +463,60 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
   hold = undefined;
   await sleep(120);
   const raced = sent.slice();
-  const lines = (first[0] ?? "").split("\n");
   out.progress = {
-    raced: raced.map((t) => t.slice(0, 200)), racedAnswered: wj.getJob(RG)?.notices?.[0]?.answeredAt !== undefined,
-    first: first.map((t) => t.slice(0, 200)), second: second.map((t) => t.slice(0, 200)), failed: failed.map((t) => t.slice(0, 200)),
-    lineAfterHead: lines[1] ?? null,
-    // 기대 줄은 카탈로그에서 — 러너가 영어로 돌 수 있다(서버 문구는 사용자 언어).
-    expectedLine: (await import("../../core/i18n.js")).translate("srv.job.progress.notice", { time: "07:46", text: "미해결 막힘" }),
-    answeredShown: first.some((t) => t.includes("답받을 막힘")),
-    inPrompt: prompts.some((p) => p.includes("미해결 막힘") || p.includes("막힘(")),
+    first, second, failed, raced,
+    racedAnswered: wj.getJob(RG)?.notices?.[0]?.answeredAt !== undefined,
+    inPrompt: prompts.some((p) => /미해결 막힘|답받을 막힘|실패한 답의 막힘|요약 중 답받는 막힘/.test(p)),
+    states: (wj.getJob(M)?.notices ?? []).map((n) => ({ text: n.text, answered: n.answeredAt !== undefined, shown: n.progressShown === true })),
+    failedState: (wj.getJob(F)?.notices ?? []).map((n) => ({ text: n.text, answered: n.answeredAt !== undefined, shown: n.progressShown === true })),
+    internal: turns.some((t) => t.text.includes("미해결 막힘")) && notices.some((n) => n.text === "실패한 답의 막힘" && n.outcome === "sent"),
   };
+
+  // 일반 도구 actions의 detail로도 우회하지 않는다. 실제 어댑터 공통 상세 빌더를 사용하고,
+  // 원본 활동 이벤트/다른 도구 상세/오류 사실/내부 알림은 유지한다. bare + Claude MCP 이름표.
+  const { buildActivityDetail } = await import("../../core/llm-runtime/adapters/_activity-detail.js");
+  const fallback: R[] = [];
+  for (const mode of ["none", "throw", "summary"] as const) {
+    for (const label of ["notify_owner", "mcp__notify-owner__notify_owner", "mcp__notify_owner__notify_owner"]) {
+      reset();
+      const P = withChannel(job("상세경계", S));
+      const text = `내부전용원문-${mode}-${label}`;
+      const detail = buildActivityDetail({ message: text });
+      const key = `worker:${P}`;
+      const raw: R[] = [];
+      const un = getEventBus().subscribe((ev) => { if (ev.type === "llm.activity" && (ev.payload as R).threadKey === key) raw.push(ev.payload as R); });
+      let promptText = "";
+      jp.registerProgressSummarizer(mode === "none" ? undefined : async (prompt) => {
+        promptText = prompt;
+        if (mode === "throw") throw new Error("격리된 요약 실패");
+        return "일반 진행 요약 유지";
+      });
+      const start = Date.now();
+      await notify(P, text);
+      // notify_owner라는 단어를 포함한 다른 도구 상세는 보존(본문 문자열 전역 필터 금지).
+      getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: key, kind: "tool", label: "Read", seq: 10, detail: "path=notify_owner-contract.md" } } as never);
+      getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: key, kind: "tool", phase: "end", label: "Read", seq: 10 } } as never);
+      getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: key, kind: "tool", label, seq: 11, detail } } as never);
+      getEventBus().publish({ type: "llm.activity", ts: Date.now(), payload: { threadKey: key, kind: "tool", phase: "end", label, seq: 11, output: { isError: true, text: "격리 오류" } } } as never);
+      const beforeActions = wj.__checkinEvidenceForTest(P)?.actions;
+      wj.__checkinTickForTest(start + 11 * MIN);
+      const delivered = await until(() => sent.length === 1);
+      const afterActions = wj.__checkinEvidenceForTest(P)?.actions;
+      un();
+      const n = wj.getJob(P)?.notices?.[0];
+      fallback.push({ mode, label, text, detail, delivered, sent: sent.slice(), promptText,
+        raw: raw.find((e) => e.label === label && e.phase !== "end")?.detail,
+        recentUnchanged: JSON.stringify(beforeActions) === JSON.stringify(afterActions),
+        recentDetail: afterActions?.find((a) => a.tool === label)?.detail,
+        recentError: afterActions?.find((a) => a.tool === label)?.error,
+        recentKey: afterActions?.find((a) => a.tool === label)?.key,
+        otherDetail: afterActions?.find((a) => a.tool === "Read")?.detail,
+        noticeText: n?.text, unanswered: n?.answeredAt === undefined, shown: n?.progressShown === true,
+        internal: turns.some((t) => t.text.includes(text)) && notices.some((e) => e.text === text && e.outcome === "sent"),
+      });
+    }
+  }
+  out.progressDetail = fallback;
 }
 
 for (const ch of channels.values()) ch.close();

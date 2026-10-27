@@ -244,8 +244,12 @@ export interface IncomingMessage {
   presentOptions?: (
     question: string,
     options: { label: string; value: string }[],
-    opts?: { note?: string },
-  ) => Promise<{ ok: true } | { ok: false; error: string; unavailable?: true }>;
+    /**
+     * `promptId`·`observedByCore` 는 코어 관측 래퍼(`prompt-options-observe.ts`)가 채운다 — 채널은 `promptId` 를 보기와 함께
+     *  들고 있다가 답이 오면 소비 판정(`prompt-answer-claims.ts`)에 쓰고, 관측 채널은 `observedByCore` 면 직접 발행하지 않는다.
+     */
+    opts?: { note?: string; promptId?: string; observedByCore?: boolean },
+  ) => Promise<{ ok: true; channelRefs?: (ChannelMessageRef & { channel: string })[] } | { ok: false; error: string; unavailable?: true }>;
 }
 
 export type MessageHandler = (msg: IncomingMessage) => Promise<void>;

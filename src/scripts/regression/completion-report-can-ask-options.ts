@@ -64,10 +64,10 @@ export const check: RegressionCheck = {
       await drive(CH, null, "scheduler:regr-21");
       const sched = asked[1];
       // ④ 대시보드 — 실제 발행 함수(인입 턴과 같은 것)
-      const pub = await loadPluginModule<{ publishPromptOptions: (bus: unknown, i: { channel: string; threadKey: string; question: string; options: { label: string; value: string }[]; note?: string }) => { ok: boolean; error?: string } }>("../../../plugins/http-bridge/prompt-options-publish.js");
+      const pub = await import("../../core/prompt-options-publish.js");
       const events: { type: string; payload: Record<string, unknown> }[] = [];
       const fakeBus = { publish: (e: { type: string; payload: Record<string, unknown> }) => { events.push(e); } };
-      const ok = pub.publishPromptOptions(fakeBus, { channel: "http-bridge", threadKey: "dashboard:regr-s", question: "고를까요?", options: [{ label: "A", value: "a" }], note: "n" });
+      const ok = pub.publishPromptOptions(fakeBus as never, { channel: "http-bridge", threadKey: "dashboard:regr-s", question: "고를까요?", options: [{ label: "A", value: "a" }], note: "n" });
       const noBus = pub.publishPromptOptions(null, { channel: "http-bridge", threadKey: "dashboard:regr-s", question: "q", options: [] });
       // ④ 대시보드 발신 — 실제 채널 인스턴스의 presentOptionsTo 를 부른다(설명·채널·좌표가 그대로 가는가, 좌표 없으면 물어본 세션).
       const Bridge = (await loadPluginModule<{ default: new () => { outbound: { presentOptionsTo?: (t: string | null, q: string, o: { label: string; value: string }[], x?: { note?: string; replyToSession?: string }) => Promise<{ ok: boolean; error?: string }> } } }>("../../../plugins/http-bridge/index.js")).default;
@@ -96,11 +96,12 @@ export const check: RegressionCheck = {
         // 좌표 발신이 같은 발행 함수를 쓴다(두 벌 금지 — 동작은 위 인스턴스 검사가 본다).
         outbound: /return publishPromptOptions\(this\.bus, \{/.test(httpSrc),
         // 인입 턴도 같은 함수(두 벌 금지).
-        inbound: /presentOptions: IncomingMessage\["presentOptions"\] = async \([\s\S]{0,80}\) =>\s*publishPromptOptions\(bus, \{/.test(chatSrc) && !/type: "prompt\.options"/.test(chatSrc),
+        // (2026-10-26) LLM 턴이면 코어 래퍼가 관측을 내므로 인입 클로저는 `observedByCore` 일 때 건너뛰고, 아닐 때(슬래시)만 같은 함수로 낸다.
+        inbound: /presentOptions: IncomingMessage\["presentOptions"\] = async \([\s\S]{0,80}\) =>\s*presentOpts\?\.observedByCore === true\s*\?\s*\{ ok: true as const \}\s*:\s*publishPromptOptions\(bus, \{/.test(chatSrc) && !/type: "prompt\.options"/.test(chatSrc),
         // ⑤ 점검 턴도 같은 처방 — 완료·점검 두 곳.
         // ⑥ 스케줄 실행부가 그 통로를 실제로 싣는다.
         scheduler: /\.\.\.turn,[\s\S]{0,400}\.\.\.scheduleChannels\(turn\.notifyDest, turn\.threadKey\),/.test(readSourceSync("plugins/scheduler/src/index.ts")),
-        checkin: (jobsSrc.match(/optionsPresenterFor\(dest\.channel, dest\.target \?\? null, (?:job|reportJob)\.threadKey\)/g) ?? []).length === 2,
+        checkin: (jobsSrc.match(/optionsPresenterFor\(dest\.channel, dest\.target \?\? null, (?:job|reportJob)\.threadKey, jobSessionLabel\((?:job|reportJob)\.threadKey\)\.labelSession\)/g) ?? []).length === 2,
       };
       return [
         assert("★① 완료 보고 턴이 선택지 통로를 받는다", explicit.had && explicit.result?.ok === true, JSON.stringify(explicit)),

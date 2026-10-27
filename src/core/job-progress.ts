@@ -220,17 +220,6 @@ export const registerProgressSummarizer = (fn: ProgressSummarizer | undefined): 
 export const getRegisteredProgressSummarizer = (): ProgressSummarizer | undefined => summarizer;
 
 /**
- * 답이 이어지지 않은 작업자 알림 줄(2026-10-25, `notify_owner` 설계 §7.2) — `⛔ 막힘(07:46): …`. 요약 프롬프트엔 넣지 않는다(오류 줄처럼
- *  하네스가 붙이는 사실 줄). 시각은 데몬 기계의 현지 시각(HH:MM).
- */
-export const noticeLines = (notices: readonly { at: number; text: string }[]): string[] =>
-  notices.map((n) => {
-    const d = new Date(n.at);
-    const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-    return translate("srv.job.progress.notice", { time, text: n.text });
-  });
-
-/**
  * 진행 알림 본문 — 머리줄 + (요약 또는 기계 요약) + **오류 줄(하네스가 붙임)**.
  * never-throw: 요약기가 던지거나 빈 글을 주면 기계 요약.
  */
@@ -252,11 +241,6 @@ export const composeProgressNotice = async (p: {
   /** 할 일의 마지막 갱신 시각 · 이 알림 구간의 시작(직전 알림, 없으면 잡 시작). */
   todosAt?: number;
   since?: number;
-  /**
-   * 답이 이어지지 않은 작업자 알림 — 머리줄 **바로 아래** 첫 줄들(머리줄이 «어느 작업인가» 를 말해야 그 줄이 주어를 갖는다).
-   * ★값이 아니라 **함수**다 — 요약을 기다리는 사이 답이 도착할 수 있다(GPT R1 #1). 본문을 조립하는 그 순간에 묻는다.
-   */
-  notices?: () => readonly { at: number; text: string }[];
 }): Promise<{ text: string; summarized: boolean } | null> => {
   // 말할 사실이 없으면 보내지 않는다 — 글만 쓰는 잡에 «최근 행동 0건» 빈 알림이 나갔다(2026-10-14 적대 검토 P1).
   // ★산출도 말할 사실이다 — 알림 전에 시작해 알림 뒤 끝난 커밋은 이 구간의 시작 행동이 없어 빈 알림 판정에 걸려, 센 값이 버려졌다(GPT R1).
@@ -286,7 +270,6 @@ export const composeProgressNotice = async (p: {
   const summarized = body !== undefined;
   const lines = [
     translate("srv.job.progress.header", { name: p.name, elapsed: formatDuration(p.elapsedMs) }),
-    ...noticeLines(p.notices?.() ?? []),
     body ?? mechanicalProgress({ actions: p.actions, todos: p.todos, ...(todosStale !== undefined ? { todosStale } : {}) }),
   ].filter((l) => l !== "");
   // ★사실 줄은 요약과 별개로 하네스가 붙인다 — 요약은 모델 글이라 정체를 «순조롭다» 로 쓸 수 있다.

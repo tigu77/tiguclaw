@@ -236,10 +236,10 @@ const run = async (): Promise<Assertion[]> => {
           : `sendMessage=${body.includes("api.sendMessage")} 공유렌더=${body.includes("renderOptions(")}`,
     });
     // ⑧ 클릭이 물어본 세션으로 돌아간다 — 값과 세션을 함께 들고 있다가 인바운드에 싣는다.
-    const carries = /storePromptOption\(o\.value, opts\?\.replyToSession\)/.test(tg);
+    const carries = /storePromptOption\(o\.value, opts\?\.replyToSession(, opts\?\.promptId)?\)/.test(tg);
     const feedsBack =
-      /resolveSessionId\("telegram", chatId, entry\?\.session\)/.test(tg) &&
-      /explicitSessionId: entry\.session/.test(tg);
+      /resolveSessionId\("telegram", chatId, callbackSession\)/.test(tg) &&
+      /explicitSessionId: callbackSession/.test(tg);
     out.push({
       name: "★보기와 함께 물어본 세션을 들고 있는다",
       ok: carries,

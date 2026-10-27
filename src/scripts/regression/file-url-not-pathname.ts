@@ -19,38 +19,15 @@
  * ★등급: **소스 검사**다(실행하지 않는다). 다만 재는 것이 «표현의 유무» 라 이 축에서는
  *  그게 정확한 도구다 — `.pathname` 이 다시 들어오면 그 자체가 결함이다.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { listSourceFiles, SOURCE_ROOTS } from "./_source-files.js";
 
 /** 레포 루트 — ★이 파일 자신이 그 관용구를 지킨다(`.pathname` 금지). */
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-
-/** 검사 대상 — 배포되는 코드와 개발 스크립트 전부. 폴더에서 **유도**한다(손 목록 금지). */
-const ROOTS = ["src", "plugins", "packages", "bin", "_workspace"];
-
-const walk = (dir: string, out: string[] = []): string[] => {
-  let entries: { name: string; isDirectory: () => boolean }[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const e of entries) {
-    const full = path.join(dir, e.name);
-    // ★`rt-*` 는 적대 검토가 만든 **트리 사본**이다 — 원본을 고치면 같이 사라지므로 센다면
-    //  같은 결함을 두 번 세게 된다. `node_modules`·`dist` 는 우리 코드가 아니다.
-    if (e.isDirectory()) {
-      if (e.name === "node_modules" || e.name === "dist" || e.name.startsWith("rt-")) continue;
-      walk(full, out);
-    } else if (e.name.endsWith(".ts") || e.name.endsWith(".mts") || e.name.endsWith(".mjs")) {
-      out.push(full);
-    }
-  }
-  return out;
-};
 
 export const check: RegressionCheck = {
   name: "file-url-not-pathname",
@@ -63,13 +40,13 @@ export const check: RegressionCheck = {
     "(하나는 던지지도 않고 «없음» 으로 조용히 빈손이었다)",
   run: (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
-    const files = ROOTS.flatMap((r) => walk(path.join(repoRoot, r)));
+    const files = listSourceFiles(repoRoot);
 
     out.push(
       assert(
         "★스캐너의 눈이 살아 있다 — 파일이 실제로 모인다(0이면 아래는 공짜 초록)",
         files.length > 200,
-        `${String(files.length)}개 파일 · 루트 ${ROOTS.join("·")}`,
+        `${String(files.length)}개 파일 · 루트 ${SOURCE_ROOTS.join("·")}`,
       ),
     );
 

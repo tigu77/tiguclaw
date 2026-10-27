@@ -18,7 +18,7 @@
  *     메시지 28px 가림(그동안 알약·답글은 메시지 아래 여백 36px 가 가려 줬다). (갱신 3) **여러 차례** 바뀌어도 매번
  *     (관측자 대역이 끊긴 관측자엔 통지 안 함 — 독립 사냥 N1) · 폭은 그때그때 판정(데스크톱→모바일 전환 — 독립 사냥 M1)
  *  ⑧ 진행 표시(`#chat-status`)는 요약 상자 맨 앞 — 데스크톱은 그 상자가 `display:contents` 라 폼 아래 그대로, 모바일은 맨 위
- *  ⑨ (갱신 2·3, 결정 문서 §11·§12) 펼침이면 토글은 태그 줄 오른쪽 칸, 데스크톱 접힘은 토글 자신이 맨 위 한 줄 — **모든 폭**
+ *  ⑨ 펼침이면 토글은 패널 우상단, 데스크톱 접힘은 토글 자신이 맨 위 한 줄 — **모든 폭**
  *     (사용자 «데스크탑이든 어디든 다같이»). 진행 표시 자리만 폭별(모바일 맨 위 · 데스크톱 폼 아래). 토글은 큰 ▾ 하나
  *     (접히면 180° 회전, 낱말 없음 — 사용자 «큰 화살표를 아래로 · 입력 정보 화살표보다 큰 윗화살표»)
  *  ⑩ (결정 문서 §13) 데스크톱(>900)에서 접힌 채 사용자가 **새로** 답글 대상을 지정하거나 첨부를 붙이면 화면을 펼친다 —
@@ -545,7 +545,7 @@ export const check: RegressionCheck = {
       ),
     );
     // ── ⑨ 배치 배선 — 격자·토글·펼침/접힘은 모든 폭(갱신 3), 진행 표시 자리만 폭별 ─────────────
-    //  ★풀린 상자의 자식(진행 표시·토글)은 `#chat > *` 를 못 받아 각자 칸을 명시해야 한다(§11 설계 R1 D1) ·
+    //  ★풀린 상자의 진행 표시는 칸을 명시하고, 펼침 토글은 #chat 기준 우상단에 고정한다 ·
     //  진행 표시는 (모바일) 작업 중일 때만 맨 위 · 태그 줄 첫 렌더 전엔 토글 숨김(R1 D2) · 데스크톱 접힘은 토글 자신이 맨 위 한 줄.
     const flat = (t: string): string => t.replace(/\s+/g, " ");
     const hasIn = (css: string, sel: RegExp, decl: RegExp): boolean => {
@@ -561,12 +561,15 @@ export const check: RegressionCheck = {
       입력기록폭: hasIn(top, /^#chat > \.chat-histind$/, /justify-self:\s*start/),
       알약한줄: hasIn(top, /^\.chat-work$/, /display:\s*flex;\s*flex-wrap:\s*wrap/),
       진행표시칸: hasIn(top, /^#chat-status$/, /grid-column:\s*span 2/),
-      태그1칸: hasIn(top, new RegExp(`^${ex} > #chat-context$`), /grid-column:\s*1;\s*order:\s*-2/),
-      토글2칸: hasIn(top, new RegExp(`^${ex} #chat-info-toggle$`), /grid-column:\s*2;\s*order:\s*-2/),
+      패널기준: hasIn(top, /^#chat$/, /position:\s*relative/),
+      태그버튼여백: hasIn(top, new RegExp(`^${ex} > #chat-context$`), /grid-column:\s*span 2;\s*order:\s*-2;\s*margin-right:\s*40px/),
+      펼침우상단: hasIn(top, new RegExp(`^${ex} #chat-info-toggle$`), /position:\s*absolute;\s*top:\s*12px;\s*right:\s*12px/),
+      접힘흐름유지: !hasIn(top + mob + deskOnly, /^\.chat-info-toggle$|^#chat\.info-collapsed #chat-info-toggle$/, /position:\s*absolute/),
+      짧은태그행겹침방지: hasIn(top, new RegExp(`^${ex} #chat-info-toggle$`), /min-height:\s*0;/),
       빈태그숨김: hasIn(top, new RegExp(`^${ex} > #chat-context:empty ~ #chat-summary > #chat-info-toggle$`), /display:\s*none/),
       데스크톱접힘줄: hasIn(deskOnly, /^#chat\.info-collapsed #chat-info-toggle$/, /grid-column:\s*span 2;\s*order:\s*-1/),
       모바일상자풀기: hasIn(mob, new RegExp(`^${ex} > #chat-summary$`), /display:\s*contents/),
-      모바일진행전폭: hasIn(mob, new RegExp(`^${ex} #chat-status$`), /grid-column:\s*span 2;\s*order:\s*-3/),
+      모바일진행전폭: hasIn(mob, new RegExp(`^${ex} #chat-status$`), /grid-column:\s*span 2;\s*order:\s*-3;\s*margin:\s*0 40px 4px 0/),
       모바일대기숨김: hasIn(mob, new RegExp(`^${ex} #chat-status:not\\(\\.working\\)$`), /display:\s*none/),
       // 진행 표시 맨 위·대기 숨김은 모바일만(밖에 새면 데스크톱 진행 표시가 폼 아래에서 사라지거나 위로 간다)
       진행규칙모바일만: !flat(top).includes(`#chat:not(.info-collapsed) #chat-status`) && !flat(deskOnly).includes("#chat-status"),
@@ -587,7 +590,7 @@ export const check: RegressionCheck = {
     };
     out.push(
       assert(
-        "★⑨ 배치: 격자·토글(펼침 태그 줄 오른쪽 칸 / 데스크톱 접힘 맨 위 한 줄)·빈 태그 줄 숨김은 모든 폭 · 진행 표시 맨 위 전폭·대기 숨김은 모바일만 · 작업 알약 한 줄",
+        "★⑨ 배치: 격자·토글(펼침 패널 우상단 / 접힘 기존 흐름)·버튼 여백·빈 태그 줄 숨김은 모든 폭 · 진행 표시 맨 위 전폭·대기 숨김은 모바일만 · 작업 알약 한 줄",
         Object.values(wiring).every(Boolean),
         wiring,
       ),

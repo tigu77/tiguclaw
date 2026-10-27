@@ -2,6 +2,7 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import type { Channel, IncomingMessage, MessageHandler } from "../../src/channels/types.js";
 import type { ChannelOutbound } from "../../src/core/channel-outbound.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
+import { claimPromptAnswer, promptReplySession } from "../../src/core/prompt-answer-claims.js";
 import { translate } from "../../src/core/i18n.js";
 
 export default class CliChannel implements Channel {
@@ -35,7 +36,7 @@ export default class CliChannel implements Channel {
     // 사용자가 바로 번호를 치면 그 보기의 value 로 치환해 router 로 흘려보낸다(텔레그램
     // callback / 대시보드 버튼 클릭과 동형 — value 가 다음 인바운드 text). 번호 아닌 입력은
     // 그대로 통과(자유 답변 허용). 다음 줄을 받으면 pending 은 소진(1회용).
-    let pendingOptions: { label: string; value: string }[] | null = null;
+    let pendingOptions: { options: { label: string; value: string }[]; promptId?: string } | null = null;
     const presentOptions: IncomingMessage["presentOptions"] = async (
       question,
       options,
@@ -52,7 +53,7 @@ export default class CliChannel implements Channel {
         lines.push(translate("srv.cli.optionsPrompt"));
         process.stdout.write(`${lines.join("\n")}\n`);
         rl.prompt();
-        pendingOptions = options;
+        pendingOptions = { options, ...(opts?.promptId !== undefined ? { promptId: opts.promptId } : {}) };
         return { ok: true as const };
       } catch (e) {
         return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
@@ -67,11 +68,21 @@ export default class CliChannel implements Channel {
       }
       // pending 선택지가 있고 입력이 유효 번호면 그 value 로 치환(1회용 — 즉시 소진).
       let text = raw;
+      let answerSession: string | undefined;
       if (pendingOptions !== null) {
-        const opts = pendingOptions;
+        const { options: opts, promptId } = pendingOptions;
         pendingOptions = null;
         const n = Number.parseInt(raw, 10);
         if (Number.isInteger(n) && n >= 1 && n <= opts.length) {
+          if (promptId !== undefined) {
+            const claimed = claimPromptAnswer(promptId);
+            if (claimed !== "ok") {
+              process.stdout.write(`(${translate(claimed === "answered" ? "srv.options.alreadyAnswered" : "srv.options.expired")})\n`);
+              rl.prompt();
+              return;
+            }
+          }
+          if (promptId !== undefined) answerSession = promptReplySession(promptId);
           text = opts[n - 1]!.value;
         }
       }
@@ -84,13 +95,13 @@ export default class CliChannel implements Channel {
       //  **CLI**용" 이라고 광고하고 있었다(검토 지적). 고정 주소를 줘서 광고와 실제를 맞춘다.
       //  bindings 조회 키가 되므로 세션 선택이 재시작 뒤에도 유지된다(텔레그램과 동형).
       const CLI_ADDRESS = "local";
-      const sessionId = resolveSessionId("cli", CLI_ADDRESS);
+      const sessionId = resolveSessionId("cli", CLI_ADDRESS, answerSession);
       const msg: IncomingMessage = {
         channel: "cli",
         channelUserId: "local",
         threadKey: sessionId,
         channelAddress: CLI_ADDRESS,
-        session: { channelAddress: CLI_ADDRESS },
+        session: { channelAddress: CLI_ADDRESS, ...(answerSession !== undefined ? { explicitSessionId: answerSession } : {}) },
         text,
         receivedAt: Date.now(),
         reply,

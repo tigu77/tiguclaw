@@ -59,7 +59,7 @@ const realChannels = async (): Promise<Assertion[]> => {
   const tg = await loadPluginModule<{
     deliverDocument: (
       api: { sendDocument: (...a: unknown[]) => Promise<unknown>; sendMessage: (...a: unknown[]) => Promise<unknown> } | undefined,
-      target: string | null, filePath: string, opts?: { caption?: string; originThreadKey?: string },
+      target: string | null, filePath: string, opts?: { caption?: string; originThreadKey?: string; labelSession?: string },
     ) => Promise<{ ok: boolean; error?: string; unavailable?: true }>;
     CAPTION_MAX: number;
   }>("../../../plugins/telegram-channel/send-document.js");
@@ -76,13 +76,19 @@ const realChannels = async (): Promise<Assertion[]> => {
   // ⑦ 세션 정보 — 다른 세션에서 온 파일
   const ORIGIN = "dashboard:regr-file-origin";
   calls.length = 0;
-  const fromOther = await tg.deliverDocument(api, "4242", "/tmp/regr-icon.png", { caption: "아이콘 67개", originThreadKey: ORIGIN });
+  const fromOther = await tg.deliverDocument(api, "4242", "/tmp/regr-icon.png", { caption: "아이콘 67개", originThreadKey: ORIGIN, labelSession: ORIGIN });
   const labeled = String((calls[0]?.extra as { caption?: string } | undefined)?.caption ?? "");
   const fileId = mid;
   const mapped = findSessionForOutboundMessage("telegram", "4242", fileId);
   calls.length = 0;
+  // (2026-10-26 확정 기준) 라벨은 호출부가 정한 세션만 — 귀속 세션(표시용 기본 세션일 수 있다)만으로는 안 붙는다(출처를 지어내지 않는다).
   const fromDefault = await tg.deliverDocument(api, "4242", "/tmp/regr-icon.png", { caption: "아이콘", originThreadKey: "dashboard:default" });
   const plain = String((calls[0]?.extra as { caption?: string } | undefined)?.caption ?? "");
+  calls.length = 0;
+  const { setThreadName } = await import("../../store/sessions.js");
+  setThreadName("dashboard:default", "회귀기본");
+  const defaultLabeled = await tg.deliverDocument(api, "4242", "/tmp/regr-icon.png", { caption: "아이콘", originThreadKey: "dashboard:default", labelSession: "dashboard:default" });
+  const defaultCap = String((calls[0]?.extra as { caption?: string } | undefined)?.caption ?? "");
   // ⑦ 긴 설명 — 캡션 한도를 넘는 나머지는 뒤 글 메시지로, 그것도 세션에 묶는다
   calls.length = 0; texts.length = 0;
   const long = "가".repeat(tg.CAPTION_MAX) + " 나머지 설명";
@@ -127,7 +133,8 @@ const realChannels = async (): Promise<Assertion[]> => {
     assert("⑥ 텔레그램: 전송 실패를 삼키지 않는다(사유 그대로)", !failing.ok && /file too big/.test(String(failing.error)) && failing.unavailable !== true, JSON.stringify(failing)),
     assert("⑦ 텔레그램: 다른 세션의 파일은 캡션 앞에 [세션] 표시 + 설명", fromOther.ok && /^\[[^\]]+\] 아이콘 67개$/.test(labeled), JSON.stringify({ fromOther, labeled })),
     assert("★⑦ 텔레그램: 파일 메시지가 발원 세션에 묶인다(답글이 그 세션으로 간다)", mapped === ORIGIN, `매핑=${String(mapped)}`),
-    assert("⑦ 텔레그램: 기본 세션이면 표시를 안 붙인다(평소 무변화)", fromDefault.ok && plain === "아이콘", JSON.stringify({ plain })),
+    assert("⑦ 텔레그램: 라벨 세션을 안 넘기면 귀속 세션이 있어도 표시를 안 붙인다(출처를 지어내지 않는다)", fromDefault.ok && plain === "아이콘", JSON.stringify({ plain })),
+    assert("★⑦ 텔레그램: 자동 알림 파일은 **기본 세션도** 라벨을 단다(2026-10-26 확정 기준)", defaultLabeled.ok && defaultCap === "[회귀기본] 아이콘", JSON.stringify({ defaultCap })),
     assert(
       "⑦ 텔레그램: 한도를 넘는 설명은 캡션+뒤 글 메시지로 나뉘고 둘 다 세션에 묶인다",
       longSent.ok && longCap.length <= tg.CAPTION_MAX && texts.length === 1 && String(texts[0]?.text).includes("나머지 설명") && restMapped === ORIGIN,

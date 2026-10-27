@@ -51,7 +51,7 @@ const loadFacade = (state: {
     if (name.endsWith("/thread-reset.js")) return { applyRunHistory: () => null };
     if (name.endsWith("/sessions.js")) return { canonicalSessionChannel: (_tk: string, ch: string) => ch, getSessionChannelMeta: () => state.meta ?? null, isConversationLive: (k: string) => state.sessions.has(k), SESSION_STORAGE_CHANNEL: "http-bridge" };
     if (name.endsWith("/threadkey.js")) return { DEFAULT_SESSION_ID: "dashboard:default" };
-    if (name.endsWith("/worker-jobs.js")) return { mainMessageHandler: () => async (m: Msg) => { seen.msgs.push(m); await state.onTurn(m); } };
+    if (name.endsWith("/worker-jobs.js")) return { jobSessionLabel: (tk: string) => ({ labelSession: tk }), mainMessageHandler: () => async (m: Msg) => { seen.msgs.push(m); await state.onTurn(m); } };
     if (name.endsWith("/outbound.js")) return {
       attachmentSenderFor: () => undefined,
       optionsPresenterFor: () => undefined,

@@ -293,6 +293,18 @@ const originalRowOfCopy = (v: unknown): number | undefined => {
   }
 };
 
+/** 일반 글의 singleton과 선택지 fan-out 목록을 같은 행에 묶는다. 잘못된 항목만 건너뛴다. */
+const bindChatChannelRefs = (refs: unknown, chatId: number | undefined, ts: number): void => {
+  if (chatId === undefined || refs === undefined) return;
+  for (const ref of Array.isArray(refs) ? refs : [refs]) {
+    if (ref === null || typeof ref !== "object") continue;
+    const r = ref as { channel?: unknown; address?: unknown; messageIds?: unknown };
+    if (typeof r.channel !== "string" || typeof r.address !== "string" || !Array.isArray(r.messageIds)) continue;
+    const ids = r.messageIds.filter((id): id is string | number => typeof id === "string" || typeof id === "number");
+    bindChannelMessages(r.channel, r.address, ids, chatId, ts);
+  }
+};
+
 const startChatLogPersistence = (bus: EventBus): void => {
   bus.subscribe((event) => {
     // ★대화 가시 이벤트(선택지·통지 등)도 여기서 대화 기록에 남긴다 (2026-08-01).
@@ -305,16 +317,23 @@ const startChatLogPersistence = (bus: EventBus): void => {
         const channel = typeof p.channel === "string" ? p.channel : "";
         // 좌표 없는 이벤트는 어느 대화에 붙일지 모른다 — 남기지 않는다(엉뚱한 탭 오염 방지).
         if (threadKey === "") return;
-        recordChatMessage({
+        // 선택지는 구조(data)를 그대로 복원하되, 보이는 질문·보기·설명은 검색 인덱스(text)에도 남긴다.
+        // 빈 text만 저장하면 탭 복원은 돼도 대화 검색에서 질문이 영영 누락된다. 과거 행 보정은 하지 않는다.
+        const searchText = event.type === "prompt.options"
+          ? [p.question, ...(Array.isArray(p.options) ? p.options.map((o: { label?: unknown } | null) => o?.label) : []), p.note]
+            .filter((s): s is string => typeof s === "string").join("\n")
+          : "";
+        const chatId = recordChatMessage({
           ts: event.ts, // ★event.ts 그대로 — 라이브 렌더와 같은 dedup 키.
           threadKey,
           channel: channel !== "" ? channel : "http-bridge",
           role: "assistant",
-          text: "", // 본문은 payload 에 있다. 문구는 프런트 렌더러가 짓는다(서버 재조립 금지).
+          text: searchText, // 표시 문구는 여전히 프런트가 data로 만든다. text는 선택지 검색용.
           notice: true,
           kind: event.type,
           data: p,
         });
+        bindChatChannelRefs(p.channelRefs, chatId, event.ts);
       } catch (e) {
         console.error(
           "event-persist: 대화 가시 이벤트 적재 실패:",
@@ -388,10 +407,7 @@ const startChatLogPersistence = (bus: EventBus): void => {
           : {}),
       });
       // 채널 메시지 id → 이 행(답글 원문 정확 조회, 2026-10-19). 휘발은 위에서 빠졌고, 사본은 원본 행을 못 정했으면 chatId 가 없다(인용만).
-      const refs = payload.channelRefs as { channel?: unknown; address?: unknown; messageIds?: unknown } | undefined;
-      if (chatId !== undefined && refs !== undefined && typeof refs.channel === "string" && typeof refs.address === "string" && Array.isArray(refs.messageIds)) {
-        bindChannelMessages(refs.channel, refs.address, refs.messageIds as (string | number)[], chatId, event.ts);
-      }
+      bindChatChannelRefs(payload.channelRefs, chatId, event.ts);
     } catch (e) {
       console.error(
         "event-persist: chat_log 적재 실패:",

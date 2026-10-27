@@ -43,7 +43,8 @@ import type { PluginHost } from "../../../src/core/plugins/host.js";
 import { runTriggerInSession } from "../../../src/core/trigger-in-session.js";
 import { mainMessageHandler } from "../../../src/core/worker-jobs.js";
 import { runClaude } from "../../../src/core/claude.js";
-import { attachmentSenderFor, optionsPresenterFor } from "../../../src/core/outbound.js";
+import { attachmentSenderFor, optionsPresenterFor, sessionOfDestination } from "../../../src/core/outbound.js";
+import { withPromptOptionsObservation } from "../../../src/core/prompt-options-observe.js";
 import { withExternalTurn } from "../../../src/core/inflight-turns.js";
 import { isInFlight, runScheduleFiring, type RunnerDeps } from "./runner.js";
 import { setSchedulerLifecycleHooks, createSchedulerMcpServer } from "./mcp.js";
@@ -447,7 +448,12 @@ export const scheduleChannels = (
   threadKey: string,
 ): { presentOptions?: NonNullable<ReturnType<typeof optionsPresenterFor>>; sendAttachment?: NonNullable<ReturnType<typeof attachmentSenderFor>> } => {
   if (dest === undefined) return {};
-  const presentOptions = optionsPresenterFor(dest.channel, dest.target ?? null, threadKey);
+  // 표시는 최종 답 글(dispatch)과 같은 대화에, 답 처리는 실행 스레드에. 발급 대장이 원세션을 보존하므로 대시보드 답도 같은 곳으로 간다.
+  // 질문은 목적지 대화에 보이는 «그 밖의 선택지»이므로 그 표시 대화 라벨(기본 세션도 포함)을 명시한다.
+  const presentOptions = withPromptOptionsObservation(
+    optionsPresenterFor(dest.channel, dest.target ?? null, threadKey, sessionOfDestination(dest.channel, dest.target ?? null)),
+    { channel: dest.channel, threadKey: sessionOfDestination(dest.channel, dest.target ?? null), replyToSession: threadKey },
+  );
   // 파일은 답 글자(dispatch)와 같은 규칙 — 발원 세션 없이 목적지로.
   const sendAttachment = attachmentSenderFor(dest.channel, dest.target ?? null);
   return {

@@ -259,6 +259,24 @@
       // 큐-취소(대기 중 버블) — ✕ 클릭 시 POST /api/cancel-queued. "cancelled" 면 버블을 취소선+
       // "취소됨"(G2)·pendingQueued 에서 제거(echo 승격 대상 아님). "already-started"/"not-found"
       // (echo 이후 등)면 안내만(G3, 자동 /stop 전환 X). 실패해도 버블은 유지(비파괴).
+      // 대기 중 버블을 «취소됨» 으로 접고 승격 대상에서 뺀다 — 큐 취소와 «닫힌 선택지 답 거절»(2026-10-26)이 같은 모양을 쓴다.
+      const foldQueuedEntry = (entry) => {
+        const el = entry.el;
+        el.classList.remove("queued");
+        el.classList.add("cancelled-turn");
+        const b = el.querySelector(".queued-badge");
+        if (b) { b.textContent = i18n("axis.cancelled"); b.classList.add("cancelled-badge"); }
+        const x = el.querySelector(".queued-cancel");
+        if (x) x.remove();
+        const idx = pendingQueued.indexOf(entry);
+        if (idx !== -1) pendingQueued.splice(idx, 1); // echo 승격 대상에서 제외.
+      };
+      // 서버가 큐에 넣기 전에 거절한 글(닫힌 선택지의 답)의 낙관 버블 — 상관 id 로 찾아 접는다. 없으면(유휴 전송) 아무것도 안 한다.
+      const foldRejectedQueuedBubble = (cid) => {
+        if (!cid) return;
+        const entry = pendingQueued.find((p) => p.cid === cid);
+        if (entry) foldQueuedEntry(entry);
+      };
       const cancelQueuedBubble = async (entry, btn) => {
         if (!entry || !entry.cid) return;
         btn.disabled = true;
@@ -271,14 +289,7 @@
           const data = await r.json().catch(() => ({}));
           const result = r.ok ? data.result : null;
           if (result === "cancelled") {
-            const el = entry.el;
-            el.classList.remove("queued");
-            el.classList.add("cancelled-turn");
-            const b = el.querySelector(".queued-badge");
-            if (b) { b.textContent = i18n("axis.cancelled"); b.classList.add("cancelled-badge"); }
-            btn.remove();
-            const idx = pendingQueued.indexOf(entry);
-            if (idx !== -1) pendingQueued.splice(idx, 1); // echo 승격 대상에서 제외.
+            foldQueuedEntry(entry);
           } else {
             // 이미 시작됨(echo 도착 후) 또는 미상 — 안내만(G3).
             btn.disabled = false;

@@ -87,9 +87,18 @@ class El {
   querySelectorAll(sel: string): El[] {
     const m = /^\[data-([a-z]+)\]$/.exec(sel);
     const out: El[] = [];
-    const walk = (n: El): void => { for (const k of n.children) { if (m !== null && k.dataset[m[1]!] !== undefined) out.push(k); walk(k); } };
+    const walk = (n: El): void => { for (const k of n.children) {
+      if ((m !== null && k.dataset[m[1]!] !== undefined) || (sel.startsWith(".") && k.classList.contains(sel.slice(1)))) out.push(k);
+      walk(k);
+    } };
     walk(this);
     return out;
+  }
+  closest(sel: string): El | null {
+    for (let n: El | null = this; n !== null; n = n.parentNode) {
+      if (sel.split(",").some((s) => s.trim().split(".").filter(Boolean).every((c) => n!.classList.contains(c)))) return n;
+    }
+    return null;
   }
   addEventListener(t: string, fn: (ev: unknown) => unknown): void { this.handlers.set(t, [...(this.handlers.get(t) ?? []), fn]); }
   async fire(t: string): Promise<void> { for (const fn of this.handlers.get(t) ?? []) await fn({ stopPropagation() {}, preventDefault() {} }); }
@@ -255,11 +264,19 @@ const jumpRun = async (): Promise<Assertion[]> => {
   const pages: Array<Array<{ ts: number; id: number; inner?: Record<string, string> }> | "fail"> = [];
   let fetches = 0;
   let scrollTop = 0;
+  const chatKindBuilders = new Map<string, unknown>();
   const ctx = vm.createContext({
     console: { warn() {}, debug() {}, log() {} },
     window: {} as Record<string, unknown>,
-    document: { querySelector: () => null, createElement: (t: string) => new El(t) },
+    document: { querySelector: () => null, getElementById: () => null, createElement: (t: string) => new El(t) },
     i18n: (k: string) => k,
+    localChatCount: 0,
+    renderedPromptOptionKeys: new Set(),
+    chatKindBuilders,
+    registerChatKindBuilder: (k: string, b: unknown) => { chatKindBuilders.set(k, b); },
+    localStorage: { getItem: () => null, setItem() {} },
+    fmtTime: () => "12:00", sendChat() {}, isTouchPrimary: () => false,
+    vtAppend: (node: El) => { vtItems.push({ node, top: vtItems.length * 100 }); },
     activeThreadKey: "dashboard:A",
     switchToken: 0,
     assistantName: "tiguclaw",
@@ -288,6 +305,8 @@ const jumpRun = async (): Promise<Assertion[]> => {
   vm.runInContext(section(virt, "      const JUMP_PASSES = 14;", "      // 파일 확장자 → highlight.js"), ctx);
   vm.runInContext(section(hist, "      const replyTargetPick = (rt) => (items, strongOnly) => {", "      /**\n       * 답글 표시 줄"), ctx);
   vm.runInContext(section(hist, "      const HISTORY_PAGE = 20;", null), ctx);
+  vm.runInContext(src("packages/dashboard/js/prompt-options.js"), ctx);
+  vm.runInContext(section(hist, "      const buildHistoryDiv = (entry) => {", "      // 보낸 메시지 버블 안 첨부 미리보기"), ctx);
   const run = <T>(code: string): T => vm.runInContext(code, ctx) as T;
   const reset = (loaded: Array<{ ts: number; id: number }>): void => {
     vtItems.length = 0;
@@ -376,6 +395,25 @@ const jumpRun = async (): Promise<Assertion[]> => {
       `다른 id=${g} · 동률 둘=${h} · 강조 ${hitIds().join(",")}`,
     ),
   );
+  // 실제 선택지 빌더/이력 복원 → 기존 matcher + 실제 jump. 좌표를 테스트에서 주입하지 않는다.
+  reset([]);
+  run(`reachedOldest = true; renderPromptOptions({question: "선택지", options: [{label: "A", value: "a"}]}, "12:00", 7770);`);
+  const liveOption = vtItems[0]?.node;
+  const liveJump = await jump({ id: 777, ts: 7770 });
+  out.push(assert("⑤ ★라이브 실제 선택지 카드는 관측 ts로 정확 이동(주변 유사시각 폴백 아님)",
+    liveJump === "ok" && liveOption?.dataset.ts === "7770" && liveOption.classList.contains("msg-jump-hit"),
+    { result: liveJump, data: liveOption?.dataset, hits: hitIds() }));
+  // 같은 ts의 경쟁 카드가 있어야 history id 제거 변이를 ts 폴백이 숨기지 못한다.
+  reset([]);
+  const historyOption = run<El>(`buildHistoryDiv({kind: "prompt.options", id: 778, ts: 7780, data: {question: "선택지", options: [{label: "A", value: "a"}]}})`);
+  const competingOption = run<El>(`buildPromptOptions({question: "다른 선택지", options: [{label: "A", value: "a"}]}, "12:00", 7780)`);
+  vtItems.push({ node: competingOption, top: 0 }, { node: historyOption, top: 100 });
+  run("reachedOldest = true;");
+  const historyJump = await jump({ id: 778, ts: 7780 });
+  out.push(assert("⑤ ★이력 선택지 실제 카드: 같은 ts 경쟁 카드를 두고 persistent id로 원문만 정확 이동",
+    historyJump === "ok" && historyOption.dataset.id === "778" && historyOption.dataset.ts === "7780" &&
+      historyOption.classList.contains("msg-jump-hit") && !competingOption.classList.contains("msg-jump-hit"),
+    { result: historyJump, data: historyOption.dataset, competing: competingOption.dataset, hits: hitIds() }));
   // (d) 검색 이동(선택 없음)은 종전대로 가장 가까운 것
   reset([{ ts: 8000, id: 80 }, { ts: 8100, id: 81 }]);
   const d = await run<(ts: number) => Promise<string>>("window.jumpToMessageTs")(8090);

@@ -298,6 +298,10 @@ interface RunFail {
   ok: false;
   reason: "timeout" | "failed";
   detail: string;
+  /** runChild가 확보한 비민감 종료 정보. 컴파일 준비 실패에는 없을 수 있다. */
+  exitCode?: number | null;
+  killed?: boolean;
+  signaled?: boolean;
   /**
    * ★**죽은 자식이 남긴 stdout** (2026-09-19, 계약 3).
    *
@@ -486,10 +490,13 @@ const runChild = (file: string, args: string[], env: Record<string, string>, tim
         // ★**스크립트가 제 오류를 stdout 에 적었으면 그게 정본**이다(형식을 우리가 정했다).
         const own = scriptError(out);
         if (err === null && own === null) return resolve({ ok: true, stdout: out });
-        const killed = (err as { killed?: boolean }).killed === true;
+        const killed = err?.killed === true;
         resolve({
           ok: false,
           reason: killed ? "timeout" : "failed",
+          exitCode: err === null ? 0 : typeof err.code === "number" && Number.isSafeInteger(err.code) ? err.code : null,
+          killed,
+          signaled: err?.signal != null,
           detail: killed
             ? `${timeoutMs}ms 초과`
             : (own ?? cleanPowerShellError(String(stderr)) ?? err?.message.slice(0, 300) ?? "알 수 없는 실패"),
@@ -880,15 +887,31 @@ const IDLE_SCRIPT = [
   "[Console]::Out.WriteLine('{\"s\":' + ([math]::Round((([TC.Idle]::GetTickCount() - $l.dwTime) / 1000.0), 3)) + '}')",
 ].join("\n");
 
-export const idleSeconds = async (): Promise<number | null> => {
+export const idleSeconds = async (onFailure?: (diagnostic: string) => void): Promise<number | null> => {
+  const started = performance.now();
   const r = await runScript(IDLE_SCRIPT, {});
-  if (!r.ok) return null;
-  try {
-    const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as { s?: number };
-    return typeof v.s === "number" && Number.isFinite(v.s) ? v.s : null;
-  } catch {
+  const fail = (reason: "execution" | "timeout" | "empty-output" | "json-parse" | "invalid-number"): null => {
+    // 원문·명령·경로는 전달하지 않는다. 진단 실패도 조회 결과(null)를 바꾸면 안 된다.
+    try {
+      onFailure?.(
+        `유휴 조회 실패 — ${reason} · 경과 ${Math.round(performance.now() - started)}ms` +
+        (!r.ok
+          ? ` · 종료코드 ${r.exitCode ?? "모름"} · 강제종료 ${r.killed === true} · 시그널 ${r.signaled === true}`
+          : ""),
+      );
+    } catch { /* 로그 장애와 무관하게 입력은 차단한다. */ }
     return null;
+  };
+  if (!r.ok) return fail(r.reason === "timeout" ? "timeout" : "execution");
+  const last = r.stdout.trim().split("\n").pop() ?? "";
+  if (last === "") return fail("empty-output");
+  let v: { s?: number } | null;
+  try {
+    v = JSON.parse(last) as { s?: number } | null;
+  } catch {
+    return fail("json-parse");
   }
+  return v !== null && typeof v.s === "number" && Number.isFinite(v.s) ? v.s : fail("invalid-number");
 };
 
 /**

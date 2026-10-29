@@ -77,6 +77,23 @@ export const sanitizeFilename = (n: string): string =>
   n.replace(/[/\\]/g, "_").replace(/[^\w.\- ]/g, "").trim().slice(-120) || "file";
 
 /**
+ * **보이는 이름** — 화면·이력·받기에 쓰는 원래 이름(한글 포함). 빈 결과는 `""`.
+ * ★`sanitizeFilename` 은 ASCII 대체(헤더·저장 확장자)용이다 — 그걸 표시 이름으로 쓰니 `회사돌쇠전달.md` 가 `.md`,
+ *  `VB개선안.md` 가 `VB.md` 가 됐다(2026-10-28). 저장 경로엔 이 이름을 쓰지 않는다(저장 이름은 해시).
+ * 지우는 것: 경로 문자(→ `_`) · 제어/방향 제어 문자(보이는 확장자를 뒤집어 속인다) · 짝 없는 서로게이트(인코딩이 던진다).
+ * 자르기는 코드 포인트 단위(이모지 가운데를 끊지 않는다).
+ */
+const cleanDisplayName = (n: string, max: number): string =>
+  Array.from(
+    n
+      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
+      .replace(/[/\\]/g, "_")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+      .trim(),
+  ).slice(-max).join("");
+export const displayFilename = (n: string): string => cleanDisplayName(n, 120) || "file";
+
+/**
  * 받을 때의 파일 이름 헤더 — **원래 이름(한글 포함)** 으로 (2026-10-16, 정태님 «보내준 파일 이름 그대로 다운로드»).
  * ★종전엔 저장 이름(해시)이 그대로 나갔고, `sanitizeFilename` 은 한글을 지워 원래 이름을 줘도 `file` 이 됐다. 표준은 둘을 같이
  *  싣는 것이다 — 옛 브라우저용 ASCII `filename` 과 UTF-8 `filename*`(RFC 6266/5987). 경로 문자·제어 문자·따옴표는 지운다(이름만
@@ -84,7 +101,7 @@ export const sanitizeFilename = (n: string): string =>
  */
 export const contentDispositionFor = (type: "inline" | "attachment", wanted: string, stored: string): string => {
   // 자르기는 **코드 포인트** 단위 — UTF-16 으로 자르면 이모지(서로게이트 쌍) 가운데가 끊겨 encodeURIComponent 가 던지고 500 이 났다(레드팀 A).
-  const clean = Array.from(wanted.replace(/[/\\"]/g, "_").replace(/[\u0000-\u001f\u007f]/g, "").trim()).slice(-200).join("");
+  const clean = cleanDisplayName(wanted.replace(/"/g, "_"), 200);
   const name = clean === "" ? stored : clean;
   const ascii = sanitizeFilename(name);
   // 이름 부분(확장자 앞)에 영숫자가 없으면(한글만 등) ASCII 대체는 저장 이름으로 — «.pdf» 처럼 이름 없는 대체를 내지 않는다.
@@ -93,8 +110,9 @@ export const contentDispositionFor = (type: "inline" | "attachment", wanted: str
   const star = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
   return `${type}; filename="${fallback}"; filename*=UTF-8''${star}`;
 };
+// 저장 확장자는 ASCII 만(표시 이름은 유니코드라 여기서 거른다 — 예전엔 이름 전체를 먼저 걸러서 ASCII 였다).
 const extForAttachment = (filename: string, mime: string): string => {
-  const e = path.extname(filename).replace(/^\./, "").toLowerCase();
+  const e = path.extname(filename).replace(/^\./, "").replace(/[^\w\- ]/g, "").toLowerCase();
   if (e.length > 0 && e.length <= 8) return e;
   return EXT_BY_MIME[mime] ?? "bin";
 };
@@ -115,7 +133,7 @@ export const ingestAttachments = async (
   for (const a of raw) {
     const item = a as { filename?: unknown; mimeType?: unknown; dataBase64?: unknown };
     if (typeof item.dataBase64 !== "string" || item.dataBase64 === "") continue;
-    const filename = sanitizeFilename(
+    const filename = displayFilename(
       typeof item.filename === "string" ? item.filename : "file",
     );
     const mimeType =
@@ -173,8 +191,8 @@ export const persistOutboundAttachment = async (
 ): Promise<OutboundAttachmentMeta | null> => {
   const st = await fs.stat(srcPath).catch(() => null);
   if (st === null || !st.isFile()) return null;
-  const name = sanitizeFilename(path.basename(srcPath));
-  const srcExt = path.extname(srcPath).replace(/^\./, "").toLowerCase();
+  const name = displayFilename(path.basename(srcPath));
+  const srcExt = path.extname(srcPath).replace(/^\./, "").replace(/[^\w\- ]/g, "").toLowerCase();
   const mime = mimeForExt(srcExt);
   const kind = attachmentKindOf(mime);
   const dir = path.join(getPaths().attachmentsDir, channel, yyyymmddUtc());

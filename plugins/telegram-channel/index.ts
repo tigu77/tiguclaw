@@ -1196,10 +1196,9 @@ export default class TelegramChannel implements Channel {
           .catch(() => {});
         return;
       }
-      // 1회용 — 복원 즉시 제거(중복 클릭 = 중복 메시지 방지 + 맵 위생).
-      promptOptionMap.delete(id);
       // ★한 질문의 답은 한 번만 (2026-10-26) — 같은 질문이 대시보드에도 살아 있다. 이미 다른 곳(또는 이 질문의 다른 보기)에서
       //  답했거나 대장에서 빠졌으면 처리하지 않고 한 줄로 알린다. 질문 id 가 없는 보기(슬래시 선택지)는 종전 그대로.
+      //  ★거절된 클릭은 보기 id 를 **남긴다**(2026-10-28) — 대시보드 답이 시작 전에 취소되면 질문이 다시 열리고, 같은 버튼이 그때 동작해야 한다.
       if (entry?.promptId !== undefined) {
         const claim = claimPromptAnswer(entry.promptId);
         if (claim !== "ok") {
@@ -1209,6 +1208,8 @@ export default class TelegramChannel implements Channel {
           return;
         }
       }
+      // 1회용 — 처리하기로 한 클릭만 제거(중복 클릭 = 중복 메시지 방지 + 맵 위생).
+      promptOptionMap.delete(id);
       const chat = ctx.chat;
       if (chat === undefined) return; // 채팅 컨텍스트 없는 콜백(이론상) — 안전 종료.
       // 선택값을 사용자 발화로 에코(텍스트 흐름과 시각 정합). 부수 UX라 실패해도 무시.
@@ -1233,7 +1234,8 @@ export default class TelegramChannel implements Channel {
         channelAddress: chatId,
         session: {
           channelAddress: chatId,
-          ...(callbackSession !== undefined ? { explicitSessionId: callbackSession } : {}),
+          // 보기 맵·발급 대장에서 꺼낸 답 좌표 — 선택기 채널이라는 뜻이 아니다(`/sessions` 선택지가 이 방 바인딩을 다룬다, 2026-10-28 B3).
+          ...(callbackSession !== undefined ? { explicitSessionId: callbackSession, fromPromptAnswer: true as const } : {}),
         },
         text: value,
         receivedAt: Date.now(),

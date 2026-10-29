@@ -313,6 +313,7 @@
         row.appendChild(meta);
         row.appendChild(btn);
         page.appendChild(row);
+        page.appendChild(buildHomeDirectoryRow());
         page.appendChild(buildLimitResumeRow());
         page.appendChild(buildMemoryCapRow());
         page.appendChild(buildLocaleRow());
@@ -322,6 +323,99 @@
         page.appendChild(buildChangelogRow());
         page.appendChild(buildUpdateNotesRow());
         root.appendChild(page);
+      };
+
+      // The lock outlives a settings re-render; opening a host folder is not a browser-local action.
+      let homeOpening = false;
+      let homePaintNow = null;
+      const buildHomeDirectoryRow = () => {
+        const row = document.createElement("div");
+        row.className = "settings-row settings-home-row";
+        row.setAttribute("data-settings-row", "home-directory");
+        const meta = document.createElement("div");
+        meta.className = "settings-meta";
+        const name = document.createElement("div");
+        name.className = "settings-name";
+        name.textContent = i18n("settings.home.head");
+        const hint = document.createElement("div");
+        hint.className = "settings-desc";
+        hint.textContent = i18n("settings.home.hint");
+        const pathEl = document.createElement("code");
+        pathEl.className = "settings-home-path";
+        pathEl.textContent = i18n("common.loading");
+        const status = document.createElement("div");
+        status.className = "settings-desc";
+        status.setAttribute("role", "status");
+        meta.appendChild(name);
+        meta.appendChild(hint);
+        meta.appendChild(pathEl);
+        meta.appendChild(status);
+        const actions = document.createElement("div");
+        actions.className = "settings-home-actions";
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "settings-toggle";
+        copy.textContent = i18n("settings.home.copy");
+        copy.disabled = true;
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "settings-toggle";
+        open.textContent = i18n("settings.home.open");
+        open.disabled = true;
+        let home = null;
+        const paint = (message) => {
+          open.disabled = home === null || homeOpening;
+          if (message !== undefined) status.textContent = message;
+        };
+        homePaintNow = paint;
+        copy.addEventListener("click", async () => {
+          if (home === null || copy.disabled) return;
+          copy.disabled = true;
+          try {
+            await navigator.clipboard.writeText(home);
+            status.textContent = i18n("settings.home.copied");
+          } catch {
+            status.textContent = i18n("settings.home.copyFailed");
+          } finally {
+            copy.disabled = false;
+          }
+        });
+        open.addEventListener("click", async () => {
+          if (home === null || homeOpening) return;
+          homeOpening = true;
+          paint(i18n("settings.home.opening"));
+          let message;
+          try {
+            const r = await fetch("/api/open-home", { method: "POST" });
+            const d = await r.json();
+            if (!r.ok || d.ok !== true) throw new Error("Open failed");
+            message = i18n("settings.home.requested");
+          } catch {
+            message = i18n("settings.home.openFailed");
+          } finally {
+            homeOpening = false;
+            homePaintNow(message);
+          }
+        });
+        actions.appendChild(copy);
+        actions.appendChild(open);
+        row.appendChild(meta);
+        row.appendChild(actions);
+        void (async () => {
+          try {
+            const r = await fetch("/api/home-directory");
+            const d = await r.json();
+            if (!r.ok || typeof d.path !== "string" || !d.path) throw new Error("Home missing");
+            home = d.path;
+            pathEl.textContent = home;
+            copy.disabled = false;
+            paint();
+          } catch {
+            pathEl.textContent = "—";
+            status.textContent = i18n("settings.home.loadFailed");
+          }
+        })();
+        return row;
       };
 
       /**

@@ -226,7 +226,12 @@
 
       // reply = { text, ref? } — 답글 원문과 대상(없으면 답글 아님).
       // promptId — 선택지 답일 때 그 질문의 발급 id(서버가 «한 질문의 답은 한 번» 을 판정, 2026-10-26). 없으면 일반 글.
-      const sendChatMessage = async (text, attachments, reply, promptId) => {
+      // sendOpts(선택지 카드만, 2026-10-28) — `onCorrelation(cid)`: 보내기 직전 상관 id(✕ 취소가 카드를 되살릴 키) ·
+      //  `queueKey`: 답이 줄 서는 스레드가 표시 탭과 다를 때 그 키(서버가 정한 `answerThreadKey`) — «바쁨» 판정과 ✕ 취소가 그 큐를 본다.
+      // 반환 사실(카드가 읽는다): `closed`(+`reason`·`error`) = 서버가 닫힌 질문이라 거절 · `cancelled` = 큐에서 시작 전 취소됨 ·
+      //  `stillRunning` = 504(받았고 아직 처리 중 — 큐 항목은 살아 있다) · `restore` = 서버가 «안 받았다» 고 말함.
+      const sendChatMessage = async (text, attachments, reply, promptId, sendOpts) => {
+        const queueKey = sendOpts && typeof sendOpts.queueKey === "string" && sendOpts.queueKey !== "" ? sendOpts.queueKey : null;
         // ★★**보낼 방을 여기서 고정한다** (2026-09-20, 회사돌쇠 검토 ②). `await` 뒤에
         //  `activeThreadKey` 를 다시 읽으면, 보내는 사이 탭을 옮겼을 때 **다른 방의 기록**을
         //  조회해 «도착 안 했다» 로 읽는다(실측 재현: A 에 보냈는데 `threadKey=room-B` 를 조회).
@@ -242,10 +247,15 @@
         // 낙관적 사용자 버블: 진행 중이면 "대기 중" 배지, 첨부가 있으면 이미지/파일 미리보기를 즉시 렌더
         // (전송한 파일을 채팅 카드에서 바로 확인). 둘 중 하나라도 해당하고 내용이 있으면 만든다.
         const busy = activeTurns.has(activeThreadKey);
+        // «대기 중» 은 **답이 줄 서는 큐**가 바쁜가다 — 보통 이 탭(`busy` 와 같다), 대화 밖 작업의 질문이면 그 작업 스레드(2026-10-28 B4).
+        //  ★아래 거절 판정에는 `busy`(이 탭이 전송 전에 바빴나)를 그대로 넘긴다 — «작업 중» 표시는 이 탭에 켜므로 답 큐와 섞지 않는다.
+        const queueBusy = queueKey ? activeTurns.has(queueKey) : busy;
         const hasAtt = !!(attachments && attachments.length);
-        if ((busy || hasAtt) && (text || hasAtt)) {
+        if (sendOpts && typeof sendOpts.onCorrelation === "function") sendOpts.onCorrelation(correlationId);
+        if ((queueBusy || hasAtt) && (text || hasAtt)) {
           queueOptimisticBubble(text, {
-            attachments: hasAtt ? attachments : null, queued: busy, cid: correlationId,
+            attachments: hasAtt ? attachments : null, queued: queueBusy, cid: correlationId,
+            ...(queueKey ? { queueKey } : {}),
             // 답글 표시 — 서버가 만들 값과 같은 모양(`{ text, ts? }`). 앞부분 자르기는 화면이 한 줄로 줄여 보여 준다.
             ...(reply && reply.text ? { replyTo: { text: reply.text, ...(typeof reply.at === "number" ? { ts: reply.at } : {}) } } : {}),
           });
@@ -322,7 +332,13 @@
             //  경과 시간으로 뒤집으면 안 된다. 「작업 중 표시」와 「수락 여부」는 다른 판단이다.
             // ★`restore` 가 곧 «서버가 안 받았다고 말했나» 다. `ok` 와 갈라 둔다 —
             //  전송이 성공한 것은 아니지만, 되돌리는 것과는 다른 판단이다.
-            return { ok: false, restore: act.restore };
+            // 선택지 카드가 읽는 사실을 같이 싣는다(2026-10-28 A2) — 닫힌 질문 거절(서버 문구는 이미 사용자 언어 — `srv.options.*`) ·
+            //  504(받았고 아직 처리 중 — 큐 항목은 살아 있다).
+            return { ok: false, restore: act.restore, ...(act.closed ? { closed: true, reason: data.reason, error: data.error } : {}), ...(act.stillRunning ? { stillRunning: true } : {}) };
+          } else if (data && data.cancelled) {
+            // 큐에서 시작 전에 취소됐다(✕) — 이 탭이 켠 작업 표시는 끈다(종전과 같다). 카드는 이 사실로 다시 열린다.
+            setChatWorking(false, sentTo);
+            return { ok: true, cancelled: true };
           } else if (data && data.steered) {
             // mid-turn steering 주입(ADR 2026-07-16) — 이 POST 는 진행 턴을 *이어가게* 메시지를
             // 끼워넣고 즉시 반환한다(턴 완료 아님). 여기서 setChatWorking(false, sentTo) 하면 긴 codex
@@ -369,5 +385,5 @@
         }
         return { ok: true };
       };
-      const submitOptionValue = (value, promptId) => sendChatMessage(value, undefined, undefined, promptId);
+      const submitOptionValue = (value, promptId, sendOpts) => sendChatMessage(value, undefined, undefined, promptId, sendOpts);
 

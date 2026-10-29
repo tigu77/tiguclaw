@@ -1266,6 +1266,16 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    // Server decides the home; never forward browser path/command input.
+    if (pathname === "/api/home-directory" && method === "GET") {
+      await proxyJson(res, "/home-directory");
+      return;
+    }
+    if (pathname === "/api/open-home" && method === "POST") {
+      await proxyJson(res, "/open-home", { method: "POST" });
+      return;
+    }
+
     // 프로젝트 폴더를 데몬 호스트 파일 탐색기로 열기(프로젝트 카드 ⋯ 메뉴). bridge 가 등록
     // 프로젝트 경로만 허용(검증). write 토큰.
     if (pathname === "/api/open-path" && method === "POST") {

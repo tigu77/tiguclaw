@@ -7,6 +7,9 @@ dist/
 .env.local
 .claude/settings.local.json
 *.log
+!bench/tasks/multi-turn-ops/workspace/logs/app-1.log
+!bench/tasks/multi-turn-ops/workspace/logs/app-2.log
+!bench/tasks/multi-turn-ops/workspace/logs/app-3.log
 *.db
 *.db-journal
 *.db-wal

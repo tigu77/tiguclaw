@@ -19,7 +19,7 @@
  * ★그리고 **판단이 한 곳**임을 지킨다: 붙여넣은 주소 파싱·CSRF·토큰 저장은 코어에 있고
  *  CLI 도 그걸 쓴다. 베끼면 한쪽만 고쳐지는 날 한쪽 사용자가 조용히 로그아웃된다.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -143,11 +143,37 @@ export const check: RegressionCheck = {
         `codex=${/login:\s*\{/.test(codexPlugin)} claude=${/login:\s*\{/.test(claudePlugin)}`,
       ),
     );
+    // A plugin is moved as a directory. Follow local imports; missing, escaping and
+    // bare dependencies still fail, as do changes to the host token-storage contract.
+    const pluginRoot = path.join(REPO, "plugins/claude-subscription-auth");
+    const pending = [path.join(pluginRoot, "index.mjs")];
+    const seen = new Set<string>();
+    const dependencies: string[] = [];
+    while (pending.length) {
+      const file = pending.pop()!;
+      if (seen.has(file)) continue;
+      seen.add(file);
+      if (!existsSync(file)) { dependencies.push(`missing: ${file}`); continue; }
+      const ts = await import("typescript");
+      const body = readFileSync(file, "utf8");
+      const parsed = ts.createSourceFile(file, body, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+      // The original contract concerned eager imports: optional usage commands already
+      // use lazy host-specific modules. No new external eager dependency is allowed.
+      for (const statement of parsed.statements) {
+        if (!(ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement))) continue;
+        const specifier = statement.moduleSpecifier;
+        if (!specifier || !ts.isStringLiteral(specifier)) continue;
+        const spec = specifier.text;
+        const target = path.resolve(path.dirname(file), spec);
+        if (!spec.startsWith(".") || !target.startsWith(pluginRoot + path.sep)) dependencies.push(`${file}: ${spec}`);
+        else pending.push(target);
+      }
+    }
     out.push(
       assert(
-        "★claude 플러그인은 여전히 **아무것도 import 하지 않는다**(홈으로 옮겨 살아남는 근거)",
-        !/^import /m.test(claudePlugin) && /host\.saveClaudeToken\(/.test(claudePlugin),
-        `import=${/^import /m.test(claudePlugin) ? "★생겼다" : "0"} · 저장=host.saveClaudeToken`,
+        "★claude 플러그인 디렉터리는 외부 모듈 정적 의존이 없다(홈으로 옮겨 살아남는 근거)",
+        dependencies.length === 0 && seen.size > 0 && /host\.saveClaudeToken\(/.test(claudePlugin),
+        { modules: [...seen].map((f) => path.relative(pluginRoot, f)), dependencies, hostStorage: /host\.saveClaudeToken\(/.test(claudePlugin) },
       ),
     );
 

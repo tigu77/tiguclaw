@@ -11,13 +11,14 @@
  */
 import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
 import { bootDashboard, jsonResponse, makeClock } from "./_mini-dom.js";
+import { bgPanelHtml } from "./_bg-panel-fixture.js";
 
 export const check: RegressionCheck = {
   name: "bg-focus-job-stops-follow",
   guards: "프로젝트 화면의 잡 카드를 눌러 백그라운드 패널의 그 잡으로 가도, 따라가기가 맨 아래로 되돌려 목표 카드가 화면 밖에 남던 것",
   run: async (): Promise<Assertion[]> => {
     const clock = makeClock();
-    const dash = bootDashboard({ clock, i18n: i18nForContext, upTo: "tabs.js", allIds: true, fetch: async () => jsonResponse({}, 404) });
+    const dash = bootDashboard({ html: bgPanelHtml(), clock, i18n: i18nForContext, upTo: "tabs.js", allIds: true, fetch: async () => jsonResponse({}, 404) });
     for (let i = 0; i < 5; i++) {
       dash.run(`ensureJobCard(${JSON.stringify("f" + i)}, ${JSON.stringify({ threadKey: "dashboard:default", kind: "worker", label: "카드 " + i })})`);
     }

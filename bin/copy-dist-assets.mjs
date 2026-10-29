@@ -180,6 +180,8 @@ const main = async () => {
 
   // 1) appRoot()-상대 헌법/빌트인 자산 → dist/ (marker walk-up 이 dist 를 appRoot 로 잡음).
   await copyFile("SYSTEM.md");
+  // load-env uses the same dep-free discovery as CLI/supervisor (source + built layout).
+  await copyFile("bin/windows-tools.mjs");
   // ★CHANGELOG 도 appRoot()-상대 앱 자산이다 (2026-08-24 — 대시보드 「설정 → 변경 이력」).
   //  배포본은 루트에 실물이 있고, **개발 레포는 오버레이가 정본**이라(manifest 가 루트로
   //  복사한다) 여기서 그 차이를 흡수한다 — 이 스크립트의 일이 "dist 를 설치본처럼 보이게"

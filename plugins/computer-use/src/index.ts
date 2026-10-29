@@ -740,7 +740,7 @@ const runSteps = async (
   // ★**단계별 소요를 잰다 — 정책은 안 바꾼다** (2026-09-20, 긴급 인계서 C).
   //  «캡처 → 응답 반환 → do 도착 → preflight/idle → 실제 실행» 중 **어디가 예산을
   //  먹는지** 아무도 안 재고 있었다. TTL 후보를 고르기 전에 그 분해가 먼저다.
-  const idle = await ctl.idleSeconds((diagnostic) => host?.log(diagnostic));
+  const idle = await ctl.idleSeconds();
   tIdle = Date.now();
   const now = tIdle;
   const begin = beginAction(w.desktop, owner, now, idle);

@@ -284,13 +284,18 @@
           const r = await fetch("/api/cancel-queued", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ threadKey: activeThreadKey, correlationId: entry.cid }),
+            // 답 큐가 표시 탭과 다른 선택지 답(2026-10-28 B4)은 그 큐를 지목한다 — 표시 탭 키로는 서버가 그 항목을 못 찾는다.
+            body: JSON.stringify({ threadKey: entry.queueKey || activeThreadKey, correlationId: entry.cid }),
           });
           const data = await r.json().catch(() => ({}));
           const result = r.ok ? data.result : null;
           if (result === "cancelled") {
             foldQueuedEntry(entry);
+            // 서버가 «시작 전 취소» 를 확정했다 — 그 답의 질문은 서버에서 다시 열렸다. 카드도 다시 고를 수 있게(2026-10-28 A2).
+            if (typeof reopenPromptCard === "function") reopenPromptCard(entry.cid);
           } else {
+            // 이미 시작했으면 그 카드는 닫힌 채다 — 되살림을 거둔다(not-found·실패는 판단을 미룬다).
+            if (result === "already-started" && typeof forgetPromptCardReopener === "function") forgetPromptCardReopener(entry.cid);
             // 이미 시작됨(echo 도착 후) 또는 미상 — 안내만(G3).
             btn.disabled = false;
             btn.title = i18n("axis.alreadyStarted.short");
@@ -311,7 +316,8 @@
           const msg = div.querySelector(".chat-message");
           (msg || div).appendChild(buildAttachmentsPreview(o.attachments));
         }
-        const entry = { text, el: div, cid };
+        // queueKey — 답이 줄 서는 스레드가 표시 탭과 다를 때만(선택지 카드의 `answerThreadKey`, 2026-10-28 B4). ✕·승격이 그 큐를 본다.
+        const entry = { text, el: div, cid, ...(o.queueKey ? { queueKey: o.queueKey } : {}) };
         if (o.queued) {
           div.classList.add("queued");
           const badge = document.createElement("span");

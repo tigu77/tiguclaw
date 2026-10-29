@@ -191,13 +191,19 @@ const main = async (): Promise<void> => {
   console.log("[env]");
   const anthropicKey = process.env.ANTHROPIC_API_KEY ?? "";
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "";
-  const hasRegionAAuth = anthropicKey.length > 0 || oauthToken.length > 0;
+  const { registerStandaloneAuthProbes } = await import("../core/standalone-auth.js");
+  await registerStandaloneAuthProbes();
+  const base = describeBasePool();
+  const { providerAuthAvailable, claudeAuthAvailable } = await import("../core/llm-runtime/provider-availability.js");
+  const hasRegionAAuth = base.specs.some((spec) => spec.provider !== undefined
+    ? providerAuthAvailable(spec.provider)
+    : spec.adapter === "claude" && claudeAuthAvailable());
   if (anthropicKey.length > 0) {
     console.log(line("ANTHROPIC_API_KEY", "set ✅"));
   } else if (oauthToken.length > 0) {
     console.log(line("ANTHROPIC_API_KEY", "not set ⚠️  (anthropic adapter disabled)"));
   } else {
-    console.log(line("ANTHROPIC_API_KEY", "not set ❌"));
+    console.log(line("ANTHROPIC_API_KEY", "not set (not required by other providers)"));
   }
   if (oauthToken.length > 0) {
     console.log(line("CLAUDE_CODE_OAUTH_TOKEN", "set ✅"));
@@ -209,8 +215,8 @@ const main = async (): Promise<void> => {
     const claudeSub = subscriptionAuthAvailable("claude-subscription");
     issues.push(
       claudeSub
-        ? "No LLM credentials — set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (or another provider key) in .env / npm run init"
-        : "No LLM credentials — set ANTHROPIC_API_KEY (or another provider key) in .env / npm run init",
+        ? "No authenticated provider in the default model pool — check its credentials and enabled auth plugins; use npm run init for a new setup"
+        : "No authenticated provider in the default model pool — check its provider key/settings; use npm run init for a new setup",
     );
   }
 
@@ -226,7 +232,6 @@ const main = async (): Promise<void> => {
   //  ★사용자 프로파일이 없을 때(빌트인)는 비어도 치명으로 세지 않는다 — doctor 는 구독 인증 플러그인을 띄우지 않아
   //   데몬보다 적게 볼 수 있다(거짓 경보 금지). 그땐 «데몬이 인증된 provider 로 조립» 이라고 말한다.
   // 출처 판정은 `/model` 과 같은 함수(`describeBasePool`) — 두 곳이 따로 판정하면 다르게 말한다.
-  const base = describeBasePool();
   const regionAPool = base.specs.map(specLabel);
   const poolName = base.source === "profile" ? `Default model pool (profile '${base.profile}')` : "Default model pool (built-in — auto)";
   if (base.profileUnresolved !== undefined) {
@@ -454,9 +459,9 @@ const main = async (): Promise<void> => {
   // [runtime]
   console.log("[runtime]");
   if (hasRegionAAuth) {
-    console.log(line("LLM runtime", "ready ✅"));
+    console.log(line("LLM credentials", "available ✅ (model response not tested)"));
   } else {
-    console.log(line("LLM runtime", "not ready ❌"));
+    console.log(line("LLM credentials", "not available in the default pool ❌"));
   }
 
   console.log("");

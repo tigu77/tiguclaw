@@ -83,7 +83,7 @@ if (res.aBooted === true) {
   res.bExitCode = b.child.exitCode;
   res.bSaysHeld = /이미 다른 데몬\(pid \d+\)이 쓰고 있습니다/.test(b.log());
   // B 가 DB 를 열기 전에 나갔나 — 채널·복구·리퍼 어느 것도 돌지 않았어야 한다.
-  res.bTouchedNothing = !/http-bridge listening|작동 헌법 로드|bg-shells reaper|ready/.test(b.log().replace(/tiguclaw daemon: starting[^\n]*/, ""));
+  res.bTouchedNothing = !/http-bridge listening|작동 헌법 로드|bg-shells reaper|tiguclaw daemon: ready/.test(b.log().replace(/tiguclaw daemon: starting[^\n]*/, ""));
   res.aAliveAfterB = !a.gone();
   res.lockStillA = existsSync(lockFile) && (JSON.parse(readFileSync(lockFile, "utf8")) as { pid: number }).pid === a.child.pid;
 

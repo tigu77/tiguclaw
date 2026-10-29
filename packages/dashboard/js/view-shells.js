@@ -16,7 +16,7 @@
       const shellElapsedEls = new Map(); // shellId -> elapsed span(틱 갱신용, 렌더마다 재구성).
       const shellOutputEls = new Map(); // shellId -> <pre> el(폴링이 쓰는 대상, 렌더마다 재구성).
       const shellTailLineEls = new Map(); // shellId -> tail-line span(폴 결과 직접 갱신, 풀 리렌더 없이).
-      const shellPollTimers = new Map(); // shellId -> intervalId(표면 D, 펼침 카드만).
+      const shellPollTimers = new Map(); // shellId -> { outEl, timer }(출력 DOM 세대 소유자).
       let shellsFilter = "running"; // "running" | "done"(완료=exited/killed, 상호배타)
 
       // /api/shells(listShells) 는 내부 status "running"|"completed"|"killed" 를 그대로 낸다
@@ -41,7 +41,7 @@
         if (!e) {
           e = {
             shellId, command: "", cwd: "", status: "running", startedAt: Date.now(),
-            threadKey: "", ownerTk: "", exitCode: null, expanded: false, killRequested: false,
+            threadKey: "", ownerTk: "", exitCode: null, cardOpen: true, expanded: false, killRequested: false,
             visible: !!(opts && opts.visible), lastLine: "",
             // owner/killable(Phase 3b, ADR §6) — 부재=killable:true(codex/openai, 프로세스 우리
             // 소유·⏹️ 가능). owner:"sdk"/killable:false(claude 관측 브리지)=⏹️ 비활성·SDK 표식.
@@ -165,63 +165,89 @@
       };
 
       // 표면 D — 비소비 tail 폴링(GET /api/shell-output?id=). 펼친 카드만, running 아니면 정지.
-      const stopShellTailPoll = (shellId) => {
-        const t = shellPollTimers.get(shellId);
-        if (t) { clearInterval(t); shellPollTimers.delete(shellId); }
+      const stopShellTailPoll = (shellId, owner) => {
+        const current = shellPollTimers.get(shellId);
+        if (!current || (owner && current !== owner)) return;
+        if (current.timer !== null) clearInterval(current.timer);
+        shellPollTimers.delete(shellId);
+      };
+      const shellInCurrentScope = (entry) => {
+        const scoped = typeof bgSessionScope !== "undefined" && bgSessionScope === "session" &&
+          typeof isShellInScope === "function";
+        return !scoped || isShellInScope(entry.threadKey, entry.ownerTk);
+      };
+      const shellPassesFilter = (entry) => shellsFilter === "running" ? entry.status === "running" : entry.status !== "running";
+      const shellTailVisible = (entry, outEl) => {
+        const head = document.getElementById("bg-shells-head");
+        return !!(entry && entry.visible && entry.cardOpen && entry.expanded && entry.owner !== "sdk" &&
+          shellInCurrentScope(entry) && shellPassesFilter(entry) &&
+          outEl && document.body.contains(outEl) && !(head && head.classList.contains("collapsed")));
+      };
+      const stopHiddenShellTailPolls = () => {
+        for (const [shellId, owner] of shellPollTimers) {
+          if (!shellTailVisible(shellRegistry.get(shellId), owner.outEl)) stopShellTailPoll(shellId, owner);
+        }
       };
       const startShellTailPoll = (shellId) => {
-        if (shellPollTimers.has(shellId)) return; // 이미 폴링 중(멱등).
+        if (shellPollTimers.has(shellId)) return;
+        const outEl = shellOutputEls.get(shellId);
+        if (!shellTailVisible(shellRegistry.get(shellId), outEl)) return;
+        // 최초 GET보다 먼저 등록한다. 재렌더/접힘 뒤 도착한 옛 응답은 새 세대를 건드리지 못한다.
+        const owner = { outEl, timer: null };
+        shellPollTimers.set(shellId, owner);
+        const ownsOutput = () => shellPollTimers.get(shellId) === owner &&
+          shellOutputEls.get(shellId) === outEl && shellTailVisible(shellRegistry.get(shellId), outEl);
         const poll = () => {
-          const entry = shellRegistry.get(shellId);
-          const outEl = shellOutputEls.get(shellId);
-          // 카드가 재렌더로 사라졌거나(접힘·필터 변경) DOM 이탈했으면 폴링 중단.
-          if (!entry || !entry.expanded || !outEl || !document.body.contains(outEl)) {
-            stopShellTailPoll(shellId);
-            return;
-          }
+          if (!ownsOutput()) { stopShellTailPoll(shellId, owner); return; }
           fetch("/api/shell-output?id=" + encodeURIComponent(shellId))
             .then((r) => r.json())
             .then((d) => {
-              const stillEl = shellOutputEls.get(shellId);
-              if (!stillEl || !document.body.contains(stillEl)) { stopShellTailPoll(shellId); return; }
+              if (!ownsOutput()) { stopShellTailPoll(shellId, owner); return; }
+              if (typeof bgGeometryChanged === "function") bgGeometryChanged();
               if (!d || d.error) {
-                stillEl.textContent = d && d.error
+                outEl.textContent = d && d.error
                   ? i18n("shell.noOutputWhy", { err: d.error })
                   : i18n("shell.noOutput");
-                stopShellTailPoll(shellId);
+                stopShellTailPoll(shellId, owner);
                 return;
               }
               const parts = [];
               if (d.stdout) parts.push(d.stdout);
               if (d.stderr) parts.push("\n[stderr]\n" + d.stderr);
               const combined = parts.join("") || i18n("shell.noOutput");
-              stillEl.textContent = combined;
-              stillEl.scrollTop = stillEl.scrollHeight;
-              // 마지막 출력 꼬리 1줄(카드 컴팩트 표시용) — 비어있지 않은 마지막 줄만. 풀 그리드
-              // 리렌더(scheduleShellsRender) 없이 DOM 직접 갱신 — 폴 tick 마다 grid.innerHTML
-              // 재구성하면 <pre> 스크롤·다른 카드 상태가 흔들린다(agent-card 패턴과 달리 여긴
-              // 라이브 필드가 렌더 밖에서도 갱신돼야 해 elapsed 틱과 동일하게 el 참조 직접 갱신).
+              outEl.textContent = combined;
+              outEl.scrollTop = outEl.scrollHeight;
+              const entry = shellRegistry.get(shellId);
               const lines = combined.split("\n").map((l) => l.trim()).filter(Boolean);
               if (lines.length) {
                 entry.lastLine = lines[lines.length - 1];
                 const tlEl = shellTailLineEls.get(shellId);
                 if (tlEl) tlEl.textContent = entry.lastLine;
               }
-              const cur = shellRegistry.get(shellId);
-              if (cur && cur.status !== "running") stopShellTailPoll(shellId); // 종료 확인 → 폴 정지.
+              if (entry.status !== "running") stopShellTailPoll(shellId, owner);
             })
-            .catch(() => { stopShellTailPoll(shellId); });
+            .catch(() => { stopShellTailPoll(shellId, owner); });
         };
         poll();
-        shellPollTimers.set(shellId, setInterval(poll, SHELL_TAIL_POLL_MS));
+        // 종료된 셸은 부착 뒤 최초 조회 1회만. running인 같은 세대에만 timer 하나.
+        if (shellRegistry.get(shellId).status === "running" && shellPollTimers.get(shellId) === owner) {
+          owner.timer = setInterval(poll, SHELL_TAIL_POLL_MS);
+        }
       };
 
       const toggleShellExpand = (shellId) => {
         const e = shellRegistry.get(shellId);
         if (!e) return;
+        stopShellTailPoll(shellId);
         e.expanded = !e.expanded;
-        if (!e.expanded) stopShellTailPoll(shellId);
         scheduleShellsRender();
+      };
+      const toggleShellCard = (shellId) => {
+        const e = shellRegistry.get(shellId);
+        if (!e) return;
+        stopShellTailPoll(shellId);
+        e.cardOpen = !e.cardOpen;
+        renderShellsView(shellId);
       };
 
       // ⏹️ Kill — POST /api/kill-shell {shellId} (낙관 UI, cancel-worker 버튼 패턴 답습).
@@ -271,10 +297,10 @@
         const top = document.createElement("div"); top.className = "agent-card-top";
         // ★설명(Bash `description`)이 있을 때만 맨 윗줄 첫 칸에 이름 (2026-10-23) — 나머지 줄(명령·폴더·경과·종료 코드·꼬리·토글·Kill)은
         //  그대로다(사용자: «기존 표시는 그대로 두고 라벨만 보완»). 없으면 지금 카드와 DOM 이 같다.
-        if (typeof entry.description === "string" && entry.description !== "") {
+        if ((typeof entry.description === "string" && entry.description !== "") || !entry.cardOpen) {
           const label = document.createElement("span"); label.className = "shell-card-label";
-          label.textContent = entry.description;
-          label.title = entry.description;
+          label.textContent = entry.description || entry.command || i18n("shell.noCommand");
+          label.title = label.textContent;
           top.appendChild(label);
         }
         const kind = document.createElement("span"); kind.className = "agent-card-kind";
@@ -306,15 +332,29 @@
             : i18n("shell.session.unknownHint");
           top.appendChild(sess);
         }
+        const collapse = document.createElement("button");
+        collapse.type = "button"; collapse.className = "shell-card-collapse";
+        collapse.textContent = entry.cardOpen ? "▾" : "▸";
+        collapse.setAttribute("aria-expanded", String(entry.cardOpen));
+        collapse.setAttribute("aria-controls", "shell-card-body-" + entry.shellId);
+        const collapseLabel = i18n(entry.cardOpen ? "shell.card.collapse" : "shell.card.expand");
+        collapse.setAttribute("aria-label", collapseLabel);
+        collapse.title = collapseLabel;
+        collapse.addEventListener("click", (ev) => { ev.stopPropagation(); toggleShellCard(entry.shellId); });
+        top.appendChild(collapse);
         card.appendChild(top);
+        const body = document.createElement("div"); body.className = "shell-card-body";
+        body.id = "shell-card-body-" + entry.shellId;
+        body.hidden = !entry.cardOpen;
+        card.appendChild(body);
         const name = document.createElement("div"); name.className = "agent-card-name shell-card-command";
         name.textContent = entry.command || i18n("shell.noCommand");
-        card.appendChild(name);
+        body.appendChild(name);
         if (entry.cwd) {
           const cwd = document.createElement("div"); cwd.className = "shell-card-cwd";
           cwd.textContent = fmtShellCwd(entry.cwd);
           cwd.title = entry.cwd;
-          card.appendChild(cwd);
+          body.appendChild(cwd);
         }
         const meta = document.createElement("div"); meta.className = "agent-card-meta";
         const el = document.createElement("span"); el.className = "agent-card-elapsed";
@@ -332,13 +372,13 @@
           codeEl.textContent = "exit " + entry.exitCode;
           meta.appendChild(codeEl);
         }
-        card.appendChild(meta);
+        body.appendChild(meta);
         // 마지막 출력 꼬리(1줄) — 최소 한 번 펼쳐 폴링한 적 있어야 채워짐(전 카드 상시 폴링은
         // 백엔드 부하라 안 함, ADR §5 "폴 간격 바운드"). 없으면 안내만.
         const tailLine = document.createElement("div"); tailLine.className = "shell-card-tailline";
         tailLine.textContent = entry.lastLine || i18n("shell.noPreview");
         shellTailLineEls.set(entry.shellId, tailLine); // 폴 결과가 직접 갱신(위 startShellTailPoll).
-        card.appendChild(tailLine);
+        body.appendChild(tailLine);
         const controls = document.createElement("div"); controls.className = "shell-card-controls";
         // 출력 tail(표면 D) — SDK 소유 셸은 BG_SHELLS 밖이라 /api/shell-output 이 항상 404(정직한
         // 한계, ADR §6) → 토글 자체를 안 그려 헛수고 폴 0(entry.expanded 도 영영 false 라 no-op).
@@ -367,45 +407,43 @@
             controls.appendChild(killBtn);
           }
         }
-        card.appendChild(controls);
-        if (entry.expanded) {
+        body.appendChild(controls);
+        if (entry.cardOpen && entry.expanded && entry.owner !== "sdk") {
           const out = document.createElement("pre"); out.className = "shell-card-output";
           out.textContent = i18n("shell.output.loading");
-          card.appendChild(out);
+          body.appendChild(out);
           shellOutputEls.set(entry.shellId, out);
-          startShellTailPoll(entry.shellId);
         }
         return card;
       };
 
-      /**
-       * **읽던 자리를 옮겨 붙인다** (2026-10-23, docs/decisions/2026-10-23-background-panel-ux.md ④-(2) R1).
-       *  셸 목록은 통째로 다시 그려(`innerHTML = ""`) 브라우저 스크롤 앵커가 사라진다 — 보던 카드 **위의** 셸이 끝나 «실행 중» 에서
-       *  빠지자 `scrollTop` 은 그대로라 보던 카드가 188px 밀렸다(헤드리스). 잡 목록은 노드를 두고 클래스로만 숨겨 브라우저가 지킨다.
-       *  그래서: 비우기 전에 칸 윗변에 걸쳤거나 그 아래 있는 카드들의 (id, 칸 기준 위치)를 순서대로 적고, 다시 그린 뒤 **아직 그려진 첫 카드**의
-       *  위치 변화만큼 `scrollTop` 을 고친다. 이동 직후에만이 아니라 늘 — «읽던 자리» 는 이동했든 손으로 내렸든 같은 질문이다.
-       *  맨 위(`scrollTop` 0)·안 보이는 칸(닫힌 패널 — 높이 0)에선 아무것도 안 한다(결과가 지금과 같다).
-       */
+      // 목록과 스크롤 소유자를 구분한다. 공통 viewport에 실제 겹친 카드만 앵커다.
       const shellReadingAnchor = (grid) => {
-        if (!(grid.scrollTop > 0) || typeof grid.getBoundingClientRect !== "function") return null;
-        const top = grid.getBoundingClientRect().top;
+        const pane = grid.closest("#bg-scroll");
+        if (!pane || !(pane.scrollTop > 0)) return null;
+        const viewport = pane.getBoundingClientRect();
+        if (viewport.height <= 0) return null;
         const out = [];
         for (const c of grid.querySelectorAll(".shell-card")) {
           const r = c.getBoundingClientRect();
-          if (r.bottom > top && r.height > 0) out.push({ id: c.dataset.shellId, at: r.top - top });
+          if (r.bottom > viewport.top && r.top < viewport.bottom && r.height > 0) {
+            out.push({ id: c.dataset.shellId, at: r.top - viewport.top });
+          }
         }
         return out.length ? out : null;
       };
       const keepShellReadingAnchor = (grid, anchor) => {
-        if (!anchor) return;
+        if (!anchor || typeof bgSetScrollTop !== "function") return;
+        const pane = grid.closest("#bg-scroll");
+        if (!pane) return;
         const now = new Map();
         for (const c of grid.querySelectorAll(".shell-card")) now.set(c.dataset.shellId, c);
-        const top = grid.getBoundingClientRect().top;
+        const top = pane.getBoundingClientRect().top;
         for (const a of anchor) {
           const c = now.get(a.id);
           if (!c) continue;
           const moved = c.getBoundingClientRect().top - top - a.at;
-          if (moved !== 0) grid.scrollTop += moved;
+          if (moved !== 0) bgSetScrollTop(pane.scrollTop + moved);
           return;
         }
       };
@@ -413,11 +451,17 @@
       // 렌더 타깃 — 옛 사이드바 페이지(#shells-grid, currentView==="shells")에서 백그라운드 드로어
       // 셸 섹션(#bg-shells-list, ADR §5 Phase 3b-2)으로 이식. 드로어는 항상 DOM 에 존재(열림/닫힘은
       // CSS body.bg-open)이라 currentView 게이트가 불필요 — jobCards 와 동형으로 상시 라이브 갱신.
-      const renderShellsView = () => {
+      const renderShellsView = (focusShellId = null) => {
         const grid = document.getElementById("bg-shells-list");
         const empty = document.getElementById("bg-shells-empty");
         if (!grid) return;
+        const active = document.activeElement;
+        const restoreFocus = focusShellId || (active && grid.contains(active) && active.classList.contains("shell-card-collapse")
+          ? active.closest(".shell-card").dataset.shellId : null);
+        // 이 파일의 초기 seed가 드로어 스크립트 로드보다 먼저 끝날 수도 있다.
+        if (typeof bgGeometryChanged === "function") bgGeometryChanged();
         const anchor = shellReadingAnchor(grid);
+        for (const shellId of shellPollTimers.keys()) stopShellTailPoll(shellId);
         grid.innerHTML = "";
         shellElapsedEls.clear();
         shellOutputEls.clear();
@@ -428,12 +472,7 @@
         //  종전엔 잡 그룹만 따랐다 — "현재 세션"으로 둬도 남의 세션 셸이 그대로 보였다.
         //  CSS 숨김이 아니라 여기서 거른다: 아래 running/total 카운트가 화면과 어긋나지 않게.
         //  판정은 잡과 같은 근거(isShellInScope: 서버 환원값 우선, 미상 숨김).
-        const scoped =
-          typeof bgSessionScope !== "undefined" && bgSessionScope === "session" &&
-          typeof isShellInScope === "function";
-        const entries = [...shellRegistry.values()].filter(
-          (e) => e.visible && (!scoped || isShellInScope(e.threadKey, e.ownerTk)),
-        );
+        const entries = [...shellRegistry.values()].filter((e) => e.visible && shellInCurrentScope(e));
         entries.sort((a, b) => {
           const ra = a.status === "running" ? 0 : 1;
           const rb = b.status === "running" ? 0 : 1;
@@ -446,12 +485,18 @@
         for (const e of entries) {
           total += 1;
           if (e.status === "running") running += 1;
-          if (shellsFilter === "running" && e.status !== "running") continue;
-          if (shellsFilter === "done" && e.status === "running") continue; // 완료 탭 = 종료된 셸만.
+          if (!shellPassesFilter(e)) continue;
           shown += 1;
           grid.appendChild(buildShellCard(e, now));
         }
         keepShellReadingAnchor(grid, anchor);
+        if (restoreFocus) {
+          const card = grid.querySelector('.shell-card[data-shell-id="' + CSS.escape(restoreFocus) + '"]');
+          const button = card && card.querySelector(".shell-card-collapse");
+          if (button) button.focus({ preventScroll: true });
+        }
+        // 빌더는 조회하지 않는다. 모든 새 출력 DOM이 부착된 다음 시작한다.
+        for (const shellId of shellOutputEls.keys()) startShellTailPoll(shellId);
         const rc = document.getElementById("bg-shells-count-running");
         const ac = document.getElementById("bg-shells-count-all"); // id 유지·의미=완료(종료) 수.
         if (rc) rc.textContent = String(running);
@@ -543,13 +588,10 @@
       // 인라인 칩)·B(컴포저 "🖥️ 셸 N개" 스트립, background-drawer.js)는 이 함수를 그대로 호출 —
       // shellRegistry 계약 무변경이라 두 표면 다 무수정으로 계속 동작.
       const showShells = () => {
-        if (typeof openBg === "function") openBg();
-        const sec = document.getElementById("bg-shells-body");
-        if (sec) {
-          sec.classList.add("bg-flash");
-          setTimeout(() => sec.classList.remove("bg-flash"), 900);
-          try { sec.scrollIntoView({ block: "nearest" }); } catch {}
-        }
+        revealBgCard({
+          find: () => document.getElementById("bg-shells-head"),
+          groupHead: "bg-shells-head",
+        });
       };
 
       // 위젯의 «보여 줘»(`ctx.reveal({ kind: "shell", id })`) — 패널의 공통 판정(`revealBgCard`, background-drawer.js)을 탄다.

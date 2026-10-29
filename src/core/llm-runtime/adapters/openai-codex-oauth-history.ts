@@ -13,6 +13,7 @@ import type { ChannelName } from "../../../channels/types.js";
 import { getEventBus } from "../../eventbus.js";
 import { promises as fs } from "node:fs";
 import {
+  describeFailureBody,
   redactSecrets,
   stripInternalRuntimeScaffolding,
 } from "../../outbound-sanitize.js";
@@ -1215,7 +1216,7 @@ async function summarizeViaCodex(
     });
     if (!res.ok) {
       throw new Error(
-        `Codex summary request failed: ${res.status} ${await res.text().catch(() => "")}`,
+        `Codex summary request failed: ${res.status} ${describeFailureBody(await res.text().catch(() => ""))}`,
       );
     }
     if (res.body === null) {
@@ -1245,7 +1246,7 @@ async function summarizeViaCodex(
       }
       throw new Error(
         `Codex summary stream failed: ${f.source}${f.code !== undefined ? `/${f.code}` : ""}` +
-          `${f.message !== undefined ? `: ${f.message}` : ""}`,
+          `${f.message !== undefined ? `: ${describeFailureBody(f.message)}` : ""}`,
       );
     }
     return result.text;

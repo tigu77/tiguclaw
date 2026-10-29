@@ -21,7 +21,6 @@ const jn = await import("../../core/job-notice.js");
 const { getEventBus } = await import("../../core/eventbus.js");
 const { createSpawnAgentMcpServer } = await import("../../core/llm-runtime/capabilities/agent-registry.js");
 const { runWorkerJob } = await import("../../core/llm-runtime/capabilities/worker-registry.js");
-const { createNotifyOwnerMcpServer } = await import("../../core/llm-runtime/capabilities/notify-owner-mcp.js");
 type RegionASdkInput = import("../../core/llm-runtime/types.js").RegionASdkInput;
 type RegionASdkOutput = import("../../core/llm-runtime/types.js").RegionASdkOutput;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -43,10 +42,13 @@ const toolsOf = (server: unknown): Record<string, Tool> => (server as { instance
 const textOf = (r: ToolResult): string => r.content.map((c) => c.text ?? "").join("");
 const job = (label: string, threadKey: string, kind: "worker" | "agent" = "worker"): string =>
   wj.registerJob({ label, task: `${label} 지시`, threadKey, channel: CH as never, channelUserId: "u", notifyDest: { channel: CH as never, target: "c" }, kind, detached: true } as never);
-/** 실제 도구 핸들러를 **동기로** 부른다(안쪽은 await 없이 끝난다) — abort 리스너 안에서 부르려고. */
+/**
+ * 코어 `notifyOwner()` 를 **동기로** 부른다 — abort 리스너 안에서 부르려고. ★이번 릴리스 보류로 도구 서버가 없다
+ * (`docs/decisions/2026-10-29-notify-owner-release-hold.md`) — 핸들러 본문과 같은 호출이다. 옛 `srv !== undefined` 분기는 지웠다
+ * (남기면 알림 없이 조용히 지나간다).
+ */
 const notifyNow = (id: string, message: string): void => {
-  const srv = createNotifyOwnerMcpServer({ threadKey: `agent:${id}` });
-  if (srv !== undefined) void toolsOf(srv).notify_owner!.handler({ message }, {});
+  wj.notifyOwner(`agent:${id}`, message);
 };
 
 /** 메인 핸들러 — 실제 줄. 완료 턴의 동작만 시나리오가 정한다. */

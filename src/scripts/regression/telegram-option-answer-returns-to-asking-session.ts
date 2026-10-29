@@ -87,6 +87,57 @@ export const check: RegressionCheck = {
       }
       const boundAfter = getChannelSessionBinding("telegram", String(OWNER));
 
+      // ④⑤⑥ (2026-10-28 B3) — LLM 턴의 선택지는 관측 래퍼를 지나 **발급 id** 를 달고, 그 클릭은 늘 명시 세션(물어본 세션)을 싣는다.
+      //  그 명시 세션은 «답 좌표» 표식(`fromPromptAnswer`)을 달아 `/sessions` 가 선택기 채널로 오판하지 않는다. 답 좌표는 그대로.
+      const { withPromptOptionsObservation } = await import("../../core/prompt-options-observe.js");
+      const sessionsReplies = async (m: unknown, args: string): Promise<string[]> => {
+        const got: string[] = [];
+        (m as { reply?: (t: string) => Promise<void> }).reply = async (t: string) => { got.push(t); };
+        await handleSessions({ msg: m as never, args, trimmed: `/sessions ${args}`, sidChannel: "telegram" as never });
+        return got;
+      };
+      const observedAsk = async (turn: Seen | undefined, value: string): Promise<void> => {
+        const present = withPromptOptionsObservation(turn?.present as never, { channel: "telegram", threadKey: turn?.threadKey ?? "", bus: { publish() {} } as never });
+        await present?.("어느 세션?", [{ label: "고르기", value }]);
+      };
+      // ④ 평소 턴(바인딩 = TARGET)의 발급 id 보기 `/sessions use default`
+      const nBefore4 = seen.length;
+      await bot.handleUpdate(textUpdate(OWNER, "평소 질문 B3") as never);
+      await settle();
+      const plain4 = seen.slice(nBefore4).find((s) => s.text === "평소 질문 B3");
+      await observedAsk(plain4, "/sessions use default");
+      await bot.handleUpdate(callbackUpdate(OWNER, lastButton()) as never);
+      await settle();
+      const click4 = seen.slice(nBefore4).find((s) => s.text === "/sessions use default");
+      const marker4 = (click4?.msg as { session?: { fromPromptAnswer?: boolean } } | undefined)?.session?.fromPromptAnswer;
+      const replies4 = click4 === undefined ? [] : await sessionsReplies(click4.msg, "use default");
+      const bound4 = getChannelSessionBinding("telegram", String(OWNER));
+      const { translate } = await import("../../core/i18n.js");
+      // ⑤ 리다이렉트 턴(세션 X 메시지에 답글)의 발급 id 보기 — 같은 표식, 답 좌표 = X
+      const nBefore5 = seen.length;
+      const reply5 = textUpdate(OWNER, "X 에 이어서 B3") as { message: Record<string, unknown> };
+      reply5.message.reply_to_message = { message_id: 777, date: 0, chat: { id: OWNER, type: "private" }, from: { id: 1, is_bot: true, first_name: "bot" }, text: "X 의 답" };
+      await bot.handleUpdate(reply5 as never);
+      await settle();
+      const turn5 = seen.slice(nBefore5).find((s) => s.text === "X 에 이어서 B3");
+      await observedAsk(turn5, `/sessions use ${TARGET}`);
+      await bot.handleUpdate(callbackUpdate(OWNER, lastButton()) as never);
+      await settle();
+      const click5 = seen.slice(nBefore5).find((s) => s.text === `/sessions use ${TARGET}`);
+      const marker5 = (click5?.msg as { session?: { fromPromptAnswer?: boolean } } | undefined)?.session?.fromPromptAnswer;
+      const replies5 = click5 === undefined ? [] : await sessionsReplies(click5.msg, `use ${TARGET}`);
+      const bound5 = getChannelSessionBinding("telegram", String(OWNER));
+      // ⑥ 진짜 선택기·사용자 명시 세션은 종전대로 거절 — 대시보드(http-bridge) · 텔레그램 글 답장 라우팅(표식 없음)
+      const dashReplies = await sessionsReplies({ channel: "http-bridge", channelUserId: "u", threadKey: "dashboard:regr-sel", channelAddress: "dashboard:regr-sel", session: { explicitSessionId: "dashboard:regr-sel", channelAddress: "dashboard:regr-sel", fromPromptAnswer: true }, text: "/sessions use default", receivedAt: Date.now() }, "use default");
+      const nBefore6 = seen.length;
+      const reply6 = textUpdate(OWNER, "/sessions use default") as { message: Record<string, unknown> };
+      reply6.message.reply_to_message = { message_id: 777, date: 0, chat: { id: OWNER, type: "private" }, from: { id: 1, is_bot: true, first_name: "bot" }, text: "X 의 답" };
+      await bot.handleUpdate(reply6 as never);
+      await settle();
+      const typed6 = seen.slice(nBefore6).find((s) => s.text === "/sessions use default");
+      const typedReplies = typed6 === undefined ? [] : await sessionsReplies(typed6.msg, "use default");
+      const hasSel = translate("srv.sessions.hasSelector");
+
       return [
         assert(
           "★① 답글로 세션 X 에서 돈 턴이 띄운 선택지를 누르면 답이 X 로 간다",
@@ -102,6 +153,23 @@ export const check: RegressionCheck = {
           "★③ 평소 턴의 버튼은 세션을 싣지 않는다 — 그래서 텔레그램 세션 목록 버튼(`/sessions use`)이 거절되지 않고 바인딩이 바뀐다",
           picked !== undefined && picked.explicit === undefined && boundAfter === TARGET,
           { 클릭명시세션: picked?.explicit, 바인딩: boundAfter, 답: replies.map((r) => r.slice(0, 60)) },
+        ),
+        assert(
+          "★④ 발급 id 가 있는 평소 턴 보기 `/sessions use default` — 답 좌표(물어본 세션)는 그대로 싣고 «답 좌표» 표식 · 선택기 거절 없이 기본 세션으로 돌아간다",
+          plain4 !== undefined && click4 !== undefined && click4.explicit === plain4.threadKey && click4.threadKey === plain4.threadKey && marker4 === true &&
+            replies4.includes(translate("srv.sessions.backToDefault")) && !replies4.includes(hasSel) && bound4 === null,
+          { 물은턴: plain4?.threadKey, 클릭명시: click4?.explicit, 표식: marker4 ?? null, 답: replies4.map((r) => r.slice(0, 60)), 바인딩: bound4 },
+        ),
+        assert(
+          "★⑤ 리다이렉트 턴(세션 X)의 보기도 같은 표식 · 답 좌표 = X · `/sessions use` 가 이 방 바인딩을 바꾼다",
+          turn5?.threadKey === SESSION_X && click5?.explicit === SESSION_X && click5?.threadKey === SESSION_X && marker5 === true &&
+            !replies5.includes(hasSel) && bound5 === TARGET,
+          { 물은턴: turn5?.threadKey, 클릭명시: click5?.explicit, 표식: marker5 ?? null, 답: replies5.map((r) => r.slice(0, 60)), 바인딩: bound5 },
+        ),
+        assert(
+          "⑥ 진짜 선택기 채널(대시보드 — 본문 표식이 있어도)·텔레그램 글 답장의 명시 세션(표식 없음)은 종전대로 «세션 선택기 채널» 거절",
+          dashReplies.includes(hasSel) && typed6 !== undefined && typed6.explicit === SESSION_X && typedReplies.includes(hasSel),
+          { 대시보드: dashReplies.map((r) => r.slice(0, 40)), 글답장명시: typed6?.explicit, 글답장: typedReplies.map((r) => r.slice(0, 40)) },
         ),
       ];
     } finally {

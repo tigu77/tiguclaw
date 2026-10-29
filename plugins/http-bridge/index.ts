@@ -110,7 +110,7 @@ import { handleProjects, handleProjectCapability, handleProjectDetail, handlePro
 import { handleWorkerJobs, handleShells, handleShellOutput, handleCancelQueued, handleCancelWorker, handleKillShell, handleTimers, handleCancelTimer } from "./routes-work.js";
 import { handleGetSessionProjects, handlePostSessionProjects } from "./routes-session-projects.js";
 import { handleMessages, handleChatHistory, handleChatSearch } from "./routes-chat.js";
-import { handlePluginIcon, handleAttachmentServe, handleTranscribe, handleOpenPath, handleFileView } from "./routes-files.js";
+import { handlePluginIcon, handleAttachmentServe, handleTranscribe, handleOpenPath, handleFileView, handleHomeDirectory, handleOpenHome } from "./routes-files.js";
 import { handleInventory, handleInventoryItem, handleContextMenuItems, handleCommands, handleMcpTools, handleHomeWidgets, handleHomeWidgetToggle, handleHomeWidgetOrder, handlePluginData, handlePlugins, handlePluginsAction } from "./routes-inventory.js";
 import type { RouteCtx } from "./route-ctx.js";
 import {
@@ -512,6 +512,10 @@ class HttpBridge implements Channel, Observer {
                 : pathname === "/cancel-timer" && method === "POST"
                   ? "write" // 자기 타이머 멈추기 — /cancel-worker 동형
                 : pathname === "/kill-shell" && method === "POST"
+                  ? "write"
+                : pathname === "/home-directory" && method === "GET"
+                  ? "read"
+                : pathname === "/open-home" && method === "POST"
                   ? "write"
                 : pathname === "/open-path" && method === "POST"
                   ? "write"
@@ -1108,6 +1112,15 @@ class HttpBridge implements Channel, Observer {
     // /project-rename — PROJECT.md frontmatter name 갱신 + 레지스트리 캐시 갱신. write.
     if (pathname === "/project-rename" && method === "POST") {
       await handleProjectRename(this.routeCtx(req, res, url));
+      return;
+    }
+
+    if (pathname === "/home-directory" && method === "GET") {
+      await handleHomeDirectory(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/open-home" && method === "POST") {
+      await handleOpenHome(this.routeCtx(req, res, url));
       return;
     }
 

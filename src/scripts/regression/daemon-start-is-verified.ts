@@ -139,11 +139,42 @@ const run = async (): Promise<Assertion[]> => {
   //  8단언이 전부 초록인 채 `bin/daemon.mjs` 가 **실행 불가**가 됐다(실측).
   //  ★`from "…"`·`from '…'`·`await import("…")` 를 전부 훑는다(표기 무관). 주석은 이미
   //   `code` 에서 벗겨져 있으므로 "왜 안 쓰는지" 설명하는 글이 판정을 흔들지 않는다.
-  const imports = [
-    ...[...code.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1] ?? ""),
-    ...[...code.matchAll(/import\(\s*["']([^"']+)["']/g)].map((m) => m[1] ?? ""),
-  ];
-  const nonBuiltin = imports.filter((m) => !m.startsWith("node:"));
+  // A bundled sibling is acceptable only when the complete local graph remains
+  // builtin-only. A bare/missing/escaping/transitive dependency is still a failure.
+  const binRoot = path.join(REPO, "bin");
+  const pending = [path.join(binRoot, "daemon.mjs")];
+  const seen = new Set<string>();
+  const imports: string[] = [];
+  const nonBuiltin: string[] = [];
+  while (pending.length) {
+    const file = pending.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    let body: string;
+    try { body = stripComments(await readFile(file, "utf8")); }
+    catch (e) { nonBuiltin.push(`unreadable: ${file}: ${e}`); continue; }
+    const ts = await import("typescript");
+    const parsed = ts.createSourceFile(file, body, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const collect = (node: import("typescript").Node): void => {
+      let spec: string | undefined;
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) spec = node.moduleSpecifier.text;
+      if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === "require"))) {
+        const arg = node.arguments[0];
+        if (arg && ts.isStringLiteral(arg)) spec = arg.text;
+        else nonBuiltin.push(`${file}: nonliteral module`);
+      }
+      if (spec !== undefined) {
+        imports.push(spec);
+        if (!spec.startsWith("node:")) {
+          const target = path.resolve(path.dirname(file), spec);
+          if (!spec.startsWith(".") || !spec.endsWith(".mjs") || !target.startsWith(binRoot + path.sep)) nonBuiltin.push(`${file}: ${spec}`);
+          else pending.push(target);
+        }
+      }
+      ts.forEachChild(node, collect);
+    };
+    collect(parsed);
+  }
   // ★**0을 세면 그것도 실패다** — 정규식이 낡아 아무것도 못 세면 "비빌트인 0" 이 되어
   //  조용히 통과한다(반대편 오탐). 실물엔 최소 5개가 있으므로 하한을 둔다.
   out.push(
@@ -157,7 +188,7 @@ const run = async (): Promise<Assertion[]> => {
     assert(
       "★빌트인만 쓴다(깨진 node_modules 에서도 도는 최후 복구 경로)",
       nonBuiltin.length === 0,
-      nonBuiltin.length === 0 ? `import ${imports.length}개 전부 node:` : `★비빌트인: ${nonBuiltin.join(",")}`,
+      { modules: [...seen].map((f) => path.relative(binRoot, f)), imports, nonBuiltin },
     ),
   );
 

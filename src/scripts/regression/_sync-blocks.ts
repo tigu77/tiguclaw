@@ -8,7 +8,7 @@
  * ★POSIX 전용(zsh) — Windows 에선 호출부가 건너뛴다.
  */
 import { execFile, type ExecFileException, type ExecFileOptions } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -147,9 +147,17 @@ export const runSyncBlock = async (
   let calls: string[] = [];
   const r = await execRc("/bin/zsh", [script], { env: vars, timeout: timeoutMs }, "싱크 블록", (out) => {
     calls = readFileSync(log, "utf8").split("\n").filter((l) => l !== "");
-    // §7 설치 블록은 자기 임시 경로를 만든다 — 이 실행이 만든 것만 지운다.
-    const made = /검증 경로: (\/tmp\/tiguclaw-cleanroom\.[A-Za-z0-9]+)/.exec(out)?.[1];
-    if (made !== undefined) rmSync(made, { recursive: true, force: true });
+    // §7 설치 블록은 자기 임시 경로(`${TMPDIR:-/tmp}/tiguclaw-cleanroom.XXXX`)를 만든다 — 이 실행이 만든 것만 지운다.
+    //  ★줄 전체를 잡고 «이름 꼴 · 블록이 본 TMPDIR 바로 아래» 가 둘 다 맞을 때만 지운다 — 종전 `/tmp/…` 정규식은 고정되지 않아
+    //  `/private/tmp/tiguclaw-cleanroom.X` 같은 경로의 접미만 잡아 다른 자리의 /tmp 를 지우려 했고, TMPDIR 아래 것은 못 지웠다.
+    const made = /^검증 경로: (\/.*)$/m.exec(out)?.[1];
+    const at = made === undefined ? undefined : path.resolve(made);
+    if (
+      at !== undefined &&
+      /^tiguclaw-cleanroom\.[A-Za-z0-9]+$/.test(path.basename(at)) &&
+      existsSync(at) &&
+      realpathSync(path.dirname(at)) === realpathSync(vars.TMPDIR || "/tmp")
+    ) rmSync(at, { recursive: true, force: true });
     rmSync(tmp, { recursive: true, force: true });
   });
   return { ...r, calls };

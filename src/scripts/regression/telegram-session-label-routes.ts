@@ -72,10 +72,10 @@ export const check: RegressionCheck = {
       const events: Ev[] = [];
       const bus = { publish: (e: Ev) => { events.push(e); } } as never;
       try {
-        await deliverOutbound({ channel: CH, target: null, text: "사본 본문", bus, originThreadKey: "dashboard:default", labelSession: "dashboard:default" });
-        await deliverOutbound({ channel: CH, target: null, text: "[회귀작업] 이미 붙은 글", bus, originThreadKey: "dashboard:regr-lbl", labelSession: "dashboard:regr-lbl" });
-        await deliverOutbound({ channel: CH, target: null, text: "업데이트 알림", bus, observeThreadKey: "dashboard:default", originThreadKey: "dashboard:default" });
-        await deliverOutbound({ channel: CH, target: null, text: "무명 세션 사본", bus, labelSession: "dashboard:5f0e1d2c-aaaa-bbbb-cccc-0123456789ab" });
+        await deliverOutbound({ channel: CH, target: "881000", text: "사본 본문", bus, originThreadKey: "dashboard:default", labelSession: "dashboard:default" });
+        await deliverOutbound({ channel: CH, target: "881000", text: "[회귀작업] 이미 붙은 글", bus, originThreadKey: "dashboard:regr-lbl", labelSession: "dashboard:regr-lbl" });
+        await deliverOutbound({ channel: CH, target: "881000", text: "업데이트 알림", bus, observeThreadKey: "dashboard:default", originThreadKey: "dashboard:default" });
+        await deliverOutbound({ channel: CH, target: "881000", text: "무명 세션 사본", bus, labelSession: "dashboard:5f0e1d2c-aaaa-bbbb-cccc-0123456789ab" });
         const observed = events.filter((e) => e.type === "channel.message.out").map((e) => String(e.payload.text));
         out.push(assert(
           "★① 대시보드 사본·자동 알림은 **기본 세션도** 물리 발송 글 앞에 `[세션 이름]` — 관측 본문엔 안 붙는다(대시보드는 탭이 구분한다)",

@@ -187,7 +187,7 @@ const run = async (): Promise<Assertion[]> => {
     });
     out.push({
       name: "install.ps1: node 버전을 PowerShell 안에서 판정한다(node 에 표현식을 안 넘긴다)",
-      ok: /node --version/.test(psCode) && !/node -p/.test(psCode),
+      ok: /node(?:\.exe)? --version/.test(psCode) && !/node -p/.test(psCode),
       got: /node -p/.test(psCode) ? "🔴 node -p 가 남아 있다" : "node --version 파싱",
     });
   }

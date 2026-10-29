@@ -140,7 +140,15 @@ export interface IncomingMessage {
    * 메타, `channelAddress`·`synthetic`·`correlationId` 계열의 LLM-agnostic 중립 필드).
    * shape 는 `route()` opts.session 과 동일(daemon handler 가 그대로 forward). additive.
    */
-  session?: { explicitSessionId?: string; channelAddress?: string };
+  session?: {
+    explicitSessionId?: string;
+    channelAddress?: string;
+    /**
+     * 이 명시 세션은 **선택지 발급자가 정한 답 좌표**다(2026-10-28 B3) — 채널이 세션을 스스로 고른다는 뜻이 아니다.
+     *  채널 코드가 자기 보기 맵·발급 대장에서 명시 세션을 꺼낸 원답 경로(텔레그램 콜백·CLI 번호 답)에서만 붙인다. 요청 본문에서 읽지 않는다.
+     */
+    fromPromptAnswer?: true;
+  };
   /**
    * 이 턴의 응답을 **인입 채널에 더해** 함께 배달할 *추가* 채널들(additive fan-out, ADR
    * 2026-07-16 §D4 Phase B2) — swap 아님. 대시보드 컴포저 체크박스 → http-bridge
@@ -215,6 +223,11 @@ export interface IncomingMessage {
    * (취소 대상 아님). 미지정 = 현행 동작(익명 큐 항목, 회귀 0).
    */
   correlationId?: string;
+  /**
+   * 이 메시지가 소비한 선택지 질문 id(`prompt-answer-claims.ts`, 2026-10-28). **시작 전 큐 취소**가 확정되면 코어가 그 질문을 다시 연다
+   *  — 그 메시지는 이후 절대 시작되지 않으므로 이중 처리가 없다. 큐 취소 통로(`correlationId`)가 있는 채널(http-bridge)만 싣는다.
+   */
+  promptAnswerId?: string;
   receivedAt: number;
   /** 반환(선택) = 실제로 보낸 채널 메시지 id — 핸들러가 송신 이벤트에 실어 대화 기록 행에 묶는다(없는 채널은 void). */
   reply: (text: string, opts?: ReplyOptions) => Promise<void | ChannelMessageRef>;

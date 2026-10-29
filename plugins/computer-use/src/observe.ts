@@ -363,11 +363,8 @@ export interface ControlBackend {
   controlPreflight(): Promise<
     { ok: true } | { ok: false; reason: "no-permission" | "timeout" | "failed"; detail: string }
   >;
-  /**
-   * 사람이 마지막으로 **하드웨어**를 만진 뒤 경과 초. 모르면 null(=«쓰는 중»).
-   * 진단을 지원하는 실행부만 실패 시 비민감 요약을 통지한다. 콜백 예외도 조회 결과를 바꾸지 않는다.
-   */
-  idleSeconds(onFailure?: (diagnostic: string) => void): Promise<number | null>;
+  /** 사람이 마지막으로 **하드웨어**를 만진 뒤 경과 초. 모르면 null(=«쓰는 중»). */
+  idleSeconds(): Promise<number | null>;
   /** 이벤트를 순서대로 쏜다. ★«오류 없음» 이 «했다» 가 아니다 — 권한은 위에서 본다. */
   post(
     events: readonly import("./control.js").LowEvent[],

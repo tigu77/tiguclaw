@@ -5,6 +5,7 @@
       // 토글 드로어(PC 우측 고정·모바일 슬라이드인+백드롭). 배지 = 실행 중 잡 수.
       const bgPanel = document.getElementById("bg-panel");
       const bgList = document.getElementById("bg-list");
+      const bgScroll = document.getElementById("bg-scroll");
       const bgEmpty = document.getElementById("bg-empty");
       const bgBadge = document.getElementById("bg-badge");
       // 컴포저(입력창 위) 인디케이터 — 현재 세션에 백그라운드 작업이 돌면 노출(runningScoped>0).
@@ -104,56 +105,79 @@
       //  두 화면을 오갈 때 읽는 방향이 안 뒤집힌다 — 종전엔 채팅은 아래가 최신인데
       //  이 목록만 위가 최신이라, 같은 드로어 안에서 시간축이 반대로 흘렀다.
       const bgJump = document.getElementById("bg-jump");
-      const BG_JUMP_THRESHOLD = 40; // stickBottom 임계(ensureJobCard _bgNearBottom)와 동일.
-      /** 맨 아래(최신) 근처인가 — 팔로우와 점프 노출이 **같은 판정**을 쓴다(두 벌 금지). */
-      const bgNearBottom = () =>
-        bgList.scrollHeight - bgList.scrollTop - bgList.clientHeight < BG_JUMP_THRESHOLD;
-      // ── 팔로우는 **래치**다 (2026-09-10 적대 검토 P-1·P-2) ────────────────────────
-      // ★종전엔 삽입할 때마다 «지금 바닥 근처인가» 를 **기하로 다시 유도**했다. 그런데
-      //  스냅이 도는 시점에 카드는 아직 `.bg-in-scope` 가 없어 `display:none` → **높이 0**
-      //  이라, `scrollTop = scrollHeight` 가 **직전 바닥**에 착지했다. 카드가 뒤늦게 자라면
-      //  그만큼 벌어지고 다음 판정이 거짓이 되어 **다시는 안 붙었다**(실측: 카드 3부터
-      //  끊겨 새 잡 8개가 화면 밖). 옛 «위에 꽂고 scrollTop=0» 은 0 이 카드 높이와 무관한
-      //  **고정점**이라 구조적으로 면역이었는데, 뒤집으며 그 성질을 잃었다.
-      // ★측정 시점을 고치는 것으로는 안 닫힌다 — `.bg-in-scope` 뒤로 미뤄도 카드는 그 뒤로
-      //  107px→167px 로 더 자란다(라벨·live·doing·요약·배지가 나중에 채워진다). +60px 는
-      //  임계 40 을 넘는다. **경계를 하나 고쳐도 다음 경계가 있다.**
-      // ★채팅(`vtProgrammatic`·`userIntentUntil`·`MOVED_EPS_PX`)만큼 복잡할 필요가 없다.
-      //  거긴 **기억한 좌표와 비교**해서 방향을 재느라 stale 이벤트를 흡수해야 했다. 여기선
-      //  ①프로그램적 스크롤이 «바닥으로» 한 종류뿐이고 ②핸들러가 이벤트를 안 믿고 **그
-      //  순간을 다시 재므로**, 늦게 온 이벤트도 그때의 진짜 위치를 읽는다. 그리고 카드가
-      //  자라는 것만으로는 scroll 이벤트가 안 나므로 «자라서 벌어졌다» 가 래치를 못 끈다 —
-      //  P-1 을 만들던 바로 그 경로가 구조적으로 막힌다.
-      // ★초기값 **켜짐** — 새로고침 하이드레이션이 저절로 바닥(최신)에 안착한다(P-2).
-      //  «하이드레이션 끝에 바닥으로» 를 따로 넣으면 그게 다섯 번째 손 목록이 된다.
+      const BG_JUMP_THRESHOLD = 40;
+      // 최신은 공통 칸의 바닥이 아니라 현재 보이는 마지막 잡의 끝이다(아래 셸을 따라가지 않는다).
+      const bgFollowTarget = () => {
+        const cards = bgList.querySelectorAll(".bg-job");
+        for (let i = cards.length - 1; i >= 0; i--) {
+          const r = cards[i].getBoundingClientRect();
+          if (r.height <= 0) continue;
+          const end = r.bottom - bgScroll.getBoundingClientRect().top + bgScroll.scrollTop;
+          return Math.max(0, Math.min(end - bgScroll.clientHeight, bgScroll.scrollHeight - bgScroll.clientHeight));
+        }
+        return null;
+      };
+      const bgNearBottom = () => {
+        const target = bgFollowTarget();
+        return target !== null && Math.abs(bgScroll.scrollTop - target) < BG_JUMP_THRESHOLD;
+      };
+      // 초기 on 래치. 레이아웃이나 늦은 출력에서 상태를 다시 유도하지 않는다.
       let bgStick = true;
-      /**
-       * ★«그 카드로» 이동이 따라가기를 **붙잡는다** (2026-10-23, docs/decisions/2026-10-23-background-panel-ux.md ④-(2)).
-       *  끝 쪽 카드는 목록 끝까지만 올라가고, 그 프로그램 스크롤이 아래 핸들러의 «바닥 근처» 판정으로 따라가기를 다시 켜
-       *  새 카드 하나에 목표가 밀려 올라갔다(헤드리스 126px). 프로그램 스크롤과 사용자 스크롤은 이벤트로 못 가르므로
-       *  **사용자 손**(휠·터치·키·포인터)이나 «↓ 최신» 이 풀어 준다. 붙잡힌 동안은 «켜기» 만 막는다(끈 채가 안전 쪽).
-       */
       let bgRevealHold = false;
-      /** 래치가 켜져 있으면 바닥에 붙인다. 꺼져 있으면 아무것도 안 한다(yank 금지). */
-      const bgPin = () => { if (bgStick) bgList.scrollTop = bgList.scrollHeight; };
-      // 노출도 **래치와 같은 판정** — 팔로우는 래치, 버튼은 기하면 임계가 갈려 깜빡인다.
+      let bgScrollInput = null;
+      let bgInputIdle = null;
+      let bgScrollbarDrag = false;
+      const bgGeometryChanged = () => {
+        bgScrollInput = null;
+        if (bgInputIdle !== null) clearTimeout(bgInputIdle);
+        bgInputIdle = null;
+      };
+      const bgSetScrollTop = (top) => { bgGeometryChanged(); bgScroll.scrollTop = top; };
+      const bgPin = () => {
+        if (!bgStick) return;
+        const target = bgFollowTarget();
+        if (target !== null) bgSetScrollTop(target);
+      };
       const updateBgJump = () => { if (bgJump) bgJump.hidden = bgStick; };
       if (bgJump) bgJump.addEventListener("click", () => {
-        // ★명시로 켠다 — 이미 바닥이면 scroll 이벤트가 안 나 래치가 꺼진 채 남는다.
         bgRevealHold = false; bgStick = true; bgPin(); updateBgJump();
       });
-      bgList.addEventListener("scroll", () => {
-        bgStick = bgRevealHold ? false : bgNearBottom(); updateBgJump();
+      const bgArmScrollInput = () => {
+        if (!bgScrollInput) bgScrollInput = { top: bgScroll.scrollTop };
+        if (bgInputIdle !== null) clearTimeout(bgInputIdle);
+        bgInputIdle = setTimeout(bgGeometryChanged, 180);
+      };
+      bgScroll.addEventListener("scroll", () => {
+        if (!bgScrollInput || bgScrollInput.top === bgScroll.scrollTop) return;
+        bgScrollInput.top = bgScroll.scrollTop;
+        bgRevealHold = false;
+        bgStick = bgNearBottom();
+        updateBgJump();
+        // 같은 제스처의 관성 스크롤만 받는다. idle 뒤에는 후보를 남기지 않는다.
+        bgArmScrollInput();
       }, { passive: true });
-      for (const t of ["wheel", "touchstart", "keydown", "pointerdown"]) {
-        bgList.addEventListener(t, () => { bgRevealHold = false; }, { passive: true });
-      }
-      // ★**카드마다** 관찰한다. `#bg-list` 는 `flex:1; overflow-y:auto` 라 오버플로 뒤엔
-      //  자기 높이가 안 변한다(실측 clientHeight 81→161→309→450→450…) — 컨테이너 관찰자는
-      //  **정확히 문제가 되는 구간에서 한 번도 안 운다.** 가장 나쁜 종류의 관찰자다.
-      //  카드별로 보면 `.bg-in-scope` 타이밍·늦게 붙는 라벨·필터 전환이 **전부 여기로**
-      //  흡수된다(경계를 하나씩 쫓지 않는다).
-      const bgCardRO = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => { bgPin(); });
+      for (const t of ["wheel", "touchmove"]) bgScroll.addEventListener(t, bgArmScrollInput, { passive: true });
+      bgScroll.addEventListener("scrollend", bgGeometryChanged, { passive: true });
+      bgScroll.addEventListener("touchend", bgGeometryChanged, { passive: true });
+      bgScroll.addEventListener("touchcancel", bgGeometryChanged, { passive: true });
+      bgScroll.addEventListener("keydown", (e) => {
+        if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        if (e.target.closest("input,textarea,select,[contenteditable]")) return;
+        if (e.key === " " && e.target.closest("button,a,[role=button]")) return;
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key)) bgArmScrollInput();
+      });
+      bgScroll.addEventListener("pointerdown", (e) => {
+        const r = bgScroll.getBoundingClientRect();
+        // 카드 클릭·선택은 후보가 아니다. 공통 칸의 스크롤바만 후보로 삼는다.
+        bgScrollbarDrag = e.target === bgScroll && e.clientX >= r.right - Math.max(14, r.width - bgScroll.clientWidth);
+        if (bgScrollbarDrag) bgArmScrollInput();
+      }, { passive: true });
+      window.addEventListener("pointermove", () => { if (bgScrollbarDrag) bgArmScrollInput(); }, { passive: true });
+      window.addEventListener("pointerup", () => { if (bgScrollbarDrag) { bgScrollbarDrag = false; bgGeometryChanged(); } }, { passive: true });
+      // 카드별 + viewport 크기 변경. observer 이벤트 자체를 사용자 입력으로 보지 않는다.
+      const bgCardRO = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => { bgGeometryChanged(); bgPin(); });
+      const bgViewportRO = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => { bgGeometryChanged(); bgPin(); });
+      if (bgViewportRO) bgViewportRO.observe(bgScroll);
       const bgObserveCard = (el) => { if (bgCardRO) bgCardRO.observe(el); };
       const bgUnobserveCard = (el) => { if (bgCardRO) bgCardRO.unobserve(el); };
       const BG_STATUS = {
@@ -255,6 +279,7 @@
        *  네 번째 경로가 생길 때 또 빠진다([[feedback_simple_composable_no_duplication]]).
        */
       const setJobOpen = (jobId, entry, want) => {
+        bgGeometryChanged();
         if (!entry || !entry.el || !entry.el.classList.contains("has-detail")) return false;
         const nowOpen =
           want === undefined ? entry.el.classList.toggle("open") : (entry.el.classList.toggle("open", want), want);
@@ -608,6 +633,7 @@
         try { localStorage.setItem(BG_OPEN_LS, on ? "1" : "0"); } catch { /* quota·프라이빗 */ }
       };
       const openBg = () => {
+        bgGeometryChanged();
         document.body.classList.add("bg-open");
         bgPanel.setAttribute("aria-hidden", "false");
         updateBgJump();
@@ -634,15 +660,15 @@
        * @param {{ find: () => (HTMLElement|null|undefined), inScope?: boolean, showFilter?: () => void, groupHead?: string, open?: (el: HTMLElement) => void, rerender?: () => void }} t
        */
       /**
-       * 카드 **윗변**을 그 카드의 스크롤 칸(`.bg-list`) 윗변 + 8px 에 둔다 (2026-10-23 — 종전엔 `scrollIntoView({block:"center"})`
+       * 카드 **윗변**을 그 카드의 공통 스크롤 칸(`#bg-scroll`) 윗변 + 8px 에 둔다 (2026-10-23 — 종전엔 `scrollIntoView({block:"center"})`
        *  라 긴 카드의 머리가 칸 위로 잘리고, 바깥(패널·문서)까지 움직여 패널 머리가 화면 밖·앱 헤더 밑으로 밀렸다).
        *  ★그 칸만 움직인다. 끝 쪽 카드는 칸 끝까지만 올라간다(브라우저가 `scrollTop` 을 자른다) — 보장은 «윗변이 칸 안에 보인다».
-       *  `.bg-list` 밖(타이머 줄)은 가장 가까운 만큼만.
+       *  `#bg-scroll` 밖(타이머 줄)은 가장 가까운 만큼만.
        */
       const alignCardTop = (card) => {
-        const pane = card && typeof card.closest === "function" ? card.closest(".bg-list") : null;
+        const pane = card && typeof card.closest === "function" ? card.closest("#bg-scroll") : null;
         if (pane) {
-          pane.scrollTop += card.getBoundingClientRect().top - pane.getBoundingClientRect().top - 8;
+          bgSetScrollTop(pane.scrollTop + card.getBoundingClientRect().top - pane.getBoundingClientRect().top - 8);
           return;
         }
         if (card && card.scrollIntoView) card.scrollIntoView({ block: "nearest" });
@@ -716,6 +742,7 @@
       const bgCountAll = document.getElementById("bg-count-all");
       let bgFilter = "running"; // "running" | "done"(완료=종료된 잡만, 상호배타)
       const setBgFilter = (mode) => {
+        bgGeometryChanged();
         bgFilter = mode === "done" ? "done" : "running";
         bgList.classList.toggle("filter-running", bgFilter === "running");
         bgList.classList.toggle("filter-done", bgFilter === "done");
@@ -754,6 +781,7 @@
         return owner !== "" && owner === activeThreadKey;
       };
       const setBgSessionScope = (mode) => {
+        bgGeometryChanged();
         bgSessionScope = mode === "all" ? "all" : "session";
         bgList.classList.toggle("scope-session", bgSessionScope === "session");
         if (bgScopeFilterEl) for (const b of bgScopeFilterEl.querySelectorAll(".bg-fbtn")) {
@@ -763,6 +791,7 @@
         }
         refreshBgBadge();
         if (typeof window.renderBgTimers === "function") window.renderBgTimers(); // 타이머도 같은 토글(bg-timers.js)
+        if (typeof stopHiddenShellTailPolls === "function") stopHiddenShellTailPolls();
         // 셸 그룹도 같은 토글을 따른다(2026-07-28) — 셸은 CSS 숨김이 아니라 렌더에서 거르므로
         // (카운트 정합) 여기서 재렌더를 걸어 준다. 로드 순서 무관하게 typeof 가드.
         if (typeof scheduleShellsRender === "function") scheduleShellsRender();
@@ -784,8 +813,12 @@
         if (!head) return;
         const key = BG_CAT_KEY + headId;
         const apply = (collapsed) => {
+          bgGeometryChanged();
           head.classList.toggle("collapsed", collapsed);
           head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+          bgPin();
+          if (headId === "bg-shells-head" && typeof stopHiddenShellTailPolls === "function") stopHiddenShellTailPolls();
+          if (headId === "bg-shells-head" && typeof scheduleShellsRender === "function") scheduleShellsRender();
         };
         let saved = false;
         try { saved = localStorage.getItem(key) === "1"; } catch {}
@@ -811,9 +844,11 @@
       // 탭 전환(activeThreadKey 변경) 후 재적용 훅 — js/tabs.js 가 switchToThread/newTab/closeTab
       // 뒤에 호출(전역 스코프, background-drawer.js 가 tabs.js 보다 먼저 로드돼 참조 가능).
       const refreshBgScope = () => {
+        bgGeometryChanged();
         for (const e of jobCards.values()) e.el.classList.toggle("bg-in-scope", isBgInScope(e.threadKey, e.ownerTk));
         refreshBgBadge();
         if (typeof window.renderBgTimers === "function") window.renderBgTimers(); // 세션을 옮기면 그 대화의 타이머로
+        if (typeof stopHiddenShellTailPolls === "function") stopHiddenShellTailPolls();
         // 셸 그룹은 렌더에서 거르므로(카운트 정합) 세션이 바뀌면 재렌더가 필요하다.
         if (typeof scheduleShellsRender === "function") scheduleShellsRender();
         if (typeof refreshShellStrip === "function") refreshShellStrip(); // 상단 "🖥️ N개" 도 갱신.
@@ -875,6 +910,7 @@
         }
       };
       const capBgList = () => {
+        bgGeometryChanged();
         while (jobCards.size > BG_MAX) {
           // 카드는 그룹 컨테이너 안에 중첩될 수 있어 직계 순회 대신 .bg-job 후손을 훑는다.
           // ★**앞에서부터** — 정렬이 오래된 순이라 앞이 가장 오래된 것이다(2026-09-10).
@@ -1139,6 +1175,7 @@
           // 최신=아래 삽입 + **래치** 팔로우. 위로 올려 과거 잡을 보는 중이면 존중한다
           // (yank 금지). ★여기서 «바닥 근처인가» 를 다시 재지 않는다 — 그게 P-1 이었다.
           //  래치는 사용자 스크롤만 끄고, 늦게 자라는 카드는 `bgCardRO` 가 다시 붙인다.
+          bgGeometryChanged();
           bgList.appendChild(el); // 최신=아래(bgEmpty 는 size>0 면 숨김).
           bgObserveCard(el);
           bgPin();

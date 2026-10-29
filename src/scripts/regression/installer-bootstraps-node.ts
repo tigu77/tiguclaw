@@ -42,6 +42,32 @@ const code = (s: string): string =>
 const bare = (s: string): string =>
   code(s).replace(/"[\s\S]*?"/g, '""').replace(/'[^'\n]*'/g, "''");
 
+/** A double quote inside a single-quoted PowerShell regex is data, not the start
+ * of a multiline string. Consume quotes in order and preserve diagnostic line offsets. */
+const barePowerShell = (source: string): string => {
+  const chars = source.split("");
+  const blank = (at: number) => { if (chars[at] !== "\n" && chars[at] !== "\r") chars[at] = " "; };
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] === "#") {
+      while (i < source.length && source[i] !== "\n") blank(i++);
+    } else if (source[i] === "`") {
+      blank(i++); if (i < source.length) blank(i);
+    } else if (source[i] === "'" || source[i] === '"') {
+      const quote = source[i]!;
+      blank(i++);
+      while (i < source.length) {
+        const c = source[i]!;
+        blank(i);
+        if ((quote === '"' && c === "`") || (c === quote && source[i + 1] === quote)) {
+          blank(++i);
+        } else if (c === quote) break;
+        i++;
+      }
+    }
+  }
+  return chars.join("");
+};
+
 export const check: RegressionCheck = {
   name: "installer-bootstraps-node",
   guards:
@@ -51,7 +77,7 @@ export const check: RegressionCheck = {
     const sh = code(read("install.sh"));
     const ps = code(read("install.ps1"));
     const shBare = bare(read("install.sh"));
-    const psBare = bare(read("install.ps1"));
+    const psBare = barePowerShell(read("install.ps1"));
     const out: Assertion[] = [];
 
     for (const [name, src, srcBare] of [
@@ -156,7 +182,7 @@ export const check: RegressionCheck = {
       const fetchAt = lines.findIndex((l) =>
         /^\s*(fetch_node|Install-PrivateNode)\s*(#.*)?$/.test(l),
       );
-      const cloneAt = lines.findIndex((l) => /git clone/.test(l) && !/^\s*#/.test(l));
+      const cloneAt = lines.findIndex((l) => /(?:git|\$GitExe) clone/.test(l) && !/^\s*#/.test(l));
       out.push(
         assert(
           `★★${name}: 전용 Node 를 **폴더를 만들기(clone) 전에** 받는다 — 뒤에 받으면 받기가 실패할 때 clone 된 폴더만 남고, 그 사람은 안내하는 복구 명령을 실행할 수도 없다(node 가 없어서 온 사람이다)`,

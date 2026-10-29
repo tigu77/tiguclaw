@@ -56,6 +56,51 @@
       })();
 
       /**
+       * 모바일 overlay의 세로 터치 경계. contain만으로는 실제 스크롤 범위가 없는 패널에서
+       * 뒤 문서로 새는 Safari가 있다. 실제 터치 대상부터 패널까지만 보고, 그 방향으로
+       * 소비할 스크롤러가 없을 때만 막는다. 메뉴의 가로 닫기·탭·선택·핀치는 그대로 둔다.
+       * 표식/리스너 수명은 마크업/페이지와 같다 — 열고 닫을 때 새로 등록하지 않는다.
+       */
+      for (const panel of document.querySelectorAll(".overlay-panel")) {
+        let touch = null;
+        const reset = () => { touch = null; };
+        panel.addEventListener("touchstart", (e) => {
+          reset();
+          if (!window.matchMedia("(max-width: 900px)").matches || e.touches.length !== 1) return;
+          const t = e.touches[0];
+          touch = { id: t.identifier, x: t.clientX, y: t.clientY, lastY: t.clientY };
+        }, { passive: true, capture: true });
+        panel.addEventListener("touchmove", (e) => {
+          if (!touch) return;
+          const r = panel.getBoundingClientRect();
+          if (!window.matchMedia("(max-width: 900px)").matches || e.touches.length !== 1 ||
+              panel.getAttribute("aria-hidden") === "true" || r.right <= 0 || r.left >= window.innerWidth ||
+              r.bottom <= 0 || r.top >= window.innerHeight) { reset(); return; }
+          const t = e.touches[0];
+          if (t.identifier !== touch.id) { reset(); return; }
+          const dy = t.clientY - touch.lastY;
+          touch.lastY = t.clientY;
+          if (!dy || Math.abs(t.clientX - touch.x) >= Math.abs(t.clientY - touch.y)) return;
+          const selection = window.getSelection();
+          // 남은 선택만으로 패널 전체를 해제하지 않는다 — 이번 시작점이 선택 텍스트 위일 때만 보호.
+          if (selection && !selection.isCollapsed && selection.rangeCount && panel.contains(selection.anchorNode) &&
+              [...selection.getRangeAt(0).getClientRects()].some(r =>
+                touch.x >= r.left && touch.x <= r.right && touch.y >= r.top && touch.y <= r.bottom)) return;
+          let el = e.target.nodeType === 1 ? e.target : e.target.parentElement;
+          if (!panel.contains(el)) { reset(); return; }
+          for (; el; el = el.parentElement) {
+            const style = getComputedStyle(el);
+            if (/^(auto|scroll|overlay)$/.test(style.overflowY) && el.scrollHeight > el.clientHeight &&
+                (dy > 0 ? el.scrollTop > 0 : el.scrollTop < el.scrollHeight - el.clientHeight)) return;
+            if (el === panel) break;
+          }
+          if (e.cancelable) e.preventDefault();
+        }, { passive: false, capture: true });
+        panel.addEventListener("touchend", reset, { passive: true, capture: true });
+        panel.addEventListener("touchcancel", reset, { passive: true, capture: true });
+      }
+
+      /**
        * 패널 왼쪽 가장자리 손잡이로 폭 조절 — bg·위젯 공통.
        * ★폭 = **드래그 시작 폭 + 포인터 이동량**. 종전 bg 의 `innerWidth - clientX` 는 «패널이 창 오른쪽 끝» 전제라, 위젯 패널이 그 오른쪽에
        *  붙으면 바깥 패널 폭까지 섞였다(아스트라 10-20).

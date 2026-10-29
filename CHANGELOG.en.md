@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Newly recorded choice prompts are searchable by their question, option labels, and notes.
 
 ### Changed
-- Internal worker notices now stay out of automatic progress reports and always-visible card summaries; they remain available in job details.
+- The `notify_owner` worker-notice tool is temporarily disabled in this release. Job completion and failure reports, result joins, and instructions to workers remain available.
+- Existing internal worker notices now stay out of automatic progress reports and always-visible card summaries; they remain available in job details.
 - The chat composer's expanded information panel now places its collapse button in the upper-right corner.
 - Codex no-progress timeout logs now record item types, states, and receipt times without item contents to aid diagnosis.
 - Telegram now labels copied replies, automatic job updates, and replies or choice prompts from another conversation with their source conversation.

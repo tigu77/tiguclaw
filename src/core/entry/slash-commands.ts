@@ -68,7 +68,8 @@ const dateLocale = (): string => {
  */
 const choosesSessionItself = (msg: IncomingMessage): boolean =>
   msg.channel === SESSION_STORAGE_CHANNEL ||
-  (msg.session?.explicitSessionId !== undefined && msg.session.explicitSessionId !== "");
+  // 선택지 답의 명시 세션은 «답 좌표» 일 뿐 세션 선택기가 아니다(2026-10-28 B3) — 텔레그램·CLI 의 `/sessions` 선택지가 그 방 바인딩을 다룬다.
+  (msg.session?.explicitSessionId !== undefined && msg.session.explicitSessionId !== "" && msg.session.fromPromptAnswer !== true);
 
 /** `/fork back` 이 결론을 보내는 중인 대화방(채널:주소). */
 const carryRooms = new Set<string>();

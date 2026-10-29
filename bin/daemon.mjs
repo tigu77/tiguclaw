@@ -48,6 +48,8 @@
  *   반복이 감독자까지 되살림, 2026-08-22). 정책으로 막혀 시작프로그램 폴백이면 데몬은 감독자가 되살리지만 감독자는 아무도 안 되살린다.
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { applyWindowsTools } from "./windows-tools.mjs";
+applyWindowsTools();
 import {
   appendFileSync,
   existsSync,
@@ -199,6 +201,7 @@ export const resolveLabel = (homeAbs) =>
 export const WIN_SERVICE_ENV_KEYS = [
   "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
   "npm_config_userconfig", "npm_config_globalconfig", "TIGUCLAW_SERVICE_LABEL",
+  "CLAUDE_CODE_GIT_BASH_PATH",
   "HTTP_BRIDGE_HOST", "HTTP_BRIDGE_PORT", "DASHBOARD_HOST", "DASHBOARD_PORT", "TZ",
 ];
 
@@ -231,6 +234,11 @@ export const winLaunchEnv = (baseEnv, homeAbs) => {
     if (readHomeEnvValue(homeAbs, key) !== undefined) continue; // .env 가 정본
     if (env[key] !== undefined && env[key] !== "") continue; // 지금 실행 환경이 준 값이 이긴다
     env[key] = value;
+  }
+  if (process.platform === "win32") {
+    const bash = readHomeEnvValue(homeAbs, "CLAUDE_CODE_GIT_BASH_PATH");
+    if (bash !== undefined) env.CLAUDE_CODE_GIT_BASH_PATH = bash;
+    applyWindowsTools(env);
   }
   return env;
 };

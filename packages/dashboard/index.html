@@ -305,38 +305,40 @@
         <div class="bg-timers-head" data-i18n="bg.timers.head">⏱ 타이머</div>
         <div class="bg-timers-list" id="bg-timers-list"></div>
       </div>
-      <!-- 작업 그룹(매니저·에이전트 혼재) — 접이식 카테고리 헤더 + 본문(상태필터 + 리스트).
-           kind(매니저/에이전트)는 카드 배지로만 구분, 그룹은 나누지 않는다(사용자 확정). -->
-      <div class="bg-group-head" id="bg-jobs-head" role="button" tabindex="0" aria-expanded="true">
-        <span class="bg-group-chevron">▾</span>
-        <span class="bg-group-label" data-i18n="bg.jobs.head">⚙️ 매니저 / 에이전트</span>
-      </div>
-      <div class="bg-group-body bg-jobs-body" id="bg-jobs-body">
-        <div class="bg-filter" id="bg-filter">
-          <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true"><span data-i18n="bg.filter.running">진행 중</span> <span class="bg-fcount" id="bg-count-running">0</span></button>
-          <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false"><span data-i18n="common.done">완료</span> <span class="bg-fcount" id="bg-count-all">0</span></button>
+      <div id="bg-scroll" class="bg-scroll" tabindex="0">
+        <!-- 작업 그룹(매니저·에이전트 혼재) — 접이식 카테고리 헤더 + 본문(상태필터 + 리스트).
+             kind(매니저/에이전트)는 카드 배지로만 구분, 그룹은 나누지 않는다(사용자 확정). -->
+        <div class="bg-group-head" id="bg-jobs-head" role="button" tabindex="0" aria-expanded="true">
+          <span class="bg-group-chevron">▾</span>
+          <span class="bg-group-label" data-i18n="bg.jobs.head">⚙️ 매니저 / 에이전트</span>
         </div>
-        <div class="bg-list filter-running scope-session" id="bg-list">
-          <div class="bg-empty" id="bg-empty" data-i18n="bg.empty">진행 중인 작업이 없습니다.</div>
+        <div class="bg-group-body bg-jobs-body" id="bg-jobs-body">
+          <div class="bg-filter" id="bg-filter">
+            <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true"><span data-i18n="bg.filter.running">진행 중</span> <span class="bg-fcount" id="bg-count-running">0</span></button>
+            <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false"><span data-i18n="common.done">완료</span> <span class="bg-fcount" id="bg-count-all">0</span></button>
+          </div>
+          <div class="bg-list filter-running scope-session" id="bg-list">
+            <div class="bg-empty" id="bg-empty" data-i18n="bg.empty">진행 중인 작업이 없습니다.</div>
+          </div>
+        </div>
+        <!-- 셸/프로세스 그룹(ADR 2026-07-17 §5, Phase 3b-2) — 매니저·에이전트 잡(위)과 데이터
+             레인이 다른 별도 그룹(shellRegistry ≠ jobCards, view-shells.js 소관). 카드 빌더·tail
+             폴링·kill 배선은 view-shells.js 재사용, 렌더 타깃만 #bg-shells-list. 접이식 헤더 동형. -->
+        <div class="bg-group-head" id="bg-shells-head" role="button" tabindex="0" aria-expanded="true">
+          <span class="bg-group-chevron">▾</span>
+          <span class="bg-group-label" data-i18n="bg.shells.head">🖥️ 셸 / 프로세스</span>
+        </div>
+        <div class="bg-group-body bg-shells-body" id="bg-shells-body">
+          <div class="bg-filter" id="bg-shells-filter">
+            <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true"><span data-i18n="bg.shells.running">실행 중</span> <span class="bg-fcount" id="bg-shells-count-running">0</span></button>
+            <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false"><span data-i18n="common.done">완료</span> <span class="bg-fcount" id="bg-shells-count-all">0</span></button>
+          </div>
+          <div class="bg-list bg-shells-list filter-running" id="bg-shells-list">
+            <div class="bg-empty" id="bg-shells-empty" data-i18n="bg.shells.empty">백그라운드로 띄운 셸이 없습니다. 도구가 직접 붙들고 실행 중인 명령은 여기 안 나옵니다 — 진행 중인 작업은 «매니저·에이전트» 를 보세요.</div>
+          </div>
         </div>
       </div>
-      <!-- 셸/프로세스 그룹(ADR 2026-07-17 §5, Phase 3b-2) — 매니저·에이전트 잡(위)과 데이터
-           레인이 다른 별도 그룹(shellRegistry ≠ jobCards, view-shells.js 소관). 카드 빌더·tail
-           폴링·kill 배선은 view-shells.js 재사용, 렌더 타깃만 #bg-shells-list. 접이식 헤더 동형. -->
-      <div class="bg-group-head" id="bg-shells-head" role="button" tabindex="0" aria-expanded="true">
-        <span class="bg-group-chevron">▾</span>
-        <span class="bg-group-label" data-i18n="bg.shells.head">🖥️ 셸 / 프로세스</span>
-      </div>
-      <div class="bg-group-body bg-shells-body" id="bg-shells-body">
-        <div class="bg-filter" id="bg-shells-filter">
-          <button class="bg-fbtn active" type="button" data-filter="running" aria-pressed="true"><span data-i18n="bg.shells.running">실행 중</span> <span class="bg-fcount" id="bg-shells-count-running">0</span></button>
-          <button class="bg-fbtn" type="button" data-filter="done" aria-pressed="false"><span data-i18n="common.done">완료</span> <span class="bg-fcount" id="bg-shells-count-all">0</span></button>
-        </div>
-        <div class="bg-list bg-shells-list filter-running" id="bg-shells-list">
-          <div class="bg-empty" id="bg-shells-empty" data-i18n="bg.shells.empty">백그라운드로 띄운 셸이 없습니다. 도구가 직접 붙들고 실행 중인 명령은 여기 안 나옵니다 — 진행 중인 작업은 «매니저·에이전트» 를 보세요.</div>
-        </div>
-      </div>
-      <button id="bg-jump" class="bg-jump" type="button" hidden aria-label="맨 아래로 (최신 작업)" title="맨 아래로 (최신 작업)" data-i18n-attrs="aria-label=bg.jump.title;title=bg.jump.title" data-i18n="bg.jump.text">↓ 최신</button>
+      <button id="bg-jump" class="bg-jump" type="button" hidden aria-label="최신 작업 끝으로" title="최신 작업 끝으로" data-i18n-attrs="aria-label=bg.jump.title;title=bg.jump.title" data-i18n="bg.jump.text">↓ 최신</button>
     </aside>
     <!-- ★언어 카탈로그 주입 자리 — 서버가 서빙할 때 이 줄을 통째로 바꾼다.
          fetch 로 받으면 **첫 렌더가 카탈로그보다 먼저** 돌아 화면이 한 번 깜빡인다.

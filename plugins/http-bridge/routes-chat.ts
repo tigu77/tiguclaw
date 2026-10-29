@@ -199,6 +199,8 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
     ...(replyToRef !== undefined ? { replyToRef } : {}),
     ...(replyToAt !== undefined ? { replyToAt } : {}),
     ...(correlationId !== "" ? { correlationId } : {}),
+    // 위에서 소비 판정(ok)을 받은 질문 — 이 메시지가 시작 전에 큐에서 취소되면 코어가 그 질문을 다시 연다(2026-10-28).
+    ...(typeof body.promptId === "string" && body.promptId !== "" ? { promptAnswerId: body.promptId } : {}),
     ...(egressChannels.length > 0 ? { egressChannels } : {}),
     // ★`noEgress: true` 면 이 답을 다른 채널로 복사하지 않는다 — 프로그램이 띄우는 턴
     //  (프로브·스크립트·통합)이 사용자 폰을 울리지 않게. 덜 보내는 쪽이라 안전하다.

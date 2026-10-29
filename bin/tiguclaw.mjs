@@ -14,6 +14,8 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
+import { applyWindowsTools } from "./windows-tools.mjs";
+applyWindowsTools();
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 

@@ -90,7 +90,7 @@ import { formatEnvContext, localTimeZone } from "../../runtime-env.js";
 import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { retrieveContext } from "../../memory.js";
 import { translate } from "../../i18n.js";
-import { redactSecrets } from "../../outbound-sanitize.js";
+import { describeFailureBody, redactSecrets } from "../../outbound-sanitize.js";
 import { createSteeringLedger } from "./_steering-ledger.js";
 import { isAuthRejected, isRateLimited } from "../rate-limit.js";
 import { createFileOpsMcpServer } from "../capabilities/file-ops-mcp.js";
@@ -322,7 +322,7 @@ export const isCodexStreamCut = (e: unknown): boolean => {
   }
   return false;
 };
-/** 끊김 복구 — 요청 하나당 횟수와 대기. 그래도 끊기면 종전처럼 정직하게 실패한다(«이어서 진행해줘» 안내). */
+/** 끊김 복구 — 요청 하나당 횟수와 대기. 그래도 끊기면 종전처럼 정직하게 실패한다(결과 확인·다시 요청 안내). */
 const CODEX_CUT_BACKOFF_MS = [1_000, 3_000];
 /** 글을 쓰던 중 끊겼을 때 이어 쓰게 하는 지시 — 모델 대면 문장. */
 const CODEX_CUT_CONTINUE_NUDGE =
@@ -1964,7 +1964,7 @@ export const runOpenAiCodex = async (
         }
         if (!res.ok) {
           throw new Error(
-            `Codex backend request failed: ${res.status} ${await res.text().catch(() => "")}`,
+            `Codex backend request failed: ${res.status} ${describeFailureBody(await res.text().catch(() => ""))}`,
           );
         }
         if (res.body === null) {
@@ -2122,7 +2122,7 @@ export const runOpenAiCodex = async (
             // 사용자에게 갈 판 — 백엔드 원문(raw)은 빼고 사유만.
             const userWhy =
               `${f.source}${f.code !== undefined ? `/${f.code}` : ""}` +
-              `${f.message !== undefined ? `: ${f.message}` : ""}` +
+              `${f.message !== undefined ? `: ${describeFailureBody(f.message)}` : ""}` +
               `${f.param !== undefined ? ` (param=${f.param})` : ""}`;
             // 로그용 판 — 문서 형상과 실물이 다를 수 있어 원문을 함께 남긴다(실패 경로에서만).
             const why =
@@ -3208,7 +3208,9 @@ export const runOpenAiCodex = async (
         // 폴백이 부작용을 중복 실행했다.
         // ★답장에 실리므로 비밀을 가린다 — 백엔드 JSON 원문이 그대로 나가던 자리다(2026-10-09 전체 적대 검토).
         const detail = redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200);
-        notice = `${translate("srv.codex.requestFailed", { detail })}${ranList}\n\n${translate("srv.codex.sayContinue")}`;
+        // ★«이어서 진행해줘» 를 권하지 않는다(2026-10-28) — 이 자리는 시작한 작업(백그라운드 잡 등)이 아직 도는지 모른다.
+        //  근거 없이 재개를 권하면 같은 일을 또 시작하게 된다. 무진전 중단과 같은 안내(결과 확인 → 다시 요청)를 쓴다.
+        notice = `${translate("srv.codex.requestFailed", { detail })}${ranList}\n\n${translate("srv.codex.checkOrAskAgain")}`;
       }
 
       // ★이미 화면에 흘러간 텍스트 **뒤에 붙인다** (2026-08-08).

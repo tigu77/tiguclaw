@@ -11,6 +11,7 @@ import { refreshHomeCredentials } from "../../credential-env.js";
 import { randomBytes } from "node:crypto";
 import type { AuthProvider } from "../auth-registry.js";
 import { ProviderUnavailableError } from "../rate-limit.js";
+import { describeFailureBody } from "../../outbound-sanitize.js";
 
 // OAuth 상수 — fork (numman-ali/opencode-openai-codex-auth) 의 lib/auth/auth.ts 답습.
 // codex_cli_rs originator + chatgpt.com/backend-api = Codex 비공식 endpoint 활성화.
@@ -109,7 +110,7 @@ export const exchangeAuthorizationCode = async (
   });
   if (!res.ok) {
     throw new Error(
-      `OAuth code exchange failed: ${res.status} ${await res.text().catch(() => "")}`,
+      `OAuth code exchange failed: ${res.status} ${describeFailureBody(await res.text().catch(() => ""))}`,
     );
   }
   const json = (await res.json()) as {
@@ -146,7 +147,7 @@ export const refreshAccessToken = async (
   });
   if (!res.ok) {
     throw new Error(
-      `OAuth token refresh failed: ${res.status} ${await res.text().catch(() => "")}`,
+      `OAuth token refresh failed: ${res.status} ${describeFailureBody(await res.text().catch(() => ""))}`,
     );
   }
   const json = (await res.json()) as {
@@ -242,9 +243,8 @@ const isExpiringSoon = (expiresEnv: string | undefined): boolean => {
  * ★`ensureFreshAccessToken` 의 throw 조건이 **이 함수의 부정**이다 — 두 벌이 되지 않게
  *  거기서도 이걸 부른다. "가용" 이라 해놓고 실행이 던지면 풀에 넣은 의미가 없다.
  */
-export const codexAuthAvailable = (): boolean =>
-  (process.env.OPENAI_CODEX_OAUTH_TOKEN ?? "") !== "" ||
-  (process.env.OPENAI_CODEX_OAUTH_REFRESH ?? "") !== "";
+export { codexAuthAvailable } from "../codex-auth-presence.js";
+import { codexAuthAvailable } from "../codex-auth-presence.js";
 
 /**
  * **진행 중인 갱신 — 프로세스에 하나만** (2026-10-09 전체 적대 검토 P4).

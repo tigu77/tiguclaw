@@ -18,6 +18,11 @@ export const publishPromptOptions = (
     note?: string;
     /** 발급 id — 대시보드가 답에 실어 보내 소비 판정(`prompt-answer-claims.ts`)을 받는다. 없으면(슬래시) 종전 그대로. */
     promptId?: string;
+    /**
+     * 답이 줄 서는 스레드 — 표시 세션(`threadKey`)과 다를 때만(대화 밖 작업의 질문, 2026-10-28). 서버가 정한 값이고 화면은 «바쁨»·✕ 취소 좌표로만 읽는다.
+     *  답의 라우팅은 여전히 서버 대장(`promptReplySession`)이 정한다.
+     */
+    answerThreadKey?: string;
     /** 실제 송신 참조 — 공통 관측의 기존 한 행에 묶는다(없는 채널은 생략). */
     channelRefs?: (ChannelMessageRef & { channel: string })[];
   },
@@ -34,6 +39,7 @@ export const publishPromptOptions = (
         options: input.options,
         ...(input.note !== undefined ? { note: input.note } : {}),
         ...(input.promptId !== undefined ? { promptId: input.promptId } : {}),
+        ...(input.answerThreadKey !== undefined ? { answerThreadKey: input.answerThreadKey } : {}),
         ...(input.channelRefs !== undefined ? { channelRefs: input.channelRefs } : {}),
       },
     });

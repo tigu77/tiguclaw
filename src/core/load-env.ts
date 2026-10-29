@@ -57,7 +57,7 @@ export const loadHomeEnv = (): void => {
   //  요약 줄은 남긴다: «왜 `.env` 가 안 먹었나» 가 로그만으로 보여야 한다.
   if (process.env[DISABLE_ENV_FILE_KEY] === "1") {
     envLoadSummary = `[env] env-file loading disabled (${DISABLE_ENV_FILE_KEY}=1) — using process environment only`;
-    queueMicrotask(() => flushEnvLoadLog());
+    setImmediate(() => flushEnvLoadLog());
     return;
   }
 
@@ -115,9 +115,9 @@ export const loadHomeEnv = (): void => {
   //  안 남았다(부팅 206회 중 0건, launchd.out 에만 373건). 하필 "어느 .env 를 쓰는가" 는
   //  409 봇 충돌 사고의 전제였고, 윈도우·회사 PC 는 launchd.out 자체가 없어 어디에도 안 남는다.
   //  로그가 1차 진단면이므로 **로깅이 준비된 뒤** 찍는다.
-  //  microtask = 진입점이 명시 flush 를 안 하는 CLI·스크립트용 폴백. 데몬은
+  //  setImmediate = 진입점이 명시 flush 를 안 하는 CLI·스크립트용 폴백. 데몬은
   //  initFileLogging 직후 명시 호출로 **결정적으로** 찍는다(top-level await 유무 무관).
-  queueMicrotask(() => flushEnvLoadLog());
+  setImmediate(() => flushEnvLoadLog());
 };
 
 // 로드 요약 — flush 가 소비한다. (읽기 전용 export 는 두지 않는다: 소비처 0인 표면은
@@ -127,7 +127,7 @@ let envLoadSummary: string | null = null;
 let envLogFlushed = false;
 /**
  * env 로드 요약을 **한 번만** 찍는다. 진입점이 로깅을 켠 직후 부르면 데몬 로그 파일에 남는다.
- * 멱등 — 명시 호출과 microtask 폴백이 겹쳐도 한 줄이다.
+ * 멱등 — 명시 호출과 setImmediate 폴백이 겹쳐도 한 줄이다.
  */
 export const flushEnvLoadLog = (): void => {
   if (envLogFlushed || envLoadSummary === null) return;
@@ -137,4 +137,13 @@ export const flushEnvLoadLog = (): void => {
 
 // 부작용 실행 — 진입점이 `import "./core/load-env.js"` 를 **가장 먼저** 두면 이 시점에 로드된다
 // (dotenv/config 패턴). 멱등이라 여러 번 import 돼도 1회만.
+// Load synchronously before any await: sibling static imports can capture env constants
+// while an async dependency is suspended. The fallback log uses setImmediate so it waits
+// for the entrypoint to initialise file logging despite this module's async evaluation.
 loadHomeEnv();
+// Runtime asset, outside rootDir=src. The build copies bin/; non-Windows needs no asset.
+const windowsTools = process.platform === "win32"
+  ? await import(new URL("../../bin/windows-tools.mjs", import.meta.url).href) as { applyWindowsTools: () => void }
+  : undefined;
+// Direct npm scripts also need PortableGit/Bash; apply after explicit home settings.
+windowsTools?.applyWindowsTools();

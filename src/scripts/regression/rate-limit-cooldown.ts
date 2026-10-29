@@ -13,21 +13,21 @@ import { isRateLimited, parseCooldownMs } from "../../core/llm-runtime/index.js"
 import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-// ★해제 시각은 **지금 기준 40분 뒤**로 만든다 (2026-08-09). 종전엔 `2:20am` 고정이라
-//  실제로 그 시각을 지난 새벽에 돌리면 파서가 null 을 내 **하루 23시간만 초록**인 검사였다
-//  (이날 02:4x 에 걸렸다). 시각에 따라 색이 바뀌는 게이트는 신뢰를 갉아먹는다 —
-//  같은 부류의 반대편이 상시 빨간 게이트다([[feedback_gate_must_actually_run]]).
-const resetAt = new Date(Date.now() + 40 * 60 * 1000);
-const h12 = resetAt.getHours() % 12 === 0 ? 12 : resetAt.getHours() % 12;
-const CLAUDE =
-  `claude-agent-sdk error: You've hit your limit · resets ${h12}:` +
-  `${String(resetAt.getMinutes()).padStart(2, "0")}` +
-  `${resetAt.getHours() < 12 ? "am" : "pm"} (Asia/Seoul)`;
-
 export const check: RegressionCheck = {
   name: "rate-limit-cooldown",
   guards: "claude 한도 초과가 쿨다운으로 안 잡혀 죽은 백엔드를 매 턴 다시 때리던 것",
   run: async (): Promise<Assertion[]> => {
+    // 각 run 시점에 계산해 선행 import 뒤 실행이 늦어져도 fixture가 낡지 않게 한다.
+    // ★해제 시각은 **지금 기준 40분 뒤**로 만든다 (2026-08-09). 종전엔 `2:20am` 고정이라
+    //  실제로 그 시각을 지난 새벽에 돌리면 파서가 null 을 내 **하루 23시간만 초록**인 검사였다
+    //  (이날 02:4x 에 걸렸다). 시각에 따라 색이 바뀌는 게이트는 신뢰를 갉아먹는다 —
+    //  같은 부류의 반대편이 상시 빨간 게이트다([[feedback_gate_must_actually_run]]).
+    const resetAt = new Date(Date.now() + 40 * 60 * 1000);
+    const h12 = resetAt.getHours() % 12 === 0 ? 12 : resetAt.getHours() % 12;
+    const CLAUDE =
+      `claude-agent-sdk error: You've hit your limit · resets ${h12}:` +
+      `${String(resetAt.getMinutes()).padStart(2, "0")}` +
+      `${resetAt.getHours() < 12 ? "am" : "pm"} (Asia/Seoul)`;
     const ms = parseCooldownMs(CLAUDE);
     return [
       assert("★claude 한도 문구를 rate-limit 으로 인식", isRateLimited(CLAUDE), "hit your limit"),

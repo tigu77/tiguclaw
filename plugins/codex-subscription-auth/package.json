@@ -14,6 +14,7 @@
     ],
     "name": "codex-subscription-auth",
     "entry": "./index.ts",
+    "authProbe": "./auth-probe.ts",
     "needs": {
       "auth": [
         "codex"

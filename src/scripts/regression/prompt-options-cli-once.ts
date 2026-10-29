@@ -40,6 +40,10 @@ export const check: RegressionCheck = {
       const before = seen.length;
       await line("1");
       out.push(assert("★대시보드가 먼저 답한 질문의 CLI 숫자 선택은 실행하지 않는다", seen.length === before, { before, after: seen.length }));
+      // ★거절된 번호 답은 보기를 남긴다(2026-10-28 A1) — 대시보드 답이 시작 전에 큐에서 취소돼 질문이 다시 열리면 **같은 번호**가 동작한다.
+      const reopened = typeof claims.reopenPromptAnswer === "function" ? claims.reopenPromptAnswer(id) : false;
+      await line("1");
+      out.push(assert("★거절 뒤 질문이 다시 열리면 같은 번호 답이 그 값으로 처리된다(보기 유지)", reopened && seen.length === before + 1 && seen.at(-1)?.text === "answer-a" && claims.claimPromptAnswer(id) === "answered", { reopened, after: seen.length, text: seen.at(-1)?.text }));
       await present?.("질문2", options);
       await line("2");
       const last = seen.at(-1);
@@ -51,6 +55,21 @@ export const check: RegressionCheck = {
       await direct("슬래시", [{ label: "세션", value: "/sessions" }]);
       await line("1");
       out.push(assert("ID 없는 슬래시 선택지의 숫자 답은 기존 경로·명시세션 없음", seen.at(-1)?.text === "/sessions" && (seen.at(-1)?.session as { explicitSessionId?: string })?.explicitSessionId === undefined, { text: seen.at(-1)?.text, session: seen.at(-1)?.session }));
+      // ★B3(2026-10-28) — 발급 id 가 있는 `/sessions` 선택지의 번호 답: 답 좌표(물어본 세션)는 싣되 «답 좌표» 표식 → 선택기 거절 없이 이 방 바인딩을 다룬다.
+      await present?.("세션?", [{ label: "기본", value: "/sessions use default" }]);
+      await line("1");
+      const sm = seen.at(-1) as Record<string, unknown> & { session?: { explicitSessionId?: string; fromPromptAnswer?: boolean } };
+      const sReplies: string[] = [];
+      sm.reply = async (t: string) => { sReplies.push(t); };
+      const { handleSessions } = await import("../../core/entry/slash-commands.js");
+      const { translate } = await import("../../core/i18n.js");
+      await handleSessions({ msg: sm as never, args: "use default", trimmed: "/sessions use default", sidChannel: "cli" as never });
+      out.push(assert(
+        "★CLI `/sessions` 선택지 번호 답 — 명시 세션 = 물어본 세션 · «답 좌표» 표식 · «세션 선택기 채널» 거절 없이 기본 세션으로",
+        sm.text === "/sessions use default" && sm.session?.explicitSessionId === "dashboard:cli-origin" && sm.session?.fromPromptAnswer === true &&
+          sReplies.includes(translate("srv.sessions.backToDefault")) && !sReplies.includes(translate("srv.sessions.hasSelector")),
+        { text: sm.text, session: sm.session, replies: sReplies.map((r) => r.slice(0, 50)) },
+      ));
       await present?.("질문4", options);
       claims.__resetPromptClaimsForTest();
       const beforeExpired = seen.length;

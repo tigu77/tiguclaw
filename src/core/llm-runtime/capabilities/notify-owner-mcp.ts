@@ -23,12 +23,20 @@ export const NOTIFY_OWNER_DESCRIPTION =
   `아닙니다(진행은 하네스가 알립니다). 같은 내용은 한 번만, 작업당 ${NOTICE_CAP_PER_JOB}회까지.`;
 
 /**
+ * ★이번 릴리스 보류(2026-10-29 사용자 «일단 이번 릴리즈에 노티파이 오너 도구를 막자») — 세 어댑터의 메인·매니저·서브 턴이 모두 이 팩토리
+ * 하나로 등록을 정하므로 여기 한 줄이 노출·실행 진입을 함께 막는다. 정의·배달 코드·이력은 그대로 둔다(재활성화 = 이 줄 삭제 + 회귀 원복).
+ * 설계: `docs/decisions/2026-10-29-notify-owner-release-hold.md`.
+ */
+const RELEASE_HOLD = true;
+
+/**
  * 이 턴에 **자기 잡**(실행 중인 작업자 좌표 `worker:`/`agent:<id>`)이 있을 때만 서버를 만든다. 메인·엔드포인트 턴은 `undefined`.
  * ★메인이 대상이 아닌 이유: 메인의 소환자는 사용자이고, 사용자에게는 이미 평문 답·`prompt_options` 가 있다(같은 일의 두 번째 길이 된다).
  */
 export const createNotifyOwnerMcpServer = (
   input: Pick<RegionASdkInput, "threadKey">,
 ): McpSdkServerConfigWithInstance | undefined => {
+  if (RELEASE_HOLD) return undefined;
   const threadKey = typeof input.threadKey === "string" ? input.threadKey : "";
   const own = parentJobIdOf(threadKey);
   if (own === undefined || getJob(own)?.status !== "running") return undefined;

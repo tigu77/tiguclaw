@@ -7,11 +7,15 @@
  * 2시간 20분을 기다렸다. 이 검사가 지키는 것(§14 번호):
  *  ① 소환자=세션 → 합성 턴 1 · 도구는 메인 턴을 기다리지 않는다 ② 소환자=도는 매니저 → 지시 채널 1(점검 시계 안 민다)
  *  ③ 합류가 즉시 꺼낸다 ③b 남의 합류는 안 깨운다 ③c·③d 중단된 합류는 꺼내지 않고 남은 알림은 정확히 1곳으로 ③e 세션 합류 선점
- *  ④ 소환자가 끝났으면 위로 ④b·④c 막 끝나는 창 ⑤ 중복·상한·길이 ⑥ 노출 ⑧ 답 잇기 ⑨ 진행 알림 ⑩ 카드 ⑫ 거두기 문구 ⑬ 기록
+ *  ④ 소환자가 끝났으면 위로 ④b·④c 막 끝나는 창 ⑤ 중복·상한·길이 ⑥ 노출(★이번 릴리스 보류 — 어디에도 없음·낡은 직접 호출·광고) ⑧ 답 잇기 ⑨ 진행 알림 ⑩ 카드 ⑫ 거두기 문구 ⑬ 기록
  *  ⑭ 비전달 상승 · 18-5 셸 대기 깨움 · 18-8 타임라인 다섯 갈래.
+ *
+ * ★2026-10-29 이번 릴리스 보류([설계](../../../docs/decisions/2026-10-29-notify-owner-release-hold.md)) — 도구는 어느 턴에도 노출되지 않는다.
+ *  ①~⑤·⑧~⑭ 의 휴면 배달 코드는 **코어 `notifyOwner()` 직접 호출**(도구 핸들러 본문과 같은 호출)로 계속 잰다.
  *
  * 등급: 동작 검사(실제 도구·채널·러너·완료 출구·셸 대기·진행 틱·미니 DOM, 모델 호출 0 · 외부 송신 0). 전역 핸들러를 거므로 자식 프로세스 둘.
  */
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, assertIsolated, i18nForContext, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -35,10 +39,10 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     assertIsolated();
     const [a, b] = await Promise.all([runChild("_job-notice-child.ts", "job-notice"), runChild("_job-notice-timeout-child.ts", "job-notice-timeout")]);
-    // 어댑터가 **실제 모델 요청**에 싣는가 — 세 어댑터 × (작업자 → 메인 → 작업자), 어댑터마다 **한 프로세스**에서 순서대로(자식 주석).
+    // 어댑터가 **실제 모델 요청**에 싣는가 — 세 어댑터 × (작업자 → 메인 → 작업자 → 낡은 직접 호출), 어댑터마다 **한 프로세스**에서 순서대로(자식 주석).
     const adapterRuns: Record<string, unknown> = {};
     for (const ad of ["claude", "codex", "openai"]) {
-      const r = await spawnWithin(90_000, `job-notice-${ad}`, ["--import", "tsx", path.join(HERE, "_job-notice-adapters-child.ts"), ad, "worker,main,worker"], {
+      const r = await spawnWithin(90_000, `job-notice-${ad}`, ["--import", "tsx", path.join(HERE, "_job-notice-adapters-child.ts"), ad, "worker,main,worker,stale"], {
         stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TIGUCLAW_REGRESSION_NO_LIVE_MODEL: "1" },
       });
       const line = r.out.trim().split("\n").filter((l) => l.startsWith("[")).pop();
@@ -144,16 +148,53 @@ export const check: RegressionCheck = {
       show(l),
     ));
     const e = d.exposure as R;
-    // ★소스 문자열이 아니라 **모델 경계에서 본 실제 요청**으로(독립 변이 사냥 구멍 1: 등록 줄을 끄는 변이가 문자열 검사를 통과했다).
+    // ★이번 릴리스 보류(`docs/decisions/2026-10-29-notify-owner-release-hold.md`) — 세 어댑터의 메인·매니저 턴 **모두** 모델 요청에 없다.
+    //  ★소스 문자열이 아니라 **모델 경계에서 본 실제 요청**으로(독립 변이 사냥 구멍 1) + 양성 대조(그 턴이 실제로 매니저/메인으로 조립됐나 —
+    //  «없음» 이 관측 실패로 공허하게 통과하지 않게).
+    const runsOf = (n: string): R[] => (Array.isArray(adapterRuns[n]) ? adapterRuns[n] : []) as R[];
     const adapters = ["claude", "codex", "openai"].map((n) => {
-      const [w, m, w2] = (Array.isArray(adapterRuns[n]) ? adapterRuns[n] : []) as R[];
-      const ok = (t: R | undefined, has: boolean): boolean => t?.has === has && t?.calls >= 1 && t?.err === undefined;
-      return [n, ok(w, true) && ok(m, false) && ok(w2, true)] as const;
+      const [w, m, w2] = runsOf(n);
+      const ok = (t: R | undefined, role: string): boolean => t?.has === false && t?.role === role && t?.calls >= 1 && t?.err === undefined;
+      return [n, ok(w, "manager") && ok(m, "main") && ok(w2, "manager")] as const;
     });
     out.push(assert(
-      "⑥ 노출 — 메인·엔드포인트 턴엔 없다 · 실행 중인 매니저·서브 턴엔 있다(도구 하나) · 끝난 잡엔 없다 · 설명 600자 이내 · ★세 어댑터가 작업자 턴의 실제 모델 요청에 싣고 메인 턴엔 안 싣는다(한 프로세스에서 작업자→메인→작업자 — 모두 모델까지 간다) · steer_worker(메인·매니저 둘 다) 에 notice_id",
-      e.main && e.endpoint && e.manager && e.sub && e.ended && e.descLen <= 600 && e.mainSteerHasNoticeId && e.mgrSteerHasNoticeId && adapters.every(([, ok]) => ok),
-      show({ e, adapters, adapterRuns }),
+      "⑥ ★보류 노출 — 팩토리는 메인·엔드포인트·실행 중인 매니저·서브·끝난 잡 모두 서버 없음 · 세 어댑터의 매니저 턴·메인 턴 실제 모델 요청에 없다(양성 대조: 매니저 턴=agents/spawn_agent 있고 workers 없음 · 메인 턴=workers 있음) · 정의 설명 600자 이내 보존 · steer_worker(메인·매니저 둘 다) 에 notice_id 유지",
+      e.main && e.endpoint && e.manager && e.sub && e.ended && e.descLen > 0 && e.descLen <= 600 && e.mainSteerHasNoticeId && e.mgrSteerHasNoticeId && adapters.every(([, ok]) => ok),
+      show({ e, adapters, adapterRuns: Object.fromEntries(["claude", "codex", "openai"].map((n) => [n, runsOf(n).map((t) => ({ which: t.which, has: t.has, role: t.role, calls: t.calls, err: t.err }))])) }),
+    ));
+    // 낡은 직접 호출 — 옛 스키마를 기억한 모델이 `notify_owner` 를 불러도 알림 기록·이벤트·합성 턴 0(어느 어댑터든 코어에 닿지 않는다).
+    const stale = Object.fromEntries(["claude", "codex", "openai"].map((n) => [n, runsOf(n)[3] ?? {}])) as Record<string, R>;
+    const quiet = (t: R): boolean => t.stale?.jobNotices === 0 && t.stale?.noticeEvents === 0 && t.stale?.synthTurns === 0 && t.stale?.coreRegistered === false && t.has === false && t.calls >= 1;
+    out.push(assert(
+      "⑥ ★낡은 직접 호출 — codex: 다음 요청의 같은 call_id 도구 출력이 «unknown tool»(실행 없음) · openai: SDK 가 그 호출을 «Tool notify_owner not found in agent tiguclaw-spike.» 로 거절(실행 없음 · 정해진 시간 안) · claude: 서버 미등록 + 코어 서버 생성 기록 없음 · 세 어댑터 모두 알림 기록·worker.notice·합성 턴 0",
+      quiet(stale.claude!) && stale.claude!.err === undefined && stale.claude!.role === "manager" &&
+        quiet(stale.codex!) && stale.codex!.err === undefined && stale.codex!.stale?.requests === 2 && String(stale.codex!.stale?.output).includes("unknown tool") &&
+        quiet(stale.openai!) && stale.openai!.err === "Tool notify_owner not found in agent tiguclaw-spike." && stale.openai!.ms < 30_000,
+      show(Object.fromEntries(Object.entries(stale).map(([n, t]) => [n, { err: t.err, ms: t.ms, calls: t.calls, role: t.role, stale: t.stale }]))),
+    ));
+    // find_capabilities — 그 매니저 턴에 claude 어댑터가 **실제로 만든** 인스턴스(활성 이름 그대로)를 질의 없음·질의 두 번 부른다.
+    const fc = runsOf("claude").find((t) => t.which === "worker")?.fc as R | undefined;
+    const noName = (x: unknown): boolean => typeof x === "string" && !/notify[-_]owner/.test(x);
+    out.push(assert(
+      "⑥ ★find_capabilities 광고 없음 — 매니저 턴의 실제 인스턴스 · 질의 없음/«notify 소환자 알림 owner» 모두 notify-owner·notify_owner 없음 · 오류 아님 · (양성) 전체 목록에 **agents** 항목이 나온다",
+      fc !== undefined && noName(fc.none) && noName(fc.query) && fc.noneErr === false && fc.queryErr === false && String(fc.none).includes("**agents**"),
+      show(fc === undefined ? null : { noneErr: fc.noneErr, queryErr: fc.queryErr, noneHit: /notify[-_]owner/.exec(String(fc.none))?.[0], queryHead: String(fc.query).slice(0, 200) }),
+    ));
+    // 번들 지침 — 이 도구를 부르게 하는 문장이 스킬·에이전트·헌법에 없다(대상이 문장이라 문자열 검사가 맞는 도구다).
+    const ROOT = path.resolve(HERE, "../../..");
+    const scanned: string[] = [];
+    const hits: string[] = [];
+    const walk = (rel: string): void => {
+      const abs = path.join(ROOT, rel);
+      if (statSync(abs).isDirectory()) { for (const n of readdirSync(abs).sort()) walk(path.join(rel, n)); return; }
+      scanned.push(rel);
+      if (readFileSync(abs, "utf8").includes("notify_owner")) hits.push(rel);
+    };
+    for (const rel of ["skills", "agents", "SYSTEM.md"]) walk(rel);
+    out.push(assert(
+      "⑥ ★번들 지침 — skills/·agents/·SYSTEM.md 에 notify_owner 0건 · (양성) QA 가이드·SYSTEM.md 를 실제로 읽었다",
+      hits.length === 0 && scanned.includes(path.join("skills", "harness", "references", "qa-agent-guide.md")) && scanned.includes("SYSTEM.md"),
+      show({ hits, scanned: scanned.length }),
     ));
 
     // ⑧ 답

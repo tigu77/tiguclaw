@@ -160,3 +160,18 @@ export const redactSecrets = (text: string): string => {
 
   return out;
 };
+
+/**
+ * 실패 본문을 사용자 문구에 실을 판 — **HTML 오류 페이지만** 제목 한 줄로 줄인다(2026-10-28).
+ * ★프록시 520 의 HTML(제목·CSS)이 원문째 오류 안내(본 턴 실패·수동 `/compact` 사유)에 실려 화면에 마크업과 CSS 가
+ *  드러났다. JSON·평문은 그대로 둔다 — 한도·인증 분류기(`isRateLimited`·`isAuthRejected`)가 그 문장을 읽는다.
+ */
+export const describeFailureBody = (body: string): string => {
+  if (!/^\s*<(?:!doctype\s+html|html|head|body|title|style|script|meta)\b/i.test(body)) return body;
+  const title = (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1] ?? "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  return title === "" ? "(HTML error page)" : `(HTML error page: ${title})`;
+};

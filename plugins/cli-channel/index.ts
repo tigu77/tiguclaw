@@ -78,6 +78,8 @@ export default class CliChannel implements Channel {
             const claimed = claimPromptAnswer(promptId);
             if (claimed !== "ok") {
               process.stdout.write(`(${translate(claimed === "answered" ? "srv.options.alreadyAnswered" : "srv.options.expired")})\n`);
+              // ★거절된 번호 답은 보기를 남긴다(2026-10-28) — 다른 곳의 답이 시작 전에 취소되면 같은 번호로 다시 답할 수 있어야 한다.
+              pendingOptions = { options: opts, promptId };
               rl.prompt();
               return;
             }
@@ -101,7 +103,8 @@ export default class CliChannel implements Channel {
         channelUserId: "local",
         threadKey: sessionId,
         channelAddress: CLI_ADDRESS,
-        session: { channelAddress: CLI_ADDRESS, ...(answerSession !== undefined ? { explicitSessionId: answerSession } : {}) },
+        // 발급 대장에서 꺼낸 답 좌표 — 선택기 채널이라는 뜻이 아니다(2026-10-28 B3).
+        session: { channelAddress: CLI_ADDRESS, ...(answerSession !== undefined ? { explicitSessionId: answerSession, fromPromptAnswer: true as const } : {}) },
         text,
         receivedAt: Date.now(),
         reply,

@@ -354,11 +354,13 @@ export const check: RegressionCheck = {
         "⑧ 화면이 그 판정에 **전송 전 바쁨**을 넘기고, 선택지 버튼·기타 입력이 질문 id 를 싣는다",
         /sendRejectionAction\(Date\.now\(\) - t0, r\.status, data, busy\)/.test(replySrc) &&
           /if \(act\.closed\) foldRejectedQueuedBubble\(correlationId\)/.test(replySrc) &&
-          (promptSrc.match(/submitOptionValue\((?:v|val), payload\.promptId\)/g) ?? []).length === 2,
+          // 버튼·기타 입력이 한 제출 함수(`submit`)를 지나 질문 id 를 싣는다(2026-10-28 A2 — 결과로 카드를 고치려고 한 곳으로 모았다).
+          (promptSrc.match(/submitOptionValue\(v, payload\.promptId, \{/g) ?? []).length === 1 && /submit\(val\);/.test(promptSrc) && /submit\(v\);/.test(promptSrc),
         JSON.stringify({
           passesBusy: /sendRejectionAction\(Date\.now\(\) - t0, r\.status, data, busy\)/.test(replySrc),
           foldsClosed: /if \(act\.closed\) foldRejectedQueuedBubble\(correlationId\)/.test(replySrc),
-          promptIdSubmissions: (promptSrc.match(/submitOptionValue\((?:v|val), payload\.promptId\)/g) ?? []).length,
+          promptIdSubmissions: (promptSrc.match(/submitOptionValue\(v, payload\.promptId, \{/g) ?? []).length,
+          buttonAndOtherViaSubmit: /submit\(val\);/.test(promptSrc) && /submit\(v\);/.test(promptSrc),
         }),
       ));
     }
@@ -371,7 +373,8 @@ export const check: RegressionCheck = {
       out.push(assert(
         "★⑨ 메인 핸들러의 선택지 통로는 관측 래퍼가 **바깥**에서 감싼다(인입·egress·완료·점검·트리거·끼워넣기 전부 여기를 지난다) — 관측 세션 = 그 턴의 답이 보이는 세션",
         /withPromptOptionsObservation\(\s*withEgressPromptOptions\(\s*msg\.presentOptions,/.test(idx) &&
-          /\{ channel: msg\.channel, threadKey: msg\.threadKey, bus \},?\s*\);/.test(idx) &&
+          // 좌표 판정은 `promptObservationSeat`(대화 밖 작업 턴만 목적지 대화 — 2026-10-28 B4, 동작은 `prompt-options-display-seat`).
+          /\{ channel: msg\.channel, \.\.\.promptObservationSeat\(msg\), bus \},?\s*\);/.test(idx) &&
           /presentOptions: presentOptionsForTurn/.test(idx),
         "배선",
       ));

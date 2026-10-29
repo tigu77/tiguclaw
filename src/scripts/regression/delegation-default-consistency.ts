@@ -110,9 +110,10 @@ const injectedSurfaces = async (): Promise<Array<{ what: string; text: string }>
  *  갈린다(실제로 앱 소스·홈 밖 규칙이 그렇게 갈려 정반대 지시가 됐다,
  *  `constitution-single-source` 참조). 사고의 형상은 **모순**이었지 *부재*가 아니었다.
  *  그래서 목적(넛지가 반대 기본값을 밀지 않는다)은 그대로 두고, 수단만 바꾼다:
- *  **넛지 = 기본값 + 정본 포인터 / 조건 정의 = 헌법·하네스 스킬**.
+ *  **넛지 = 기본값 + 정본 포인터 / 조건 정의 = 헌법**.
+ *  harness는 재사용 팀 제작 가이드이므로 조건을 복제하지 않고 구축 전에 정본을 가리킨다.
  */
-const CONDITION_SOURCES = SOURCES.filter((s) => !s.rel.endsWith("_shared-sysprompt.ts"));
+const CONDITION_SOURCES = SOURCES.filter((s) => s.rel === "SYSTEM.md");
 
 /** 되살아나면 안 되는 **반대 기본값** 문구 — 옛 사고의 형상 그대로. */
 const OPPOSITE = [
@@ -180,7 +181,7 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
 
-    // ★① 조건 정의가 **정의처(헌법·하네스 스킬)** 에 있는가. 없으면 그 자리에서 다른 기준이 쓰인다.
+    // ★① 조건 정의가 **정의처(헌법)** 에 있는가. 없으면 그 자리에서 다른 기준이 쓰인다.
     const missing = CONDITION_SOURCES.filter((s) => {
       const src = read(s.rel);
       return !(src.includes("독립·비중첩") && src.includes("3개 이상"));
@@ -201,33 +202,16 @@ export const check: RegressionCheck = {
       for (const re of OPPOSITE) if (re.test(s.text)) revived.push(`${s.what}: ${re.source}`);
     }
 
-    // ★하네스의 **팀 갈래가 매니저로 라우팅**되는가 (2026-08-21 적대 검토 A-F3).
-    //  넛지와 헌법은 "서브에이전트 2명 이상이면 매니저에게 통째로 넘겨라" 인데, 정작 팀
-    //  갈래에서 **실제로 읽히는** 하네스 스킬은 비서가 전경에서 2~5명을 지휘하는 그림을
-    //  그리고 매니저 위임을 한 번도 지시하지 않았다. 팀 갈래는 정의상 항상 그 조건이라,
-    //  이건 세 자리 중 하나가 반대 방향을 가리키고 있었다는 뜻이다 — 사용자가 겪은 형태는
-    //  헌법이 인용한 실사고 그대로다("직접을 고른 뒤 전경에서 10명을 뿌렸다").
-    //
-    //  ★한계(정직하게): 산문의 **의미**는 실행으로 못 잰다. 여기서 지키는 건 "팀 규모를
-    //   정하는 그 자리에 매니저 라우팅이 **있는가**" 하나다. 문장을 반대로 뒤집으면서
-    //   `run_in_background` 라는 단어를 남기면 이 검사는 통과한다(같은 파일 상단이 부분문자열
-    //   린트의 한계를 이미 적어 뒀다). 그래도 **통째로 사라지는 것**은 막는다 — 그게 실제로
-    //   일어났던 일이다.
-    {
-      const skill = read("skills/harness/SKILL.md");
-      const start = skill.indexOf("## ② 규모");
-      const next = start < 0 ? -1 : skill.indexOf("\n## ", start + 5);
-      const scale = start < 0 ? "" : skill.slice(start, next < 0 ? undefined : next);
-      out.push(
-        assert(
-          "★하네스의 팀 규모 절이 매니저 라우팅을 지시한다(팀 갈래 = 항상 '2명 이상' 조건)",
-          scale.includes("run_in_background") && scale.includes("메인 턴"),
-          scale === ""
-            ? "★'## ② 규모' 절을 못 찾음"
-            : `run_in_background=${scale.includes("run_in_background")} · 메인 턴 분기=${scale.includes("메인 턴")}`,
-        ),
-      );
-    }
+    // harness는 일반 라우팅을 다시 정의하지 않는다. 정본의 매니저 계약 자체는 유지한다.
+    const constitutionRoute = read("SYSTEM.md");
+    out.push(
+      assert(
+        "★헌법이 서브에이전트 2명 이상을 매니저로 라우팅한다",
+        /2명 이상 필요하면 매니저에게 통째로 넘겨라/.test(constitutionRoute) &&
+          constitutionRoute.includes("run_in_background"),
+        { managerGate: constitutionRoute.match(/2명 이상 필요하면 매니저에게 통째로 넘겨라/)?.[0], backgroundToolMentioned: constitutionRoute.includes("run_in_background") },
+      ),
+    );
     out.push(
       assert(
         "★반대 기본값(‘기본은 substantial’·‘애매하면 substantial’)이 없다",
@@ -294,25 +278,25 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★④ 하네스 스킬에서 **게이트가 구축 절차보다 앞에** 있는가.
-    //  뒤에 있으면 문서가 "먼저 감사/설계하라"고 시켜 게이트가 사후 적용된다(옛 Phase 0 형상).
+    // ★④ 제작 전에 정본 포인터와 영속화의 실체가 있는가. 제목/description만으로 통과하지 않는다.
+    // 부분문자열 배선 린트이지 산문의 의미 판정은 아니다(상단 한계 참조).
     const skill = read("skills/harness/SKILL.md");
-    // ★제목이 아니라 **게이트 본문**(갈래 표)의 위치를 본다 (적대 검토 F7).
-    //  종전엔 `^##.*게이트` 제목 위치만 봐서, 앞에 껍데기 제목("## ① 게이트 — 뒤쪽을 보라")만
-    //  남기고 실제 표를 구축 절차 뒤로 옮겨도 초록이었다 = 옛 Phase 0(사후 게이트) 복원.
-    //  판정의 실체는 세 갈래 표이므로 그 표의 헤더 행을 기준으로 잰다.
-    const gateAt = skill.search(/^\|\s*갈래\s*\|/m);
-    const buildAt = Math.min(
-      ...["에이전트 정의", "오케스트레이션 스킬"].map((k) => {
-        const i = skill.indexOf(k, skill.indexOf("\n## "));
-        return i < 0 ? Number.MAX_SAFE_INTEGER : i;
-      }),
-    );
+    const body = skill.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
+    const buildAt = body.search(/^## .*역할·입출력·산출물 연결 구성/m);
+    const beforeBuild = buildAt < 0 ? "" : body.slice(0, buildAt);
     out.push(
       assert(
-        "★하네스 스킬에서 게이트가 구축 내용보다 먼저 나온다(사후 적용 0)",
-        gateAt > 0 && gateAt < buildAt,
-        `게이트 ${gateAt}자 · 구축 ${buildAt}자`,
+        "★하네스가 구축 전에 일반 위임 정본과 도구 계약을 가리킨다",
+        beforeBuild.includes("일반 위임 판단의 정본은 SYSTEM.md §1") &&
+          beforeBuild.includes("도구 설명"),
+        `구축 위치 ${buildAt}자 · 앞부분에서 포인터 검사`,
+      ),
+      assert(
+        "★하네스가 구축 전에 일회성 프롬프트/반복팀 영속화 경계를 둔다",
+        beforeBuild.includes("이번 한 번의 역할은 프롬프트로 전달한다") &&
+          beforeBuild.includes("일회성 작업 때문에 에이전트 파일이나 팀 스킬을 만들지 않는다") &&
+          beforeBuild.includes("반복해서 사용할 팀만 영속 자산으로 만든다"),
+        `구축 위치 ${buildAt}자 · 경계 본문이 먼저 있어야 함`,
       ),
     );
 

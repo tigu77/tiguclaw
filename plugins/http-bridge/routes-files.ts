@@ -7,6 +7,8 @@
  */
 import * as nodeFs from "node:fs";
 import { systemOpener } from "../../src/core/onboard-ready.js";
+import { openHomeDirectory } from "../../src/core/open-home-directory.js";
+
 import crypto from "node:crypto";
 import { resolveTranscriptionProvider } from "../../src/core/llm-runtime/transcription/index.js";
 import { translate } from "../../src/core/i18n.js";
@@ -20,6 +22,19 @@ import fs from "node:fs/promises";
 import nodePath from "node:path";
 import path from "node:path";
 import type { RouteCtx } from "./route-ctx.js";
+
+export const handleHomeDirectory = async (ctx: RouteCtx): Promise<void> => {
+  writeJson(ctx.res, 200, { path: getPaths().home });
+};
+
+export const handleOpenHome = async (ctx: RouteCtx): Promise<void> => {
+  try {
+    await openHomeDirectory();
+    writeJson(ctx.res, 200, { ok: true });
+  } catch {
+    writeJson(ctx.res, 500, { error: "Home folder open request failed" });
+  }
+};
 
 /**
  * `GET /plugin-icon?name=<플러그인>` — 그 플러그인이 선언한 아이콘 파일.

@@ -305,7 +305,7 @@ export const check: RegressionCheck = {
         const fetchStub = () => { fetched += 1; return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ jobId: "J", task: "가".repeat(2000) }) }); };
         // eslint-disable-next-line no-new-func
         const make = new Function(
-          "fetch", "i18n", "updateChev", "requestAnimationFrame",
+          "fetch", "i18n", "updateChev", "requestAnimationFrame", "bgGeometryChanged",
           `${setterBlock} return setJobOpen;`,
         );
         const fn = make(
@@ -313,6 +313,7 @@ export const check: RegressionCheck = {
           (k: string, p?: { v?: string }) => (k === "bg.task.truncated" ? "[T]" : `작업 · ${p?.v ?? ""}`),
           () => {},
           (f: () => void) => f(),
+          () => {}, // 펼침 기하 무효화는 공통 viewport 계약 검사에서 실제 실행한다.
         ) as (id: string, e: unknown, w?: boolean) => unknown;
         const opened = fn("J", entry, want);
         await new Promise((r) => setTimeout(r, 5));

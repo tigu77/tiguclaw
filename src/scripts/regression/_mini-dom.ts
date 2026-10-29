@@ -426,6 +426,8 @@ const splitTop = (s: string, sep: string): string[] => {
   return out.map((x) => x.trim()).filter((x) => x !== "");
 };
 const matchCompound = (el: MElement, c: string, scope: MElement | null): boolean => {
+  // CSS의 합법적인 unquoted 식별자 값도 quoted 값과 같은 의미다.
+  c = c.replace(/\[([\w-]+)([*^$]?=)([\w-]+)\]/g, '[$1$2"$3"]');
   const re = /^(\*|[a-zA-Z][\w-]*)|#([\w-]+)|\.([\w-]+)|\[([\w-]+)(?:([*^$]?=)"([^"]*)")?\]|:not\(((?:[^()]|\([^()]*\))*)\)|(:scope)/g;
   let m: RegExpExecArray | null;
   let consumed = 0;

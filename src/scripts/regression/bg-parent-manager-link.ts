@@ -13,10 +13,11 @@
  */
 import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
 import { bootDashboard, jsonResponse, makeClock } from "./_mini-dom.js";
+import { bgPanelHtml } from "./_bg-panel-fixture.js";
 
 const boot = () => {
   const clock = makeClock();
-  const dash = bootDashboard({ clock, i18n: i18nForContext, upTo: "tabs.js", allIds: true, fetch: async () => jsonResponse({}, 404) });
+  const dash = bootDashboard({ html: bgPanelHtml(), clock, i18n: i18nForContext, upTo: "tabs.js", allIds: true, fetch: async () => jsonResponse({}, 404) });
   return { clock, dash };
 };
 const J = (v: unknown): string => JSON.stringify(v);
@@ -86,9 +87,10 @@ export const check: RegressionCheck = {
       let bubbled = 0;
       (dash.run(`(f) => jobCards.get("C1").el.addEventListener("click", f)`) as (f: () => void) => void)(() => { bubbled += 1; });
       // 화면 밖 부모의 기하를 고정한다 — 강조만 남고 실제 이동이 빠지는 회귀를 잡는다.
-      dash.run(`globalThis.parentPane = { scrollTop: 11, getBoundingClientRect: () => ({ top: 0 }) };
-        jobCards.get("M1").el.closest = () => parentPane;
-        jobCards.get("M1").el.getBoundingClientRect = () => ({ top: 500 });`);
+      dash.run(`globalThis.parentPane = document.getElementById("bg-scroll");
+        parentPane.scrollTop = 11; parentPane.clientHeight = 300; parentPane.scrollHeight = 2000;
+        parentPane.getBoundingClientRect = () => ({ top: 0, bottom: 300 });
+        jobCards.get("M1").el.getBoundingClientRect = () => ({ top: 500, bottom: 600, height: 100 });`);
       dash.run(`jobCards.get("C1").parentBtnEl.click()`);
       await clock.advance(50);
       out.push(assert("★③ 화면 밖 부모의 윗변까지 실제로 스크롤한다(강조만 하는 회귀 방지)",

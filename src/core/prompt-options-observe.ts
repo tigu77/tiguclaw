@@ -17,6 +17,23 @@ import type { EventBus } from "./eventbus.js";
 import { getEventBus } from "./eventbus.js";
 import { issuePromptId } from "./prompt-answer-claims.js";
 import { publishPromptOptions } from "./prompt-options-publish.js";
+import { sessionOfDestination } from "./outbound.js";
+import { isUserConversationThread } from "../store/sessions.js";
+
+/**
+ * **이 턴의 선택지를 어디에 보이고, 답은 어디로 받나** — 순수 (2026-10-28, 설계 `2026-10-28-prompt-choice-release-followup.md` §2 B4).
+ *
+ * ★사고: 대화 밖(스케줄) 작업의 완료·점검·알림 턴은 숨은 스레드(`scheduler:…`)에서 돈다. 관측 좌표가 늘 `msg.threadKey` 라
+ *  그 선택지가 대시보드 어느 탭에도 안 떴다(탭 후보에서 `scheduler:` 는 빠진다).
+ * ★규칙은 스케줄 자기 턴(`plugins/scheduler` `scheduleChannels`)과 같다 — 표시 = 목적지 대화(`sessionOfDestination`), 답 = 실행 스레드.
+ *  사람의 대화 스레드 턴과 `replyTarget` 없는 내부 턴(엔드포인트·게이트웨이)은 종전 그대로 `msg.threadKey`.
+ */
+export const promptObservationSeat = (
+  msg: Pick<IncomingMessage, "threadKey" | "replyTarget">,
+): { threadKey: string; replyToSession?: string } =>
+  msg.replyTarget !== undefined && !isUserConversationThread(msg.threadKey)
+    ? { threadKey: sessionOfDestination(msg.replyTarget.channel, msg.replyTarget.target), replyToSession: msg.threadKey }
+    : { threadKey: msg.threadKey };
 
 export const withPromptOptionsObservation = (
   present: IncomingMessage["presentOptions"],
@@ -49,6 +66,8 @@ export const withPromptOptionsObservation = (
       options,
       ...(opts?.note !== undefined ? { note: opts.note } : {}),
       promptId,
+      // 답이 줄 서는 스레드가 표시 세션과 다를 때만 — 화면이 «바쁨»·✕ 취소를 그 큐로 본다(라우팅은 서버 대장이 정한다).
+      ...(at.replyToSession !== undefined && at.replyToSession !== at.threadKey ? { answerThreadKey: at.replyToSession } : {}),
       ...(r.channelRefs !== undefined ? { channelRefs: r.channelRefs } : {}),
     });
     if (!p.ok) {

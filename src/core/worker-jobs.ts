@@ -2864,6 +2864,8 @@ const threadTails = new Map<string, Promise<unknown>>();
 interface QueueMarker {
   state: "pending" | "started";
   cancelled: boolean;
+  /** 시작 전 취소가 **처음** 확정되는 순간 한 번 부른다(선택지 답의 질문 재개방, 2026-10-28). 수명 = 이 marker(POST 응답과 무관). */
+  onCancel?: () => void;
 }
 const pendingTurnIds = new Map<string, Map<string, QueueMarker>>();
 
@@ -2911,13 +2913,13 @@ export const isSteeredTurnResult = (v: unknown): boolean =>
 export const enqueueThreadTurn = <T>(
   threadKey: string,
   task: () => Promise<T>,
-  opts?: { id?: string },
+  opts?: { id?: string; onCancel?: () => void },
 ): Promise<T> => {
   // id 있으면 미시작 집합에 marker 등록(같은 threadKey 스코프 마지막 등록만 신뢰 — G4).
   const id = opts?.id !== undefined && opts.id !== "" ? opts.id : undefined;
   let marker: QueueMarker | undefined;
   if (id !== undefined) {
-    marker = { state: "pending", cancelled: false };
+    marker = { state: "pending", cancelled: false, ...(opts?.onCancel !== undefined ? { onCancel: opts.onCancel } : {}) };
     let m = pendingTurnIds.get(threadKey);
     if (m === undefined) {
       m = new Map();
@@ -2979,7 +2981,11 @@ export const cancelQueuedTurn = (
   const marker = m?.get(id);
   if (marker === undefined) return "not-found";
   if (marker.state === "started") return "already-started";
-  marker.cancelled = true; // 멱등 — 중복 취소 무해(이미 true 여도 동일 결과).
+  // 멱등 — 중복 취소 무해. ★`onCancel` 은 **처음 확정될 때만** 부른다: 되돌린 뒤 다른 답이 그 질문을 다시 닫았을 수 있다(두 번째가 열면 이중 처리).
+  if (!marker.cancelled) {
+    marker.cancelled = true;
+    marker.onCancel?.();
+  }
   return "cancelled";
 };
 

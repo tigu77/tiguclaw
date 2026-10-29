@@ -18,6 +18,7 @@
  * ★이건 격리가 아니라 **책임 경계**다. 격리가 0이라 마음먹은 운영자는 우회할 수 있다.
  *  막는 것은 «아무도 모르게 구독으로 돌아가는 것» 이다.
  */
+import { claudeSubscriptionAuthenticated } from "./auth-probe.mjs";
 const token = () => (process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "").trim();
 
 /**
@@ -463,7 +464,7 @@ export default class ClaudeSubscriptionAuth {
     await loadCache();
     const r = host.registerAuthProvider({
       provider: "claude-subscription",
-      isAuthenticated: () => token() !== "",
+      isAuthenticated: claudeSubscriptionAuthenticated,
       // 한도가 얼마나 남았나 — 상세를 열 때만(배경 폴링 0). 위 `fetchClaudeUsage` 주석 참조.
       getUsage: fetchClaudeUsage,
       getAccessToken: async () => {

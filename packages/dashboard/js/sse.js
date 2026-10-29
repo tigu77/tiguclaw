@@ -273,12 +273,19 @@
             // 방지). 매칭은 correlationId(있으면) 우선 → 동일 텍스트 오매칭 해소, 없으면(텔레그램
             // echo 등) 텍스트-매칭 폴백(보존 §6). 낙관적 버블은 active 세션 DOM 에만 있으므로
             // active 일 때만 승격(pendingQueued 는 전환 시 비워짐).
-            if (isActiveThread(tk)) {
+            // ★시작 = 취소 불가 경계 — 그 상관 id 의 선택지 카드 되살림은 이제 쓸 일이 없다(2026-10-28 A2).
+            const inCid = ev.payload && ev.payload.correlationId;
+            if (inCid && typeof forgetPromptCardReopener === "function") forgetPromptCardReopener(inCid);
+            // ★답 큐가 표시 탭과 다른 선택지 답(대화 밖 작업의 질문, 2026-10-28 B4)은 **그 큐 키**의 메아리로 승격한다 — 상관 id 가 정확히 같고
+            //  그 버블의 답 큐가 이 키일 때만. 텍스트 폴백은 활성 탭에서만(숨은 스레드의 남의 글을 끌어오지 않게).
+            const queueHit = inCid ? pendingQueued.findIndex((p) => p.cid && p.cid === inCid && p.queueKey === tk) : -1;
+            if (isActiveThread(tk) || queueHit !== -1) {
               const inText = ev.payload && ev.payload.text;
-              const inCid = ev.payload && ev.payload.correlationId;
-              let pi = -1;
-              if (inCid) pi = pendingQueued.findIndex((p) => p.cid && p.cid === inCid);
-              if (pi === -1) pi = pendingQueued.findIndex((p) => p.text === inText);
+              let pi = queueHit;
+              // 답 큐가 명시된 버블은 위 «상관 id + 그 큐 키» 로만 승격한다 — 활성 탭의 다른 메아리(같은 글을 다른 곳에서 보냄)가 끌어가면
+              //  ✕ 가 사라지고 실제 답은 계속 기다린다(GPT 0f P2). 아래 폴백은 답 큐 없는 버블(직접 친 글·평소 카드)만 — 종전 그대로.
+              if (pi === -1 && inCid) pi = pendingQueued.findIndex((p) => !p.queueKey && p.cid && p.cid === inCid);
+              if (pi === -1) pi = pendingQueued.findIndex((p) => !p.queueKey && p.text === inText);
               if (pi !== -1) {
                 const { el } = pendingQueued.splice(pi, 1)[0];
                 el.classList.remove("queued");

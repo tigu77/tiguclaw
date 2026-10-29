@@ -66,7 +66,7 @@ export const check: RegressionCheck = {
       for (const c of cases) {
         const agent = agents.find(a => a.name === c.name && a.source === "project");
         const policy = deriveToolPolicy(agent?.tools);
-        out.push(assert(`${c.name}이 의도한 high 프로파일로 발견된다`, agent?.model === "high", agent?.model));
+        out.push(assert(`${c.name}이 의도한 기본 모델 상속으로 발견된다`, agent?.model === "default", agent?.model));
         out.push(assert(`${c.name}의 역할에 필요한 도구 목록이 보존된다`, policy?.mode === "allow" && c.tools.every(t => policy.names.includes(t)), policy));
       }
     } finally {

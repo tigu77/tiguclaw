@@ -16,6 +16,7 @@
  */
 import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
 import { bootDashboard, jsonResponse, makeClock } from "./_mini-dom.js";
+import { bgPanelHtml } from "./_bg-panel-fixture.js";
 import { mountWidget } from "./background-work-widget.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -164,7 +165,7 @@ export const check: RegressionCheck = {
     const ClockDate = class extends Date { static now(): number { return BASE + clock.now(); } };
     let seedShells: unknown[] = [];
     const dash = bootDashboard({
-      clock, i18n: i18nForContext, upTo: "tabs.js", allIds: true, extra: { Date: ClockDate },
+      html: bgPanelHtml(), clock, i18n: i18nForContext, upTo: "tabs.js", allIds: true, extra: { Date: ClockDate },
       fetch: async (url: string) => (url.startsWith("/api/shells") ? jsonResponse({ shells: seedShells }) : jsonResponse({}, 404)),
     });
     await clock.advance(20);
@@ -308,10 +309,11 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "★보존: 설명 없는 셸 카드는 지금 DOM 그대로(라벨 칸 없음 · 줄 순서·클래스 동일) · 설명 있는 카드는 그 앞에 한 칸만 더해진다 · 리소스(위젯)에 설명이 실린다",
-          plain?.label === null && JSON.stringify(plain?.top) === JSON.stringify(["agent-card-kind", "agent-card-status", "shell-card-session"]) &&
-            JSON.stringify(plain?.kids) === JSON.stringify(["agent-card-top", "agent-card-name shell-card-command", "shell-card-cwd", "agent-card-meta", "shell-card-tailline", "shell-card-controls"]) &&
-            JSON.stringify(r1?.top.slice(1)) === JSON.stringify(["agent-card-kind", "agent-card-status", "shell-card-session"]) && JSON.stringify(r1?.kids) === JSON.stringify(plain?.kids) &&
+          "★보존: 설명 없는 셸 카드는 라벨 칸 없음 · 공통 body 안 기존 줄 순서/클래스 보존 · 설명 있는 카드는 그 앞에 한 칸만 더해진다 · 리소스(위젯)에 설명이 실린다",
+          plain?.label === null && JSON.stringify(plain?.top) === JSON.stringify(["agent-card-kind", "agent-card-status", "shell-card-session", "shell-card-collapse"]) &&
+            JSON.stringify(plain?.kids) === JSON.stringify(["agent-card-top", "shell-card-body"]) &&
+            JSON.stringify(R(`Array.from(document.querySelector('.shell-card[data-shell-id="plain"] .shell-card-body')?.children || []).map(x=>x.className)`)) === JSON.stringify(["agent-card-name shell-card-command", "shell-card-cwd", "agent-card-meta", "shell-card-tailline", "shell-card-controls"]) &&
+            JSON.stringify(r1?.top.slice(1)) === JSON.stringify(["agent-card-kind", "agent-card-status", "shell-card-session", "shell-card-collapse"]) && JSON.stringify(r1?.kids) === JSON.stringify(plain?.kids) &&
             fed?.description === "개발 서버 띄우기",
           { plain, r1top: r1?.top, fed },
         ),
@@ -339,20 +341,21 @@ export const check: RegressionCheck = {
     {
       R(`setBgFilter("running"); setShellsFilter("running"); setBgSessionScope("all")`);
       for (const id of ["p1", "p2", "p3"]) R(`handleWorkerEvent({ jobId: "${id}", status: "running", kind: "worker", label: "${id}", task: "할 일", threadKey: "dashboard:default", ownerThreadKey: "dashboard:default", startedAt: ${BASE} }, "")`);
-      const list = `document.getElementById("bg-list")`;
+      const list = `document.getElementById("bg-scroll")`;
       R(`window.EV = (type) => ({ type, bubbles: false, _stopped: false, defaultPrevented: false, stopPropagation() { this._stopped = true; }, preventDefault() { this.defaultPrevented = true; } })`);
       // 미니 DOM 의 정적 요소는 id 만 갖는다 — 실제 마크업(index.html)의 스크롤 칸 클래스를 붙인다(정렬은 `.bg-list` 조상을 찾는다).
       R(`${list}.classList.add("bg-list"); document.getElementById("bg-shells-list").classList.add("bg-list")`);
       R(`(() => { const l = ${list}; l.rect = { left: 0, right: 400, top: 100, bottom: 400, width: 400, height: 300 }; l.scrollTop = 0; l.scrollHeight = 2000; l.clientHeight = 300;
+        jobCards.get("p3").el.getBoundingClientRect = () => ({ top: 612 - l.scrollTop, bottom: 812 - l.scrollTop, height: 200 });
         jobCards.get("p2").el.rect = { left: 0, right: 400, top: 520, bottom: 700, width: 400, height: 180 }; })()`);
       R(`window.dispatchEvent(new CustomEvent("tigu:reveal", { detail: { kind: "job", id: "p2" } }))`);
       await clock.advance(30);
       const widgetOpen = R(`jobCards.get("p2").el.classList.contains("open")`);
       const aligned = R(`${list}.scrollTop`);
       // 끝 쪽: 프로그램 스크롤이 «바닥 근처» 를 만들어도 따라가기를 다시 켜지 않는다 → 손(휠)이 풀어 준 뒤에만
-      R(`(() => { const l = ${list}; l.scrollTop = 1700; l.dispatchEvent(window.EV("scroll")); })()`);
+      R(`(() => { const l = ${list}; l.scrollTop = 410; l.dispatchEvent(window.EV("scroll")); })()`);
       const heldStick = R(`bgStick`);
-      R(`(() => { const l = ${list}; l.dispatchEvent(window.EV("wheel")); l.dispatchEvent(window.EV("scroll")); })()`);
+      R(`(() => { const l = ${list}; l.dispatchEvent(window.EV("wheel")); l.scrollTop = 412; l.dispatchEvent(window.EV("scroll")); })()`);
       const afterWheel = R(`bgStick`);
       R(`window.dispatchEvent(new CustomEvent("tigu:reveal", { detail: { kind: "job", id: "p3" } }))`);
       await clock.advance(30);
@@ -383,15 +386,15 @@ export const check: RegressionCheck = {
 
       // 셸 목록 읽던 자리 — 카드마다 높이 100, 칸 윗변 100 인 가짜 배치(레이아웃 없는 미니 DOM 에 위치 함수만 끼운다)
       R(`(() => {
-        const g = document.getElementById("bg-shells-list");
-        g.getBoundingClientRect = () => ({ top: 100, bottom: 400, left: 0, right: 400, height: 300, width: 400 });
+        const g = document.getElementById("bg-shells-list"), viewport = document.getElementById("bg-scroll");
+        viewport.getBoundingClientRect = () => ({ top: 100, bottom: 400, left: 0, right: 400, height: 300, width: 400 });
         const proto = Object.getPrototypeOf(document.createElement("div"));
         if (!proto.__bguxRect) {
           proto.__bguxRect = proto.getBoundingClientRect;
           proto.getBoundingClientRect = function () {
             if (this.classList && this.classList.contains("shell-card") && this.parentNode === g) {
               const i = [...g.querySelectorAll(".shell-card")].indexOf(this);
-              const top = 100 + i * 100 - g.scrollTop;
+              const top = 100 + i * 100 - viewport.scrollTop;
               return { top, bottom: top + 100, left: 0, right: 400, height: 100, width: 400 };
             }
             return proto.__bguxRect.call(this);
@@ -399,13 +402,13 @@ export const check: RegressionCheck = {
         }
         for (const [id, t] of [["sa", 1], ["sb", 2], ["sc", 3]]) upsertShellEntry(id, { command: id, status: "running", startedAt: ${BASE} + t, threadKey: "dashboard:default", ownerTk: "dashboard:default" }, { visible: true });
         renderShellsView();
-        g.scrollTop = 150;
+        viewport.scrollTop = 150;
       })()`);
       const relB = () => R(`(() => { const g = document.getElementById("bg-shells-list"); const c = [...g.querySelectorAll(".shell-card")].find((x) => x.dataset.shellId === "sb"); return c.getBoundingClientRect().top - 100; })()`);
       const before = relB();
       R(`handleShellExited({ shellId: "sa", command: "sa", status: "exited", startedAt: ${BASE} + 1, finishedAt: ${BASE} + 2 }, ""); renderShellsView();`);
       const after = relB();
-      const top0 = R(`(() => { const g = document.getElementById("bg-shells-list"); g.scrollTop = 0; renderShellsView(); return g.scrollTop; })()`);
+      const top0 = R(`(() => { const g = document.getElementById("bg-shells-list"); document.getElementById("bg-scroll").scrollTop = 0; renderShellsView(); return document.getElementById("bg-scroll").scrollTop; })()`);
       out.push(
         assert(
           "★셸 목록을 통째로 다시 그려도 읽던 카드의 자리를 지킨다 — 위의 셸이 끝나 «실행 중» 에서 빠져도(종전엔 100px 밀림) · 맨 위에선 손대지 않는다",

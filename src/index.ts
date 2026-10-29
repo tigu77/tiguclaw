@@ -201,7 +201,8 @@ import {
   type EgressTarget,
 } from "./core/egress-targets.js";
 import { withEgressPromptOptions } from "./core/prompt-options-egress.js";
-import { withPromptOptionsObservation } from "./core/prompt-options-observe.js";
+import { promptObservationSeat, withPromptOptionsObservation } from "./core/prompt-options-observe.js";
+import { reopenPromptAnswer } from "./core/prompt-answer-claims.js";
 import { readEgressChannels } from "./core/settings.js";
 import { catalogModelKeys, modelCapsFor } from "./core/llm-runtime/model-catalog.js";
 import { providerAuthAvailable } from "./core/llm-runtime/provider-availability.js";
@@ -1293,7 +1294,8 @@ const handler: MessageHandler = async (msg) => {
         originThreadKey: msg.threadKey,
       },
     ),
-    { channel: msg.channel, threadKey: msg.threadKey, bus },
+    // 대화 밖(스케줄) 작업 턴은 목적지 대화에 보이고 답은 실행 스레드로(2026-10-28 B4) — 판정은 `promptObservationSeat` 한 곳.
+    { channel: msg.channel, ...promptObservationSeat(msg), bus },
   );
   // mid-turn steering 채널 등록(ADR 2026-07-16 §5) — flag on 일 때만 생성·등록·주입한다.
   // ★flag off = steeringCh 미생성 + steering 필드 미주입 = route input 현행 동일(회귀 0).
@@ -1871,7 +1873,12 @@ const queueHandler: MessageHandler = (msg) => {
       }
       return handler(msg);
     },
-    { id: msg.correlationId },
+    // ★선택지 답이 시작 전에 취소되면 그 질문을 다시 연다(2026-10-28) — 이 항목은 이후 절대 시작되지 않는다(`gatedTask` 의 sentinel).
+    //  시작·끼워넣기·`/stop`·throw·시한은 되돌리지 않는다(설계 `2026-10-28-prompt-choice-release-followup.md` §1.4).
+    {
+      id: msg.correlationId,
+      ...(msg.promptAnswerId !== undefined ? { onCancel: () => { reopenPromptAnswer(msg.promptAnswerId!); } } : {}),
+    },
   );
 };
 

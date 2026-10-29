@@ -1231,7 +1231,8 @@
       .bg-filter .bg-fcount { min-width:16px; height:16px; padding:0 5px; border-radius:8px; background:var(--accent-2); color:var(--on-accent); font-size:0.625rem; font-weight:900; display:inline-flex; align-items:center; justify-content:center; line-height:1; }
       .bg-filter .bg-fbtn[data-filter="all"] .bg-fcount,
       .bg-filter .bg-fbtn[data-filter="done"] .bg-fcount { background:var(--text-dim); color:var(--text); }
-      .bg-list { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px; }
+      .bg-scroll { flex:1; min-height:0; overflow-y:auto; }
+      #bg-scroll .bg-list { padding:12px; display:flex; flex-direction:column; gap:10px; }
       /* filter=running 이면 running 이 아닌 카드를 숨긴다(카드는 그대로 두고 표시만 토글 → 회귀 0). */
       .bg-list.filter-running .bg-job:not(.running) { display:none; }
       /* filter=done(완료·상호배타) — 진행 중 카드를 숨겨 종료된 잡만 보인다(진행중 탭의 대칭). */
@@ -1246,10 +1247,8 @@
       .bg-group-chevron { font-size:var(--caret-size); line-height:1; color:var(--text-mute); display:inline-block; width:11px; text-align:center; transition:transform .15s; }
       .bg-group-head.collapsed .bg-group-chevron { transform:rotate(-90deg); }
       .bg-group-head.collapsed + .bg-group-body { display:none; }
-      /* 작업 그룹 본문 — ★flex-grow:0 → 내용 높이만 차지(빈 공간을 안 먹어 셸 그룹이 바로 밑에
-         바짝 붙음). 작업이 많으면 flex-shrink:1+min-height:0 으로 #bg-list(flex:1,overflow-y:auto)
-         가 내부 스크롤 → 셸은 항상 보임. 클래스 선택자(0,1,0)라 collapse 규칙(0,3,0)이 이긴다
-         — ID(#bg-jobs-body,1,0,0,0)면 display:flex 가 collapse 의 display:none 을 눌러버림. */
+      /* 그룹은 내용 높이 그대로 공통 바깥 스크롤에 쌓인다. 클래스 선택자를 유지해
+         collapsed + .bg-group-body 의 display:none 이 display:flex 보다 우선한다. */
       /* 한 번 타이머(2026-10-20, bg-timers.js) — 작업 그룹 위 짧은 목록. 없으면 [hidden](전역 규칙)으로 숨는다. 한 줄 = 남은 시간 · 이름 · 멈추기. */
       .bg-timers { flex:none; padding:8px 12px 2px; }
       .bg-timers-head { font-size:0.6875rem; font-weight:900; letter-spacing:.03em; text-transform:uppercase; color:var(--text-mute); padding-bottom:4px; }
@@ -1262,19 +1261,15 @@
       .bg-timer-stop { flex:none; padding:3px 8px; border:1px solid var(--border); border-radius:7px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:0.6875rem; font-weight:800; }
       .bg-timer-stop:hover { color:var(--text); background:var(--card-hover); }
       .bg-timer-stop:disabled { opacity:.5; cursor:default; }
-      .bg-jobs-body { flex:0 1 auto; min-height:0; display:flex; flex-direction:column; overflow:hidden; }
+      .bg-jobs-body { display:flex; flex-direction:column; }
       .bg-group-body .bg-filter { flex:none; }
       /* 세션 스코프(2026-07-16) — 기본은 활성 세션(activeThreadKey)이 띄운 잡만. 카드의 .bg-in-scope
          는 JS 가 세션 전환/카드 생성 때마다 갱신(threadKey==activeThreadKey 또는 threadKey 없음=레거시
          항상 소속). 상태필터(위)와 독립 클래스 → 두 규칙이 겹쳐 AND 로 숨김(둘 중 하나만 걸려도 숨김). */
       .bg-list.scope-session .bg-job:not(.bg-in-scope) { display:none; }
       .bg-empty { color:var(--text-mute); font-style:italic; font-size:0.75rem; padding:20px 6px; text-align:center; }
-      /* ── 셸/프로세스 그룹 본문(ADR 2026-07-17 §5, Phase 3b-2) — 매니저/에이전트 잡 리스트(#bg-list,
-         위)와 물리적으로 분리된 별도 그룹(데이터 레인 분리 유지: shellRegistry ≠ jobCards).
-         작업 본문(#bg-jobs-body)이 내용 높이만 차지(flex-grow:0) → 이 셸 그룹이 바로 밑에 붙는다.
-         이 본문은 max-height 로 bound 되 셸이 많아지면 자체 스크롤 — 잡 리스트 로직은 무변경. */
-      .bg-shells-body { flex:0 0 auto; max-height:42%; min-height:0; display:flex; flex-direction:column; overflow:hidden; transition:outline-color .15s ease; }
-      .bg-shells-list { min-height:0; }
+      /* 데이터 레인은 분리하되 크기/스크롤은 #bg-scroll 하나가 소유한다. */
+      .bg-shells-body { display:flex; flex-direction:column; transition:outline-color .15s ease; }
       /* showShells() 포커스 하이라이트(컴포저 스트립 클릭 등) — .bg-job.bg-flash/.agent-card.bg-flash 관례. */
       .bg-shells-body.bg-flash { outline:2px solid var(--accent-2); outline-offset:-2px; border-radius:10px; }
       /* 진행 중 뷰용 — 카드 헤더 밑에 경과시간 + 마지막 스텝(현재 무엇을 하는 중인지)을 인라인 표시.
@@ -1542,6 +1537,11 @@
       /* 설명이 있으면 설명이 먼저 자리를 갖는다(10-23 실측: 세션 배지 탓에 한글 7~8자만 보였다) — 세션 배지가 먼저 줄고
          (말줄임·툴팁은 그대로) 한글 네 글자가 들어가는 최소 폭에서 멈춘다. 설명 없는 카드엔 안 걸린다(지금 모습 그대로). */
       .shell-card-label ~ .shell-card-session { flex-shrink:100; min-width:5.5em; }
+      /* 좁은 카드에서 SDK·세션·상태 배지와 접기 버튼의 최소폭을 한 줄에 강제하지 않는다. */
+      .shell-card .agent-card-top { flex-wrap:wrap; }
+      .shell-card-collapse { flex:none; margin-left:auto; padding:3px 7px; border:1px solid var(--border); border-radius:6px; background:transparent; color:var(--text-mute); cursor:pointer; }
+      .shell-card-collapse:focus-visible { outline:2px solid var(--accent-2); outline-offset:2px; }
+      .shell-card-body { display:flex; flex-direction:column; gap:6px; min-width:0; }
       .shell-card-command { font-family:var(--font-mono); font-size:0.8125rem; }
       .shell-card-cwd { font-family:var(--font-mono); font-size:0.625rem; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .shell-card-exitcode { font-size:0.6875rem; color:var(--text-mute); font-family:var(--font-mono); }
@@ -2025,7 +2025,10 @@
           font-weight:700; box-shadow:var(--shadow); cursor:pointer; }
         /* 모바일 — 얇은 헤더 바(☰ 드로어 버튼 + 브랜드 + 상태). 풀 브랜딩(sub·이벤트수)만 숨김.
            탭바 제거, 네비는 ☰ 드로어. 콘텐츠는 헤더 아래로 깔끔히 시작(플로팅 ☰ 가리는 문제 해소). */
-        header { position:sticky; top:0; z-index:20; height:46px; padding:0 10px; gap:8px; } header .sub, header .meter { display:none; }
+        /* 헤더는 본문 쪽 레이어다. 전체화면 드로어의 배경막(최소18)보다 아래에 둔다.
+           패널만 올리면 배경막 위에 토글이 남아, 닫기 좌표에서 다른 패널을 열 수 있다.
+           본문 고정 UI(최대15) < header < 배경막 < 패널을 열고 닫을 때도 한 자리에서 유지한다. */
+        header { position:sticky; top:0; z-index:17; height:46px; padding:0 10px; gap:8px; } header .sub, header .meter { display:none; }
         /* «⭐ GitHub» 도 뺀다 — 얇은 바엔 검색·백그라운드 버튼이 같이 서서 자리가 없고, 넣으면 화면 밖으로 밀린다(390px 실측 x=435). */
         header .repo-star { display:none; }
         /* ★gap 도 모바일에선 좁힌다 — 14px × 요소 사이 5곳 = 70px 이고, 320px 화면에선
@@ -2242,6 +2245,9 @@
       .settings-row { display:flex; align-items:flex-start; gap:16px; padding:14px 16px; margin-top:10px;
         background:var(--card); border:1px solid var(--border); border-radius:12px; }
       .settings-meta { flex:1; min-width:0; }
+      .settings-home-path { display:block; margin-top:8px; overflow-wrap:anywhere; white-space:pre-wrap; }
+      .settings-home-actions { display:flex; flex-wrap:wrap; gap:8px; max-width:100%; }
+      .settings-home-actions .settings-toggle { white-space:normal; }
       .settings-name { font-weight:800; font-size:0.8125rem; color:var(--text); }
       .settings-desc { margin-top:5px; font-size:0.6875rem; line-height:1.5; color:var(--text-mute); }
       /* ★**글자를 세로로 세우지 않는다** (2026-09-05 정태님: «글자가 세로로 나열되는 건 다

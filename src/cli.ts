@@ -27,7 +27,7 @@ const ENV_PATH = path.join(HOME_DIR, ".env");
  *  shell:true — Windows 는 `npm` 이 `npm.cmd` 라 shell 없이는 ENOENT(크로스플랫폼 필수).
  *  script 는 하드코딩 리터럴만(주입 위험 0). */
 const runNpm = (script: string, env?: NodeJS.ProcessEnv): number => {
-  const r = spawnSync("npm", ["run", script], {
+  const r = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["run", script], {
     stdio: "inherit",
     shell: true,
     ...(env !== undefined ? { env: { ...process.env, ...env } } : {}),
@@ -104,7 +104,9 @@ const onboard = async (): Promise<number> => {
 
   console.log("[1/5] Setup wizard (creates .env)…");
   // init 이 «다음 단계» 를 수동으로 늘어놓지 않게 — 이어지는 단계는 onboard 가 한다.
-  if (runNpm("init", { TIGUCLAW_FROM_ONBOARD: "1" }) !== 0) {
+  if (existsSync(ENV_PATH)) {
+    console.log("   Existing .env found — keeping settings and resuming setup.");
+  } else if (runNpm("init", { TIGUCLAW_FROM_ONBOARD: "1" }) !== 0) {
     console.error("→ init failed or was cancelled. Stopping onboard.");
     return 1;
   }
@@ -122,12 +124,27 @@ const onboard = async (): Promise<number> => {
     : providerIsClaudeSub()
       ? "claude-auth"
       : null;
-  if (authScript !== null) {
+  // Load only after init: a new .env did not exist when this command started.
+  await import("./core/load-env.js");
+  const { registerStandaloneAuthProbes } = await import("./core/standalone-auth.js");
+  const { getAuthProvider } = await import("./core/llm-runtime/auth-registry.js");
+  await registerStandaloneAuthProbes();
+  const auth = authScript === null ? undefined : getAuthProvider(authScript === "codex-auth" ? "codex" : "claude-subscription");
+  if (authScript !== null && auth === undefined) {
+    console.error("→ The selected subscription auth plugin is missing or disabled. Enable it before resuming; your settings are kept.");
+    return 1;
+  }
+  if (authScript !== null && auth?.isAuthenticated?.()) {
+    console.log("\n[2/5] Subscription credentials already present — keeping them (no refresh/login).");
+  } else if (authScript !== null) {
     console.log(`\n[2/5] Getting a subscription OAuth token (${authScript})…`);
     if (runNpm(authScript) !== 0) {
       console.error(`→ ${authScript} failed. Stopping onboard.`);
       return 1;
     }
+    // OAuth child saved new tokens. Do not pass this parent's pre-login blanks to doctor.
+    const { refreshHomeCredentials } = await import("./core/credential-env.js");
+    refreshHomeCredentials();
   } else {
     console.log("\n[2/5] Not a subscription provider — skipping the OAuth step.");
   }
@@ -170,7 +187,7 @@ const onboard = async (): Promise<number> => {
       "     To use this install as the global command, run `npm link` yourself (this replaces the existing one).",
     );
   } else {
-    const linked = spawnSync("npm", ["link"], { stdio: "inherit", shell: true });
+    const linked = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["link"], { stdio: "inherit", shell: true });
     if ((linked.status ?? 1) === 0) {
       console.log(
         "   ✓ From any folder you can now run: tiguclaw status | restart | logs | doctor",
@@ -203,6 +220,7 @@ const onboard = async (): Promise<number> => {
     return 1;
   }
 
+  console.log("   Installation/service readiness checked; a real model reply has not been tested.");
   if (!dashboardOn) {
     console.log("\n✅ Ready! The dashboard module is turned off — talk to the assistant on your other channels, or turn the dashboard back on in settings.");
     console.log("   Manage: tiguclaw status / restart / logs / uninstall\n");

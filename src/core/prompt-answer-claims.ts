@@ -41,6 +41,17 @@ export const claimPromptAnswer = (id: string): PromptClaim => {
   return "ok";
 };
 
+/**
+ * 닫힌 질문을 다시 연다 — **그 답이 절대 시작되지 않음이 확정된 순간에만** 부른다(시작 전 큐 취소, 2026-10-28).
+ * 대장에 없으면(상한 퇴출·재시작) 되살리지 않는다 — 그 id 는 «만료» 그대로(위 R1-3). 반환 = 실제로 열었나.
+ */
+export const reopenPromptAnswer = (id: string): boolean => {
+  const entry = ledger.get(id);
+  if (entry === undefined || !entry.closed) return false;
+  entry.closed = false;
+  return true;
+};
+
 /** 답을 처리할 세션은 발급자가 정한다 — 표시 탭·클라이언트가 바꾸지 못한다. */
 export const promptReplySession = (id: string): string | undefined => ledger.get(id)?.replyToSession;
 

@@ -29,8 +29,99 @@ Write-Host "=== Installing tiguclaw ===" -ForegroundColor Cyan
 Write-Host "Install location: $Dir   (to change it: `$env:TIGUCLAW_DIR='D:\tiguclaw')"
 Write-Host ""
 
-# ── 전제 ────────────────────────────────────────────────────────────────────
-if (-not (Get-Command git  -ErrorAction SilentlyContinue)) { Die "git is not installed. Please install it first: winget install Git.Git" }
+# Existing directory != finished installation. Do not overwrite a partial/unrelated checkout.
+$ExistingInstall = Test-Path -LiteralPath $Dir
+if ($ExistingInstall) {
+  $packageFile = Join-Path $Dir 'package.json'
+  if (!(Test-Path -LiteralPath $packageFile) -or !(Test-Path -LiteralPath (Join-Path $Dir '.git'))) {
+    Die "Existing folder is not a complete tiguclaw checkout: $Dir. Keep it for recovery; inspect/rename it yourself or choose another TIGUCLAW_DIR, then rerun. Nothing was overwritten."
+  }
+  $existingPackage = Get-Content -LiteralPath $packageFile -Raw | ConvertFrom-Json
+  if ($existingPackage.name -ne 'tiguclaw' -or !(Test-Path -LiteralPath (Join-Path $Dir 'bin\tiguclaw.mjs'))) {
+    Die 'This is not a tiguclaw install. Choose another TIGUCLAW_DIR; the folder was not changed.'
+  }
+  # npm ci/build must not replace files held by a running daemon. Unknown is not stopped.
+  try {
+    $nodes = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction Stop)
+    $needle = [IO.Path]::GetFullPath($Dir).Replace('/', '\').ToLowerInvariant()
+    foreach ($proc in $nodes) {
+      # WMI does not expose cwd. A relative tiguclaw daemon entry cannot be proved unrelated.
+      $unscopedDaemon = $proc.CommandLine -match '(?i)(?:^|[\s"])(?:[^\\/\s":]+[\\/])*(?:(?:dist[\\/])?src[\\/]index\.(?:js|ts)|bin[\\/]daemon\.mjs)(?:\s|$|")'
+      if (!$proc.CommandLine -or $unscopedDaemon -or $proc.CommandLine.Replace('/', '\').ToLowerInvariant().Contains($needle) -or
+          ($proc.ExecutablePath -and $proc.ExecutablePath.Replace('/', '\').ToLowerInvariant().StartsWith($needle + '\'))) {
+        throw 'Running or uninspectable Node process'
+      }
+    }
+  } catch {
+    Die "Cannot establish that this install is stopped. No dependencies were changed. Use node.exe `"$Dir\bin\tiguclaw.mjs`" status / stop, then rerun. For a normal update use node.exe `"$Dir\bin\tiguclaw.mjs`" update. ($($_.Exception.Message))"
+  }
+}
+
+# System Git first; opt-in app-private PortableGit includes Bash (MinGit does not).
+$GitRoot = Join-Path $env:LOCALAPPDATA 'tiguclaw\tools\git'
+$PrivateGit = Join-Path $GitRoot 'cmd\git.exe'
+$PrivateBash = Join-Path $GitRoot 'bin\bash.exe'
+function Enable-PrivateGit {
+  $env:Path = (Join-Path $GitRoot 'cmd') + ";" + $env:Path
+  # Bash is discovered by the CLI after the home .env has had its say.
+}
+$GitCmd = Get-Command git.exe -ErrorAction SilentlyContinue
+if (!$GitCmd) {
+  if ((Test-Path -LiteralPath $PrivateGit) -and (Test-Path -LiteralPath $PrivateBash) -and
+      (Test-Path -LiteralPath (Join-Path $GitRoot 'tiguclaw-portable-git.json'))) {
+    & $PrivateGit --version | Out-Null
+    if ($LASTEXITCODE -ne 0) { Die 'App-private Git is damaged. Inspect/rename it or install Git for Windows yourself, then rerun.' }
+    & $PrivateBash --version | Out-Null
+    if ($LASTEXITCODE -ne 0) { Die 'App-private Bash is damaged. Inspect/rename it or install Git for Windows yourself, then rerun.' }
+    Enable-PrivateGit
+  } else {
+    if (Test-Path -LiteralPath $GitRoot) { Die "Incomplete private Git at $GitRoot. It was not overwritten. Inspect/rename it or install Git for Windows yourself, then rerun." }
+    Write-Host "Git is missing. Prepare official PortableGit (Git + Bash) in $GitRoot?"
+    Write-Host 'Only this app/process uses it; machine/user PATH and execution policy are not changed.'
+    $consent = Read-Host 'Download, verify SHA256 and run the official PortableGit extractor? [y/N]'
+    if ($consent -notmatch '^(?i:y|yes)$') {
+      Die 'Git preparation declined. Install Git for Windows from https://git-scm.com/download/win and rerun. Settings are kept.'
+    }
+    $gitArch = $(if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }).ToLowerInvariant()
+    $assetArch = switch ($gitArch) { 'arm64' { 'arm64' } 'amd64' { '64-bit' } default { Die "Unsupported PortableGit architecture: $gitArch" } }
+    $release = Invoke-RestMethod 'https://api.github.com/repos/git-for-windows/git/releases/latest' -Headers @{ 'User-Agent' = 'tiguclaw-installer' }
+    $assets = @($release.assets | Where-Object { $_.name -match "^PortableGit-[0-9.]+-$assetArch\.7z\.exe$" })
+    if ($assets.Count -ne 1) { Die 'Official PortableGit asset is missing/ambiguous. Retry later or install Git for Windows manually.' }
+    $asset = $assets[0]
+    if ($asset.digest -notmatch '^sha256:[a-fA-F0-9]{64}$' -or
+        $asset.browser_download_url -notmatch '^https://github\.com/git-for-windows/git/releases/download/[a-zA-Z0-9._-]+/PortableGit-[0-9.]+-(64-bit|arm64)\.7z\.exe$') {
+      Die 'Official PortableGit URL/SHA256 metadata is unavailable. Nothing will be executed; retry later.'
+    }
+    $download = Join-Path ([IO.Path]::GetTempPath()) ('tiguclaw-portable-git-' + [guid]::NewGuid().ToString('N') + '.exe')
+    $stage = Join-Path (Split-Path $GitRoot -Parent) ('git-partial-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $stage -Force | Out-Null
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $download -UseBasicParsing
+    $actual = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash
+    if ($actual -ine $asset.digest.Substring(7)) { Die 'PortableGit SHA256 mismatch. Extractor was NOT run. Rerun to download a fresh copy.' }
+    $extract = Start-Process -FilePath $download -ArgumentList @('-y', ('-o"' + $stage + '"')) -Wait -PassThru
+    if ($extract.ExitCode -ne 0) { Die "PortableGit extraction failed ($($extract.ExitCode)); rerun. Incomplete staging was not reused." }
+    $stageGit = Join-Path $stage 'cmd\git.exe'
+    $stageBash = Join-Path $stage 'bin\bash.exe'
+    if (!(Test-Path -LiteralPath $stageGit) -or !(Test-Path -LiteralPath $stageBash)) { Die 'PortableGit extraction is incomplete; no tool path was enabled.' }
+    & $stageGit --version | Out-Null
+    if ($LASTEXITCODE -ne 0) { Die 'Extracted Git failed its version check.' }
+    & $stageBash --version | Out-Null
+    if ($LASTEXITCODE -ne 0) { Die 'Extracted Bash failed its version check.' }
+    @{ asset = $asset.name; sha256 = $actual; source = $asset.browser_download_url } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $stage 'tiguclaw-portable-git.json') -Encoding UTF8
+    [IO.Directory]::Move($stage, $GitRoot)
+    Enable-PrivateGit
+    Write-Host '  SHA256 verified; app-private Git + Bash ready.'
+  }
+  $GitCmd = Get-Command git.exe -ErrorAction Stop
+}
+$GitExe = $GitCmd.Source
+if ($ExistingInstall) {
+  $origin = & $GitExe -C $Dir remote get-url origin
+  if ($LASTEXITCODE -ne 0 -or $origin -notmatch '^(https://github\.com/tigu77/tiguclaw(?:\.git)?|git@github\.com:tigu77/tiguclaw(?:\.git)?)$') {
+    Die 'Existing folder is not the official tiguclaw checkout. It was not changed; choose another TIGUCLAW_DIR.'
+  }
+}
+Write-Host "  git: $GitExe"
 
 # ★**Node 가 없으면 여기서 멈추지 않는다** — sh 판과 같은 이유·같은 방식이다(2026-09-09).
 #  `winget install` 을 부르지 않는다: 전역 변경이고, 무엇보다 **지울 때 같이 안 지워진다.**
@@ -41,9 +132,9 @@ $NodeDir = Join-Path $Dir '.node'
 $NeedNode = $false
 
 function Test-NodeOk {
-  if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $false }
-  if (-not (Get-Command npm  -ErrorAction SilentlyContinue)) { return $false }
-  try { $maj = [int]((((node --version) -replace '^v','') -split '\.')[0]) } catch { return $false }
+  if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) { return $false }
+  if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) { return $false }
+  try { $maj = [int]((((node.exe --version) -replace '^v','') -split '\.')[0]) } catch { return $false }
   return ($maj -ge $MinNode)
 }
 
@@ -91,14 +182,18 @@ function Move-PrivateNode {
   Remove-Item -Recurse -Force $script:NodeStageTmp -ErrorAction SilentlyContinue
   $env:PATH = "$NodeDir;$env:PATH"
   if (-not (Test-NodeOk)) { Die "The private Node was installed but does not run ($NodeDir\node.exe)." }
-  Write-Host "[v] Private node $(node -v) — $NodeDir (your system was not touched)" -ForegroundColor Green
+  Write-Host "[v] Private node $(node.exe -v) — $NodeDir (your system was not touched)" -ForegroundColor Green
 }
 
+# A fresh PowerShell does not inherit the previous installer's process PATH.
+if ($ExistingInstall -and (Test-Path -LiteralPath (Join-Path $NodeDir 'node.exe'))) {
+  $env:PATH = "$NodeDir;$env:PATH"
+}
 if (Test-NodeOk) {
-  Write-Host "[v] node $(node -v) · git $((git --version).Split(' ')[2])"
+  Write-Host "[v] node $(node.exe -v) · git $((& $GitExe --version).Split(' ')[2])"
 } else {
-  if (Get-Command node -ErrorAction SilentlyContinue) {
-    Write-Host "! Your node is $(node -v), but $MinNode or newer is required." -ForegroundColor Yellow
+  if (Get-Command node.exe -ErrorAction SilentlyContinue) {
+    Write-Host "! Your node is $(node.exe -v), but $MinNode or newer is required." -ForegroundColor Yellow
   } else {
     Write-Host "! Node.js is not installed ($MinNode or newer is required)." -ForegroundColor Yellow
   }
@@ -147,24 +242,15 @@ if (Test-NodeOk) {
 #   빠뜨렸다. 같은 판단을 두 곳에 두면 한쪽이 낡는다.
 #  (원래 이 자리가 막던 PowerShell 5.1 인용 함정은 `Test-NodeOk` 안으로 옮겨가 있다.)
 
-# ── 이미 있으면 덮지 않는다 — 업데이트는 update 의 일이다 ────────────────────
-if (Test-Path $Dir) {
-  if (Test-Path (Join-Path $Dir '.git')) {
-    Die @"
-tiguclaw is already installed in $Dir.
-   To update:  cd $Dir; npx tiguclaw update
-   (It stops the daemon, updates dependencies, rebuilds, and starts it again.
-    Do not run npm ci yourself — if the daemon holds files open, the install breaks.)
-"@
-  }
-  Die "$Dir already exists but is not a tiguclaw install. Use another path: `$env:TIGUCLAW_DIR='D:\tiguclaw'"
-}
-
-# ── 받기 · 설치 ─────────────────────────────────────────────────────────────
+# A verified stopped checkout resumes without pull/reset. A folder is not a completion marker.
 Write-Host ""
-Write-Host "-> Downloading the code..."
-git clone --quiet $RepoUrl $Dir
-if ($LASTEXITCODE -ne 0) { Die "git clone failed — check your network or access." }
+if ($ExistingInstall) {
+  Write-Host "-> Resuming existing checkout (settings are kept): $Dir"
+} else {
+  Write-Host "-> Downloading the code..."
+  & $GitExe clone --quiet $RepoUrl $Dir
+  if ($LASTEXITCODE -ne 0) { Die "git clone failed. Keep any partial folder for recovery or choose another TIGUCLAW_DIR and rerun." }
+}
 Set-Location $Dir
 
 # ★전용 Node 는 clone 뒤에 받는다 — 폴더가 먼저 있으면 `git clone` 이 실패한다.
@@ -180,12 +266,12 @@ if ($NeedNode) {
   $NpmShow  = Join-Path $NodeDir 'npm.cmd'
   $HowtoTail = "`n   (This install uses a private Node — to keep using it from your terminal, add this to your PATH:`n      `$env:PATH = '$NodeDir;' + `$env:PATH`n    Even without it, you can update from chat with /update.)"
 } else {
-  $NpmShow = 'npm'
+  $NpmShow = 'npm.cmd'
   $HowtoTail = ''
 }
 
 # ★이제서야 npm 을 해석한다 — 전용 Node 를 깔았으면 그쪽 `npm.cmd` 가 잡혀야 한다(P2).
-$Npm = if (Get-Command npm.cmd -ErrorAction SilentlyContinue) { "npm.cmd" } else { "npm" }
+$Npm = (Get-Command npm.cmd -ErrorAction Stop).Source
 
 Write-Host "-> Installing dependencies... (building native modules can take 1-2 minutes)"
 # ★`--ignore-scripts=false` 를 **명시**한다 (2026-08-19 실사고). 사내 정책으로 npm 설정에
@@ -198,7 +284,7 @@ if ($LASTEXITCODE -ne 0) {
 Dependency install failed.
    You may need the C++ build tools:
      winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
-   Then retry:  cd $Dir; $NpmShow ci
+   Then retry:  cd $Dir; $NpmShow ci --ignore-scripts=false
 "@
 }
 
@@ -214,12 +300,12 @@ Write-Host "-> Checking native modules..."
 #  종료 오류로 바꾼다. 점검이 실제로 DB 를 열게 되면서 실패 때 stderr 가 나오고, 그러면 아래 rebuild·안내에 닿기 전에 스크립트가 죽는다.
 #  판정은 종료코드($LASTEXITCODE)로 한다.
 $ErrorActionPreference = 'Continue'
-node bin/check-native.cjs 2>$null
+node.exe bin/check-native.cjs 2>$null
 if ($LASTEXITCODE -ne 0) {
   # ★알려주고 끝내지 않는다 - **스스로 한 번 고쳐본다**(사용자가 명령을 외우게 하지 않는다).
   Write-Host "   A native module failed to load - rebuilding..."
   & $Npm rebuild better-sqlite3 --ignore-scripts=false 2>$null | Out-Null
-  node bin/check-native.cjs 2>$null
+  node.exe bin/check-native.cjs 2>$null
   if ($LASTEXITCODE -ne 0) {
     Die @"
 Cannot load the SQLite native module - the daemon would crash on every start.
@@ -236,6 +322,7 @@ $ErrorActionPreference = 'Stop'
 # ── onboard 로 넘김 (대화형) ────────────────────────────────────────────────
 Write-Host ""
 & $Npm run onboard
+if ($LASTEXITCODE -ne 0) { Die "Setup is not finished. Settings are kept; rerun this installer after fixing the problem above." }
 } catch {
   # Die 는 이미 안내를 찍었다. 그 밖의 오류(네트워크 끊김 등)는 날것의 PowerShell 오류 대신 한 줄로.
   if ("$_" -ne 'TIGUCLAW_DIE') {

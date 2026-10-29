@@ -13,6 +13,11 @@
         "kbd",                // 단축키 표기
       ]);
       const MD_SAFE_HREF = /^(https?:|mailto:)/i;
+      // 화면에 그리지 않는 요소 — 안의 글자는 본문이 아니다(CSS·스크립트·문서 제목). 풀어 놓으면(unwrap) 그 글자가 드러난다
+      //  (2026-10-28: 오류 안내에 실린 HTML 오류 페이지의 제목·CSS 가 채팅에 그대로 보였다). 내용째 버린다.
+      const MD_HIDDEN_TAGS = new Set([
+        "script","style","title","template","noscript","iframe","object","embed","noembed","noframes",
+      ]);
 
       /**
        * **태그별 속성 정책** — 값까지 본다 (2026-08-27).
@@ -54,6 +59,12 @@
           for (const child of Array.from(node.childNodes)) {
             if (child.nodeType === 1) {
               const tag = child.tagName.toLowerCase();
+              if (MD_HIDDEN_TAGS.has(tag)) {
+                // 내용째 버린다 — 안의 글자는 되살리지 않는다(닫히지 않은 요소가 뒤 본문을 삼키는 건 아래
+                //  `closeRawTextAtBlockEnd` 가 마크다운 블록 경계에서 막는다).
+                node.removeChild(child);
+                continue;
+              }
               if (!MD_ALLOWED_TAGS.has(tag)) {
                 // 미허용 태그 = unwrap(자식 텍스트/노드는 보존, 통째 drop 아님).
                 walk(child);
@@ -429,11 +440,33 @@
         return t.replace(/\s+/g, " ").trim();
       };
 
+      // raw-text 요소 — HTML 파서는 맞는 닫는 태그가 나올 때까지 뒤의 글 전부를 그 안의 글자로 넣는다. 닫히지 않은 채 오면
+      //  (예: 200자로 잘린 오류 페이지의 `<style>`) **뒤따르는 문단까지** 삼킨다. 마크다운 블록 끝에서 닫아 그 블록 안에 가둔다.
+      //  코드 블록·인라인 코드 안의 `<` 는 marked 가 이미 `&lt;` 로 바꿔 여기 걸리지 않는다.
+      const MD_RAW_TEXT_OPEN = /<(script|style|title|textarea|xmp|iframe|noembed|noframes)\b[^>]*>/gi;
+      const closeRawTextAtBlockEnd = (html) => {
+        MD_RAW_TEXT_OPEN.lastIndex = 0;
+        for (let m; (m = MD_RAW_TEXT_OPEN.exec(html)); ) {
+          const close = new RegExp("</" + m[1] + "[\\s/>]", "i");
+          const at = html.slice(MD_RAW_TEXT_OPEN.lastIndex).search(close);
+          if (at < 0) return html + "</" + m[1] + ">";
+          MD_RAW_TEXT_OPEN.lastIndex += at;
+        }
+        return html;
+      };
       const renderMarkdown = (src) => {
         // marked·sanitize 실패 시 평문 폴백(happy-path 금지).
-        return sanitizeMarkdownHtml(
-          window.marked.parse(sealFences(src), { gfm: true, breaks: true }),
-        );
+        // 블록마다 따로 HTML 로 만든 뒤 잇는다(`marked.parse` 와 같은 결과 — 그 둘을 이은 것이 parse 다). 합친 문서를 한 번에 정화한다.
+        const opts = Object.assign({}, window.marked.defaults, { gfm: true, breaks: true });
+        const tokens = window.marked.lexer(sealFences(src), opts);
+        const html = tokens
+          .map((t) => {
+            const one = [t];
+            one.links = tokens.links;
+            return closeRawTextAtBlockEnd(window.marked.parser(one, opts));
+          })
+          .join("");
+        return sanitizeMarkdownHtml(html);
       };
       // 봇 답변=마크다운(innerHTML, sanitize 후), 사용자/오류=평문(textContent).
       const setChatBody = (msgEl, text, asMarkdown) => {

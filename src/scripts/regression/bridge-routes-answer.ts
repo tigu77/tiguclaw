@@ -46,8 +46,14 @@ interface Probe {
   /** `ms` = 그 요청 하나의 경과(요청 시한 5초와 비교할 값) · `err` = 상태 0 의 사유(예외 종류·원인 코드·데몬 상태). */
   rows?: Array<{
     path: string; status: number; ms?: number;
+    /** 5xx 일 때만 — 응답 본문(가린 뒤 300자). */
+    body?: string;
     err?: { kind: string; code?: string; msg: string; daemon: string };
   }>;
+  /** 데몬에 넘긴 env 의 표시 조건(값은 안 싣고 유무만). */
+  display?: { platform: string; display: boolean; wayland: boolean; envFileOff: boolean };
+  /** 무디스플레이 Linux 일 때만 — 같은 홈·같은 env 로 제품 함수를 직접 부른 결과. */
+  openHome?: { error?: string; openerCalls: number };
   /** `?jobId=` 단건 갈래가 살아 있나 — 1=목록으로 안 떨어짐, 0=떨어짐, -1=요청 실패(`err` = 사유). */
   taskOne?: { got: number; want: number; err?: string };
   alive?: boolean;
@@ -64,12 +70,71 @@ const deadLine = (r: NonNullable<Probe["rows"]>[number]): string =>
     ? r.path
     : `${r.path}[${r.err.kind}${r.err.code !== undefined ? `/${r.err.code}` : ""} ${String(r.ms)}ms · ${r.err.msg} · daemon ${r.err.daemon}]`;
 
+/**
+ * ★무디스플레이 Linux 의 `POST /open-home` 500 은 **제품이 맞게 낸 실패**다 (2026-10-29 CI
+ *  40811381675). 제품은 표시 장치가 없으면 열기 프로그램을 띄우기 전에 거절하고 라우트는 고정 500
+ *  본문을 낸다. 그러나 «5xx 없음» 을 넓게 풀면 진짜 결함이 같은 자리로 숨는다 — 그래서 **경로·상태·
+ *  정확한 본문 · 데몬 env 가 무디스플레이 Linux(.env 미로드) · 같은 조건 직접 호출이 그 문구로
+ *  실패하고 열기 프로그램 0회** 를 전부 만족할 때만 예상 실패로 센다. 하나라도 어긋나면 그대로 5xx 다.
+ *  반환: 예상 실패면 근거 한 줄, 아니면 undefined.
+ */
+export const headlessOpenHome = (
+  r: NonNullable<Probe["rows"]>[number],
+  got: Pick<Probe, "display" | "openHome">,
+): string | undefined => {
+  const d = got.display;
+  const o = got.openHome;
+  const ok =
+    r.path === "POST /open-home" &&
+    r.status === 500 &&
+    r.body === JSON.stringify({ error: "Home folder open request failed" }) &&
+    d?.platform === "linux" && d.display === false && d.wayland === false && d.envFileOff === true &&
+    o?.error === "No desktop display available" && o.openerCalls === 0;
+  return ok
+    ? `${r.path}:500 body=${String(r.body)} · platform=linux DISPLAY/WAYLAND 없음 · .env 미로드 · 직접 호출 오류="${String(o?.error)}" 열기 프로그램 ${String(o?.openerCalls)}회`
+    : undefined;
+};
+
 export const check: RegressionCheck = {
   name: "bridge-routes-answer",
   guards:
     "라우트 본문을 모듈로 옮기면서 호출부의 `return;` 을 빠뜨려 handleRequest 가 404 폴백까지 흘러 **헤더를 두 번 쓰고 데몬이 죽던 것**(2026-08-30 실사고: /health 만 200, 그 뒤 21개 전부 000) — 소스 검사는 라우트 **조건**이 제자리에 있어서 2,330건이 전부 초록이었다. '등록돼 있는가' 와 '응답하는가' 는 다르다",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
+    // ★예외 판정의 부정 대조 — 맞는 입력 하나에서 **조건을 하나씩만** 깨면 전부 예외가 아니어야 한다.
+    //  실제 Linux CI 가 아니면 예외 갈래가 안 밟히므로, 판정 함수 자체를 여기서 고정한다.
+    {
+      const row = { path: "POST /open-home", status: 500, body: JSON.stringify({ error: "Home folder open request failed" }) };
+      const display = { platform: "linux", display: false, wayland: false, envFileOff: true };
+      const openHome = { error: "No desktop display available", openerCalls: 0 };
+      const table: Array<[string, NonNullable<Probe["rows"]>[number], Pick<Probe, "display" | "openHome">]> = [
+        ["다른 라우트 500", { ...row, path: "POST /open-path" }, { display, openHome }],
+        ["상태 502", { ...row, status: 502 }, { display, openHome }],
+        ["상태 200", { ...row, status: 200 }, { display, openHome }],
+        ["다른 본문", { ...row, body: JSON.stringify({ error: "boom" }) }, { display, openHome }],
+        ["본문 키 추가", { ...row, body: JSON.stringify({ error: "Home folder open request failed", x: 1 }) }, { display, openHome }],
+        ["본문 없음", { path: row.path, status: 500 }, { display, openHome }],
+        ["darwin", row, { display: { ...display, platform: "darwin" }, openHome }],
+        ["win32", row, { display: { ...display, platform: "win32" }, openHome }],
+        ["DISPLAY 있음", row, { display: { ...display, display: true }, openHome }],
+        ["WAYLAND 있음", row, { display: { ...display, wayland: true }, openHome }],
+        [".env 로드", row, { display: { ...display, envFileOff: false }, openHome }],
+        ["표시 조건 미측정", row, { openHome }],
+        ["직접 호출 다른 오류", row, { display, openHome: { error: "spawn xdg-open ENOENT", openerCalls: 0 } }],
+        ["직접 호출 성공", row, { display, openHome: { openerCalls: 0 } }],
+        ["열기 프로그램 1회", row, { display, openHome: { ...openHome, openerCalls: 1 } }],
+        ["직접 호출 없음", row, { display }],
+      ];
+      const bad = table.filter(([, r, g]) => headlessOpenHome(r, g) !== undefined).map(([n]) => n);
+      const positive = headlessOpenHome(row, { display, openHome }) !== undefined;
+      out.push(
+        assert(
+          "무디스플레이 /open-home 예외는 조건 전부가 맞을 때만 — 하나만 깨도 예외 아님(부정 대조)",
+          positive && bad.length === 0,
+          `정합 입력 예외=${String(positive)} · 부정 ${String(table.length)}건 중 예외로 샌 것 ${String(bad.length)}건${bad.length > 0 ? `: ★${bad.join(", ")}` : ""}`,
+        ),
+      );
+    }
     const home = mkdtempSync(path.join(tmpdir(), "br-routes-"));
     let got: Probe = {};
     // ★자식이 JSON 을 못 냈을 때(90초 시한·크래시) 부모가 실을 사유 — 종료 상태·경과·자식 stderr 의 실패 줄.
@@ -167,12 +232,35 @@ export const check: RegressionCheck = {
       ),
     );
 
-    const server5xx = rows.filter((r) => r.status >= 500);
+    const expected = rows.map((r) => (r.status >= 500 ? headlessOpenHome(r, got) : undefined)).filter((s) => s !== undefined);
+    const server5xx = rows.filter((r) => r.status >= 500 && headlessOpenHome(r, got) === undefined);
+    // 예상 실패로 센 근거도 통과 때 로그에 남긴다(러너는 실패 단언만 출력한다).
+    for (const s of expected) console.log(`     · bridge-routes-answer 예상 실패(무디스플레이 Linux): ${s}`);
     out.push(
       assert(
-        "5xx 가 없다(있으면 그 라우트 안에서 던진 것)",
+        "5xx 가 없다(있으면 그 라우트 안에서 던진 것 — 무디스플레이 Linux 의 /open-home 고정 실패만 조건 전부 대조 후 예외)",
         server5xx.length === 0,
-        server5xx.length === 0 ? "5xx 0건" : `★${server5xx.map((r) => `${r.path}:${String(r.status)}`).join(", ")}`,
+        server5xx.length === 0
+          ? `5xx 0건${expected.length > 0 ? ` · 예상 실패 ${String(expected.length)}건: ${expected.join(" | ")}` : ""}`
+          : `★${server5xx.map((r) => `${r.path}:${String(r.status)}${r.body !== undefined ? ` body=${r.body}` : ""}`).join(", ")} · display=${JSON.stringify(got.display)} · openHome=${JSON.stringify(got.openHome)}`,
+      ),
+    );
+
+    // ★무디스플레이 Linux 에선 **예상 실패가 실제로 나야** 한다 — 위 5xx 필터는 그 라우트가 200·404 로
+    //  잘못 답하거나 목록에서 사라져도 조용히 통과한다. 표시 조건은 자식이 데몬 env 에서 읽은 값이다.
+    const d = got.display;
+    const headless = d?.platform === "linux" && !d.display && !d.wayland;
+    const openHomeRow = rows.find((r) => r.path === "POST /open-home");
+    out.push(
+      assert(
+        "무디스플레이 Linux 면 POST /open-home 이 정확한 500 본문 + 같은 홈 직접 오류 + 열기 프로그램 0회(그 외 환경이면 직접 호출 없음)",
+        d !== undefined &&
+          (headless
+            ? openHomeRow !== undefined && headlessOpenHome(openHomeRow, got) !== undefined
+            : got.openHome === undefined),
+        d === undefined
+          ? "★표시 조건 미측정"
+          : `${headless ? "무디스플레이 Linux" : "해당 없음"} · display=${JSON.stringify(d)} · openHome=${JSON.stringify(got.openHome)} · 행=${openHomeRow === undefined ? "★없음" : `${String(openHomeRow.status)}${openHomeRow.body !== undefined ? ` body=${openHomeRow.body}` : ""}`}`,
       ),
     );
 

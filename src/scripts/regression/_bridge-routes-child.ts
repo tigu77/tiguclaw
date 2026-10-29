@@ -5,7 +5,7 @@
  *  프로세스를 오염시키므로 자식에서만 한다.
  */
 import { mkdtempSync, rmSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,16 +82,17 @@ const main = async (): Promise<void> => {
     HTTP_BRIDGE_TOKEN: token,
   });
   let log = "";
+  const daemonEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    TIGUCLAW_HOME: home,
+    TELEGRAM_BOT_TOKEN: "",
+    HTTP_BRIDGE_PORT: bp,
+    DASHBOARD_PORT: dp,
+    HTTP_BRIDGE_TOKEN: token,
+  };
   const child = spawn(process.execPath, ["--import", "tsx", path.join(REPO, "src/index.ts")], {
     cwd: REPO,
-    env: {
-      ...process.env,
-      TIGUCLAW_HOME: home,
-      TELEGRAM_BOT_TOKEN: "",
-      HTTP_BRIDGE_PORT: bp,
-      DASHBOARD_PORT: dp,
-      HTTP_BRIDGE_TOKEN: token,
-    },
+    env: daemonEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
   reapOnExit(child.pid);
@@ -127,6 +128,8 @@ const main = async (): Promise<void> => {
 
   const rows: Array<{
     path: string; status: number; ms: number;
+    /** 5xx 일 때만 — 응답 본문(가린 뒤 300자). 부모가 정확히 대조한다. */
+    body?: string;
     err?: { kind: string; code?: string; msg: string; daemon: string };
   }> = [];
   if (boot.ok) {
@@ -140,9 +143,12 @@ const main = async (): Promise<void> => {
             ...(r.method === "POST" ? { "Content-Type": "application/json" } : {}),
           },
           ...(r.method === "POST" ? { body: "{}" } : {}),
-          signal: AbortSignal.timeout(5000),
+          // `/update-availability` 만 25초 — 제품이 `git fetch` 를 20초 시한으로 기다린다(core/update-availability.ts).
+          signal: AbortSignal.timeout(r.path === "/update-availability" ? 25_000 : 5000),
         });
-        rows.push({ path: `${r.method} ${r.path}`, status: res.status, ms: sinceMs(started) });
+        const row: (typeof rows)[number] = { path: `${r.method} ${r.path}`, status: res.status, ms: sinceMs(started) };
+        if (res.status >= 500) row.body = scrubDiag(scrubText(await res.text(), hide), [], 300);
+        rows.push(row);
       } catch (e) {
         const row = {
           path: `${r.method} ${r.path}`, status: 0, ms: sinceMs(started),
@@ -189,13 +195,40 @@ const main = async (): Promise<void> => {
       failLine(taskOne.err ?? "");
     }
   }
+  // ★무디스플레이 Linux 판정 재료 (2026-10-29 CI 40811381675 — `POST /open-home:500`).
+  //  데몬에 넘긴 **같은 env 객체**에서 조건을 읽는다(.env 미로드여야 데몬 env 가 이것과 같다).
+  //  그 조건일 때만 같은 홈·같은 env 로 제품 함수를 직접 불러 오류 문구와 «열기 프로그램 0회» 를
+  //  남긴다 — 부모는 조건·직접 오류·라우트 본문이 **모두** 맞을 때만 그 500 을 예상 실패로 본다.
+  const display = {
+    platform: process.platform,
+    display: Boolean(daemonEnv.DISPLAY),
+    wayland: Boolean(daemonEnv.WAYLAND_DISPLAY),
+    envFileOff: daemonEnv.TIGUCLAW_DISABLE_ENV_FILE === "1",
+  };
+  let openHome: { error?: string; openerCalls: number } | undefined;
+  if (display.platform === "linux" && !display.display && !display.wayland) {
+    process.env.TIGUCLAW_HOME = home;
+    (await import("../../core/paths.js")).__resetPathsCache();
+    const { openHomeDirectory } = await import("../../core/open-home-directory.js");
+    let openerCalls = 0;
+    const run = ((): never => {
+      openerCalls++;
+      throw new Error("probe opener must not run");
+    }) as unknown as typeof execFile;
+    try {
+      await openHomeDirectory(process.platform, daemonEnv, run);
+      openHome = { openerCalls };
+    } catch (e) {
+      openHome = { error: scrubDiag(e instanceof Error ? e.message : String(e), hide, 200), openerCalls };
+    }
+  }
   const alive = child.exitCode === null && child.signalCode === null;
   const exit = alive ? undefined : early;
   const totalMs = sinceMs(t0);
   child.kill("SIGKILL");
   if (process.env.PROBE_HOME === undefined) rmSync(home, { recursive: true, force: true });
   process.stdout.write(
-    `\n${JSON.stringify({ boot: boot.ok, why: scrubDiag(boot.why, [], 300), rows, alive, exit, totalMs, taskOne, tail: scrubDiag(scrubText(log, hide).slice(-300), [], 300) })}\n`,
+    `\n${JSON.stringify({ boot: boot.ok, why: scrubDiag(boot.why, [], 300), rows, alive, exit, totalMs, taskOne, display, openHome, tail: scrubDiag(scrubText(log, hide).slice(-300), [], 300) })}\n`,
   );
 };
 

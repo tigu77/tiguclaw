@@ -53,12 +53,15 @@ applyWindowsTools();
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
   watchFile,
   writeFileSync,
   writeSync,
@@ -284,13 +287,59 @@ export const saveWinServiceEnv = (c, env = process.env) => {
   renameSync(tmp, file);
 };
 
+/** `redactUpdateLog` 가 값으로 가리는 키 — 같은 규칙을 두 자리에 두지 않게 하나로. */
+const SECRET_KEY_RE = /(TOKEN|SECRET|PASSWORD|API_KEY|AUTHORIZATION)/i;
+
+/**
+ * 데몬 stderr 를 가릴 때 쓸 env — 데몬에게 준 실행 환경 + 홈·레포 `.env` 의 값(데몬이 직접 읽어 감독자 env 엔 없다).
+ * 키 이름은 원래 이름을 품게 둔다 — `redactUpdateLog` 가 키 이름으로 비밀을 고른다.
+ * @param {NodeJS.ProcessEnv} env @param {string[]} dirs `.env` 를 읽을 폴더들 @returns {NodeJS.ProcessEnv}
+ */
+export const stderrMaskEnv = (env, dirs) => {
+  /** @type {NodeJS.ProcessEnv} */
+  const out = { ...env };
+  const parse = /** @type {((s: string) => Record<string, string>) | undefined} */ (nodeUtil.parseEnv);
+  dirs.forEach((dir, i) => {
+    try {
+      if (typeof parse !== "function") return; // 옛 Node — 데몬 자체가 못 뜬다(readHomeEnvValue 주석). 패턴 가리기는 그대로 돈다.
+      for (const [k, v] of Object.entries(parse(readFileSync(path.join(dir, ".env"), "utf8")))) out[`dotenv${i}:${k}`] = v;
+    } catch {
+      /* .env 없음 */
+    }
+  });
+  return out;
+};
+
+/**
+ * 데몬이 죽기 전에 남긴 stderr 의 **끝부분** — 먼저 가리고 그다음 자른다(R1 #3: 자른 뒤 가리면 경계에 걸린 비밀의 꼬리가 남는다).
+ * `cut` = 원문 앞이 이미 잘린 버퍼 — 그 앞머리엔 잘린 비밀 값·`token=…` 꼬리가 있을 수 있어, 가장 긴 비밀 길이만큼과 그 뒤 첫 공백까지 버린다
+ * (비밀 값·패턴 값이 공백을 안 품는다는 전제는 `redactUpdateLog` 와 같다).
+ * @param {string} raw @param {boolean} cut @param {NodeJS.ProcessEnv} env @param {number} [keep] @returns {string}
+ */
+export const maskedStderrTail = (raw, cut, env, keep = 4096) => {
+  let text = redactUpdateLog(raw, env);
+  if (cut) {
+    text = text.slice(Math.min(text.length, stderrSecretSpan(env)));
+    const ws = text.search(/\s/);
+    text = ws === -1 ? "" : text.slice(ws + 1);
+  }
+  return text.length > keep ? text.slice(-keep) : text;
+};
+
+/** 앞머리에서 버릴 길이 = 가릴 비밀 값 중 가장 긴 것(최소 256). 버퍼도 그만큼 더 쥔다. @param {NodeJS.ProcessEnv} env */
+export const stderrSecretSpan = (env) => {
+  let m = 256;
+  for (const [k, v] of Object.entries(env)) if (SECRET_KEY_RE.test(k) && v && v.length > m) m = v.length;
+  return m;
+};
+
 /** 로그에는 환경의 비밀값·인증 헤더·URL 자격증명을 남기지 않는다.
  * @param {string} text @param {NodeJS.ProcessEnv} [env] @returns {string}
  */
 export const redactUpdateLog = (text, env = process.env) => {
   let clean = text;
   for (const [key, value] of Object.entries(env)) {
-    if (/(TOKEN|SECRET|PASSWORD|API_KEY|AUTHORIZATION)/i.test(key) && value && value.length >= 8) {
+    if (SECRET_KEY_RE.test(key) && value && value.length >= 8) {
       clean = clean.split(value).join("[REDACTED]");
     }
   }
@@ -598,6 +647,17 @@ const darwinRestart = (c) => {
   );
 };
 
+/**
+ * 정지 성공 줄 — **등록을 확인한 만큼만** 말한다(2026-10-29 Windows 현장: 등록 안 된 라벨에도 «still registered» 를 찍었다).
+ * @param {Ctx} c @param {boolean | undefined} registered undefined = 이번에 확인하지 않았다(업데이트 중 정지)
+ */
+export const stoppedLine = (c, registered) =>
+  registered === true
+    ? `✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`
+    : registered === false
+      ? `✅ stopped (not registered — nothing will start it automatically; to set it up: tiguclaw install). ${c.label}`
+      : `✅ stopped. ${c.label}`;
+
 // stop = 실행만 중지, plist(등록) 유지 (D3). bootout 은 KeepAlive respawn 도 멈춘다.
 /** @param {Ctx} c */
 const darwinStop = (c) => {
@@ -609,7 +669,7 @@ const darwinStop = (c) => {
   } catch {
     /* 미로드 — 이미 정지 상태로 간주 */
   }
-  console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
+  console.log(stoppedLine(c, isRegistered(c)));
   return true;
 };
 
@@ -771,7 +831,7 @@ const linuxStop = (c) => {
     process.exitCode = 1;
     return false;
   }
-  console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
+  console.log(stoppedLine(c, isRegistered(c)));
   return true;
 };
 
@@ -860,8 +920,9 @@ const sleepSync = (ms) => {
  *  없다). 증거 등급을 정해 둔 주석이 정작 mac/linux 에선 성립하지 않았다.
  * ★한계는 정직하게 적는다: **옛 데몬도 `/health` 에 답한다.** 그래서 이건 "엉뚱한 프로세스"
  *  만 걸러내고, 재시작의 "죽어가는 소켓" 은 아래 `settleMs` 가 맡는다.
+ * ★왜 아니었는지도 돌려준다 (2026-10-29) — 실패 보고가 «안 열렸다» 하나뿐이라 «열렸는데 health 가 아니다» 를 가를 수 없었다.
  * @param {Ctx} c
- * @returns {boolean}
+ * @returns {{ ok: boolean, why: string }}
  */
 const healthSaysOurs = (c) => {
   const port = winPort(c);
@@ -869,50 +930,109 @@ const healthSaysOurs = (c) => {
     process.execPath,
     [
       "-e",
-      `const http=require("http");const q=http.get({host:"127.0.0.1",port:${port},path:"/health",timeout:1500},(s)=>{let b="";s.on("data",(d)=>{b+=d});s.on("end",()=>{process.stdout.write(b.slice(0,200))})});q.on("error",()=>process.exit(1));q.on("timeout",()=>{q.destroy();process.exit(1)});`,
+      `const http=require("http");const q=http.get({host:"127.0.0.1",port:${port},path:"/health",timeout:1500},(s)=>{let b="";s.on("data",(d)=>{b+=d});s.on("end",()=>{process.stdout.write(b.slice(0,200));process.stderr.write("HTTP "+s.statusCode)})});q.on("error",(e)=>{process.stderr.write("no answer ("+(e.code||e.message)+")");process.exit(1)});q.on("timeout",()=>{process.stderr.write("no answer within 1.5s");q.destroy();process.exit(1)});`,
     ],
     { encoding: "utf8" },
   );
-  return r.status === 0 && /"ok"\s*:\s*true/.test(r.stdout ?? "");
+  const said = (r.stderr ?? "").trim().slice(0, 120);
+  if (r.status === 0 && /"ok"\s*:\s*true/.test(r.stdout ?? "")) return { ok: true, why: "" };
+  if (r.status === 0) return { ok: false, why: `${said || "answered"} without "ok": true` };
+  return { ok: false, why: said || r.error?.message || `health check exited with ${r.status}` };
 };
 
 /**
+ * 기동 확인 대기의 관측 — 성공이면 `pids` 가 차 있다. 실패 보고가 **무엇을 봤는지** 말하게 모아 둔다.
+ * @typedef {{ pids: string[], health: { ok: boolean, why: string } | null }} LaunchSeen 조회가 성공한 한 회
+ * @typedef {{ pids: string[], last: LaunchSeen | { error: string } | null, lastKnown: LaunchSeen | null,
+ *   everSeen: boolean, probeFailures: number, waitedMs: number }} LaunchWait
+ */
+
+/**
  * @param {Ctx} c
- * @param {(c: Ctx) => string[]} probe
+ * @param {(c: Ctx) => { pids: string[], error?: string }} probe
  * @param {number} [timeoutMs]
  * @param {number} [settleMs] 첫 프로브 전 대기 — **재시작 전용**. 옛 데몬이 graceful 종료
  *  중 수백 ms 동안 포트를 물고 있으면 그 소켓으로 ✅ 가 찍힌다(적대 검토 P7). 기동(start)은
  *  옛 프로세스가 없으므로 0.
+ * @returns {LaunchWait}
  */
 const waitForListening = (c, probe, timeoutMs = 20000, settleMs = 0) => {
   if (settleMs > 0) sleepSync(settleMs);
-  const until = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const until = startedAt + timeoutMs;
+  /** @type {LaunchWait} */
+  const w = { pids: [], last: null, lastKnown: null, everSeen: false, probeFailures: 0, waitedMs: 0 };
   for (;;) {
-    const pids = probe(c);
-    // 포트가 잡혔으면 **우리 것인지** 한 번 더 묻는다(엉뚱한 프로세스 배제).
-    if (pids.length > 0 && healthSaysOurs(c)) return pids;
-    if (Date.now() >= until) return [];
+    const p = probe(c);
+    // ★조회 실패는 «안 열림» 이 아니다 (2026-10-29) — 실패한 회는 따로 세고, 마지막으로 **확정한** 상태를 덮지 않는다.
+    if (p.error !== undefined) {
+      w.probeFailures += 1;
+      w.last = { error: p.error };
+    } else {
+      // 포트가 잡혔으면 **우리 것인지** 한 번 더 묻는다(엉뚱한 프로세스 배제). 성공 조건은 종전 그대로 — 포트 PID 그리고 health.
+      const seen = { pids: p.pids, health: p.pids.length > 0 ? healthSaysOurs(c) : null };
+      w.last = seen;
+      w.lastKnown = seen;
+      if (p.pids.length > 0) w.everSeen = true;
+      if (seen.health?.ok === true) {
+        w.pids = p.pids;
+        w.waitedMs = Date.now() - startedAt;
+        return w;
+      }
+    }
+    if (Date.now() >= until) {
+      w.waitedMs = Date.now() - startedAt;
+      return w;
+    }
     sleepSync(700);
   }
 };
 
 /**
  * 기동 결과를 **정직하게** 보고한다. 못 떴으면 ✅ 를 찍지 않고 exit 1.
+ * ★실패를 갈라 말한다 (2026-10-29, Windows 현장 보고 — 같은 기동이 나중엔 정상이었는데 «port never opened» 만 남았다).
+ *  끝 시점을 **확인했는가** 부터 본다: 마지막 조회가 실패했으면 그 앞의 관측으로 결론 내지 않는다.
  * @param {Ctx} c
- * @param {string[]} pids
+ * @param {LaunchWait} w
  * @param {string} verb
  * @param {string} hint
  */
-const reportLaunch = (c, pids, verb, hint) => {
-  if (pids.length > 0) {
-    console.log(pids[0] === "listening" ? `✅ ${verb}` : `✅ ${verb} (pid ${pids.join(", ")})`);
+const reportLaunch = (c, w, verb, hint) => {
+  if (w.pids.length > 0) {
+    console.log(w.pids[0] === "listening" ? `✅ ${verb}` : `✅ ${verb} (pid ${w.pids.join(", ")})`);
     return;
   }
-  console.error(
-    // ★«Not installed» 라고 하지 않는다 — install 이면 등록은 됐고 데몬만 안 뜬 것이다(동사를 명사로: installed→install).
-    `🔴 Daemon not running after ${verb.replace(/ed$/, "")} — the start command was sent, but the bridge port never opened. ` +
-      `The daemon either didn't start or exited right away.\n${hint}`,
-  );
+  const port = winPort(c);
+  const secs = Math.round(w.waitedMs / 1000);
+  // ★«Not installed» 라고 하지 않는다 — install 이면 등록은 됐고 데몬만 안 뜬 것이다(동사를 명사로: installed→install).
+  const noun = verb.replace(/ed$/, "");
+  /** @param {string[]} pids */
+  const by = (pids) => (pids[0] === "listening" ? "" : ` (PID ${pids.join(", ")})`);
+  /** @param {LaunchSeen | null} s */
+  const seenText = (s) =>
+    s === null
+      ? "the port could not be checked even once"
+      : s.pids.length === 0
+        ? `the bridge port ${port} was not listening`
+        : `the bridge port ${port} was listening${by(s.pids)} but /health did not answer ok (${s.health?.why ?? "not asked"})`;
+  /** @type {string} */
+  let msg;
+  if (w.last === null || "error" in w.last) {
+    msg =
+      `🔴 Could not confirm the daemon is running after ${noun} — the last port check failed (${w.last?.error ?? "no check ran"}); ` +
+      `before that, ${seenText(w.lastKnown)}. It may still be running.`;
+  } else if (w.last.pids.length === 0) {
+    msg = w.everSeen
+      ? `🔴 Daemon not running after ${noun} — the bridge port ${port} opened, then closed again within ${secs}s. The daemon most likely exited right after starting.`
+      : `🔴 Daemon not running after ${verb.replace(/ed$/, "")} — the start command was sent, but the bridge port never opened. ` +
+        `The daemon either didn't start or exited right away. (port ${port}, checked for ${secs}s` +
+        `${w.probeFailures > 0 ? `; ${w.probeFailures} port checks failed` : ""})`;
+  } else {
+    msg =
+      `🔴 Could not confirm the daemon after ${noun} — ${seenText(w.last)} within ${secs}s. ` +
+      `Another program may hold the port, or the daemon is still starting.`;
+  }
+  console.error(`${msg}\n${hint}`);
   process.exitCode = 1;
 };
 
@@ -923,14 +1043,17 @@ export const winLegacyVbsPath = (c) => path.join(c.homeAbs, "win-launch.vbs");
  * 브리지 포트를 LISTEN 하는 PID(윈도우) 또는 표식(맥·리눅스).
  * ★`netstat` 는 세 OS 에 다 있고 dep-free 다. 맥·리눅스는 PID 를 안 주는 형식이라
  *  "떴다" 표식(`listening`)만 돌려준다 — 판정에 필요한 건 그것뿐이다.
+ * ★조회가 실패했으면(netstat 을 못 돌렸다 — 리눅스엔 없을 수도 있다) 빈 목록이 아니라 `error` 를 준다(2026-10-29).
  * @param {Ctx} c
- * @returns {string[]}
+ * @returns {{ pids: string[], error?: string }}
  */
 const listeningOnBridge = (c) => {
   const port = winPort(c); // .env 우선 — 플랫폼 무관 동일 규칙.
   const r = spawnSync("netstat", process.platform === "win32" ? ["-ano"] : ["-an"], {
     encoding: "utf8",
   });
+  if (r.error !== undefined) return { pids: [], error: `netstat could not run (${r.error.message})` };
+  if (r.status !== 0) return { pids: [], error: `netstat exited with ${r.status}` };
   const out = r.stdout ?? "";
   /** @type {Set<string>} */
   const pids = new Set();
@@ -949,7 +1072,7 @@ const listeningOnBridge = (c) => {
       pids.add("listening");
     }
   }
-  return [...pids];
+  return { pids: [...pids] };
 };
 
 
@@ -1186,10 +1309,15 @@ const winLaunchLegacyStartup = (c) => {
   child.unref();
 };
 
+/** 시작프로그램 폴백이 놓이는 자리(새 바로가기 · 옛 `.vbs`) — 지우기와 «등록됨» 판정이 같은 목록을 본다. @param {Ctx} c */
+const winStartupFallbackPaths = (c) => [winStartupLnkPath(c), winLegacyStartupVbsPath(c)];
+/** 시작프로그램 폴백이 놓여 있나 — 로그온 때 감독자를 띄우므로 «등록됨» 이다. 판정은 여기 한 곳(정지 줄·업데이트 안내가 같이 본다). 파일만 본다(OS 조회 0). @param {Ctx} c */
+const winHasStartupFallback = (c) => winStartupFallbackPaths(c).some((p) => p !== null && existsSync(p));
+
 /** 폴백 제거(멱등) — 예약작업이 살아나면 **반드시** 지운다(둘 다 있으면 두 개 뜬다). 옛 `.vbs` 폴백도 같이. @param {Ctx} c */
 export const winRemoveStartupFallback = (c) => {
   let removed = false;
-  for (const p of [winStartupLnkPath(c), winLegacyStartupVbsPath(c)]) {
+  for (const p of winStartupFallbackPaths(c)) {
     if (p === null || !existsSync(p)) continue;
     rmSync(p, { force: true });
     removed = true;
@@ -1397,14 +1525,37 @@ export const selectWinKillTargets = ({ netstat, procsCsv, port, home, repoRoot }
   return [...out];
 };
 
-/** 실행 중 node 프로세스 명령줄 조회 인자 — 출력 인코딩 머리가 앞에 붙는다(회귀가 확인한다). @returns {string[]} */
+/**
+ * 실행 중 node 프로세스 명령줄 조회 인자 — 출력 인코딩 머리가 앞에 붙는다(회귀가 확인한다).
+ * ★끝까지 돌았다는 표식(`SCAN_OK`)을 마지막 줄에 찍는다 (2026-10-29). 빈 출력은 «node 가 없다» 와 «조회가 실패했다» 가 같아
+ *  보여서, 조회가 실패한 기계에서 정지가 아무것도 안 죽이고 «✅ stopped» 로 갔다. 오류는 멈추게 해(`Stop`) 표식이 안 찍히게 한다.
+ * @returns {string[]}
+ */
 export const winProcQueryArgs = () => [
   "-NoProfile",
   "-Command",
   PS_UTF8_OUTPUT +
+    "$ErrorActionPreference = 'Stop'; " +
     "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
-    "Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation",
+    "Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation; 'SCAN_OK'",
 ];
+
+/**
+ * 프로세스 조회가 **믿을 만한가** — 아니면 이유, 믿을 만하면 undefined. 빈 결과를 «없다» 로 읽어도 되는 건 조회가 끝까지 돌았을 때뿐이다.
+ * @param {{ status: number | null, stdout?: string | null, stderr?: string | null, error?: Error }} netstat
+ * @param {{ status: number | null, stdout?: string | null, stderr?: string | null, error?: Error }} ps
+ * @returns {string | undefined}
+ */
+export const winScanFailure = (netstat, ps) => {
+  if (netstat.error !== undefined) return `netstat could not run (${netstat.error.message})`;
+  if (netstat.status !== 0) return `netstat exited with ${netstat.status}`;
+  if (ps.error !== undefined) return `the process list query could not run (${ps.error.message})`;
+  if (ps.status !== 0 || !/^SCAN_OK\s*$/m.test(ps.stdout ?? "")) {
+    // stdout 은 싣지 않는다 — 다른 프로세스의 명령줄(인자에 무엇이 있을지 모른다)이 섞인다.
+    return `the process list query failed (exit ${ps.status}: ${psErrorText({ stdout: "", stderr: ps.stderr ?? "" })})`;
+  }
+  return undefined;
+};
 
 /**
  * 명령줄로 이 인스턴스의 데몬 PID 를 찾는다 — **포트 탐지의 보완**.
@@ -1475,26 +1626,54 @@ export const winSupervisorIsDuplicate = ({ lines, home, selfPid }) => {
   return older === undefined ? null : String(older.pid);
 };
 
-/** @param {Ctx} c */
+/**
+ * ★`error` = 조회를 믿을 수 없다(2026-10-29) — 그때 `targets`·`portDaemons` 는 «없음» 이 아니라 «모름» 이다.
+ * @param {Ctx} c
+ * @returns {{ targets: string[], portDaemons: string[], error?: string }}
+ */
 const winScan = (c) => {
-  const netstat = spawnSync("netstat", ["-ano"], { encoding: "utf8" }).stdout ?? "";
-  const procsCsv = spawnSync("powershell", winProcQueryArgs(), { encoding: "utf8" }).stdout ?? "";
+  // 시한 — WMI 가 멈추면 종전엔 정지·업데이트가 무기한 멈췄다(감독자 쪽 질의는 이미 15초 시한). 시한에 걸리면 «모름».
+  const ns = spawnSync("netstat", ["-ano"], { encoding: "utf8", timeout: 30_000 });
+  const ps = spawnSync("powershell", winProcQueryArgs(), { encoding: "utf8", timeout: 30_000 });
+  const netstat = ns.stdout ?? "";
+  const procsCsv = ps.stdout ?? "";
   const port = winPort(c);
+  const error = winScanFailure(ns, ps);
   return {
     targets: selectWinKillTargets({ netstat, procsCsv, port, home: String(c.homeRaw ?? ""), repoRoot: c.repoRoot }),
     portDaemons: winPortDaemonPids({ netstat, procsCsv, port }),
+    ...(error === undefined ? {} : { error }),
   };
 };
 
 /**
- * 실행 중 데몬 종료 — 포트 PID + 명령줄 PID **합집합**. 반환값 = 죽인 뒤에도 남은 PID.
- * ★호출부는 이 반환을 보고 보고해야 한다(빈 배열이어야 `✅`). 종전엔 결과를 안 보고
- *  무조건 성공을 찍었다.
+ * 이 홈의 데몬·감독자가 떠 있나 — **포트와 무관하게**(감독자만 살아 데몬이 아직/더는 포트를 안 연 때도 있다). 업데이트의 정지 판단용.
  * @param {Ctx} c
- * @returns {string[]}
+ * @returns {{ state: "running" | "stopped" | "unknown", pids: string[], why?: string }}
+ */
+const winPresence = (c) => {
+  const s = winScan(c);
+  if (s.error !== undefined) return { state: "unknown", pids: [], why: s.error };
+  const pids = [...new Set([...s.targets, ...s.portDaemons])];
+  return { state: pids.length > 0 ? "running" : "stopped", pids };
+};
+
+/**
+ * 정지의 결과 — `pids` = 아직 남은 PID · `unconfirmed` = 남았는지 **확인하지 못한** 이유. 둘 다 없어야 «멈췄다».
+ * @typedef {{ pids: string[], unconfirmed?: string }} WinStopResult
+ */
+
+/**
+ * 실행 중 데몬 종료 — 포트 PID + 명령줄 PID **합집합**. 반환값 = 죽인 뒤에도 남은 PID(또는 확인 못 함).
+ * ★호출부는 이 반환을 보고 보고해야 한다(남은 것도 «확인 못 함» 도 없어야 `✅`). 종전엔 결과를 안 보고
+ *  무조건 성공을 찍었다.
+ * ★조회가 실패하면 아무것도 죽이지 않는다 (2026-10-29) — 대상 목록을 믿을 수 없다. 종전엔 빈 목록으로 읽혀 «남은 것 없음» = 성공이었다.
+ * @param {Ctx} c
+ * @returns {WinStopResult}
  */
 const winKillRunning = (c) => {
   const first = winScan(c);
+  if (first.error !== undefined) return { pids: [], unconfirmed: first.error };
   const targets = new Set(first.targets);
   for (const pid of targets)
     spawnSync("taskkill", ["/PID", pid, "/F", "/T"], { stdio: "ignore" });
@@ -1502,14 +1681,16 @@ const winKillRunning = (c) => {
   //  종료는 비동기다 — **몇 번** 다시 센다(2026-10-08 적대 검토 P1: 한 번만 보고 실패로 치면, 늦게 죽는 데몬이 «실패» 로 남는다).
   /** @param {{ targets: string[], portDaemons: string[] }} scan */
   const survivorsOf = (scan) => [...new Set([...scan.targets.filter((p) => targets.has(p)), ...scan.portDaemons])];
-  let survivors = survivorsOf(first);
-  if (targets.size === 0) return survivors;
+  /** @type {WinStopResult} */
+  let result = { pids: survivorsOf(first) };
+  if (targets.size === 0) return result;
   for (let i = 0; i < 6; i++) {
     spawnSync("powershell", ["-NoProfile", "-Command", "Start-Sleep -Milliseconds 900"], { stdio: "ignore" });
-    survivors = survivorsOf(winScan(c));
-    if (survivors.length === 0) break;
+    const scan = winScan(c);
+    result = scan.error !== undefined ? { pids: [], unconfirmed: scan.error } : { pids: survivorsOf(scan) };
+    if (result.pids.length === 0 && result.unconfirmed === undefined) break;
   }
-  return survivors;
+  return result;
 };
 
 /**
@@ -1798,7 +1979,7 @@ const winRepair = (c) => {
  *  가 "안 먹는" 것처럼 보인다. launchd 에서 `launchctl bootout` 을 쓰지 프로세스를 kill
  *  하지 않는 것과 같은 이유다. 남은 좀비는 그 뒤에 정리한다(포트+명령줄 합집합).
  * @param {Ctx} c
- * @returns {string[]} 종료 후에도 살아남은 PID
+ * @returns {WinStopResult} 종료 후에도 살아남은 PID · 확인 못 한 이유
  */
 const winStopTask = (c) => {
   // ★**멈추려면 비활성화까지 해야 한다** (2026-08-22, 그 기계에서 실측으로 잡음).
@@ -1822,22 +2003,32 @@ const winStopTask = (c) => {
     if (s.status !== 0) console.warn(`⚠ schtasks /disable failed too (status=${s.status}): ${((s.stderr ?? "") || (s.stdout ?? "")).trim().slice(0, 300)} — fix once with \`npm run daemon:repair\`.`);
   }
   const survived = winKillRunning(c);
-  if (survived.length > 0) return survived;
+  if (survived.pids.length > 0 || survived.unconfirmed !== undefined) return survived;
   // ★**되살아났는지 한 번 더 본다** — 위에서 센 것은 «죽이려던 것» 뿐이라, 트리거가 새로 띄운 감독자는 안 셌다(그래서 «✅ stopped» 를 찍고
   //  npm ci 로 갔다). 잠깐 기다린 뒤 이 인스턴스의 감독자·데몬이 **새로** 떠 있으면 정지 실패다 — 업데이트는 설치 전에 멈춘다.
   spawnSync("powershell", ["-NoProfile", "-Command", "Start-Sleep -Milliseconds 2500"], { stdio: "ignore" });
   const again = winScan(c);
+  // 다시 보지 못했으면 «안 살아났다» 가 아니다(2026-10-29).
+  if (again.error !== undefined) return { pids: [], unconfirmed: `could not re-check after stopping — ${again.error}` };
   const revived = [...new Set([...again.targets, ...again.portDaemons])];
   if (revived.length > 0) console.error(`🔴 the daemon came back right after stopping (PID ${revived.join(", ")}) — something relaunched it (scheduled task still enabled?).`);
-  return revived;
+  return { pids: revived };
 };
 
 /** @param {Ctx} c */
 const winRestart = (c) => {
   const survived = winStopTask(c);
-  if (survived.length > 0) {
+  if (survived.unconfirmed !== undefined) {
     console.error(
-      `🔴 restart failed — the running daemon did not stop (PID ${survived.join(", ")}). ` +
+      `🔴 restart failed — could not confirm the running daemon stopped (${survived.unconfirmed}). ` +
+        `Not starting a new one (to avoid running two). Check Task Manager for this instance's node processes, then try again.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (survived.pids.length > 0) {
+    console.error(
+      `🔴 restart failed — the running daemon did not stop (PID ${survived.pids.join(", ")}). ` +
         `Not starting a new one (to avoid running two). End that PID in Task Manager, or reboot, then try again.`,
     );
     process.exitCode = 1;
@@ -1869,9 +2060,17 @@ const winRestart = (c) => {
 /** @param {Ctx} c */
 const winStop = (c) => {
   const survived = winStopTask(c);
-  if (survived.length > 0) {
+  if (survived.unconfirmed !== undefined) {
     console.error(
-      `🔴 stop failed — still running (PID ${survived.join(", ")}). ` +
+      `🔴 stop failed — could not confirm the daemon stopped (${survived.unconfirmed}). ` +
+        `It may still be running; npm ci or an update could then fail on file locks (EPERM).`,
+    );
+    process.exitCode = 1;
+    return false;
+  }
+  if (survived.pids.length > 0) {
+    console.error(
+      `🔴 stop failed — still running (PID ${survived.pids.join(", ")}). ` +
         `Running npm ci or an update now will fail on file locks (EPERM).`,
     );
     process.exitCode = 1;
@@ -1880,8 +2079,13 @@ const winStop = (c) => {
   // ★작업을 못 껐으면 «멈췄다» 가 1분짜리다 — 반복 트리거가 곧 다시 띄운다(2026-10-21 집 윈도우: 권한 부족으로 끄기 실패).
   //  업데이트 중이면 «업데이트 중» 표식이 기동을 막으므로 그대로 간다. 아니면 그렇게 말하고 실패로 끝낸다(«✅ stopped» 를 찍지 않는다).
   //  ★꺼졌는지 **못 읽었으면** 그것도 성공이 아니다(아스트라 10-21) — 없음(시작프로그램 폴백 등)만 정상으로 둔다.
+  //  등록 여부는 여기서 이미 읽은 작업 상태로만 말한다 — 업데이트 중엔 읽지 않으므로 말하지 않는다(조회를 늘리지 않는다).
+  /** @type {boolean | undefined} */
+  let registered;
   if (activeUpdateLock(c) === null) {
     const t = winTaskState(c);
+    // 작업이 없어도 시작프로그램 폴백이 있으면 로그온 때 다시 뜬다 — 등록된 것이다.
+    registered = t.state !== "missing" || winHasStartupFallback(c);
     if (t.state === "enabled") {
       console.error(
         `🔴 stop will not stick — the scheduled task could not be turned off, so it will start the daemon again within a minute. ` +
@@ -1899,7 +2103,7 @@ const winStop = (c) => {
       return false;
     }
   }
-  console.log(`✅ stopped (still registered — resume with: npm run daemon:start). ${c.label}`);
+  console.log(stoppedLine(c, registered));
   return true;
 };
 
@@ -2175,43 +2379,116 @@ const runSupervise = (c) => {
   //  못 꺼서 트리거가 우리를 띄웠거나, 데몬이 포트를 안 연 채라 업데이트가 우리를 못 멈춘 경우) 띄우지 않고 끝낸다. 잡은 파이프는 종료와 함께
   //  OS 가 놓으므로, 업데이트 뒤 재가동이나 다음 1분 트리거의 감독자가 정상으로 뜬다. ★기다리지 않고 끝내는 이유: 남아 있으면 업데이트의
   //  «정지 직후 되살아남» 판정에 감독자로 세어져 업데이트가 설치 전에 그만둔다.
+  // ★데몬 stderr 의 끝부분을 쥔다 (2026-10-29, Windows 현장: 재기동 직후 0.1초 exit 1 루프 — 감독자 로그엔 «exited after 0s (code=1)» 뿐이었다).
+  //  앱 로거·최후 그물은 **정적 import 가 다 풀린 뒤**에야 선다 — 의존성이 빠져 `ERR_MODULE_NOT_FOUND` 로 죽으면 node 가 stderr 에 찍고
+  //  끝나는데, 예약작업은 창 없는 콘솔(`conhost --headless`)·직접 기동은 `ignore` 라 어디에도 안 남았다. 그래서 stderr 만 파이프로 받아
+  //  **그대로 넘기고**(보이던 자리 보존) 끝부분만 쥐었다가, 비정상 종료 때 가려서 같은 로그에 남긴다. 새 로깅 체계는 만들지 않는다.
+  //  감독자 자신의 stderr 가 끊겨도(창 없음·NUL) 감독은 계속한다.
+  process.stderr.on("error", () => undefined);
+  const STDERR_KEEP = 4096;
+  /** 직전에 남긴 끝부분 — 같은 것이 되풀이되면(0.1초 루프) 한 줄로만. */
+  let lastStderr = "";
+  let sameStderrRuns = 0;
+
   const spawnOnce = () => {
     if (yieldToUpdate()) return;
     const startedAt = Date.now();
+    const env = {
+      ...childEnv(),
+      TIGUCLAW_HOME: c.homeRaw,
+      TIGUCLAW_RUNTIME: c.runtime,
+    };
     child = spawn(exe, rest, {
       cwd: c.repoRoot,
-      env: {
-        ...childEnv(),
-        TIGUCLAW_HOME: c.homeRaw,
-        TIGUCLAW_RUNTIME: c.runtime,
-      },
-      stdio: "inherit",
+      env,
+      stdio: ["inherit", "inherit", "pipe"],
       windowsHide: true,
     });
+    // 원문은 끝 `KEEP + 여유` 만 쥔다 — 조각 경계에 걸친 비밀도 버퍼 안에선 온전해야 가릴 수 있다(R1 #3). 잘린 앞머리는 기록할 때
+    //  가장 긴 비밀 길이만큼 버린다(`maskedStderrTail`) — 여유보다 긴 비밀이 있어도 더 버릴 뿐 새지 않는다.
+    const hold = STDERR_KEEP + 8192;
+    const tail = { text: "", cut: false, ended: child.stderr === null || child.stderr === undefined };
+    const err = child.stderr ?? null;
+    if (err !== null) {
+      err.setEncoding("utf8"); // 여러 바이트 글자가 조각 경계에서 깨지지 않게
+      err.on("data", (/** @type {string} */ d) => {
+        try {
+          process.stderr.write(d);
+        } catch {
+          /* 감독자 콘솔이 없어도 감독은 계속 */
+        }
+        tail.text += d;
+        if (tail.text.length > hold) {
+          tail.text = tail.text.slice(-hold);
+          tail.cut = true;
+        }
+      });
+      err.on("error", () => undefined);
+      err.on("end", () => {
+        tail.ended = true;
+      });
+    }
+    /** 비정상 종료 때 stderr 끝을 남긴다 — 되풀이면 크래시 줄에 붙일 꼬리말만 돌려준다. @returns {string} */
+    const noteStderr = () => {
+      const text = maskedStderrTail(tail.text, tail.cut, stderrMaskEnv(env, [c.homeAbs, c.repoRoot]), STDERR_KEEP).trim();
+      if (text === "") return " · no stderr output";
+      if (text === lastStderr) {
+        sameStderrRuns += 1;
+        return ` · stderr same as before (${sameStderrRuns + 1} in a row)`;
+      }
+      lastStderr = text;
+      sameStderrRuns = 0;
+      log(`daemon stderr before exit (last ${text.length} chars, secrets masked):\n${text.split(/\r?\n/).map((l) => `  | ${l}`).join("\n")}`);
+      return "";
+    };
     log(`daemon started pid=${child.pid} runtime=${c.runtime} home=${c.homeRaw}`);
     child.on("exit", (code, signal) => {
       const uptimeMs = Date.now() - startedAt;
       child = null;
-      if (stopping) {
-        log(`supervisor stop requested — not restarting (code=${code} signal=${signal})`);
-        process.exit(0);
-      }
-      // ★수치를 싣는다 — 로그가 1차 진단면이라 "얼마나 살았나" 가 크래시루프 판정의
-      //  근거다. 증상만 적으면 원격 기계(회사 PC·윈도우)에서 추론에 의존하게 된다.
-      if (uptimeMs < MIN_UPTIME_MS) {
-        consecutiveCrashes += 1;
+      /** @param {string} note */
+      const decide = (note) => {
+        // 정지는 stderr 를 기다리는 사이에 올 수도 있다 — 여기서 본다(기다린 뒤에 재기동하지 않게).
+        if (stopping) {
+          log(`supervisor stop requested — not restarting (code=${code} signal=${signal})`);
+          process.exit(0);
+          return;
+        }
+        // ★수치를 싣는다 — 로그가 1차 진단면이라 "얼마나 살았나" 가 크래시루프 판정의
+        //  근거다. 증상만 적으면 원격 기계(회사 PC·윈도우)에서 추론에 의존하게 된다.
+        if (uptimeMs < MIN_UPTIME_MS) {
+          consecutiveCrashes += 1;
+          log(
+            `daemon exited after ${Math.round(uptimeMs / 1000)}s (code=${code} signal=${signal}) — ` +
+              `${consecutiveCrashes} in a row · restarting in ${THROTTLE_MS / 1000}s (throttled)${note}`,
+          );
+          setTimeout(spawnOnce, THROTTLE_MS);
+          return;
+        }
+        consecutiveCrashes = 0;
         log(
-          `daemon exited after ${Math.round(uptimeMs / 1000)}s (code=${code} signal=${signal}) — ` +
-            `${consecutiveCrashes} in a row · restarting in ${THROTTLE_MS / 1000}s (throttled)`,
+          `daemon exited (code=${code} signal=${signal}, up ${Math.round(uptimeMs / 1000)}s) — restarting now${note}`,
         );
-        setTimeout(spawnOnce, THROTTLE_MS);
+        spawnOnce();
+      };
+      // 정상 종료(재시작 요청 등)·정지는 남길 것이 없다.
+      if (stopping || code === 0 || err === null) {
+        decide("");
         return;
       }
-      consecutiveCrashes = 0;
-      log(
-        `daemon exited (code=${code} signal=${signal}, up ${Math.round(uptimeMs / 1000)}s) — restarting now`,
-      );
-      spawnOnce();
+      // stderr 끝을 잠깐 기다린다 — 후손이 stderr 를 쥐고 있어 `end` 가 안 와도 300ms 에 끝낸다(`end` 가 exit 앞이든 뒤든 같은 결과).
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        decide(noteStderr());
+      };
+      const timer = setTimeout(finish, 300);
+      if (tail.ended) finish();
+      else {
+        err.once("end", finish);
+        err.once("close", finish);
+      }
     });
   };
 
@@ -2282,7 +2559,8 @@ const runSupervise = (c) => {
 
 /**
  * ★`stop` 은 **멈췄는지** 를 돌려준다(true/false) — 업데이트가 그걸 보고 설치 전에 멈춘다(2026-10-08 외부 검토 F2).
- * @type {Record<string, Record<string, (c: Ctx) => void | boolean> | undefined>}
+ * ★`presence`(윈도우만) = 포트와 무관한 이 홈의 프로세스 존재 — 업데이트의 정지 판단(2026-10-29).
+ * @type {Record<string, Record<string, (c: Ctx) => void | boolean | ReturnType<typeof winPresence>> | undefined>}
  */
 const handlers = {
   darwin: {
@@ -2310,6 +2588,7 @@ const handlers = {
     restart: winRestart,
     stop: winStop,
     reenable: winReenable,
+    presence: winPresence,
     start: winStart,
     status: winStatus,
     print: winPrint,
@@ -2361,14 +2640,9 @@ const isRegistered = (c) => {
     // ★윈도우는 **예약작업 존재**로 판정한다 (2026-08-22). 종전엔 `win-launch.vbs` 파일을
     //  봤는데, 감독자 방식으로 옮기며 그 VBS 를 지우므로 그대로 뒀다면 설치된 기계가
     //  전부 "미설치" 로 보여 update 가 매번 install 을 안내했을 것이다.
-    if (process.platform === "win32") {
-      return (
-        spawnSync("schtasks", ["/query", "/tn", winTaskName(c)], {
-          stdio: "ignore",
-          windowsHide: true,
-        }).status === 0
-      );
-    }
+    //  ★시작프로그램 폴백도 등록이다 (2026-10-29) — 예약작업만 봐서 폴백 설치에 «not registered — run install» 을 말했다
+    //  (`stop` 은 같은 상태를 «등록됨» 으로 쳤다 — 판정이 두 곳). 폴백은 파일만 보므로 먼저 본다(schtasks 호출이 늘지 않는다).
+    if (process.platform === "win32") return winHasStartupFallback(c) || winTaskExists(c);
   } catch {
     /* 감지 실패 — 무시 */
   }
@@ -2640,7 +2914,88 @@ const runUpdate = (c) => {
     console.log("   No code changes — refreshing dependencies and build only.");
   }
 
-  const wasRunning = isDaemonRunning(c);
+  // ── 의존성 트리를 지우지 않고 옆으로 옮겨 두는 데 쓰는 것들 (2026-10-29) ──────────────
+  // ★사고(Windows, 현장 보고): `npm ci` 는 `node_modules` 를 **먼저 지운다**. 잠긴 파일(`better_sqlite3.node`)에서 EPERM 으로 멈추면
+  //  이미 일부(Claude SDK 등)가 지워진 뒤였고, 롤백의 두 번째 `npm ci` 도 같은 자리에서 같은 이유로 실패했다 — «롤백 실패» 라고 정직하게
+  //  말해도 **트리는 반쯤 지워진 채** 남았다. 그래서 설치 전에 지금 트리를 같은 폴더 안 다른 이름으로 옮겨 두고(같은 볼륨 = 원자적, 복사 0),
+  //  실패하면 그것을 되돌리고, 성공하면 버린다. 이름은 self-update 의 `.dist-old-*` 관례를 따른다.
+  const depsDir = path.join(c.repoRoot, "node_modules");
+  /** @type {string | null} 업데이트 직전 트리를 옮겨 둔 곳 — 실패하면 되돌리고, 성공하면 버린다. */
+  let depsBackup = null;
+  /** 링크도 «있다» 로 본다(`existsSync` 는 링크를 따라가 끊긴 링크를 «없다» 라 한다). @param {string} p */
+  const present = (p) => {
+    try {
+      lstatSync(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  /** 링크면 **링크만**, 폴더면 통째로 지운다 — 링크 너머(다른 설치의 트리)는 건드리지 않는다. @param {string} p @returns {boolean} 없어졌나 */
+  const removeTree = (p) => {
+    try {
+      if (lstatSync(p).isSymbolicLink()) unlinkSync(p);
+      else rmSync(p, { recursive: true, force: true, maxRetries: 2 });
+    } catch {
+      /* 아래에서 남았는지 본다 */
+    }
+    return !present(p);
+  };
+  /** 이름 바꾸기 — 백신·인덱서의 일시 잠금에 대비해 세 번까지. @param {string} from @param {string} to @returns {string | null} 실패 이유 · null = 됐다 */
+  const moveAside = (from, to) => {
+    let why = "";
+    for (let i = 0; i < 3; i++) {
+      if (i > 0) sleepSync(500);
+      try {
+        renameSync(from, to);
+        return null;
+      } catch (e) {
+        why = e instanceof Error ? e.message : String(e);
+      }
+    }
+    return why;
+  };
+  /** 버릴 트리 — 먼저 «버릴 것» 이름으로 바꿔 표시하고(폴더 **안에** 쓰지 않는다 — 링크면 너머에 써진다) 지운다. @param {string} p */
+  const discardTree = (p) => {
+    const marked = path.join(c.repoRoot, `.node_modules-discard-${Date.now()}`);
+    const target = moveAside(p, marked) === null ? marked : p;
+    if (!removeTree(target)) {
+      console.warn(
+        target === marked
+          ? `   ⚠ could not delete ${target} (still in use?) — a later update removes it.`
+          : `   ⚠ could not delete ${target} (still in use?) — delete it once this install works.`,
+      );
+    }
+  };
+
+  // 지난 업데이트가 남긴 것 — «버릴 것» 만 지운다. `prev` 는 중단된 업데이트가 옮겨 둔 트리일 수 있다(유일하게 쓸 만한 것일 수 있다) → 안 지운다.
+  try {
+    for (const name of readdirSync(c.repoRoot)) {
+      const p = path.join(c.repoRoot, name);
+      if (name.startsWith(".node_modules-discard-")) {
+        if (!removeTree(p)) console.warn(`   ⚠ could not delete ${p} (left by an earlier update — still in use?) — trying again next update.`);
+      } else if (name.startsWith(".node_modules-prev-")) {
+        console.warn(`   ⚠ found ${p} — dependencies an interrupted update set aside. Left as is: delete it once this install works (it may be the last working copy).`);
+      }
+    }
+  } catch {
+    /* 훑기 실패 — 정리는 덤이다 */
+  }
+
+  // ★Windows 는 포트만으로 «돌고 있지 않다» 를 정하지 않는다 (2026-10-29). 감독자가 살아 데몬이 아직/더는 포트를 안 연 때(재기동 루프·부팅 중)
+  //  종전엔 정지 없이 `npm ci` 로 갔다. 조회가 실패하면 «모름» — 그 무언가가 파일을 쥐고 있을 수 있으니 설치에 들어가지 않는다.
+  //  (맥·리눅스는 `presence` 가 없다 — 종전 그대로.)
+  const presence = /** @type {ReturnType<typeof winPresence> | undefined} */ (table?.presence?.(c));
+  if (presence?.state === "unknown") {
+    console.error(`update: could not check whether this instance's daemon is running (${presence.why}) — not installing (it may still hold its files).`);
+    abortBeforeStop("stop", `could not check whether the daemon is running: ${presence.why}`, { restart: false, revert: true });
+    return;
+  }
+  const portOpen = isDaemonRunning(c);
+  if (!portOpen && presence?.state === "running") {
+    console.log(`   The bridge port is closed, but this instance's processes are running (PID ${presence.pids.join(", ")}) — stopping them before installing.`);
+  }
+  const wasRunning = portOpen || presence?.state === "running";
 
   /**
    * 멈춰 둔 데몬을 다시 띄운다 — **그 사이 다시 떠 있으면 재시작**(2026-10-19 윈도우돌쇠 실측). 설치 도중 감독자가 되살아나 데몬이 빌드 전에
@@ -2662,13 +3017,44 @@ const runUpdate = (c) => {
    * ★마커를 재가동 **전**에 쓴다 — 다시 뜬 데몬이 부팅 때 읽어 통지한다.
    * ★되돌리기를 못 해도 데몬은 다시 띄운다 — 멈춘 채 두면 사용자에겐 «비서가 죽었다» 다(Windows 는 예약작업이
    *  1분마다 어차피 다시 띄운다). --keep 은 실행 전 변경을 확인한다 — 업데이트 중 생긴 작업을 지우지 않는다.
-   * @param {string} stage @param {string} detail
+   * ★두 축을 따로 정해 합친다 (2026-10-29 — 의존성을 옮겨 두게 되면서 R1 #6). **의존성 축**: 옮겨 둔 트리를 되돌렸나(`restored`)·못 되돌렸나
+   *  (`restore-failed`)·손대지 않았나(`untouched` — 옮기기부터 실패)·옮겨 둔 게 없어 종전대로 다시 깔았나(`reinstalled`/`reinstall-failed`)·
+   *  못 깔았나(`skipped` — 코드를 못 되돌려 이전 lock 으로 갈 수 없었다). **코드 축**: 종전 사슬(status → reset → 이전 판 재빌드).
+   *  `rolled-back` = 코드 축 성공 그리고 의존성이 업데이트 전 상태. 의존성이 깨졌으면 띄우지 않는다 — 코드 축 결과가 이걸 덮지 않는다.
+   * @param {string} stage @param {string} detail @param {{ depsUntouched?: boolean }} [opts]
    */
-  const rollback = (stage, detail) => {
+  const rollback = (stage, detail, opts = {}) => {
     run("git", ["checkout", "--", "package-lock.json"]); // 생성물 — npm 이 다시 썼을 수 있다(위 단계 3과 같은 근거).
-    /** @type {"rolled-back" | "needs-check"} */
-    let outcome = "needs-check";
-    let startIt = wasRunning;
+    // ── 의존성 축 — git 결과와 **무관하게 먼저**: built 런타임에서 실제로 도는 것은 dist + node_modules 이고, 반쯤 지워진 트리보다
+    //  업데이트 전 트리가 언제나 낫다(코드를 못 되돌려도).
+    /** @type {"untouched" | "restored" | "restore-failed" | "pending" | "reinstalled" | "reinstall-failed" | "skipped"} */
+    let deps = opts.depsUntouched === true ? "untouched" : "pending";
+    if (deps === "pending" && depsBackup !== null) {
+      const backup = depsBackup;
+      // 새(실패한) 트리를 걷는다 — 못 지우면 비킨다. 그래도 자리가 안 비면 되돌릴 수 없다.
+      if (present(depsDir) && !removeTree(depsDir) && moveAside(depsDir, path.join(c.repoRoot, `.node_modules-discard-${Date.now()}`)) !== null) {
+        deps = "restore-failed";
+      } else {
+        const why = moveAside(backup, depsDir);
+        if (why === null) {
+          depsBackup = null;
+          deps = "restored";
+          console.log("   Restored the dependencies from before the update.");
+        } else {
+          deps = "restore-failed";
+        }
+      }
+      if (deps === "restore-failed") {
+        console.error(
+          `update: could not put the previous dependencies back — they are kept, untouched, at ${backup}. ` +
+            `To restore by hand: stop the daemon, delete ${depsDir}, then rename ${backup} to node_modules. ` +
+            `Not restarting the daemon; if something starts it anyway, it will fail until the dependencies are restored.`,
+        );
+      }
+    }
+    // ★`rolled-back` 은 아래 사슬 끝에서만 선다 — 그 자리는 의존성이 업데이트 전 상태(`untouched`·`restored`·`reinstalled`)일 때만 닿는다.
+    //  (판단을 한 자리에 둔다: 따로 «의존성 OK» 를 또 보면 같은 판단이 두 곳이 된다 — 변이 M7 이 등가였다.)
+    let rolledBack = false;
     const state = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], {
       cwd: c.repoRoot, encoding: "utf8",
     });
@@ -2676,17 +3062,29 @@ const runUpdate = (c) => {
       console.error("update: rollback skipped — new uncommitted changes, or the status check failed. Please check manually.");
     } else if (run("git", ["reset", "--keep", prevSha]) !== 0) {
       console.error("update: rollback failed — your files were left as they are. Please check manually.");
-    } else if (run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin }) !== 0) {
-      console.error("update: could not restore dependencies during rollback — not restarting the daemon.");
-      startIt = false; // 의존성이 깨진 채 띄우면 부팅마다 죽는다.
-    } else if (c.runtime === "built" && (run("npm", ["run", "build:prod"], { shell: isWin }) !== 0 || !existsSync(c.distEntry))) {
-      // ★빌드도 이전 판으로 다시 한다 (2026-10-05 재검토 P2). 실패한 빌드가 새 코드의 `.js` 를 이미 dist 에 써 두었을 수
-      //  있다(tsc 는 타입 오류에도 내보낸다) — 다시 안 만들면 «이전 판으로 되돌렸다» 가 거짓이고 옛 의존성과 새 dist 가 섞인다.
-      console.error("update: could not rebuild the previous version during rollback — check manually.");
     } else {
-      outcome = "rolled-back";
+      // 옮겨 둔 트리가 없던 경우만 종전대로 이전 lock 으로 다시 깐다(reset **뒤** — 이전 판의 lock 이어야 한다).
+      if (deps === "pending") {
+        deps = run("npm", ["ci", "--no-audit", "--no-fund", "--include=dev", "--ignore-scripts=false"], { shell: isWin }) === 0 ? "reinstalled" : "reinstall-failed";
+        if (deps === "reinstall-failed") console.error("update: could not restore dependencies during rollback — not restarting the daemon.");
+      }
+      if (deps === "restore-failed" || deps === "reinstall-failed") {
+        /* 의존성이 없으면 이전 판을 빌드할 수도 없다 — 위에서 말했다 */
+      } else if (deps !== "untouched" && c.runtime === "built" && (run("npm", ["run", "build:prod"], { shell: isWin }) !== 0 || !existsSync(c.distEntry))) {
+        // ★빌드도 이전 판으로 다시 한다 (2026-10-05 재검토 P2). 실패한 빌드가 새 코드의 `.js` 를 이미 dist 에 써 두었을 수
+        //  있다(tsc 는 타입 오류에도 내보낸다) — 다시 안 만들면 «이전 판으로 되돌렸다» 가 거짓이고 옛 의존성과 새 dist 가 섞인다.
+        //  (`untouched` = 의존성도 빌드도 손대기 전에 멈췄다 — 다시 만들 것이 없다.)
+        console.error("update: could not rebuild the previous version during rollback — check manually.");
+      } else {
+        rolledBack = true;
+      }
     }
-    writeFailedMarker(stage, detail, outcome);
+    if (deps === "pending") deps = "skipped"; // 코드를 못 되돌려 이전 lock 으로 갈 수 없었다 — 종전과 같이 다시 깔지 않는다.
+    /** @type {"rolled-back" | "needs-check"} */
+    const outcome = rolledBack ? "rolled-back" : "needs-check";
+    // 의존성이 깨진 채 띄우면 부팅마다 죽는다. (`skipped` 는 종전대로 — 옮겨 둔 트리가 없는 설치에서 데몬이 돌던 경우다.)
+    const startIt = wasRunning && deps !== "restore-failed" && deps !== "reinstall-failed";
+    writeFailedMarker(stage, deps === "restore-failed" ? `${detail} — previous dependencies kept at ${depsBackup ?? "?"}` : detail, outcome);
     if (startIt) resumeDaemon();
   };
 
@@ -2710,6 +3108,23 @@ const runUpdate = (c) => {
       abortBeforeStop("stop", "the running daemon did not stop", { restart: false, revert: true });
       return;
     }
+  }
+
+  // ── 단계 5b: 지금 트리를 옆으로 옮겨 둔다(위 «의존성 트리를 지우지 않고» 주석) ──────────
+  //  옮기기가 실패하면 **설치하지 않는다** — 무언가가 아직 그 트리를 쥐고 있다는 실측이다. 의존성·빌드는 손대지 않았으므로 코드만 되돌리고
+  //  다시 띄운다. 링크(junction)면 링크 자체가 옮겨진다 — npm 이 링크 너머(다른 설치의 트리)를 지우지 않게 된다.
+  if (present(depsDir)) {
+    const backup = path.join(c.repoRoot, `.node_modules-prev-${Date.now()}`);
+    const why = moveAside(depsDir, backup);
+    if (why !== null) {
+      console.error(`update: could not set the current dependencies aside (${why}) — something still has them open. Not installing; node_modules was not changed.`);
+      rollback("dependencies", `could not set node_modules aside before installing: ${why}`, { depsUntouched: true });
+      console.error("update: failed. See the log above for the rollback and restart results. exit 1.");
+      process.exitCode = 1;
+      return;
+    }
+    depsBackup = backup;
+    console.log(`   Set the current dependencies aside (${path.basename(backup)}) — they come back if the install fails.`);
   }
 
   // ── 단계 6: npm ci ──────────────────────────────────────────────────────────
@@ -2818,6 +3233,8 @@ const runUpdate = (c) => {
   } else {
     console.log("   The daemon was not running — start it with 'tiguclaw start'.");
   }
+  // ── 단계 8b: 옮겨 둔 옛 트리를 버린다 — 재가동 **뒤**(정지 시간에 넣지 않는다). 새 데몬은 새 트리를 쓴다.
+  if (depsBackup !== null) discardTree(depsBackup);
 
   // ── 단계 9: 결과 요약 ───────────────────────────────────────────────────────
   // ★기동 실패를 받고도 ✅ 를 찍지 않는다 (2026-08-15 2차, 적대 검토 P11). `reportLaunch`
@@ -2833,9 +3250,11 @@ const runUpdate = (c) => {
     );
     return;
   }
+  // ★«다시 띄웠다» 는 실제로 띄운 경로에서만 말한다 (2026-10-29 Windows 현장: 돌지 않던 홈에도 «Daemon resumed.» 를 찍었다 — 위 단계 8 이 이미
+  //  «안 돌고 있었다/미등록» 을 말한 뒤 마지막 줄이 그걸 뒤집었다).
   console.log(
     `✅ update complete: ${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} ` +
-      `(runtime=${c.runtime}). Daemon resumed.`,
+      `(runtime=${c.runtime}). ${wasRunning ? "Daemon resumed." : "The daemon was not running, so it was not started."}`,
   );
 };
 

@@ -107,12 +107,34 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     const source = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     const body = source.slice(source.indexOf("const runUpdate = (c) => {"), source.indexOf("\n/**\n * @param {Ctx} c\n * @param {string} cmd", source.indexOf("const runUpdate = (c) => {")));
     type Scenario = "success" | "npm-fail" | "dirty" | "lock-only" | "rollback-dirty" | "corrupt-env" | "pull-fail";
-    const simulate = (scenario: Scenario, opts: { notify?: boolean; handoff?: string; resetFails?: boolean; stopFails?: boolean; revivedDuringCi?: boolean; platform?: "win32" | "darwin" } = {}) => {
+    type SimOpts = { notify?: boolean; handoff?: string; resetFails?: boolean; stopFails?: boolean; revivedDuringCi?: boolean; platform?: "win32" | "darwin";
+      // ★2026-10-29 — 포트와 무관한 존재 판정 · 의존성 트리 옮겨 두기. `deps` 를 주면 이 케이스만의 레포에 진짜 `node_modules` 를 만든다
+      //  (tree = 폴더 · link = 다른 폴더를 가리키는 링크). fs 는 진짜이고, 실패만 골라 주입한다.
+      presence?: "running" | "stopped" | "unknown"; portClosed?: boolean; registered?: boolean; deps?: "tree" | "link"; leftovers?: string[];
+      ciFail?: (n: number) => boolean; buildFail?: (n: number) => boolean; statusFailFrom?: number;
+      renameFail?: (from: string, to: string) => boolean; rmFail?: (p: string) => boolean;
+      // ★진짜 `handlers` 표(소스에서)와 진짜 `winPresence` 로 돈다 — 스캔 결과만 준다(GPT 코드 검토 R1: 가짜 표에 presence 를 꽂으면 연결이 빠져도 초록).
+      scan?: { targets: string[]; portDaemons: string[]; error?: string } };
+    const handlersSrc = source.slice(source.indexOf("const handlers = {"), source.indexOf("\n};\n", source.indexOf("const handlers = {")) + 3);
+    const presenceSrc = source.slice(source.indexOf("const winPresence = (c) => {"), source.indexOf("\n};\n", source.indexOf("const winPresence = (c) => {")) + 3);
+    const handlerNames = [...new Set([...handlersSrc.matchAll(/:\s*([a-z][A-Za-z]+),/g)].map((m) => m[1] as string))].filter((n) => n !== "undefined");
+    const simulate = (scenario: Scenario, opts: SimOpts = {}) => {
       const h = fs.mkdtempSync(path.join(home, "case-")); fs.writeFileSync(path.join(h, "dist.js"), "ok");
-      const context = { ...c, homeAbs: h, logsDir: path.join(h, "logs"), distEntry: path.join(h, "dist.js"),
+      // 의존성 케이스는 자기 레포를 쓴다(공유 fakeRepo 에 node_modules 를 만들면 다른 케이스가 오염된다).
+      const repoRoot = opts.deps !== undefined || opts.leftovers !== undefined ? path.join(h, "repo") : fakeRepo;
+      const shared = path.join(h, "shared-deps");
+      if (repoRoot !== fakeRepo) {
+        fs.mkdirSync(repoRoot);
+        for (const l of opts.leftovers ?? []) { fs.mkdirSync(path.join(repoRoot, l)); fs.writeFileSync(path.join(repoRoot, l, "marker.txt"), l); }
+        if (opts.deps === "tree") { fs.mkdirSync(path.join(repoRoot, "node_modules", "sdk"), { recursive: true }); fs.writeFileSync(path.join(repoRoot, "node_modules", "sdk", "marker.txt"), "old-tree"); }
+        if (opts.deps === "link") { fs.mkdirSync(path.join(shared, "sdk"), { recursive: true }); fs.writeFileSync(path.join(shared, "sdk", "marker.txt"), "shared-tree"); fs.symlinkSync(shared, path.join(repoRoot, "node_modules"), "dir"); }
+      }
+      const context = { ...c, repoRoot, homeAbs: h, logsDir: path.join(h, "logs"), distEntry: path.join(h, "dist.js"),
         ...(scenario === "corrupt-env" ? { winEnvError: "win-service-env.json is unreadable (fixture)" } : {}) };
+      const nm = path.join(repoRoot, "node_modules");
+      const short = (p: string) => path.basename(p).replace(/-\d+$/, "-N");
       const marker = path.join(h, ".update-failed");
-      const calls: string[] = []; let rev = 0, status = 0, ci = 0; let lockDirty = scenario === "lock-only";
+      const calls: string[] = []; let rev = 0, status = 0, ci = 0, build = 0; let lockDirty = scenario === "lock-only";
       // 데몬이 떠 있나 — 멈추면 내려가고, `revivedDuringCi` 면 설치 도중 무언가가 다시 띄운다(2026-10-19 윈도우돌쇠 실측).
       let running = true;
       // «업데이트 중» 표식 — 종료 처리기는 모아 뒀다가 끝에 부른다(진짜 프로세스 종료를 흉내).
@@ -132,29 +154,74 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
           status++;
           if (lockDirty) stdout = " M package-lock.json\n";
           if (scenario === "dirty" || (scenario === "rollback-dirty" && status > 1)) stdout = " M src/edited.ts\n";
+          if (opts.statusFailFrom !== undefined && status >= opts.statusFailFrom) { code = 128; stderr = "fixture: status failed"; }
         }
         if (cmd === "npm" && args[0] === "ci") {
           calls.push(`CI:${lockState()}`);
           if (opts.revivedDuringCi === true) running = true;
-          ci++; if (scenario !== "success" && scenario !== "lock-only" && ci === 1) { code = 1; stderr = "fixture npm EACCES opaque-fixture-secret"; }
+          ci++;
+          const fails = opts.ciFail !== undefined ? opts.ciFail(ci) : scenario !== "success" && scenario !== "lock-only" && ci === 1;
+          // 의존성 케이스: npm 은 그 자리에 트리를 만든다 — 실패면 반쯤(현장 모양: 일부만 남음), 성공이면 새 트리.
+          if (opts.deps !== undefined) {
+            if (fs.existsSync(nm) && fs.lstatSync(nm).isSymbolicLink()) calls.push("CI-THROUGH-LINK");
+            fs.mkdirSync(path.join(nm, "sdk"), { recursive: true });
+            fs.writeFileSync(path.join(nm, "sdk", "marker.txt"), fails ? "partial" : `new-tree-${ci}`);
+          }
+          if (fails) { code = 1; stderr = "fixture npm EACCES opaque-fixture-secret"; }
+        }
+        if (cmd === "npm" && args[0] === "run" && args[1] === "build:prod") {
+          build++;
+          if (opts.buildFail?.(build) === true) { code = 1; stderr = "fixture: tsc failed"; }
         }
         return { status: code, stdout, stderr };
       };
+      // 진짜 fs 위에 실패만 골라 넣는다 — 무엇을 옮기고 지웠는지 기록한다.
+      const renameW = (a: string, b: string) => {
+        if (opts.renameFail?.(a, b) === true) { calls.push(`MV-FAIL:${short(a)}>${short(b)}`); throw new Error(`EPERM: operation not permitted, rename '${short(a)}'`); }
+        fs.renameSync(a, b); calls.push(`MV:${short(a)}>${short(b)}`);
+      };
+      const rmW = (p: string, o?: fs.RmOptions) => {
+        if (path.basename(p).startsWith(".node_modules") || p === nm) { if (opts.rmFail?.(p) === true) { calls.push(`RM-FAIL:${short(p)}`); throw new Error("EBUSY fixture"); } calls.push(`RM:${short(p)}`); }
+        fs.rmSync(p, o);
+      };
+      const unlinkW = (p: string) => {
+        if (opts.rmFail?.(p) === true) { calls.push(`UNLINK-FAIL:${short(p)}`); throw new Error("EBUSY fixture"); }
+        calls.push(`UNLINK:${short(p)}`); fs.unlinkSync(p);
+      };
       const messages: string[] = []; const fakeConsole = { log: (...a: unknown[]) => messages.push(a.join(" ")), error: (...a: unknown[]) => messages.push(a.join(" ")), warn: (...a: unknown[]) => messages.push(a.join(" ")) };
       const fds: number[] = [];
-      const names = ["process", "console", "path", "existsSync", "mkdirSync", "openSync", "writeSync", "writeFileSync", "spawnSync", "isDaemonRunning", "isRegistered", "handlers", "warnWinServiceToken", "saveWinServiceEnv", "redactUpdateLog", "rmSync", "updateLockPath"];
+      // ★`lstatSync`·`readdirSync`·`renameSync`·`unlinkSync`·`sleepSync` 를 **반드시** 넘긴다 — 안 넘기면 본문의 try/catch 가 ReferenceError 를
+      //  삼켜 «node_modules 없음» 으로 조용히 통과한다(2026-10-29 실측: 넘기기 전에도 47건이 초록이었다).
+      const names = ["process", "console", "path", "existsSync", "mkdirSync", "openSync", "writeSync", "writeFileSync", "spawnSync", "isDaemonRunning", "isRegistered", "handlers", "warnWinServiceToken", "saveWinServiceEnv", "redactUpdateLog", "rmSync", "updateLockPath",
+        "lstatSync", "readdirSync", "renameSync", "unlinkSync", "sleepSync"];
       // 마커가 재가동 **전에** 있었나 — 다시 뜬 데몬이 부팅 때 읽어 통지한다.
       const startMark = (what: string) => () => calls.push(`${what}:${fs.existsSync(marker) ? "marker" : "no-marker"}`, `${what}@${lockState()}`);
+      const presenceFake = opts.presence === undefined ? {} : { presence: () => { calls.push("PRESENCE"); return { state: opts.presence, pids: opts.presence === "running" ? ["777"] : [], why: "fixture: process list query failed" }; } };
+      const ops = { stop: () => { calls.push("STOP"); if (opts.stopFails !== true) running = false; return opts.stopFails === true ? false : true; }, reenable: () => calls.push("REENABLE"), start: startMark("START"), restart: startMark("RESTART") };
+      // 진짜 표: 표에 적힌 이름마다 가짜를 넣되 정지·기동은 위 기록기로, 존재 판정만 진짜 본문(스캔 결과 주입)으로.
+      const realTable = () => {
+        const winPresence = new Function("winScan", presenceSrc + "; return winPresence;")(() => { calls.push("SCAN"); return opts.scan; });
+        const byName: Record<string, unknown> = { winStop: ops.stop, winReenable: ops.reenable, winStart: ops.start, winRestart: ops.restart, winPresence,
+          darwinStop: ops.stop, darwinStart: ops.start, darwinRestart: ops.restart };
+        return new Function(...handlerNames, handlersSrc + "; return handlers;")(...handlerNames.map((n) => byName[n] ?? (() => calls.push(`UNEXPECTED:${n}`))));
+      };
+      const table = opts.scan !== undefined ? realTable() : ((t: unknown) => ({ win32: t, darwin: t }))({ ...ops, ...presenceFake });
       const invoke = new Function(...names, body + "; return runUpdate;")(...[
-        processFake, fakeConsole, path, fs.existsSync, fs.mkdirSync, (p: string, flags: string) => { const fd = fs.openSync(p, flags); fds.push(fd); return fd; }, fs.writeSync, fs.writeFileSync, spawnSync, () => running, () => true,
-        ((t: unknown) => ({ win32: t, darwin: t }))({ stop: () => { calls.push("STOP"); if (opts.stopFails !== true) running = false; return opts.stopFails === true ? false : true; }, reenable: () => calls.push("REENABLE"), start: startMark("START"), restart: startMark("RESTART") }), () => {}, () => calls.push("SAVE_ENV"), (text: string) => d.redactUpdateLog(text, processFake.env),
-        fs.rmSync, d.updateLockPath,
+        processFake, fakeConsole, path, fs.existsSync, fs.mkdirSync, (p: string, flags: string) => { const fd = fs.openSync(p, flags); fds.push(fd); return fd; }, fs.writeSync, fs.writeFileSync, spawnSync, () => running && opts.portClosed !== true, () => opts.registered !== false,
+        table, () => {}, () => calls.push("SAVE_ENV"), (text: string) => d.redactUpdateLog(text, processFake.env),
+        rmW, d.updateLockPath,
+        fs.lstatSync, fs.readdirSync, renameW, unlinkW, () => {},
       ]);
       try { invoke(context); } finally { for (const fd of fds) fs.closeSync(fd); }
       const lockAfterRun = lockState(); for (const fn of exitHandlers) fn(); const lockAfterExit = lockState();
       const log = fs.readdirSync(path.join(h, "logs")).find((x) => x.startsWith("update-")); assert(log);
       const mk = fs.existsSync(marker) ? JSON.parse(fs.readFileSync(marker, "utf8")) : undefined;
-      return { calls, messages, exitCode: processFake.exitCode, log: fs.readFileSync(path.join(h, "logs", log), "utf8"), home: h, marker: mk, lockAfterRun, lockAfterExit };
+      const read = (p: string) => { try { return fs.readFileSync(p, "utf8"); } catch { return "(none)"; } };
+      const markerIn = (dir: string) => (fs.existsSync(path.join(dir, "sdk", "marker.txt")) ? read(path.join(dir, "sdk", "marker.txt")) : read(path.join(dir, "marker.txt")));
+      const entries = repoRoot === fakeRepo ? [] : fs.readdirSync(repoRoot).filter((x) => x.startsWith(".node_modules")).map((x) => ({ name: x.replace(/-\d+$/, "-N"), marker: markerIn(path.join(repoRoot, x)) }));
+      const depsNow = repoRoot === fakeRepo ? "(n/a)" : read(path.join(nm, "sdk", "marker.txt"));
+      const sharedNow = opts.deps === "link" ? { marker: read(path.join(shared, "sdk", "marker.txt")), files: fs.readdirSync(shared).join(",") } : undefined;
+      return { calls, messages, exitCode: processFake.exitCode, log: fs.readFileSync(path.join(h, "logs", log), "utf8"), home: h, marker: mk, lockAfterRun, lockAfterExit, depsNow, entries, sharedNow, ci, build };
     };
     const has = (calls: string[], re: RegExp) => calls.some((x) => re.test(x));
     test("멈춘 뒤 실패(npm): stderr·단계 로그 보존·비밀 제거 · 되돌리고 «rolled-back» 마커를 재가동 **전에** 쓴다", () => {
@@ -204,6 +271,21 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       assert(/process\.on\("exit", \(\) => rmSync\(updateLockPath\(c\)/.test(s), "종료 처리기 없음");
       return "설치 중 표식 · 재가동 전 해제 4경로";
     });
+    test("★요약 줄의 «Daemon resumed.» 는 실제로 다시 띄운 경로에서만 — 돌지 않던 홈(미등록 포함)은 «안 띄웠다» 고 말한다", () => {
+      // 2026-10-29 Windows 현장(사용자 보고): 데몬 없는 시험 홈의 업데이트가 «not registered» 를 말한 뒤 마지막 줄에서 «Daemon resumed.» 로 뒤집었다.
+      const last = (r: { messages: string[] }) => r.messages.filter((m) => /update complete/.test(m)).join(" | ");
+      // 현장 모양 = 미등록 · 미가동(시험 라벨) — 그리고 등록됐지만 멈춰 있던 홈.
+      for (const registered of [false, true]) {
+        const idle = simulate("success", { presence: "stopped", portClosed: true, registered });
+        const said = registered ? /was not running — start it with/ : /not registered — run 'tiguclaw install'/;
+        assert.equal(idle.exitCode, 0); assert(!has(idle.calls, /^(START|RESTART)/), idle.calls.join(" | "));
+        assert(idle.messages.some((m) => said.test(m)), `registered=${registered}: ${idle.messages.join(" | ")}`);
+        assert(!/Daemon resumed/.test(last(idle)) && /was not running, so it was not started/.test(last(idle)), `registered=${registered}: ${last(idle)}`);
+      }
+      const resumed = simulate("success");
+      assert(has(resumed.calls, /^START/) && /Daemon resumed\./.test(last(resumed)), last(resumed));
+      return "미등록·미가동 / 등록·미가동 = «안 띄웠다» · 돌던 홈 = resumed";
+    });
     test("★lock 파일만 바뀌었으면(우리 npm 이 다시 씀) 되돌리고 업데이트를 계속한다 — 거절하면 영영 업데이트가 안 된다", () => {
       const r = simulate("lock-only"); assert.equal(r.exitCode, 0, r.messages.join(" | "));
       assert(r.calls.indexOf("git checkout -- package-lock.json") < r.calls.indexOf("git pull --ff-only"));
@@ -224,6 +306,137 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const r = simulate("rollback-dirty", { notify: true }); assert.equal(r.exitCode, 1); assert(!has(r.calls, /git reset/));
       assert.equal(r.marker?.outcome, "needs-check"); assert(r.calls.includes("START:marker"), r.calls.join(" | "));
       return `outcome=${r.marker?.outcome}`;
+    });
+    // ── 2026-10-29: 포트와 무관한 존재 판정(A1) ─────────────────────────────────────────────────
+    test("★포트가 닫혀 있어도 이 홈의 프로세스가 살아 있으면 멈추고 설치한다 · 조회가 실패하면 설치하지 않는다(npm 0·코드 되돌림·재가동 0) · 없으면 종전대로", () => {
+      const alive = simulate("success", { presence: "running", portClosed: true });
+      assert(alive.calls.includes("STOP") && alive.calls.indexOf("STOP") < alive.calls.findIndex((x) => /^CI:/.test(x)) && has(alive.calls, /^START/), alive.calls.join(" | "));
+      const blind = simulate("success", { presence: "unknown", notify: true, portClosed: true });
+      assert.equal(blind.exitCode, 1);
+      assert(!blind.calls.includes("STOP") && !has(blind.calls, /^npm /) && !has(blind.calls, /^(START|RESTART)/), blind.calls.join(" | "));
+      assert(blind.calls.includes("git reset --keep 1111111") && blind.marker?.outcome === "unchanged", `${blind.calls.join(" | ")} · ${JSON.stringify(blind.marker)}`);
+      assert(blind.messages.some((m) => /could not check whether this instance's daemon is running/.test(m)), blind.messages.join(" | "));
+      const gone = simulate("success", { presence: "stopped", portClosed: true });
+      assert(!gone.calls.includes("STOP") && has(gone.calls, /^CI:/) && !has(gone.calls, /^(START|RESTART)/), gone.calls.join(" | "));
+      // 맥·리눅스(존재 판정 없음)는 종전 그대로 — 포트만 본다
+      const mac = simulate("success", { platform: "darwin" });
+      assert(!mac.calls.includes("PRESENCE") && mac.calls.includes("STOP"), mac.calls.join(" | "));
+      return "살아 있음=정지 후 설치 · 모름=설치 0 · 없음=정지 없이";
+    });
+    test("★진짜 handlers 표 + 진짜 winPresence: 포트 닫힘 + 이 홈 감독자 PID → 정지 후 설치 · 조회 실패 → 설치 0 · 아무것도 없음 → 정지 없이 · 맥 표엔 존재 판정 없음", () => {
+      const alive = simulate("success", { scan: { targets: ["555"], portDaemons: [] }, portClosed: true });
+      assert(alive.calls.includes("SCAN") && alive.calls.includes("STOP") && has(alive.calls, /^CI:/) && !has(alive.calls, /^UNEXPECTED/), alive.calls.join(" | "));
+      assert(alive.messages.some((m) => /processes are running \(PID 555\)/.test(m)), alive.messages.join(" | "));
+      const blind = simulate("success", { scan: { targets: [], portDaemons: [], error: "the process list query failed (exit 1: denied)" }, portClosed: true, notify: true });
+      assert(!blind.calls.includes("STOP") && !has(blind.calls, /^npm /) && blind.marker?.outcome === "unchanged", blind.calls.join(" | "));
+      assert(blind.messages.some((m) => /exit 1: denied/.test(m)), blind.messages.join(" | "));
+      const none = simulate("success", { scan: { targets: [], portDaemons: [] }, portClosed: true });
+      assert(none.calls.includes("SCAN") && !none.calls.includes("STOP") && has(none.calls, /^CI:/), none.calls.join(" | "));
+      const mac = simulate("success", { scan: { targets: ["555"], portDaemons: [] }, platform: "darwin" });
+      assert(!mac.calls.includes("SCAN") && mac.calls.includes("STOP"), mac.calls.join(" | "));
+      return "표 연결 · 진짜 판정";
+    });
+    // ── 2026-10-29: 의존성 트리를 옮겨 두고 설치한다(A2) — fs 는 진짜 ─────────────────────────────
+    test("★성공: 옛 트리를 옮겨 두고(npm 은 빈 자리에 깐다) · 재가동 **뒤** 버린다 · 남는 것 0", () => {
+      const r = simulate("success", { deps: "tree" });
+      assert.equal(r.exitCode, 0, r.messages.join(" | "));
+      assert.equal(r.depsNow, "new-tree-1");
+      const stash = r.calls.indexOf("MV:node_modules>.node_modules-prev-N");
+      const ci = r.calls.findIndex((x) => /^CI:/.test(x));
+      const start = r.calls.findIndex((x) => /^START/.test(x));
+      const discard = r.calls.indexOf("MV:.node_modules-prev-N>.node_modules-discard-N");
+      assert(stash >= 0 && stash > r.calls.indexOf("STOP") && stash < ci, r.calls.join(" | "));
+      assert(discard > start && start > 0, `버리기는 재가동 뒤: ${r.calls.join(" | ")}`);
+      assert.deepEqual(r.entries, [], JSON.stringify(r.entries));
+      return "옮김 → 설치 → 재가동 → 버림";
+    });
+    test("★설치가 두 번 다 실패해도(현장 모양) 업데이트 직전 트리가 그대로 돌아온다 — 롤백 npm 없음 · rolled-back · 다시 띄움", () => {
+      const r = simulate("npm-fail", { deps: "tree", notify: true, ciFail: () => true });
+      assert.equal(r.depsNow, "old-tree"); assert.equal(r.ci, 1, `롤백이 npm ci 를 또 돌렸다: ${r.calls.join(" | ")}`);
+      assert.equal(r.marker?.outcome, "rolled-back"); assert(r.calls.includes("START:marker"), r.calls.join(" | "));
+      assert.deepEqual(r.entries.filter((e) => e.name.startsWith(".node_modules-prev")), [], JSON.stringify(r.entries));
+      return `deps=${r.depsNow} · ci ${r.ci}회`;
+    });
+    test("★빌드·네이티브가 실패해도 옛 트리로 돌아온다(새 트리는 걷는다) · 이전 판 재빌드는 종전대로", () => {
+      const r = simulate("success", { deps: "tree", notify: true, buildFail: (n) => n === 1 });
+      assert.equal(r.depsNow, "old-tree"); assert.equal(r.ci, 1); assert.equal(r.build, 2, r.calls.join(" | "));
+      assert.equal(r.marker?.outcome, "rolled-back");
+      return `deps=${r.depsNow} · build ${r.build}회`;
+    });
+    test("★옛 트리를 옮기지 못하면(무언가 쥐고 있다) 설치하지 않는다 — npm·빌드 0 · 트리 그대로 · 코드 되돌림 · 다시 띄움", () => {
+      const r = simulate("success", { deps: "tree", notify: true, renameFail: (_a, b) => b.includes(".node_modules-prev-") });
+      assert.equal(r.exitCode, 1);
+      assert(!has(r.calls, /^npm /), r.calls.join(" | ")); assert.equal(r.depsNow, "old-tree");
+      assert(r.calls.filter((x) => /^MV-FAIL:node_modules>/.test(x)).length === 3, `세 번 시도: ${r.calls.join(" | ")}`);
+      assert(r.calls.includes("git reset --keep 1111111") && r.marker?.stage === "dependencies" && r.marker?.outcome === "rolled-back", JSON.stringify(r.marker));
+      assert(r.calls.includes("START:marker"), r.calls.join(" | "));
+      return `npm 0 · outcome=${r.marker?.outcome}`;
+    });
+    test("★옛 트리를 되돌리지 못하면 «needs-check» · 업데이터는 안 띄움 · 옛 트리는 지우지 않고 경로를 말한다", () => {
+      const r = simulate("npm-fail", { deps: "tree", notify: true, ciFail: () => true, renameFail: (a, b) => a.includes(".node_modules-prev-") && path.basename(b) === "node_modules" });
+      assert.equal(r.marker?.outcome, "needs-check"); assert(!has(r.calls, /^(START|RESTART)/), r.calls.join(" | "));
+      const kept = r.entries.find((e) => e.name === ".node_modules-prev-N");
+      assert(kept?.marker === "old-tree", JSON.stringify(r.entries));
+      assert(r.messages.some((m) => /could not put the previous dependencies back/.test(m) && /\.node_modules-prev-\d+/.test(m)), r.messages.join(" | "));
+      assert(/previous dependencies kept at/.test(r.marker?.detail ?? ""), JSON.stringify(r.marker));
+      return `outcome=${r.marker?.outcome} · 옛 트리 보존`;
+    });
+    test("★지난 업데이트가 남긴 것: «버릴 것» 만 지우고 «옮겨 둔 것(prev)» 은 남기며 알린다(유일하게 쓸 만한 트리일 수 있다)", () => {
+      const r = simulate("success", { deps: "tree", leftovers: [".node_modules-discard-1", ".node_modules-prev-2"] });
+      assert.equal(r.exitCode, 0, r.messages.join(" | "));
+      assert.deepEqual(r.entries, [{ name: ".node_modules-prev-N", marker: ".node_modules-prev-2" }], JSON.stringify(r.entries));
+      assert(r.messages.some((m) => /found .*\.node_modules-prev-2/.test(m)), r.messages.join(" | "));
+      return "discard 지움 · prev 보존";
+    });
+    test("★node_modules 가 링크면 링크만 옮기고 지운다 — 링크 너머(다른 설치의 트리)엔 쓰기·삭제 0 · 지우기가 실패해도 너머에 표식을 안 쓴다", () => {
+      const ok = simulate("success", { deps: "link" });
+      assert(!ok.calls.includes("CI-THROUGH-LINK"), ok.calls.join(" | "));
+      assert.deepEqual(ok.sharedNow, { marker: "shared-tree", files: "sdk" }); assert.equal(ok.depsNow, "new-tree-1");
+      assert(ok.calls.includes("UNLINK:.node_modules-discard-N") && !ok.calls.some((x) => /^RM:\.node_modules-discard/.test(x)), ok.calls.join(" | "));
+      const stuck = simulate("success", { deps: "link", rmFail: (p) => path.basename(p).startsWith(".node_modules-discard-") });
+      assert.deepEqual(stuck.sharedNow, { marker: "shared-tree", files: "sdk" });
+      assert(stuck.entries.some((e) => e.name === ".node_modules-discard-N"), JSON.stringify(stuck.entries));
+      const fail = simulate("npm-fail", { deps: "link", ciFail: () => true });
+      assert.deepEqual(fail.sharedNow, { marker: "shared-tree", files: "sdk" });
+      assert(fs.lstatSync(path.join(fail.home, "repo", "node_modules")).isSymbolicLink(), "실패하면 링크가 돌아와야 한다");
+      return "너머 무사 · 링크 복원";
+    });
+    test("★rollback 교차표 — 의존성 축 × 코드 축: rolled-back 은 둘 다 됐을 때만 · 의존성이 깨지면 띄우지 않는다 · 코드 축이 그걸 덮지 않는다", () => {
+      type Row = { name: string; o: SimOpts; outcome: string; start: boolean; buildCalls?: number };
+      const restored: SimOpts = { deps: "tree", notify: true, ciFail: () => true };
+      const lost: SimOpts = { ...restored, renameFail: (a, b) => a.includes(".node_modules-prev-") && path.basename(b) === "node_modules" };
+      const untouched: SimOpts = { deps: "tree", notify: true, renameFail: (_a, b) => b.includes(".node_modules-prev-") };
+      const rows: Row[] = [];
+      for (const [dn, d0, depsOk, startOk] of [["복원", restored, true, true], ["복원 실패", lost, false, false], ["손대지 않음", untouched, true, true]] as const) {
+        rows.push({ name: `${dn} × 코드 성공`, o: d0, outcome: depsOk ? "rolled-back" : "needs-check", start: startOk });
+        rows.push({ name: `${dn} × status 변경`, o: { ...d0, statusFailFrom: undefined }, outcome: "needs-check", start: startOk });
+        rows.push({ name: `${dn} × status 조회 실패`, o: { ...d0, statusFailFrom: 2 }, outcome: "needs-check", start: startOk });
+        rows.push({ name: `${dn} × reset 실패`, o: { ...d0, resetFails: true }, outcome: "needs-check", start: startOk });
+        rows.push({ name: `${dn} × 이전 판 재빌드 실패`, o: { ...d0, buildFail: () => true }, outcome: dn === "손대지 않음" ? "rolled-back" : "needs-check", start: startOk, buildCalls: dn === "손대지 않음" ? 0 : undefined });
+      }
+      const bad: string[] = [];
+      for (const row of rows) {
+        const r = simulate(row.name.includes("status 변경") ? "rollback-dirty" : row.o.ciFail ? "npm-fail" : "success", row.o);
+        const started = has(r.calls, /^(START|RESTART)/);
+        const markerFirst = !started || r.calls.includes("START:marker") || r.calls.includes("RESTART:marker");
+        if (r.marker?.outcome !== row.outcome || started !== row.start || !markerFirst || (row.buildCalls !== undefined && r.build !== row.buildCalls) || r.ci > 1) {
+          bad.push(`${row.name}: outcome=${r.marker?.outcome} start=${started} build=${r.build} ci=${r.ci}`);
+        }
+      }
+      assert.deepEqual(bad, []);
+      return `${rows.length}칸`;
+    });
+    test("★옮겨 둔 트리가 없던 설치(백업 없음): reset **뒤** 이전 lock 으로 다시 깐다 · 재설치 실패 → needs-check·안 띄움 · 재빌드 실패 → needs-check·띄움 · 코드를 못 되돌리면 다시 깔지 않는다", () => {
+      const twice = simulate("npm-fail", { notify: true, ciFail: () => true });
+      assert(twice.calls.indexOf("git reset --keep 1111111") < twice.calls.lastIndexOf("CI:lock") && twice.ci === 2, twice.calls.join(" | "));
+      assert.equal(twice.marker?.outcome, "needs-check"); assert(!has(twice.calls, /^(START|RESTART)/), twice.calls.join(" | "));
+      const rebuild = simulate("npm-fail", { notify: true, buildFail: () => true });
+      assert.equal(rebuild.marker?.outcome, "needs-check"); assert(has(rebuild.calls, /^START/), rebuild.calls.join(" | "));
+      const ok = simulate("npm-fail", { notify: true });
+      assert.equal(ok.marker?.outcome, "rolled-back"); assert(has(ok.calls, /^START/));
+      const noReset = simulate("npm-fail", { notify: true, resetFails: true });
+      assert.equal(noReset.ci, 1, noReset.calls.join(" | ")); assert.equal(noReset.marker?.outcome, "needs-check"); assert(has(noReset.calls, /^START/), "종전대로 띄운다");
+      return "순서·재설치 실패·재빌드 실패·reset 실패";
     });
     test("★업데이트는 시작 환경을 저장하지 않는다(어느 경로든) — 위임 환경은 데몬이 .env 를 올려 둔 것이라 저장하면 지운 값이 되살아난다", () => {
       const all = (["success", "npm-fail", "dirty", "lock-only", "rollback-dirty", "pull-fail"] as Scenario[]).map((sc) => simulate(sc, { notify: true, handoff: "0000000" }));
@@ -409,11 +622,17 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
         proc: { set exitCode(v: number) { out.push("exit:" + v); }, get exitCode() { return 0; } },
       };
     };
-    const runStop = (o: { survived?: string[]; state?: TS; locked?: boolean }) => {
+    // `fallback` = 시작프로그램 폴백 파일이 있다(작업이 없어도 로그온 때 다시 뜬다). 등록 판정은 진짜 `stoppedLine` 으로 문구가 된다.
+    //  폴백 판정도 **진짜 본문**(`winHasStartupFallback`) — 경로 목록·파일 존재만 주입한다(정지 줄과 업데이트 안내가 같은 판정을 본다).
+    const oneLiner = (name: string): string => source.slice(source.indexOf(`const ${name} = (c) =>`), source.indexOf(";\n", source.indexOf(`const ${name} = (c) =>`)) + 2);
+    const hasFallbackOf = (fallback: boolean): ((c: unknown) => boolean) => new Function("winStartupFallbackPaths", "existsSync", oneLiner("winHasStartupFallback") + " return winHasStartupFallback;")(
+      () => [null, "C:\\fixture\\startup.lnk"], (p: string) => fallback && p.endsWith("startup.lnk"));
+    const runStop = (o: { survived?: string[]; state?: TS; locked?: boolean; fallback?: boolean }) => {
       const k = sink();
       const prevCode = process.exitCode;
-      const r = new Function("winStopTask", "winTaskState", "winTaskName", "activeUpdateLock", "console", "process", bodyOf("winStop") + "; return winStop;")(
-        () => o.survived ?? [], () => o.state ?? { state: "disabled" }, () => "task", () => (o.locked === true ? { pid: 1 } : null), k.con, k.proc,
+      const r = new Function("winStopTask", "winTaskState", "winTaskName", "activeUpdateLock", "winHasStartupFallback", "stoppedLine", "console", "process", bodyOf("winStop") + "; return winStop;")(
+        () => ({ pids: o.survived ?? [] }), () => o.state ?? { state: "disabled" }, () => "task", () => (o.locked === true ? { pid: 1 } : null),
+        hasFallbackOf(o.fallback === true), d.stoppedLine, k.con, k.proc,
       )(c);
       process.exitCode = prevCode;
       return { r, out: k.out };
@@ -442,6 +661,44 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       assert(updating.r === true && ok(updating), updating.out.join(" | "));
       assert(off.r === true && ok(off) && gone.r === true && ok(gone), [...off.out, ...gone.out].join(" | "));
       return "켜짐=실패 · 모름=실패 · 업데이트 중=진행 · 꺼짐/없음=정상";
+    });
+    test("★정지 성공 줄은 등록을 확인한 만큼만 말한다 — 작업 없음·폴백 없음=«not registered» · 꺼짐 또는 폴백=«still registered» · 업데이트 중(안 읽음)=등록을 말하지 않음 · 맥·리눅스도 같다", () => {
+      // 2026-10-29 Windows 현장(사용자 보고): 등록 안 된 시험 라벨을 멈췄는데 «still registered» 가 찍혔다.
+      const line = (x: { out: string[] }) => x.out.find((m) => /✅ stopped/.test(m)) ?? "(none)";
+      const gone = line(runStop({ state: { state: "missing" } }));
+      const goneButFallback = line(runStop({ state: { state: "missing" }, fallback: true }));
+      const off = line(runStop({ state: { state: "disabled" } }));
+      const updating = line(runStop({ state: { state: "missing" }, locked: true }));
+      assert(/not registered/.test(gone) && !/still registered/.test(gone), gone);
+      assert(/still registered/.test(goneButFallback) && /still registered/.test(off), `${goneButFallback} | ${off}`);
+      assert(!/registered/.test(updating) && updating.includes(c.label), updating);
+      // 맥·리눅스 — 실제 본문, 등록 판정만 주입
+      const out: string[] = []; const con = { log: (m: string) => out.push(m), error: (m: string) => out.push(m) };
+      const mac = (reg: boolean) => new Function("launchdDomain", "execFileSync", "isRegistered", "stoppedLine", "console", bodyOf("darwinStop") + "; return darwinStop;")(
+        () => "gui/1", () => { throw new Error("not loaded"); }, () => reg, d.stoppedLine, con)(c);
+      const lin = (reg: boolean) => new Function("systemctlUser", "isRegistered", "stoppedLine", "console", "process", bodyOf("linuxStop") + "; return linuxStop;")(
+        () => "", () => reg, d.stoppedLine, con, { exitCode: 0 })(c);
+      mac(false); mac(true); lin(false); lin(true);
+      assert.deepEqual(out.map((m) => (/not registered/.test(m) ? "no" : /still registered/.test(m) ? "yes" : "?")), ["no", "yes", "no", "yes"], out.join(" | "));
+      return `${gone} · ${updating}`;
+    });
+    test("★업데이트의 등록 판정(isRegistered)도 시작프로그램 폴백을 등록으로 본다 — 폴백만 있는 설치에 «not registered — run install» 을 말하지 않는다 · 폴백이 있으면 schtasks 를 부르지 않는다", () => {
+      // 2026-10-29: 정지 줄은 폴백을 «등록됨» 으로 쳤는데 업데이트 안내는 예약작업만 봤다(같은 판단이 두 곳).
+      const run = (o: { task: boolean; fallback: boolean }) => {
+        let queries = 0;
+        const reg = new Function("process", "existsSync", "launchdPlistPath", "systemdUnitPath", "winHasStartupFallback", "winTaskExists", bodyOf("isRegistered") + "; return isRegistered;")(
+          { platform: "win32" }, () => { throw new Error("윈도우 판정이 파일 경로를 따로 보면 안 된다"); }, () => "", () => "",
+          hasFallbackOf(o.fallback), () => { queries += 1; return o.task; },
+        )(c) as boolean;
+        return { reg, queries };
+      };
+      const fbOnly = run({ task: false, fallback: true });
+      const taskOnly = run({ task: true, fallback: false });
+      const none = run({ task: false, fallback: false });
+      assert.deepEqual(fbOnly, { reg: true, queries: 0 }, JSON.stringify(fbOnly));
+      assert.deepEqual(taskOnly, { reg: true, queries: 1 }, JSON.stringify(taskOnly));
+      assert.deepEqual(none, { reg: false, queries: 1 }, JSON.stringify(none));
+      return "폴백만=등록(조회 0) · 작업만=등록 · 둘 다 없음=미등록(조회 1)";
     });
     const runUninstall = (o: { unreg: string; after: TS }) => {
       const k = sink();
@@ -568,7 +825,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
         envs.push(o.env);
         return { pid: envs.length, kill: () => {}, on: (ev: string, fn: (code: number, sig: null) => void) => { if (ev === "exit") exits.push(() => fn(0, null)); } };
       };
-      const fakeProcess = { platform: "win32", env: { SUPERVISOR_ONLY: "1" }, on: () => {}, exit: () => {}, stdout: { write: () => {} } };
+      const fakeProcess = { platform: "win32", env: { SUPERVISOR_ONLY: "1" }, on: () => {}, exit: () => {}, stdout: { write: () => {} }, stderr: { on: () => {}, write: () => true } };
       const run = new Function("process", "spawn", "mkdirSync", "appendFileSync", "path", "execStrings", "winLaunchEnv", "WIN_SERVICE_ENV_KEYS", "Date", "setTimeout",
         "spawnSync", "winSupervisorQueryArgs", "winSupervisorIsDuplicate", "statSync", "writeFileSync", "net", "winSupervisorPipeName", "activeUpdateLock",
         sup + "; return runSupervise;")(fakeProcess, spawn, () => {}, () => {}, path, () => ["node", "x"], d.winLaunchEnv, d.WIN_SERVICE_ENV_KEYS,

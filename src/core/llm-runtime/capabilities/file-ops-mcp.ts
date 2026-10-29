@@ -90,9 +90,15 @@ const execFileP = promisify(execFile);
  * ★종전엔 상한을 넘으면 통째로 오류였다 — `head_limit:5` 를 줘도 매칭이 12MB 면 «maxBuffer 초과» 하나만 돌아왔다.
  *  잘린 마지막 줄은 버리고, `overflowed` 로 «더 있다» 를 알린다(조용히 자르면 모델이 그게 전부로 읽는다).
  */
-const rgCollect = async (args: string[], maxBuffer: number): Promise<{ stdout: string; overflowed: boolean }> => {
+const rgCollect = async (
+  args: string[],
+  maxBuffer: number,
+  // ★취소 신호 (2026-10-29) — 턴/요청 취소가 **실행 중인 rg 직접 자식**까지 끝내게 한다(종전엔 안 넘겨 rg 가 끝까지 돌았다).
+  //  abort 시 execFile 이 자식에 SIGTERM 을 보내고 AbortError 로 거부한다 — 판정은 호출부가 신호 상태로 한다.
+  signal?: AbortSignal,
+): Promise<{ stdout: string; overflowed: boolean }> => {
   try {
-    const { stdout } = await execFileP(rgPath(), args, { maxBuffer });
+    const { stdout } = await execFileP(rgPath(), args, { maxBuffer, ...(signal !== undefined ? { signal } : {}) });
     return { stdout, overflowed: false };
   } catch (e) {
     const err = e as { stdout?: string; code?: number | string };
@@ -1191,6 +1197,20 @@ const makeFileOpsTools = (
   const resolvePath = (target: string): string =>
     path.isAbsolute(target) ? target : path.resolve(base, target);
 
+  // 검색 도구의 취소 신호 — 턴(/stop, 팩토리)과 **이 도구 호출 자체**(MCP 요청 취소) 둘 중 하나면 취소다.
+  //  BashOutput·WebFetch 와 같은 정책(두 신호를 듣는다). 판정은 오류 모양이 아니라 이 신호의 상태로 한다.
+  const searchSignal = (extra: unknown): AbortSignal | undefined => {
+    const signals = [abortSignal, (extra as { signal?: AbortSignal } | undefined)?.signal].filter(
+      (x): x is AbortSignal => x !== undefined,
+    );
+    return signals.length === 0 ? undefined : AbortSignal.any(signals);
+  };
+  // 함수로 묻는다 — 시작 전 검사 뒤 TS 가 `aborted` 를 false 로 좁혀 두면, await 뒤 다시 묻는 판정이 타입상 «불가능» 이 된다.
+  const isAborted = (s: AbortSignal | undefined): boolean => s?.aborted === true;
+  // ★취소를 «결과 없음» 으로 읽히게 하지 않는다 — 빈 목록·부분 결과 대신 중단이라고 말한다.
+  const searchCancelled = (): ReturnType<typeof errText> =>
+    errText("검색이 취소되었습니다 — 결과 없음이 아니라 중단입니다(부분 결과도 버렸습니다).");
+
   // ─── Read 도구 ─────────────────────────────────────────────────────────
   const readTool = tool(
     "Read",
@@ -1319,11 +1339,14 @@ const makeFileOpsTools = (
       pattern: z.string().min(1),
       cwd: z.string().optional(),
     },
-    async (args) => {
+    async (args, extra) => {
+      const signal = searchSignal(extra);
+      // 시작 전 취소면 rg 를 띄우지 않는다(execFile 은 이미 취소된 신호로도 일단 띄운 뒤 죽인다).
+      if (isAborted(signal)) return searchCancelled();
       try {
         const cwd = args.cwd !== undefined ? resolvePath(args.cwd) : base;
         // rg `--files` = cwd 내 모든 파일 나열 (.gitignore 존중), `-g <pattern>` 으로 필터.
-        const { stdout, overflowed } = await rgCollect(["--files", "-g", args.pattern, cwd], GLOB_MAX_BUFFER);
+        const { stdout, overflowed } = await rgCollect(["--files", "-g", args.pattern, cwd], GLOB_MAX_BUFFER, signal);
         const lines = stdout.split("\n").filter((l) => l.length > 0);
         // ★**최근 수정 순**으로 준다 (2026-08-09). claude 빌트인 Glob 이 그렇게 주고, 그게
         //  실제로 유용하다 — "방금 건드린 파일" 이 위로 온다. rg 는 파일시스템 순서라
@@ -1341,6 +1364,8 @@ const makeFileOpsTools = (
             }
           }),
         );
+        // rg 가 끝난 뒤 mtime 조회 중 취소됐으면 결과를 버린다(진행 중 stat 은 끊지 않는다 — 자식 프로세스가 없다).
+        if (isAborted(signal)) return searchCancelled();
         withMtime.sort((a, b) => b.m - a.m);
         const files = withMtime.slice(0, GLOB_MAX_RESULTS).map((x) => x.f);
         // ★잘렸으면 **말한다** — Grep 은 말하는데 Glob 만 침묵하면 같은 커밋 안에서
@@ -1353,6 +1378,7 @@ const makeFileOpsTools = (
           ),
         );
       } catch (e) {
+        if (isAborted(signal)) return searchCancelled(); // 취소가 먼저다 — 부분 출력·다른 오류로 읽히지 않게.
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes("ENOENT")) {
           forgetRipgrep(rgPath()); // 죽었다 — 기억을 지워 다음 호출이 다시 찾는다.
@@ -1443,7 +1469,9 @@ const makeFileOpsTools = (
       /** 앞에서 N 개만 반환 — 넓은 검색의 컨텍스트 폭주를 모델이 직접 막을 수 있게. */
       head_limit: z.number().int().min(1).max(10_000).optional(),
     },
-    async (args) => {
+    async (args, extra) => {
+      const signal = searchSignal(extra);
+      if (isAborted(signal)) return searchCancelled(); // 시작 전 취소 — rg 를 띄우지 않는다(Glob 과 같다).
       try {
         const searchPath =
           args.path !== undefined ? resolvePath(args.path) : base;
@@ -1473,7 +1501,8 @@ const makeFileOpsTools = (
           }
         }
         rgArgs.push("-e", args.pattern, searchPath);
-        const { stdout, overflowed } = await rgCollect(rgArgs, GREP_MAX_BUFFER); // 1 = 매칭 없음(정상) · 상한이면 받은 데까지
+        const { stdout, overflowed } = await rgCollect(rgArgs, GREP_MAX_BUFFER, signal); // 1 = 매칭 없음(정상) · 상한이면 받은 데까지
+        if (isAborted(signal)) return searchCancelled(); // rg 종료 뒤 반환 전 취소 — 결과를 버린다(Glob 과 같다).
         const lines = stdout.split("\n").filter((l) => l.length > 0);
         // ★상한이 둘이다: 모델이 지정한 head_limit(의도)과 우리 안전망(GREP_MAX_LINES).
         //  둘 중 작은 쪽을 쓰고, **잘렸으면 말한다** — 조용히 자르면 모델이 "그게 전부" 로 읽는다.
@@ -1488,6 +1517,7 @@ const makeFileOpsTools = (
           ),
         );
       } catch (e) {
+        if (isAborted(signal)) return searchCancelled(); // 취소가 먼저다(Glob 과 같다).
         const msg = e instanceof Error ? e.message : String(e);
         // ripgrep 부재 케이스 별도 hint.
         if (msg.includes("ENOENT")) {

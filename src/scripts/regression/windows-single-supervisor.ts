@@ -62,7 +62,7 @@ export const check: RegressionCheck = {
       let spawned = 0, queried = 0, listened = 0;
       let exited = false;
       const logs: string[] = [];
-      const fakeProcess = { platform: "win32", pid: selfPid, env: {}, on: () => {}, exit: () => { exited = true; }, stdout: { write: (l: string) => void logs.push(l) } };
+      const fakeProcess = { platform: "win32", pid: selfPid, env: {}, on: () => {}, exit: () => { exited = true; }, stdout: { write: (l: string) => void logs.push(l) }, stderr: { on: () => {}, write: () => true } };
       // 가짜 잠금 — lockErr 이면 그 오류로 실패, 아니면 바로 잡힌다(실제 파이프의 배타성은 샌드박스 실측: 2026-10-18).
       const fakeNet = { createServer: (handler: (s: unknown) => void) => { connHandler = handler; let onErr: (e: { code: string }) => void = () => {}; return { on: (_ev: string, fn: (e: { code: string }) => void) => { onErr = fn; }, listen: (_n: string, cb: () => void) => { listened += 1; return lockErr === undefined ? cb() : onErr({ code: lockErr }); } }; } };
       const supSrc = src.slice(src.indexOf("const runSupervise = (c) => {"), src.indexOf("\n};\n", src.indexOf("const runSupervise = (c) => {")) + 3);
@@ -90,7 +90,7 @@ export const check: RegressionCheck = {
       let spawned = 0, exited = false, now = 0;
       let updateLock: { pid: number } | null = null;
       const logs: string[] = []; const exits: Array<() => void> = []; const timers: Array<() => void> = [];
-      const fakeProcess = { platform: "win32", pid: 200, env: {}, on: () => {}, exit: () => { exited = true; }, stdout: { write: (l: string) => void logs.push(l) } };
+      const fakeProcess = { platform: "win32", pid: 200, env: {}, on: () => {}, exit: () => { exited = true; }, stdout: { write: (l: string) => void logs.push(l) }, stderr: { on: () => {}, write: () => true } };
       const fakeNet = { createServer: () => ({ on: () => {}, listen: (_n: string, cb: () => void) => cb() }) };
       const FakeDate = class extends Date { static now() { return now; } };
       const supSrc = src.slice(src.indexOf("const runSupervise = (c) => {"), src.indexOf("\n};\n", src.indexOf("const runSupervise = (c) => {")) + 3);

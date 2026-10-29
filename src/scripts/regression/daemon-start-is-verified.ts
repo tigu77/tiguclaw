@@ -16,6 +16,7 @@
  * ★이 파일은 **의존성-프리**다(깨진 node_modules 에서도 도는 최후 복구 경로). 그래서
  *  확인도 빌트인만으로 한다: `Atomics.wait` 로 자고 `netstat` 로 본다.
  */
+import { spawn, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -128,6 +129,89 @@ const run = async (): Promise<Assertion[]> => {
         `정착 대기 있는 자리 ${settled}곳 (기대 3 — darwin·linux·win restart)`,
       ),
     );
+  }
+
+  // ── ④-c ★실패를 갈라 말한다 — 실제 waitForListening·reportLaunch 본문을 가짜 시계·프로브·health 로 (2026-10-29) ──
+  //  Windows 현장: 같은 기동이 나중엔 정상이었는데 «bridge port never opened» 만 남아, 포트 누락인지 health 인지 늦은 기동인지 가를 수 없었다.
+  //  판정(성공 = 포트 PID 그리고 health ok)은 그대로 — 바뀐 것은 실패를 어떻게 말하느냐뿐이다.
+  {
+    const bodyOf = (name: string) => src.slice(src.indexOf(`const ${name} = (`), src.indexOf("\n};\n", src.indexOf(`const ${name} = (`)) + 3);
+    type Probe = { pids: string[]; error?: string };
+    const drive = (probes: Probe[], health: (i: number) => { ok: boolean; why: string }) => {
+      let t = 0; let pi = 0; let hi = 0; let healthCalls = 0;
+      const fakeDate = { now: () => t };
+      const lines: string[] = [];
+      const proc = { exitCode: 0 as number | undefined };
+      const fns = new Function("sleepSync", "Date", "healthSaysOurs", "winPort", "console", "process",
+        `${bodyOf("waitForListening")}\n${bodyOf("reportLaunch")}\nreturn { waitForListening, reportLaunch };`)(
+        (ms: number) => { t += ms; }, fakeDate, () => { healthCalls += 1; return health(hi++); }, () => "7021",
+        { log: (m: string) => lines.push(`log:${m}`), error: (m: string) => lines.push(`err:${m}`) }, proc,
+      ) as { waitForListening: (c: unknown, p: () => Probe) => unknown; reportLaunch: (c: unknown, w: unknown, v: string, h: string) => void };
+      const w = fns.waitForListening({}, () => probes[Math.min(pi++, probes.length - 1)] as Probe);
+      fns.reportLaunch({}, w, "started", "HINT");
+      return { text: lines.join("\n"), code: proc.exitCode, healthCalls };
+    };
+    const ok = { ok: true, why: "" };
+    const refused = { ok: false, why: "no answer (ECONNREFUSED)" };
+    const open: Probe = { pids: ["5"] };
+    const closed: Probe = { pids: [] };
+    const broke: Probe = { pids: [], error: "netstat exited with 1" };
+    const cases = {
+      success: drive([closed, open], () => ok),
+      never: drive([closed], () => ok),
+      healthBad: drive([open], () => refused),
+      closedAgain: drive([open, open, closed], () => refused),
+      lastFailedAfterOpen: drive([open, broke], () => refused),
+      lastFailedAfterClosed: drive([closed, broke], () => ok),
+      allFailed: drive([broke], () => ok),
+      someFailedThenClosed: drive([broke, broke, closed], () => ok),
+    };
+    const fail = (x: { text: string; code: number | undefined }) => x.code === 1 && !/✅/.test(x.text) && /HINT/.test(x.text);
+    const checks: [string, boolean][] = [
+      ["성공은 종전대로(포트 PID 그리고 health)", cases.success.code === 0 && /✅ started \(pid 5\)/.test(cases.success.text)],
+      ["★포트가 비면 health 를 묻지 않고 성공도 아니다(빈 프로브 + 성공 health)", cases.never.healthCalls === 0 && fail(cases.never) && /bridge port never opened/.test(cases.never.text) && /port 7021, checked for 20s/.test(cases.never.text)],
+      ["열렸지만 health 불성립 → 그 이유", fail(cases.healthBad) && /7021 was listening \(PID 5\) but \/health did not answer ok \(no answer \(ECONNREFUSED\)\)/.test(cases.healthBad.text) && !/never opened/.test(cases.healthBad.text)],
+      ["열렸다가 닫힘", fail(cases.closedAgain) && /opened, then closed again/.test(cases.closedAgain.text)],
+      ["★끝 조회 실패 — 앞의 관측으로 결론 내지 않는다(전에 열림)", fail(cases.lastFailedAfterOpen) && /Could not confirm the daemon is running/.test(cases.lastFailedAfterOpen.text) && /last port check failed \(netstat exited with 1\)/.test(cases.lastFailedAfterOpen.text) && /before that, the bridge port 7021 was listening \(PID 5\)/.test(cases.lastFailedAfterOpen.text) && !/never opened|then closed/.test(cases.lastFailedAfterOpen.text)],
+      ["★끝 조회 실패 — 전에 닫힘", fail(cases.lastFailedAfterClosed) && /before that, the bridge port 7021 was not listening/.test(cases.lastFailedAfterClosed.text) && !/never opened/.test(cases.lastFailedAfterClosed.text)],
+      ["★한 번도 확인 못 함", fail(cases.allFailed) && /could not be checked even once/.test(cases.allFailed.text)],
+      ["중간 조회 실패 후 닫힘 확인 → 안 열림 + 실패 횟수", fail(cases.someFailedThenClosed) && /never opened/.test(cases.someFailedThenClosed.text) && /2 port checks failed/.test(cases.someFailedThenClosed.text)],
+    ];
+    const bad = checks.filter(([, v]) => !v).map(([n]) => n);
+    out.push(
+      assert(
+        "★기동 확인 실패를 갈라 말한다 — 끝 조회 실패·안 열림·열렸다 닫힘·health 불성립 · 성공 판정 불변(8갈래, 실제 본문)",
+        bad.length === 0,
+        bad.length === 0 ? "8갈래" : { bad, texts: Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, v.text.slice(0, 260)])) },
+      ),
+    );
+
+    // ★실제 healthSaysOurs — 진짜 HTTP 응답으로(GPT 코드 검토 R1: 위 검사는 health 를 가짜로 바꿔, 본문 `"ok": true` 조건을 빼도 초록이었다).
+    //  healthSaysOurs 는 spawnSync 로 묻는다(이벤트 루프가 멈춘다) — 그래서 답하는 서버는 **별도 프로세스**다.
+    const serve = (body: string) =>
+      new Promise<{ port: string; stop: () => void }>((resolve, reject) => {
+        const ch = spawn(process.execPath, ["-e", `const s=require("http").createServer((q,r)=>{r.statusCode=q.url==="/health"?200:404;r.end(${JSON.stringify(body)})});s.listen(0,"127.0.0.1",()=>console.log(s.address().port))`]);
+        ch.once("error", reject);
+        ch.stdout.once("data", (d: Buffer) => resolve({ port: String(d).trim(), stop: () => ch.kill() }));
+      });
+    const health = (port: string) =>
+      (new Function("winPort", "spawnSync", "process", `${bodyOf("healthSaysOurs")}; return healthSaysOurs;`)(() => port, spawnSync, process) as (c: unknown) => { ok: boolean; why: string })({});
+    const okSrv = await serve('{"ok": true, "version": "fixture"}');
+    const badSrv = await serve('{"ok": false}');
+    try {
+      const closedPort = await (async () => { const s = await serve("x"); s.stop(); await new Promise((r) => setTimeout(r, 150)); return s.port; })();
+      const r = { ours: health(okSrv.port), notOk: health(badSrv.port), closed: health(closedPort) };
+      out.push(
+        assert(
+          "★실제 /health 판정: 본문 `\"ok\": true` 면 성공 · 다른 본문은 실패(«HTTP 200 without ok») · 닫힌 포트는 실패(«no answer»)",
+          r.ours.ok === true && r.notOk.ok === false && /HTTP 200/.test(r.notOk.why) && /without "ok": true/.test(r.notOk.why) && r.closed.ok === false && /no answer/.test(r.closed.why),
+          r,
+        ),
+      );
+    } finally {
+      okSrv.stop();
+      badSrv.stop();
+    }
   }
 
   // ── ⑤ 의존성-프리 유지 — 확인 때문에 import 가 늘면 최후 복구가 깨진다 ──────

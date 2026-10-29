@@ -251,7 +251,8 @@ const run = async (): Promise<Assertion[]> => {
     const sup = await sourceHas("../../../bin/daemon.mjs", [
       /child\.on\("exit"/,
       /setTimeout\(spawnOnce, THROTTLE_MS\)/, // 크래시 루프 스로틀(launchd 동형)
-      /spawnOnce\(\);\s*\}\);/, // 정상 종료 → 즉시 재기동
+      // 정상 종료 → 즉시 재기동. (2026-10-29: 재기동 판단이 stderr 끝을 기다린 뒤의 `decide` 로 옮겨 «종료 처리기 끝» 이 아니라 «restarting now 줄 바로 뒤» 를 본다.)
+      /restarting now[^\n]*\n\s*\);\s*spawnOnce\(\);/,
     ]);
     out.push(
       assert(

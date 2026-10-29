@@ -44,6 +44,12 @@ const EXT = /\.(ts|js|md|html|css)$/;
  *  같은 이유로 들어오고, 그때 이 주석이 근거가 된다([[feedback_hand_maintained_lists]]).
  */
 const ARCHIVE = path.join("docs", "decisions");
+/**
+ * 전달함(`docs/handoffs/`)의 **날짜 박힌 인계 원문**도 같은 성질의 기록이다 — 받은 글을 고치면 원문이 거짓이 된다
+ * (2026-10-29: 받은 버그 보고의 브라우저 용어 Service Worker 의 한국어 표기가 옛 이름 글자를 품어 잡혔다). 날짜 없는 안내(`README.md`)는 그대로 검사한다.
+ */
+const HANDOFFS = path.join("docs", "handoffs");
+const DATED_RECORD = /^\d{4}-\d\d-\d\d-/;
 
 /**
  * 찾는 옛 이름 — **런타임에 조립한다.**
@@ -62,7 +68,7 @@ const walk = (dir: string, out: string[] = []): string[] => {
       if (p.endsWith(ARCHIVE)) continue; // 날짜 박힌 기록 — 위 ARCHIVE 주석 참조.
       walk(p, out);
     }
-    else if (EXT.test(name)) out.push(p);
+    else if (EXT.test(name) && !(DATED_RECORD.test(name) && path.relative(REPO, dir).split(path.sep).slice(0, 2).join(path.sep) === HANDOFFS)) out.push(p);
   }
   return out;
 };

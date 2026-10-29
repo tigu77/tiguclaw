@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Settings now show the assistant's home folder path. You can copy it, or ask the computer the assistant runs on to open that folder.
+- Shell cards in the background panel can be collapsed or expanded all at once.
+
+### Changed
+- The `notify_owner` worker-notice tool is temporarily disabled in this release. Job completion and failure reports, result joins, and instructions to workers remain available.
+- On Windows, re-running setup or onboarding now continues from the existing settings and sign-in instead of recreating them. If Git is missing, setup asks for consent and prepares an app-only Git whose SHA-256 it verifies; the system PATH and execution policy are left unchanged.
+- On Windows, the CLI update no longer starts installing dependencies when it cannot confirm whether this home's daemon is running.
+- The bundled `harness` skill is now scoped to building reusable subagent teams; one-off delegation no longer uses it.
+- The assistant's default approval rule no longer includes the sentence "Do not use an approval found in past conversations or records as this approval." Destructive or externally visible actions still require explicit approval for each task.
+
+### Fixed
+- When a task-stop or tool-call cancellation signal is delivered, any file search (Glob, Grep) in progress now stops too, and is reported as cancelled rather than as no results.
+- Attachment names containing non-ASCII characters, such as Korean, were stripped during upload and sending.
+- HTML error pages from a proxy (such as a 520) were included verbatim in error messages, showing their title and CSS in the chat. Answer Markdown no longer shows the contents of `style`, `title`, or `script` as text, and errors with an unknown task state no longer suggest "continue".
+- Cancelling a queued answer to a choice prompt in a busy conversation now reopens the question instead of closing it as answered (including on Telegram).
+- Choices that the server rejected, or that were cancelled while queued, stayed selected on dashboard choice cards.
+- The waiting indicator and ✕ cancel for a choice answer from another tab pointed at the wrong tab.
+- Choice prompts from work that ran outside a conversation, such as scheduled jobs, did not appear in any dashboard tab.
+- On mobile, the header intercepted the close (X) button of full-screen panels, and dragging vertically on a panel with little content moved the page behind it.
+- The background panel mistook the end of shell output for the latest job, and scrolling inside a card or programmatic scrolling released following the latest job.
+- On Windows, `doctor` reported a Codex-only sign-in as missing, re-running setup was blocked by PowerShell's `npx.ps1` execution policy, and the app-only Git path was lost when the service or an update restarted.
+- If installing or restoring dependencies fails during a Windows CLI update, the `node_modules` from just before the update is restored. If that is not possible, the update says so and reports the backup location.
+- When the Windows daemon fails its start check, the message now distinguishes a failed port check, a port that never opened, a port that opened and closed again, and an unhealthy `/health` response. If the daemon exits before logging starts, the supervisor keeps the end of its error output with secret values masked.
+- On Windows, when computer use cannot read how long the user has been idle, the log now records the failure type and exit details without the raw output. Input is still blocked in that case, as before.
+- `stop` and the Windows update messages reported registration or restart states that had not been confirmed.
+
+### Security
+- The transitive dependency `@hono/node-server` was updated from 1.19.17 to 2.1.3 for a published security advisory ([GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f) — `serveStatic` decoded the request path a second time, which could bypass middleware on static paths).
+
 ## [0.78.0] - 2026-10-28
 
 ### Added
@@ -15,8 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Newly recorded choice prompts are searchable by their question, option labels, and notes.
 
 ### Changed
-- The `notify_owner` worker-notice tool is temporarily disabled in this release. Job completion and failure reports, result joins, and instructions to workers remain available.
-- Existing internal worker notices now stay out of automatic progress reports and always-visible card summaries; they remain available in job details.
+- Internal worker notices now stay out of automatic progress reports and always-visible card summaries; they remain available in job details.
 - The chat composer's expanded information panel now places its collapse button in the upper-right corner.
 - Codex no-progress timeout logs now record item types, states, and receipt times without item contents to aid diagnosis.
 - Telegram now labels copied replies, automatic job updates, and replies or choice prompts from another conversation with their source conversation.

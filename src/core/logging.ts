@@ -84,6 +84,13 @@ export const logFatal = (...args: unknown[]): void => {
 export const initFileLogging = (): string | null => {
   if (initialized) return null;
   initialized = true;
+  // ★stderr 쓰기 오류가 데몬을 끝내지 않게 (2026-10-29). Windows 감독자는 데몬 stderr 를 파이프로 받는다(부팅 전 오류를 남기려고,
+  //  `bin/daemon.mjs` runSupervise) — 감독자만 죽으면 읽는 쪽이 사라지고, 직접 `process.stderr.write` 하는 자리(외부 MCP stderr 중계·logFatal)
+  //  의 쓰기 오류가 처리기 없는 'error' 로 최후 그물에 걸려 데몬이 끝난다. 직접 기동 경로는 감독자를 아무도 안 되살린다.
+  //  stderr 는 보조 출력이고 기록의 정본은 이 파일 로그다. (`console.*` 는 Node 가 원래 쓰기 오류를 삼킨다.)
+  process.stderr.on("error", () => {
+    /* stderr 를 잃어도 데몬은 산다 */
+  });
 
   let logsDir: string;
   // 아래 openStream 이 try 안에서 이들을 반드시 할당(실패 시 return null) — TS 는 클로저

@@ -276,9 +276,11 @@ const reapScenario = async (how: "ok" | "fail" | "cancel") => {
     });
     return { text: "매니저 본 턴" } as RegionASdkOutput; // 자식이 도는 채로 끝난다 → 거두기 대기
   });
-  await until(() => C !== "" && wj.getJob(C)?.status === "running");
+  // ★자식의 지시 채널이 붙을 때까지 기다린다 — 잡은 등록 때 이미 running 이고 채널은 그 뒤 비동기로 붙는다. 그 틈에 보내면 «전달 못 함»(absent)이라
+  //  반송할 글이 없어 이 시나리오의 전제가 깨진다(2026-10-29 전체 실행에서만 빨강 — 30ms 대기를 0 으로 줄이면 같은 모양으로 재현).
+  await until(() => C !== "" && wj.getJob(C)?.status === "running" && wj.getSteerChannel(C) !== undefined);
   await sleep(30); // 매니저가 본 턴을 끝내고 거두기 대기에 들어간다
-  await toolsOf(createSpawnAgentMcpServer(managerInput(P))).steer_worker!.handler({ label: "조사", message: "매니저의 늦은 지시" }, {});
+  const steerText = textOf(await toolsOf(createSpawnAgentMcpServer(managerInput(P))).steer_worker!.handler({ label: "조사", message: "매니저의 늦은 지시" }, {}));
   childGo = true;
   await until(() => wj.getJob(P)?.status !== "running");
   const first = harvests[0];
@@ -286,6 +288,7 @@ const reapScenario = async (how: "ok" | "fail" | "cancel") => {
   const head = { ok: "완료] 결과", fail: "실패]", cancel: "**중지됨**" }[how];
   return {
     cStatus: wj.getJob(C)?.status, pStatus: wj.getJob(P)?.status, harvests: harvests.length,
+    steerDelivered: steerText.includes("전달했어요"),
     firstHasResult: first !== undefined && first.text.includes("[백그라운드 서브에이전트 '조사'") && first.text.includes(head),
     bounceInFirst: first !== undefined && (first.text.includes("반영되지 않았습니다") || first.steering.some((t) => t.includes("반영되지 않았습니다"))),
     first: first === undefined ? null : { text: first.text.slice(-260), steering: first.steering.map((t) => t.slice(0, 60)) },

@@ -111,7 +111,8 @@ export const check: RegressionCheck = {
         const name = { ok: "성공", fail: "실패", cancel: "취소" }[how];
         return assert(
           `⑥ ★순서(${name}) — 거두기 대기 중 자식이 소환자 지시를 못 읽고 끝나면 매니저의 **첫 깨움**이 그 결과를 갖고 있고, 반송도 그 깨움에 있다`,
-          v?.firstHasResult === true && v?.bounceInFirst === true && v?.cStatus === { ok: "done", fail: "failed", cancel: "cancelled" }[how],
+          // 전제(지시가 자식에 실제로 닿았다)도 잰다 — 못 닿으면 반송이 없어 «순서» 를 잰 게 아니다.
+          v?.steerDelivered === true && v?.firstHasResult === true && v?.bounceInFirst === true && v?.cStatus === { ok: "done", fail: "failed", cancel: "cancelled" }[how],
           show(v),
         );
       }),

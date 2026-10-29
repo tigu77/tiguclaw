@@ -36,25 +36,27 @@ export const check: RegressionCheck = {
     //  남은 PID 가 있어도 true 를 돌려줘도 초록이었다). 함수 본문을 떼어 OS 경계만 주입한다.
     const src = readFileSync(new URL("../../../bin/daemon.mjs", import.meta.url), "utf8");
     const fnSrc = (name: string): string => src.slice(src.indexOf(`const ${name} = (c) => {`), src.indexOf("\n};\n", src.indexOf(`const ${name} = (c) => {`)) + 3);
-    const quiet = { log: () => {}, error: () => {} };
+    const quiet = { log: () => {}, error: () => {}, warn: () => {} };
     const proc = { exitCode: 0 };
-    const winStopWith = (survived: string[]) =>
+    const winStopWith = (survived: string[], unconfirmed?: string) =>
       // 작업 켜짐·업데이트 표식은 «꺼졌다» 로 — 못 껐을 때의 갈래는 windows-update-environment 가 본다(2026-10-21).
-      (new Function("winStopTask", "winTaskState", "winTaskName", "activeUpdateLock", "console", "process", `${fnSrc("winStop")}; return winStop;`)(() => survived, () => ({ state: "disabled" }), () => "L", () => null, quiet, proc) as (c: unknown) => unknown)({ label: "L" });
+      (new Function("winStopTask", "winTaskState", "winTaskName", "activeUpdateLock", "winHasStartupFallback", "stoppedLine", "console", "process", `${fnSrc("winStop")}; return winStop;`)(() => ({ pids: survived, ...(unconfirmed === undefined ? {} : { unconfirmed }) }), () => ({ state: "disabled" }), () => "L", () => null, () => false, () => "stopped", quiet, proc) as (c: unknown) => unknown)({ label: "L" });
     const linuxStopWith = (fails: boolean) =>
-      (new Function("systemctlUser", "console", "process", `${fnSrc("linuxStop")}; return linuxStop;`)(
-        () => { if (fails) throw new Error("fixture: unit busy"); }, quiet, proc,
+      (new Function("systemctlUser", "isRegistered", "stoppedLine", "console", "process", `${fnSrc("linuxStop")}; return linuxStop;`)(
+        () => { if (fails) throw new Error("fixture: unit busy"); }, () => true, () => "stopped", quiet, proc,
       ) as (c: unknown) => unknown)({ label: "L" });
-    const contract = { winAlive: winStopWith(["123"]), winGone: winStopWith([]), linuxFail: linuxStopWith(true), linuxOk: linuxStopWith(false) };
+    const contract = { winAlive: winStopWith(["123"]), winGone: winStopWith([]), winUnknown: winStopWith([], "fixture: process list query failed"), linuxFail: linuxStopWith(true), linuxOk: linuxStopWith(false) };
     // 종료 흐름 — 스캔 결과를 차례로 주고(실제 kill 0) 남은 것을 본다
-    const killWith = (scans: { targets: string[]; portDaemons: string[] }[]) => {
+    type Scan = { targets: string[]; portDaemons: string[]; error?: string };
+    const killWith = (scans: Scan[]) => {
       let i = 0;
       const killed: string[] = [];
       const fn = new Function("winScan", "spawnSync", `${fnSrc("winKillRunning")}; return winKillRunning;`)(
         () => scans[Math.min(i++, scans.length - 1)],
         (cmd: string, args: string[]) => { if (cmd === "taskkill") killed.push(args[1] ?? ""); return { status: 0 }; },
-      ) as (c: unknown) => string[];
-      return { survivors: fn({}), killed, scans: i };
+      ) as (c: unknown) => { pids: string[]; unconfirmed?: string };
+      const r = fn({});
+      return { survivors: r.pids, unconfirmed: r.unconfirmed, killed, scans: i };
     };
     const flow = {
       // 소유 확인된 데몬 5 — 세 번째 스캔에서 사라진다(늦게 죽음)
@@ -63,7 +65,28 @@ export const check: RegressionCheck = {
       orphan: killWith([{ targets: [], portDaemons: ["111"] }]),
       // 끝까지 안 죽는다
       stuck: killWith([{ targets: ["5"], portDaemons: [] }]),
+      // ★조회 실패(2026-10-29) — 첫 조회가 실패하면 아무것도 안 죽이고 «확인 못 함» · 다시 세는 조회가 실패해도 «멈춤» 이 아니다
+      blind: killWith([{ targets: [], portDaemons: [], error: "fixture: PowerShell blocked" }]),
+      lostSight: killWith([{ targets: ["5"], portDaemons: [] }, { targets: [], portDaemons: [], error: "fixture: netstat exited with 1" }]),
     };
+    // winStopTask 의 «다시 살아났나» 재확인이 실패하면 «멈춤» 이 아니다
+    const stopTaskWith = (again: Scan) => (new Function("winTaskName", "winPs", "psq", "winTaskExists", "spawnSync", "winKillRunning", "winScan", "psErrorText", "console",
+      `${fnSrc("winStopTask")}; return winStopTask;`)(() => "L", () => ({ status: 0, stdout: "ENABLED=False", stderr: "" }), (x: string) => x, () => true, () => ({ status: 0 }),
+      () => ({ pids: [] }), () => again, () => "", quiet) as (c: unknown) => { pids: string[]; unconfirmed?: string })({});
+    const reCheck = { blind: stopTaskWith({ targets: [], portDaemons: [], error: "fixture: timed out" }), clear: stopTaskWith({ targets: [], portDaemons: [] }) };
+    // 조회를 믿을 만한가 — 끝 표식 없음·종료코드·실행 실패는 전부 «모름»
+    const fail = (d as unknown as { winScanFailure: (n: object, p: object) => string | undefined }).winScanFailure;
+    const ok = { status: 0, stdout: "", stderr: "" };
+    const psOk = { status: 0, stdout: '"ProcessId","CommandLine"\r\n"5","node.exe x"\r\nSCAN_OK\r\n', stderr: "" };
+    const scanTable = {
+      clean: fail(ok, psOk),
+      noNode: fail(ok, { status: 0, stdout: "SCAN_OK\r\n", stderr: "" }),
+      noMarker: fail(ok, { status: 0, stdout: '"5","node.exe --token=abc x"\r\n', stderr: "" }),
+      psExit: fail(ok, { status: 1, stdout: "", stderr: "Get-CimInstance : denied" }),
+      psTimeout: fail(ok, { status: null, stdout: "", stderr: "", error: new Error("spawnSync powershell ETIMEDOUT") }),
+      netstatExit: fail({ status: 1, stdout: "", stderr: "" }, psOk),
+    };
+    const queryArgs = (d as unknown as { winProcQueryArgs: () => string[] }).winProcQueryArgs()[2] ?? "";
     // 소유 확인 못 한 포트 데몬(상대경로로 띄운 `npm start`)은 안 죽이되 «남았다» 로 센다
     const orphan = d.winPortDaemonPids({ netstat: NETSTAT, procsCsv: csv([["111", "node.exe dist/src/index.js"], ["222", "node.exe C:\\apps\\other\\index.js"]]), port: 3000 });
     const ours = `node.exe ${REPO}\\dist\\src\\index.js`;
@@ -86,9 +109,21 @@ export const check: RegressionCheck = {
       assert("★포트를 잡은 node 라도 이 레포의 데몬이 아니면 죽이지 않는다", foreignNode.length === 0, sorted(foreignNode)),
       assert("다른 홈의 감독자는 건드리지 않는다(홈 경계)", otherHome.length === 0, sorted(otherHome)),
       assert(
-        "★stop 은 멈췄는지를 돌려준다 — Windows 남은 PID 있으면 false · 없으면 true · linux systemctl 실패면 false",
-        contract.winAlive === false && contract.winGone === true && contract.linuxFail === false && contract.linuxOk === true,
+        "★stop 은 멈췄는지를 돌려준다 — Windows 남은 PID 있으면 false · 없으면 true · 확인 못 했으면 false · linux systemctl 실패면 false",
+        contract.winAlive === false && contract.winGone === true && contract.winUnknown === false && contract.linuxFail === false && contract.linuxOk === true,
         contract,
+      ),
+      assert(
+        "★조회 실패는 «없음» 이 아니다 — 첫 조회 실패면 아무것도 안 죽이고 확인 못 함 · 다시 세다 실패해도 확인 못 함 · 정지 뒤 재확인 실패도 확인 못 함",
+        flow.blind.killed.length === 0 && flow.blind.unconfirmed !== undefined && flow.lostSight.unconfirmed !== undefined &&
+          reCheck.blind.unconfirmed !== undefined && reCheck.clear.unconfirmed === undefined && reCheck.clear.pids.length === 0,
+        { blind: flow.blind, lostSight: flow.lostSight, reCheck },
+      ),
+      assert(
+        "★프로세스 조회는 끝 표식(SCAN_OK)이 있어야 믿는다 — 표식 없음·종료코드·시한·netstat 실패는 이유 · 정상(빈 목록 포함)은 undefined · 이유에 남의 명령줄을 싣지 않는다",
+        scanTable.clean === undefined && scanTable.noNode === undefined && [scanTable.noMarker, scanTable.psExit, scanTable.psTimeout, scanTable.netstatExit].every((x) => typeof x === "string") &&
+          !String(scanTable.noMarker).includes("token=abc") && /ErrorActionPreference = 'Stop'/.test(queryArgs) && /'SCAN_OK'$/.test(queryArgs),
+        { scanTable, queryArgs: queryArgs.slice(-80) },
       ),
       assert(
         "★종료 흐름: 늦게 죽는 데몬은 다시 세는 동안 사라지면 성공 · 소유 불명 포트 데몬은 안 죽이되 남았다고 보고 · 끝까지 남으면 실패",

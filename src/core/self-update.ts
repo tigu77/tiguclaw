@@ -19,10 +19,11 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { telegramTargetFor } from "../store/sessions.js";
-import { promises as fs, existsSync } from "node:fs";
+import { promises as fs, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { sourceRoot, getPaths } from "./paths.js";
+import { appRoot, sourceRoot, getPaths } from "./paths.js";
 import { ensureRipgrep } from "./ripgrep.js";
+import { keepAliveServiceOwnsProcess } from "./restart.js";
 import { redactSecrets } from "./outbound-sanitize.js";
 import { translate } from "./i18n.js";
 
@@ -33,6 +34,31 @@ export const UPDATE_COMPLETE_MARKER = ".update-complete";
  *  통지 좌표. 위임 실행은 stdio 가 버려져 실패가 조용히 사라졌다 → 롤백 후 재가동한 데몬이
  *  부팅 시 1회 소비해 요청자에게 실패 단계+로그 경로를 통지한다. UPDATE_COMPLETE_MARKER 와 대칭. */
 export const UPDATE_FAILED_MARKER = ".update-failed";
+
+/**
+ * 빌드 산출물의 «어느 커밋으로 빌드했나» 기록 — `bin/copy-dist-assets.mjs` 가 빌드를 끝까지 마쳤을 때만 쓴다
+ * (dep-free 라 import 못 해 이름을 맞춘다 — 회귀 `update-sees-running-build` 가 그 스크립트가 쓴 것을 아래 함수로 읽는다).
+ */
+export const BUILD_COMMIT_FILE = ".build-commit";
+
+/** `dir` 의 빌드 커밋(소문자 전체 SHA). 없거나 못 읽거나 형식이 아니면 null — 모르는 것이다. */
+export const readBuildCommit = (dir: string): string | null => {
+  try {
+    const v = readFileSync(path.join(dir, BUILD_COMMIT_FILE), "utf8").trim().toLowerCase();
+    return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * ★이 프로세스가 **실제로 싣고 있는** 빌드 — 모듈 로드(= 부팅: `index.ts` 가 정적 import) 때 한 번 읽는다 (2026-10-30).
+ *  디스크의 dist 는 배포·업데이트가 바꾸므로 나중에 읽으면 «돌고 있는 것» 이 아니다.
+ *  빌드 산출물로 돌 때(`appRoot()` = `<repo>/dist` ≠ `sourceRoot()`)만 뜻이 있고, 소스로 돌면 undefined(판정 대상 아님).
+ *  env(`TIGUCLAW_RUNTIME`)가 아니라 배치를 보는 이유: `npm run dev` 는 env 없이 소스로 돈다.
+ */
+const BOOT_RUNNING_BUILD: string | null | undefined =
+  appRoot() !== sourceRoot() ? readBuildCommit(appRoot()) : undefined;
 
 /**
  * 실패 통지 문장 — 마커의 `outcome`(CLI 가 **실제로 한 일**)대로 말한다 (2026-10-05 적대 검토).
@@ -118,6 +144,13 @@ export interface SelfUpdateDeps {
   cwd?: string;
   /** 답 전송 후 분리 재시작까지 지연(ms). 기본 5000. */
   restartDelayMs?: number;
+  /**
+   * 테스트·격리용 — 이 프로세스가 싣고 있는 빌드 커밋(null = 빌드로 도는데 기록이 없다).
+   * 미지정이면 부팅 때 읽은 값이고, 소스로 돌면 판정하지 않는다.
+   */
+  runningBuild?: string | null;
+  /** 테스트·격리용 — 이 프로세스를 KeepAlive 서비스가 관리하는가. 미지정이면 측정(`keepAliveServiceOwnsProcess`). */
+  keepAlive?: boolean;
 }
 
 export interface SelfUpdateResult {
@@ -464,6 +497,8 @@ export const runSelfUpdate = async (
         error: redactSecrets(e instanceof Error ? e.message : String(e)),
       };
     }
+    // 사용자에게 알리는 «무엇에서» — 대개 pull 전 HEAD, 빌드가 뒤처졌으면 돌고 있는 빌드(아래 단계 4). 롤백·위임 앵커는 언제나 prevSha.
+    let reportFrom = prevSha;
 
     // ── 단계 3: git pull --ff-only (현재 브랜치 origin — install/dev 자동, 분기 0) ──
     // 선처리: package-lock.json 로컬 드리프트 폐기. 이 파일은 npm install 이 재생성하는
@@ -487,7 +522,7 @@ export const runSelfUpdate = async (
       // 상태 확인 실패는 «깨끗함» 이 아니다 — 멈추고 사유를 돌려준다(이 함수는 던지지 않는다).
       return {
         status: "failed",
-        from: prevSha,
+        from: reportFrom,
         error: redactSecrets(translate("srv.update.err.dirtyCheck", { error: e instanceof Error ? e.message : String(e) })),
       };
     }
@@ -496,7 +531,7 @@ export const runSelfUpdate = async (
       const named = dirty.length > 3 ? translate("srv.update.err.filesAndMore", { files: first, count: dirty.length - 3 }) : first;
       return {
         status: "failed",
-        from: prevSha,
+        from: reportFrom,
         error: translate("srv.update.err.dirty", { files: named }),
       };
     }
@@ -507,7 +542,7 @@ export const runSelfUpdate = async (
       // 이 보존(부분 적용 0). 자동 stash/merge 는 파괴적·암묵이라 하지 않음(§1·O1).
       return {
         status: "failed",
-        from: prevSha,
+        from: reportFrom,
         error: redactSecrets(e instanceof Error ? e.message : String(e)),
       };
     }
@@ -519,28 +554,77 @@ export const runSelfUpdate = async (
     } catch (e) {
       return {
         status: "failed",
-        from: prevSha,
+        from: reportFrom,
         error: redactSecrets(e instanceof Error ? e.message : String(e)),
       };
     }
-    if (newSha === prevSha) {
+    // ★«받을 커밋 없음» ≠ «최신» (2026-10-30). built 는 dist 로 돈다 — HEAD 가 그대로여도 **돌고 있는 빌드**나 **디스크 dist**
+    //  가 다른 커밋이면(빌드 없이 checkout·pull · 빌드만 하고 재시작 안 함 · 빌드 실패) 여기서 끝내는 순간 `/update` 로는 영영 못
+    //  맞춘다(`/restart` 도 옛 dist 를 다시 싣는다). 실측: 소스 0.79.0 · `/health` 0.78.0 인데 «이미 최신». 그때는 아래 정상 경로
+    //  (설치·재빌드·재시작, Windows 는 위임)로 보낸다. 기록이 없으면 모르는 것이라 «뒤처짐» 쪽이다.
+    //  설계: docs/decisions/2026-10-30-update-uptodate-running-build.md
+    const running = deps.runningBuild !== undefined ? deps.runningBuild : BOOT_RUNNING_BUILD;
+    let staleBuild = false;
+    if (newSha === prevSha && isBuiltRuntime() && running !== undefined) {
+      let head: string;
+      try {
+        head = (await run("git", ["rev-parse", "HEAD"], cwd)).stdout.trim().toLowerCase();
+      } catch (e) {
+        return {
+          status: "failed",
+          from: reportFrom,
+          error: redactSecrets(e instanceof Error ? e.message : String(e)),
+        };
+      }
+      const onDisk = readBuildCommit(path.join(cwd, "dist"));
+      staleBuild = running !== head || onDisk !== head;
+      if (staleBuild) {
+        console.log(
+          `self-update: 받을 커밋은 없지만 빌드가 HEAD(${head.slice(0, 8)})와 다릅니다 — ` +
+            `실행 중 ${running?.slice(0, 8) ?? "기록 없음"} · 디스크 ${onDisk?.slice(0, 8) ?? "기록 없음"} → 의존성·빌드를 다시 맞춥니다.`,
+        );
+        if (running !== null) reportFrom = running.slice(0, newSha.length);
+      }
+    }
+    // ★감독자가 **측정되지 않으면** 이 갈래는 손대지 않는다 (2026-10-30 R2). 종전 이 입력은 «최신» 으로 살아 있었다 — 여기서
+    //  재빌드 뒤 종료하면 감독자 없이 띄운 설치(LaunchAgent 없는 맥 등)는 **살아 있던 프로세스가 사라진다.** 일반 재시작·HEAD 가
+    //  움직인 업데이트는 그대로(종전 계약). Windows 는 아래 CLI 위임이 정지·기동을 맡는다.
+    if (staleBuild && process.platform !== "win32") {
+      const kept =
+        deps.keepAlive !== undefined
+          ? deps.keepAlive
+          : keepAliveServiceOwnsProcess({ platform: process.platform, pid: process.pid });
+      if (!kept) {
+        console.error(
+          "self-update: 빌드를 맞추려면 재시작해야 하는데 이 프로세스를 다시 띄울 서비스(KeepAlive)를 확인하지 못했습니다 — " +
+            "의존성 설치·재빌드·재시작을 하지 않고 지금 빌드로 계속 돕니다.",
+        );
+        await ensureRipgrepBestEffort();
+        return { status: "failed", from: reportFrom, to: prevSha, error: translate("srv.update.err.staleNoSupervisor") };
+      }
+    }
+    if (newSha === prevSha && !staleBuild) {
       // ★코드가 최신이어도 **환경은 아닐 수 있다** (2026-08-09 윈도우 실측). 여기서 조기
       //  반환하면 이미 최신인 인스턴스는 ripgrep 을 영영 못 받는다 — 그리고 그게 정확히
       //  "검색이 죽은 채 오래 살던" 기계들이다. self-update 변경은 원래 **다음 업데이트부터**
       //  듣는데(수행 주체가 돌고 있던 옛 코드다), 그 뒤엔 pull 할 게 없어 여기로 온다.
       //  best-effort + 짧은 상한 — 업데이트 응답을 잡아두지 않는다.
       await ensureRipgrepBestEffort();
-      return { status: "up-to-date", from: prevSha, to: prevSha };
+      return { status: "up-to-date", from: reportFrom, to: prevSha };
     }
 
     // 바뀐 파일 목록 — 요약 + npm install 필요 판정. 실패해도 치명 아님(빈 목록 폴백).
+    //  빌드가 뒤처진 경우엔 돌고 있는 빌드 기준으로 센다(알림용).
     let changed: string[] = [];
     try {
-      changed = await changedFilesBetween(prevSha, cwd);
+      changed = await changedFilesBetween(staleBuild && typeof running === "string" ? running : prevSha, cwd);
     } catch {
       changed = [];
     }
-    const depsChanged = changed.some(
+    // ★빌드가 뒤처졌으면 **언제나** 설치한다 — `node_modules` 는 실행 빌드·디스크 빌드와 따로 움직여(빌드 없이 checkout,
+    //  설치 없이 빌드) 어느 기록으로도 단정할 수 없다. HEAD 의 lock 이 이미 맞으면 npm 이 그대로 둔다.
+    //  아래 정상 설치 블록과 rollback() 재설치가 이 한 값을 같이 본다.
+    const depsChanged = staleBuild || changed.some(
       (f) =>
         f === "package.json" ||
         f === "package-lock.json" ||
@@ -588,14 +672,14 @@ export const runSelfUpdate = async (
         child.unref();
         return {
           status: "updating",
-          from: prevSha,
+          from: reportFrom,
           to: newSha,
           changedFiles: changed.length,
         };
       } catch (e) {
         return {
           status: "failed",
-          from: prevSha,
+          from: reportFrom,
           error: redactSecrets(
             translate("srv.update.err.handoff", { error: e instanceof Error ? e.message : String(e) }),
           ),
@@ -686,7 +770,7 @@ export const runSelfUpdate = async (
             const rolledBack = await rollback();
             return {
               status: "failed",
-              from: prevSha,
+              from: reportFrom,
               to: newSha,
               changedFiles: changed.length,
               rolledBack,
@@ -701,7 +785,7 @@ export const runSelfUpdate = async (
         const rolledBack = await rollback();
         return {
           status: "failed",
-          from: prevSha,
+          from: reportFrom,
           to: newSha,
           changedFiles: changed.length,
           rolledBack,
@@ -746,7 +830,7 @@ export const runSelfUpdate = async (
         const rolledBack = await rollback();
         return {
           status: "failed",
-          from: prevSha,
+          from: reportFrom,
           to: newSha,
           changedFiles: changed.length,
           ranNpmInstall,
@@ -771,7 +855,7 @@ export const runSelfUpdate = async (
     try {
       const marker = path.join(getPaths().home, UPDATE_COMPLETE_MARKER);
       const payload = {
-        from: prevSha,
+        from: reportFrom,
         to: newSha,
         changedFiles: changed.length,
         ts: Date.now(),
@@ -835,7 +919,7 @@ export const runSelfUpdate = async (
       // setTimeout 자체 실패는 사실상 불가 — 방어적 처리.
       return {
         status: "failed",
-        from: prevSha,
+        from: reportFrom,
         to: newSha,
         changedFiles: changed.length,
         ranNpmInstall,
@@ -848,7 +932,7 @@ export const runSelfUpdate = async (
     // ── 단계 9: updating 반환 ──────────────────────────────────────────────────
     return {
       status: "updating",
-      from: prevSha,
+      from: reportFrom,
       to: newSha,
       changedFiles: changed.length,
       ranNpmInstall,

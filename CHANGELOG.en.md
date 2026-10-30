@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.1] - 2026-10-30
+
+### Fixed
+- `/update` ended with "Already up to date" when there were no new commits, even if the running build or the build on disk didn't match the current source. It now reinstalls dependencies, rebuilds and restarts to match. If it can't confirm a service that would start the process again, it changes nothing and explains how to update manually.
+
 ## [0.79.0] - 2026-10-30
 
 ### Added
@@ -1202,7 +1207,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.79.1...HEAD
+[0.79.1]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...v0.79.1
 [0.79.0]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...v0.79.0
 [0.78.0]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...v0.77.0

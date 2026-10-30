@@ -837,6 +837,7 @@
   "srv.update.err.pluginsMissing": "staging/plugins 가 없습니다(플러그인 미러 실패)",
   "srv.update.err.rebuild": "재빌드 실패(옛 빌드를 유지하고 재시작하지 않습니다): {error}",
   "srv.update.err.scheduleRestart": "재시작을 예약하지 못했습니다: {error}",
+  "srv.update.err.staleNoSupervisor": "실행 중인 빌드나 디스크의 빌드가 지금 소스와 같은지 확인되지 않습니다. 맞추려면 의존성 설치·재빌드 뒤 재시작해야 하는데, 이 실행을 자동으로 다시 띄워 줄 서비스를 확인하지 못해 이번 자동 업데이트를 멈췄습니다(의존성 설치·빌드 교체·재시작은 하지 않았습니다). 서비스로 설치했다면 그 설치에서 터미널로 `tiguclaw update` 를 실행하세요. 직접 띄웠다면 그 폴더에서 `npm install` 과 `npm run build:prod` 를 실행한 뒤, 띄웠던 방식 그대로 다시 실행하세요.",
   "srv.update.err.swap": "dist 원자 교체 실패: {error}",
   "srv.update.failed": "⚠️ 업데이트에 실패했습니다. {state}",
   "srv.update.failedNotice": "❌ 업데이트 실패 (단계: {stage}) — {what}",

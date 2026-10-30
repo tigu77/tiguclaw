@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+## [0.79.1] - 2026-10-30
+
+### 수정
+- 받을 커밋이 없을 때 실행 중인 빌드나 디스크의 빌드가 현재 소스와 달라도 `/update`가 «이미 최신»으로 끝나던 문제를 수정했습니다. 이제 의존성 설치·재빌드 뒤 다시 시작해 맞춥니다. 이 프로세스를 다시 띄울 서비스를 확인하지 못하면 아무것도 바꾸지 않고 직접 맞추는 방법을 안내합니다.
+
 ## [0.79.0] - 2026-10-30
 
 ### 추가
@@ -2752,7 +2757,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.79.1...HEAD
+[0.79.1]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...v0.79.1
 [0.79.0]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...v0.79.0
 [0.78.0]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...v0.77.0

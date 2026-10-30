@@ -73,6 +73,55 @@ export const winSupervisorTaskExists = (): boolean => {
 export const hasSupervisorRespawn = (): boolean =>
   hasSupervisorRespawnOn(process.platform) || winSupervisorTaskExists();
 
+/** `launchctl` 한 번 — 상태·표준출력만. 시험은 대역을 넣는다. */
+export type LaunchctlRun = (args: string[]) => { status: number | null; stdout: string };
+
+const runLaunchctl: LaunchctlRun = (args) => {
+  const r = spawnSync("launchctl", args, { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] });
+  return { status: r.status, stdout: typeof r.stdout === "string" ? r.stdout : "" };
+};
+
+/**
+ * 이 프로세스가 **지금 무조건 KeepAlive 작업으로 직접 관리되고 있는가** — 플랫폼 선언이 아니라 측정 (2026-10-30).
+ *  측정 시점의 등록·정책 확인이지 미래 재기동 성공 보장은 아니다(그 사이 unload·실행 파일 제거는 못 본다).
+ *
+ * ★`hasSupervisorRespawnOn` 은 «그 플랫폼의 설치는 감독자를 등록한다» 는 **관례**를 말한다. 감독자 없이 띄운 맥 설치
+ *  (LaunchAgent 없이 `nohup` — 고아가 되면 ppid 가 launchd(1)라 ppid 로는 못 가른다)에선 거짓이다.
+ *  지금 이 측정을 쓰는 곳은 `/update` 의 «받을 커밋 없음·빌드 뒤처짐» 갈래 하나다 — 종전엔 그 입력에서 아무것도 안 하고
+ *  살아 있었으므로, 거기서 새로 죽지 않게 한다. 일반 재시작(`restartDaemon`)은 그대로다.
+ *
+ * darwin: `launchctl list` 에서 PID 가 이 프로세스인 작업의 라벨을 찾고, `launchctl list <라벨>` 이 같은 PID 와
+ *  `"OnDemand" = false`(KeepAlive) 를 보일 때만 참. 라벨을 env 로 받지 않는다(plist 가 라벨 env 를 넣지 않는다).
+ * 그 밖(linux 포함): 측정 수단이 없다 → 거짓. 실패·시간 초과·형식 불일치도 거짓 — **모르면 죽지 않는다.**
+ */
+export const keepAliveServiceOwnsProcess = (input: {
+  platform: string;
+  pid: number;
+  launchctl?: LaunchctlRun;
+}): boolean => {
+  if (input.platform !== "darwin") return false;
+  const lc = input.launchctl ?? runLaunchctl;
+  try {
+    const list = lc(["list"]);
+    if (list.status !== 0) return false;
+    const pid = String(input.pid);
+    const label = list.stdout
+      .split("\n")
+      .map((l) => l.split("\t"))
+      .find((c) => c.length >= 3 && c[0]?.trim() === pid)?.[2]
+      ?.trim();
+    if (label === undefined || label === "") return false;
+    const job = lc(["list", label]);
+    if (job.status !== 0) return false;
+    return (
+      new RegExp(`^\\s*"PID" = ${pid};\\s*$`, "m").test(job.stdout) &&
+      /^\s*"OnDemand" = false;\s*$/m.test(job.stdout)
+    );
+  } catch {
+    return false;
+  }
+};
+
 /**
  * 재시작 요청을 받았을 때 정말 죽어도 되는가.
  *

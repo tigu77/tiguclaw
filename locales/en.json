@@ -837,6 +837,7 @@
   "srv.update.err.pluginsMissing": "staging/plugins is missing (mirroring plugins failed)",
   "srv.update.err.rebuild": "Rebuild failed (the old build is kept and there's no restart): {error}",
   "srv.update.err.scheduleRestart": "Couldn't schedule the restart: {error}",
+  "srv.update.err.staleNoSupervisor": "The running build or the build on disk could not be confirmed to match the current source. Bringing it up to date needs a dependency install, a rebuild and a restart, but no service that would start this process again could be confirmed, so this automatic update was stopped (no dependency install, build swap or restart was done). If you installed it as a service, run `tiguclaw update` in a terminal for that installation. If you started it yourself, run `npm install` and `npm run build:prod` in its folder, then start it again the same way you did before.",
   "srv.update.err.swap": "atomic dist swap failed: {error}",
   "srv.update.failed": "⚠️ The update failed. {state}",
   "srv.update.failedNotice": "❌ Update failed (stage: {stage}) — {what}",

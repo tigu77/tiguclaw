@@ -12,14 +12,22 @@
 //    dist/plugins 로 미러한다(.ts 는 tsc 가 이미 .js 로 emit).
 //
 // 순수 node(no tsx) — build:prod 파이프라인의 마지막 단계. node>=20 의 fs.cp 사용.
+import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// ★빌드 커밋 기록 (2026-10-30) — `/update` 가 «돌고 있는 빌드·디스크 dist == HEAD» 를 이것으로 판정한다
+//  (`src/core/self-update.ts` 의 `BUILD_COMMIT_FILE` — dep-free 라 import 못 해 이름을 맞춘다. 회귀
+//  `update-sees-running-build` 가 이 스크립트가 쓴 기록을 그쪽 함수로 읽어 둘을 같이 잰다).
+//  기록이 있다 = 그 커밋으로 빌드가 **끝까지** 됐다. 그래서 쓰기 시작할 때 지우고 끝에서만 쓴다 —
+//  in-place 빌드(`build:prod`)는 tsc 가 dist 에 쓰기 **전에** 지우기 모드로 먼저 부른다(tsc 가 JS 를 내고 실패하면 `&&` 가 멈춘다).
+const BUILD_COMMIT_FILE = ".build-commit";
+const FORGET = process.argv[2] === "--forget-build-commit";
 // 대상 dist 는 기본 <repo>/dist 이나, self-update(built) 의 스테이징 빌드(원자 교체용)를
 // 위해 argv[2] 로 오버라이드 가능(ADR 2026-07-14 D3). 절대/상대 모두 repoRoot 기준 해석.
-const dist = process.argv[2]
+const dist = process.argv[2] && !FORGET
   ? path.resolve(repoRoot, process.argv[2])
   : path.join(repoRoot, "dist");
 
@@ -169,7 +177,25 @@ const pruneOrphanDirs = async (rel) => {
   }
 };
 
+/** 끝까지 왔을 때만 — HEAD 를 적는다. 못 읽으면 적지 않는다(남은 기록은 이미 지웠다). */
+const writeBuildCommit = async () => {
+  const r = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8", windowsHide: true });
+  const sha = r.status === 0 ? (r.stdout ?? "").trim() : "";
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(sha)) {
+    log("build-commit: none (could not read the git commit) — the next /update rebuilds");
+    return;
+  }
+  await fs.writeFile(path.join(dist, BUILD_COMMIT_FILE), `${sha}\n`);
+  log(`build-commit: ${sha.slice(0, 12)}`);
+};
+
 const main = async () => {
+  // 지우기 모드 — 맨 먼저(대상 존재 검사·복사 전). 첫 빌드처럼 dist 가 없어도 성공, 못 지우면 실패(→ `&&` 가 tsc 를 막는다).
+  if (FORGET) {
+    await fs.rm(path.join(dist, BUILD_COMMIT_FILE), { force: true });
+    log("build-commit: cleared (build starting)");
+    return;
+  }
   // dist/ 가 없으면 tsc 빌드가 선행되지 않은 것 — 방어.
   try {
     await fs.access(dist);
@@ -177,6 +203,8 @@ const main = async () => {
     console.error("[copy-dist-assets] dist/ not found — run tsc build first.");
     process.exit(1);
   }
+  // 이 복사가 끝나기 전까지는 «그 커밋으로 빌드됨» 이 아니다.
+  await fs.rm(path.join(dist, BUILD_COMMIT_FILE), { force: true });
 
   // 1) appRoot()-상대 헌법/빌트인 자산 → dist/ (marker walk-up 이 dist 를 appRoot 로 잡음).
   await copyFile("SYSTEM.md");
@@ -227,6 +255,7 @@ const main = async () => {
   //  `dist` 는 배포·설치가 통째로 실어 나르는 트리다.
   await pruneOrphanDirs("packages");
 
+  await writeBuildCommit();
   log("done.");
 };
 

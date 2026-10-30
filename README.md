@@ -82,10 +82,12 @@ irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
 ```
 
 Download, install, and the setup wizard, in one go. Default location is `tiguclaw/` under your home —
-override with `TIGUCLAW_DIR`. **git** has to be there already. If **Node 20+** isn't, the installer
+override with `TIGUCLAW_DIR`. **git** has to be there already on macOS/Linux; on Windows, if it's missing, the
+installer can set up an app-only Git with your consent (SHA-256 verified, system `PATH` untouched). If **Node 20+** isn't, the installer
 asks before fetching one into `<install dir>/.node` — for tiguclaw only: no admin rights, nothing
 added to your system `PATH`, and it goes away when you delete the folder. If something is already
-installed at the target path it stops and tells you rather than overwriting. (It picks a current
+installed at the target path it stops and tells you rather than overwriting (on Windows, re-running over a
+stopped tiguclaw install resumes setup and keeps its settings). (It picks a current
 **LTS**; prebuilt native binaries track LTS, so odd-numbered releases may require C++ build tools.)
 
 <details>

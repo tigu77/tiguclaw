@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - The `notify_owner` worker-notice tool is temporarily disabled in this release. Job completion and failure reports, result joins, and instructions to workers remain available.
-- On Windows, re-running setup or onboarding now continues from the existing settings and sign-in instead of recreating them. If Git is missing, setup asks for consent and prepares an app-only Git whose SHA-256 it verifies; the system PATH and execution policy are left unchanged.
+- Re-running onboarding now continues from the existing settings and sign-in instead of recreating them. On Windows this also applies to re-running setup, and if Git is missing, setup asks for consent and prepares an app-only Git whose SHA-256 it verifies; the system PATH and execution policy are left unchanged.
 - On Windows, the CLI update no longer starts installing dependencies when it cannot confirm whether this home's daemon is running.
 - The bundled `harness` skill is now scoped to building reusable subagent teams; one-off delegation no longer uses it.
 - The assistant's default approval rule no longer includes the sentence "Do not use an approval found in past conversations or records as this approval." Destructive or externally visible actions still require explicit approval for each task.
@@ -27,10 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Choices that the server rejected, or that were cancelled while queued, stayed selected on dashboard choice cards.
 - The waiting indicator and ✕ cancel for a choice answer from another tab pointed at the wrong tab.
 - Choice prompts from work that ran outside a conversation, such as scheduled jobs, did not appear in any dashboard tab.
+- On Telegram and the CLI, `/sessions` and `/fork` commands chosen from a choice prompt were not applied to that chat.
 - On mobile, the header intercepted the close (X) button of full-screen panels, and dragging vertically on a panel with little content moved the page behind it.
 - The background panel mistook the end of shell output for the latest job, and scrolling inside a card or programmatic scrolling released following the latest job.
-- On Windows, `doctor` reported a Codex-only sign-in as missing, re-running setup was blocked by PowerShell's `npx.ps1` execution policy, and the app-only Git path was lost when the service or an update restarted.
-- If installing or restoring dependencies fails during a Windows CLI update, the `node_modules` from just before the update is restored. If that is not possible, the update says so and reports the backup location.
+- `doctor` reported a Codex-only sign-in as missing, and on Windows the update command suggested when re-running setup was blocked by PowerShell's `npx.ps1` execution policy.
+- If installing or restoring dependencies fails during a Windows CLI update, the `node_modules` from just before the update is restored. If that is not possible, the update says so and reports the backup location. If the daemon fails to restart after the update, this backup is kept and its path is shown.
 - When the Windows daemon fails its start check, the message now distinguishes a failed port check, a port that never opened, a port that opened and closed again, and an unhealthy `/health` response. If the daemon exits before logging starts, the supervisor keeps the end of its error output with secret values masked.
 - On Windows, when computer use cannot read how long the user has been idle, the log now records the failure type and exit details without the raw output. Input is still blocked in that case, as before.
 - `stop` and the Windows update messages reported registration or restart states that had not been confirmed.

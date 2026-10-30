@@ -18,7 +18,7 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tsxLoaderUrl } from "./_probe-helpers.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -173,7 +173,8 @@ const run = async (): Promise<Assertion[]> => {
     // ⑨ 데몬 쪽 그물 — 실제 initFileLogging() 을 부른 자식에서 stderr 쓰기 오류가 나도 최후 그물(uncaughtException → exit)에 안 걸린다
     {
       const home = fs.mkdtempSync(path.join(tmp, "home-"));
-      const logging = path.join(REPO, "src/core/logging.ts");
+      // import 지정자는 URL 이다 — Windows 절대경로(`C:\…`)를 그대로 넣으면 `ERR_UNSUPPORTED_ESM_URL_SCHEME` 로 제품에 닿기 전에 죽는다(Windows 실측 10-30).
+      const logging = pathToFileURL(path.join(REPO, "src/core/logging.ts")).href;
       const script = [
         `import { initFileLogging } from ${JSON.stringify(logging)};`,
         "initFileLogging();",

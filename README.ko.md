@@ -84,10 +84,12 @@ irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
 ```
 
 받고, 설치하고, 설정 마법사까지 이어집니다. 기본 위치는 홈 아래 `tiguclaw/` — 바꾸려면
-`TIGUCLAW_DIR` 를 지정하세요. **git** 은 미리 있어야 합니다. **Node 20 이상**이 없으면 설치기가
+`TIGUCLAW_DIR` 를 지정하세요. macOS·Linux 에서는 **git** 이 미리 있어야 합니다. Windows 에서는 git 이 없으면 동의를
+받아 앱 전용 Git 을 준비합니다(SHA-256 확인, 시스템 `PATH` 는 그대로). **Node 20 이상**이 없으면 설치기가
 물어본 뒤 `<설치폴더>/.node` 에 받습니다 — tiguclaw 전용이라 관리자 권한이 필요 없고, 시스템
 `PATH` 를 건드리지 않으며, 설치 폴더를 지우면 같이 사라집니다. 대상 경로에 이미 설치돼 있으면
-덮지 않고 알려줍니다. (현재 **LTS** 를 고릅니다. 네이티브 모듈 미리 빌드된 바이너리가 LTS
+덮지 않고 알려줍니다(Windows 에서는 멈춰 있는 tiguclaw 설치 위에 다시 실행하면 기존 설정을 그대로
+두고 남은 과정을 이어 갑니다). (현재 **LTS** 를 고릅니다. 네이티브 모듈 미리 빌드된 바이너리가 LTS
 기준이라, 비-LTS 홀수 버전에서는 C++ 빌드 도구가 필요할 수 있습니다.)
 
 <details>

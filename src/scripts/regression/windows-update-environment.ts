@@ -107,7 +107,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     const source = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     const body = source.slice(source.indexOf("const runUpdate = (c) => {"), source.indexOf("\n/**\n * @param {Ctx} c\n * @param {string} cmd", source.indexOf("const runUpdate = (c) => {")));
     type Scenario = "success" | "npm-fail" | "dirty" | "lock-only" | "rollback-dirty" | "corrupt-env" | "pull-fail";
-    type SimOpts = { notify?: boolean; handoff?: string; resetFails?: boolean; stopFails?: boolean; revivedDuringCi?: boolean; platform?: "win32" | "darwin";
+    type SimOpts = { notify?: boolean; handoff?: string; resetFails?: boolean; stopFails?: boolean; startFails?: "exit" | "throw"; revivedDuringCi?: boolean; platform?: "win32" | "darwin" | "linux";
       // ★2026-10-29 — 포트와 무관한 존재 판정 · 의존성 트리 옮겨 두기. `deps` 를 주면 이 케이스만의 레포에 진짜 `node_modules` 를 만든다
       //  (tree = 폴더 · link = 다른 폴더를 가리키는 링크). fs 는 진짜이고, 실패만 골라 주입한다.
       presence?: "running" | "stopped" | "unknown"; portClosed?: boolean; registered?: boolean; deps?: "tree" | "link"; leftovers?: string[];
@@ -127,7 +127,10 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
         fs.mkdirSync(repoRoot);
         for (const l of opts.leftovers ?? []) { fs.mkdirSync(path.join(repoRoot, l)); fs.writeFileSync(path.join(repoRoot, l, "marker.txt"), l); }
         if (opts.deps === "tree") { fs.mkdirSync(path.join(repoRoot, "node_modules", "sdk"), { recursive: true }); fs.writeFileSync(path.join(repoRoot, "node_modules", "sdk", "marker.txt"), "old-tree"); }
-        if (opts.deps === "link") { fs.mkdirSync(path.join(shared, "sdk"), { recursive: true }); fs.writeFileSync(path.join(shared, "sdk", "marker.txt"), "shared-tree"); fs.symlinkSync(shared, path.join(repoRoot, "node_modules"), "dir"); }
+        if (opts.deps === "link") { fs.mkdirSync(path.join(shared, "sdk"), { recursive: true }); fs.writeFileSync(path.join(shared, "sdk", "marker.txt"), "shared-tree");
+          // Windows 는 junction — 디렉터리 symlink 는 권한(개발자 모드·관리자)이 있어야 만들어져 EPERM 이었다(Windows 실측 10-30). 현장의 링크된
+          //  node_modules 도 대개 junction 이고, 제품 판정(`lstatSync().isSymbolicLink()`·`unlinkSync`)이 그것을 링크로 다뤄야 한다 — 검사는 그대로다.
+          fs.symlinkSync(shared, path.join(repoRoot, "node_modules"), process.platform === "win32" ? "junction" : "dir"); }
       }
       const context = { ...c, repoRoot, homeAbs: h, logsDir: path.join(h, "logs"), distEntry: path.join(h, "dist.js"),
         ...(scenario === "corrupt-env" ? { winEnvError: "win-service-env.json is unreadable (fixture)" } : {}) };
@@ -197,7 +200,9 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       // 마커가 재가동 **전에** 있었나 — 다시 뜬 데몬이 부팅 때 읽어 통지한다.
       const startMark = (what: string) => () => calls.push(`${what}:${fs.existsSync(marker) ? "marker" : "no-marker"}`, `${what}@${lockState()}`);
       const presenceFake = opts.presence === undefined ? {} : { presence: () => { calls.push("PRESENCE"); return { state: opts.presence, pids: opts.presence === "running" ? ["777"] : [], why: "fixture: process list query failed" }; } };
-      const ops = { stop: () => { calls.push("STOP"); if (opts.stopFails !== true) running = false; return opts.stopFails === true ? false : true; }, reenable: () => calls.push("REENABLE"), start: startMark("START"), restart: startMark("RESTART") };
+      // 재가동 실패 — 진짜 start 는 `reportLaunch` 로 exitCode 1 을 세우거나(launch 확인 실패) `execFileSync` 가 던진다(launchctl·systemctl).
+      const launch = (what: string) => () => { startMark(what)(); if (opts.startFails === "exit") processFake.exitCode = 1; if (opts.startFails === "throw") throw new Error("fixture: launchctl load failed"); };
+      const ops = { stop: () => { calls.push("STOP"); if (opts.stopFails !== true) running = false; return opts.stopFails === true ? false : true; }, reenable: () => calls.push("REENABLE"), start: launch("START"), restart: launch("RESTART") };
       // 진짜 표: 표에 적힌 이름마다 가짜를 넣되 정지·기동은 위 기록기로, 존재 판정만 진짜 본문(스캔 결과 주입)으로.
       const realTable = () => {
         const winPresence = new Function("winScan", presenceSrc + "; return winPresence;")(() => { calls.push("SCAN"); return opts.scan; });
@@ -205,7 +210,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
           darwinStop: ops.stop, darwinStart: ops.start, darwinRestart: ops.restart };
         return new Function(...handlerNames, handlersSrc + "; return handlers;")(...handlerNames.map((n) => byName[n] ?? (() => calls.push(`UNEXPECTED:${n}`))));
       };
-      const table = opts.scan !== undefined ? realTable() : ((t: unknown) => ({ win32: t, darwin: t }))({ ...ops, ...presenceFake });
+      const table = opts.scan !== undefined ? realTable() : ((t: unknown) => ({ win32: t, darwin: t, linux: t }))({ ...ops, ...presenceFake });
       const invoke = new Function(...names, body + "; return runUpdate;")(...[
         processFake, fakeConsole, path, fs.existsSync, fs.mkdirSync, (p: string, flags: string) => { const fd = fs.openSync(p, flags); fds.push(fd); return fd; }, fs.writeSync, fs.writeFileSync, spawnSync, () => running && opts.portClosed !== true, () => opts.registered !== false,
         table, () => {}, () => calls.push("SAVE_ENV"), (text: string) => d.redactUpdateLog(text, processFake.env),
@@ -381,6 +386,40 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       assert(/previous dependencies kept at/.test(r.marker?.detail ?? ""), JSON.stringify(r.marker));
       return `outcome=${r.marker?.outcome} · 옛 트리 보존`;
     });
+    test("★설치·빌드는 됐는데 재가동이 실패하면(종료코드·예외, start·restart) 옮겨 둔 옛 트리를 버리지 않는다 — 정확한 경로·«의존성뿐·이전 판 것» 을 말하고 ✅ 를 찍지 않는다", () => {
+      // 2026-10-30: 종전엔 재가동 결과를 보기 **전에** 백업을 무조건 버렸다 — 실패한 순간 복구 재료가 사라졌다.
+      const cases = { exit: simulate("success", { deps: "tree", startFails: "exit" }), throw: simulate("success", { deps: "tree", startFails: "throw" }),
+        revived: simulate("success", { deps: "tree", startFails: "exit", revivedDuringCi: true }), revivedThrow: simulate("success", { deps: "tree", startFails: "throw", revivedDuringCi: true }),
+        mac: simulate("success", { deps: "tree", startFails: "throw", platform: "darwin" }),
+        // 세 OS 가 같은 공통 경로다 — 판정이 OS 를 갈라도 잡히게(독립 변이 사냥: «linux 만 빼기» 가 초록이었다).
+        linux: simulate("success", { deps: "tree", startFails: "exit", platform: "linux" }), linuxThrow: simulate("success", { deps: "tree", startFails: "throw", platform: "linux" }) };
+      for (const [k, r] of Object.entries(cases)) {
+        const all = r.messages.join(" | ");
+        assert.equal(r.exitCode, 1, `${k}: ${all}`); assert.equal(r.depsNow, "new-tree-1", k);
+        assert.deepEqual(r.entries, [{ name: ".node_modules-prev-N", marker: "old-tree" }], `${k}: ${JSON.stringify(r.entries)}`);
+        assert(!has(r.calls, /^(MV|RM|UNLINK)(-FAIL)?:\.node_modules-prev-N/), `${k}: ${r.calls.join(" | ")}`);
+        const kept = r.messages.find((m) => /Kept the dependencies from before the update at /.test(m)) ?? "";
+        // 실제로 남은 폴더의 **전체 경로**(타임스탬프 포함)를 말해야 한다 — 접두사만 보면 없는 경로를 말해도 통과한다(GPT 검토 R1).
+        const real = fs.readdirSync(path.join(r.home, "repo")).filter((x) => x.startsWith(".node_modules-prev-"));
+        assert(real.length === 1 && kept.includes(`at ${path.join(r.home, "repo", real[0] as string)} — `), `${k}: ${real.join(",")} · ${kept}`);
+        assert(/node_modules only/.test(kept) && kept.includes("1111111"), `${k}: ${all}`);
+        // 복구됐다·되돌릴 수 있다고 말하지 않는다(의존성뿐이라 지금 코드와 짝이 아니다).
+        assert(!/restor|roll(ed)? ?back|revert/i.test(kept), `${k}: ${kept}`);
+        assert(r.messages.some((m) => /failed to restart/.test(m)) && !r.messages.some((m) => /update complete/.test(m)), `${k}: ${all}`);
+      }
+      assert(has(cases.revived.calls, /^RESTART/) && has(cases.revivedThrow.calls, /^RESTART/) && cases.throw.messages.some((m) => /restart command failed: fixture: launchctl load failed/.test(m)), cases.throw.messages.join(" | "));
+      // 다음 업데이트는 그 트리를 지우지 않고 알린다(종전 «prev 는 남긴다» 규칙 그대로).
+      return "종료코드·예외·재시작·맥 = 백업 보존 + 경로";
+    });
+    test("★재가동하지 않는 정상 경로(멈춰 있던·미등록 홈)는 종전대로 옛 트리를 버린다 — 남는 것 0 · exit 0", () => {
+      for (const registered of [true, false]) {
+        const r = simulate("success", { deps: "tree", presence: "stopped", portClosed: true, registered });
+        assert.equal(r.exitCode, 0, r.messages.join(" | ")); assert(!has(r.calls, /^(START|RESTART)/), r.calls.join(" | "));
+        assert.deepEqual(r.entries, [], `registered=${registered}: ${JSON.stringify(r.entries)}`);
+        assert(!r.messages.some((m) => /Kept the dependencies/.test(m)), r.messages.join(" | "));
+      }
+      return "미가동 = 정리";
+    });
     test("★지난 업데이트가 남긴 것: «버릴 것» 만 지우고 «옮겨 둔 것(prev)» 은 남기며 알린다(유일하게 쓸 만한 트리일 수 있다)", () => {
       const r = simulate("success", { deps: "tree", leftovers: [".node_modules-discard-1", ".node_modules-prev-2"] });
       assert.equal(r.exitCode, 0, r.messages.join(" | "));
@@ -456,7 +495,8 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
         "winPs", "psq", "winTaskName", "buildWinTaskScript", "winRemoveStartupFallback", "winTaskExists", "console", "winWriteStartupFallback",
         "winHeadlessSupported", "winKillRunning", "os", "winLegacyStartupVbsPath", "existsSync",
         ensureSrc + "; return winEnsureTask;")(() => ev.push("legacy-autostart"), () => {}, () => ev.push("warn"), () => ev.push("save"),
-        (p: string) => ev.push("rm:" + path.basename(p)), () => "H\\win-launch.vbs",
+        // 지운 경로를 **그대로** 적는다 — 가짜 `winLegacyVbsPath` 가 준 값과 같은가를 본다(basename 은 Windows 에서 `\` 를 잘라 기대와 갈렸다).
+        (p: string) => ev.push("rm:" + p), () => "H\\win-launch.vbs",
         (script: string) => {
           if (script === "REGISTER") { ev.push("register"); return o.register === false ? { status: 0, stdout: "TASK_ERR: denied", stderr: "" } : { status: 0, stdout: "TASK_REGISTERED", stderr: "" }; }
           ev.push("disable-stop"); return { status: 0, stdout: "", stderr: "" };
@@ -791,7 +831,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const un = new Function("winPs", "psq", "winTaskName", "winKillRunning", "winRemoveLegacyAutostart", "winRemoveStartupFallback", "rmSync", "winLegacyVbsPath", "winTaskState", "console", "process",
         fn + "; return winUninstall;")((s: string) => { ev.push(/Unregister/.test(s) ? "unregister" : "ps"); return { status: 0, stdout: "TASK_UNREGISTERED", stderr: "" }; }, (x: string) => x, () => "task",
         () => { ev.push("kill"); return []; }, () => ev.push("legacy-autostart"), () => { ev.push("remove-fallback"); return true; },
-        (p: string) => ev.push("rm:" + path.basename(p)), () => "H\\win-launch.vbs", () => ({ state: "missing" }), { log: () => {}, warn: () => {}, error: () => {} }, { exitCode: 0 });
+        (p: string) => ev.push("rm:" + p), () => "H\\win-launch.vbs", () => ({ state: "missing" }), { log: () => {}, warn: () => {}, error: () => {} }, { exitCode: 0 });
       un(c);
       for (const want of ["unregister", "kill", "remove-fallback", "rm:H\\win-launch.vbs"]) assert(ev.includes(want), `${want} 없음: ${ev.join(",")}`);
       return ev.join("→");

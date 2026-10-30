@@ -3227,14 +3227,33 @@ const runUpdate = (c) => {
   //  git 커밋을 찍어 새 판처럼 보였다). 지금 떠 있는 데몬은 정의상 이번 빌드 전에 뜬 것이다 — 새 빌드를 올리려면 다시 띄워야 한다.
   //  누가 되살렸는지와 무관하게 닫히는 자리가 여기다(원인은 따로 — 로그로 남긴다).
   if (wasRunning) {
-    resumeDaemon(); // 5에서 멈췄으니 start — 그 사이 다시 떴으면 restart(위 주석).
+    // ★던져도 재가동 실패로 다룬다 (2026-10-30) — 종전엔 예외가 아래 판정·백업 안내를 건너뛰고 그대로 올라갔다.
+    try {
+      resumeDaemon(); // 5에서 멈췄으니 start — 그 사이 다시 떴으면 restart(위 주석).
+    } catch (e) {
+      console.error(`🔴 the restart command failed: ${e instanceof Error ? e.message : String(e)}`);
+      process.exitCode = 1;
+    }
   } else if (!isRegistered(c)) {
     console.log("   The daemon is not registered — run 'tiguclaw install' to start it.");
   } else {
     console.log("   The daemon was not running — start it with 'tiguclaw start'.");
   }
+  // ★재가동 실패 판정은 여기 한 곳 — 8b(백업)와 9(요약)가 같이 쓴다. `start` 는 실패하면 exitCode 1 을 세운다(`reportLaunch`).
+  const restartFailed = process.exitCode === 1;
   // ── 단계 8b: 옮겨 둔 옛 트리를 버린다 — 재가동 **뒤**(정지 시간에 넣지 않는다). 새 데몬은 새 트리를 쓴다.
-  if (depsBackup !== null) discardTree(depsBackup);
+  //  ★재가동이 실패했으면 버리지 않는다 (2026-10-30) — 원인을 아직 모르는 채 업데이트 전 의존성을 지우지 않는다. 그 트리는 **의존성뿐**이고
+  //   이전 판(코드·lock·빌드)과 짝이라 지금 코드와 맞지 않는다 — 되돌릴 수 있다고 말하지 않고, 어디 있는지만 말한다.
+  if (depsBackup !== null) {
+    if (restartFailed) {
+      console.warn(
+        `   ⚠ Kept the dependencies from before the update at ${depsBackup} — node_modules only, matching the previous version ` +
+          `(${prevSha.slice(0, 7)}), not the code now in place. Delete it once the daemon runs.`,
+      );
+    } else {
+      discardTree(depsBackup);
+    }
+  }
 
   // ── 단계 9: 결과 요약 ───────────────────────────────────────────────────────
   // ★기동 실패를 받고도 ✅ 를 찍지 않는다 (2026-08-15 2차, 적대 검토 P11). `reportLaunch`
@@ -3242,7 +3261,7 @@ const runUpdate = (c) => {
   //  줄이 "가동 재개" 라 그게 결론으로 읽힌다. 윈도우 93분 사망 사고의 사용자 체감이
   //  (성공 메시지 + 죽은 데몬) 문자 그대로 재현 가능했다. `start` 가 exitCode 1 을 세웠으면
   //  코드는 적용됐어도 **재가동은 실패**라고 말한다.
-  if (process.exitCode === 1) {
+  if (restartFailed) {
     console.error(
       `🔴 The update was applied, but **the daemon failed to restart**: ` +
         `${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} (runtime=${c.runtime}).\n` +

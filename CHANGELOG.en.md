@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-10-30
+
 ### Added
 - Settings now show the assistant's home folder path. You can copy it, or ask the computer the assistant runs on to open that folder.
 - Shell cards in the background panel can be collapsed or expanded all at once.
@@ -1200,7 +1202,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...HEAD
+[0.79.0]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...v0.79.0
 [0.78.0]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...v0.76.0

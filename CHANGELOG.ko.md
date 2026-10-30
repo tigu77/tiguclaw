@@ -8,6 +8,8 @@
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-10-30
+
 ### 추가
 - 설정 화면에 비서의 홈 폴더 경로를 표시합니다. 경로를 복사하거나, 비서가 실행 중인 컴퓨터에서 그 폴더를 열도록 요청할 수 있습니다.
 - 백그라운드 패널에서 셸 카드를 한 번에 접거나 펼칠 수 있습니다.
@@ -2750,7 +2752,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...HEAD
+[0.79.0]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...v0.79.0
 [0.78.0]: https://github.com/tigu77/tiguclaw/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/tigu77/tiguclaw/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/tigu77/tiguclaw/compare/v0.75.0...v0.76.0

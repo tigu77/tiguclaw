@@ -11,7 +11,8 @@
 import { killShellById, listShells, tailShell } from "../../src/core/llm-runtime/capabilities/file-ops-mcp.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { RUNNING_WORK, stampFor } from "../../src/core/resource-revision.js";
-import { cancelJob, cancelQueuedTurn, getJob, getJobActivity, listJobs, resolveOwnerThreadKey } from "../../src/core/worker-jobs.js";
+import { cancelJob, cancelQueuedTurn, getJobActivity, getJobForRead, listJobs, resolveOwnerThreadKey } from "../../src/core/worker-jobs.js";
+import { NOTICE_MAX_ATTEMPTS, safeNoticeRecoverability } from "../../src/core/job-report-delivery.js";
 import { deleteSchedule, getSchedule, isTimer, listSchedules } from "../../src/store/schedules.js";
 import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
@@ -28,17 +29,26 @@ import type { RouteCtx } from "./route-ctx.js";
  * 단건은 펼침 지시문과 재접속 상태 복구에 필요한 필드만 반환한다.
  */
 const handleWorkerJobOne = (ctx: RouteCtx, jobId: string): void => {
-  // ★`getJob` 이다 — 목록을 훑지 않는다 (2026-09-04 2R P-3). 첫 판은 `listJobs({limit:500})`
+  // ★단건 조회(`getJobForRead` — PK)다 — 목록을 훑지 않는다 (2026-09-04 2R P-3). 첫 판은 `listJobs({limit:500})`
   //  에서 찾았는데, 그건 **임계값만 500으로 옮겨 같은 거짓말을 부활**시킨 것이었다:
   //  잡이 500건을 넘으면 데몬이 원문을 갖고 있는데 라우트가 «없다» 고 답한다(실측 601건에서
   //  재현). `jobs` 맵엔 캡이 없어 오래 도는 인스턴스가 결국 도달한다.
   //  ★고칠 때 물었어야 할 것: *"이 판정의 정확한 값이 이미 있나?"* — 있었다.
-  const j = getJob(jobId);
-  const task = j === undefined ? undefined : (j as { task?: string }).task;
+  // ★메모리에 없으면 저장 행(재시작·정리 뒤 — 2026-10-31 완료 보고 복구 §4-3). 진행 중 판정은 여전히 목록(메모리)이 한다.
+  const j = getJobForRead(jobId);
+  // 전달 상태 — `recover` 는 선점과 **같은 판정**(`noticeRecoverability`)이다. 화면은 문구만 고르고 소유 세션을 다시 추론하지 않는다.
+  const n = j?.notice;
+  const row = n === undefined ? undefined : { noticeState: n.state, noticeSession: n.session, noticeAttempts: n.attempts };
   writeJson(ctx.res, 200, j === undefined ? { jobId } : {
-    jobId, task, status: j.status, startedAt: j.startedAt, finishedAt: j.finishedAt,
+    jobId, task: j.task, status: j.status, startedAt: j.startedAt, finishedAt: j.finishedAt,
     ownerThreadKey: resolveOwnerThreadKey(j.threadKey),
     result: j.result, error: j.error,
+    ...(j.resultCapped !== undefined ? { resultCapped: j.resultCapped } : {}),
+    ...(j.errorCapped !== undefined ? { errorCapped: j.errorCapped } : {}),
+    ...(j.bodyPredates === true ? { bodyPredates: true } : {}),
+    ...(row !== undefined
+      ? { notice: { state: n?.state ?? null, attempts: n?.attempts ?? 0, max: NOTICE_MAX_ATTEMPTS, at: n?.at ?? null, recover: safeNoticeRecoverability(row) } }
+      : {}),
   });
 };
 

@@ -1064,6 +1064,16 @@
         return c;
       };
 
+      /**
+       * 저장 상한으로 **앞부분만 남았다**는 표기 — 서버 단건의 `resultCapped`·`errorCapped`(`{kept,total}`). 없으면 "".
+       * ★드로어 카드·에이전트 상세·복사가 **같은 함수**를 쓴다(2026-10-31 완료 보고 복구 §4-2 — 조용히 자르지 않는다). 원문 필드엔 섞지 않고
+       *  표시·내보내기 경계에서 붙인다.
+       */
+      const storedCapNote = (c) =>
+        c && typeof c.kept === "number" && typeof c.total === "number"
+          ? i18n("bg.storedTruncated", { kept: c.kept.toLocaleString(), total: c.total.toLocaleString() })
+          : "";
+
       const onToggleClick = (el, fn) => {
         el.addEventListener("click", (e) => {
           if (isTextDragClick(el)) return;

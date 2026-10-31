@@ -36,6 +36,12 @@ export interface PluginTurnContext {
   channel: string;
   /** 채널 내 목적지(telegram=chatId, http-bridge=threadKey). 모르면 null. */
   target: string | null;
+  /**
+   * 이 턴의 **외부 취소 신호**(`runRegionA` 입력 `abortSignal` — `/stop`·잡 취소·상한) — 2026-10-31.
+   * ★코어 내부 전용이다. 플러그인 호스트는 이걸 `host.turn` 에 싣지 않고 `host.ask` 의 수명에만 잇는다
+   *  (`host.turn` 은 직렬화 가능한 좌표 셋이라는 계약 — `plugins/host.ts`). 설계: 2026-10-30 플러그인 지정 프로필 §3.
+   */
+  abortSignal?: AbortSignal;
 }
 
 /** 서버 **팩토리** — 부를 때마다 새 인스턴스를 준다. */

@@ -170,6 +170,43 @@ export interface SelfUpdateResult {
   restartInMs?: number;
 }
 
+/**
+ * `updating` 의 «언제 재시작하나» 한 문장 — 슬래시(/update)와 도구(update_self)가 같이 쓴다(판단·카탈로그 한 곳).
+ * ★재시작 시각을 아는 건 이 프로세스가 직접 예약했을 때(`restartInMs`)뿐이다 (2026-10-30 v0.79.1 잔여). Windows 위임은 별도 CLI 가
+ *  정지·설치·빌드 뒤에 다시 띄우므로 걸리는 시간이 기기마다 다르다(실측 약 2분 49초) — 종전 기본값 «약 5초» 는 거짓이었다. 숫자를 지어내지 않는다.
+ */
+export const restartNotice = (r: Pick<SelfUpdateResult, "restartInMs">): string =>
+  r.restartInMs !== undefined
+    ? translate("srv.update.restartingIn", { sec: Math.round(r.restartInMs / 1000) })
+    : translate("srv.update.restartingAfterBuild");
+
+// 자가 업데이트 결과 → 사용자 친화 문구 (LLM 무경유 결정론 렌더 — 채널 무관, 슬래시(/update)가 쓴다.
+// 2026-10-30 index.ts 에서 옮김 — 회귀가 문구를 실행으로 재도록). status 4종 each. updating 은 from→to·파일수·"곧 재시작" 고지.
+export const formatSelfUpdateResult = (r: SelfUpdateResult): string => {
+  if (r.status === "busy") {
+    return translate("srv.update.busy");
+  }
+  if (r.status === "up-to-date") {
+    return translate("srv.update.upToDate");
+  }
+  if (r.status === "updating") {
+    const span =
+      r.from !== undefined && r.to !== undefined ? `${r.from} → ${r.to}` : translate("srv.update.latest");
+    // 버전 뒤에 붙는 주석 칸(파일 수 · 의존성) — 칸마다 키 하나, 앞 공백·쉼표까지 카탈로그 값이다.
+    const files =
+      r.changedFiles !== undefined
+        ? translate(r.changedFiles === 1 ? "srv.update.fileCount.one" : "srv.update.fileCount.other", { count: r.changedFiles })
+        : "";
+    const deps = r.ranNpmInstall === true ? translate("srv.update.depsUpdated") : "";
+    return `${translate("srv.update.applied", { span, files, deps })}\n${restartNotice(r)}`;
+  }
+  // failed — 의존성 설치·빌드 실패 시 자동 롤백·데몬 생존을 명시(먹통 아님).
+  const state = translate(r.rolledBack === true ? "srv.update.state.rolledBack" : "srv.update.state.running");
+  return r.error !== undefined && r.error !== ""
+    ? translate("srv.update.failedWithCause", { state, error: r.error })
+    : translate("srv.update.failed", { state });
+};
+
 // ── 동시 업데이트 가드 (단계 1, module-private 인프로세스 락) ───────────────────
 // 진행 중 재호출은 git 작업트리를 동시에 건드리지 못하게 즉시 busy 반환. 재시작이
 // 프로세스를 죽이므로(updating 경로) 자연 해제 — 단 모든 실패 경로도 finally 로 복구.
@@ -657,6 +694,8 @@ export const runSelfUpdate = async (
               //  빌드가 깨졌을 때 되돌아갈 곳이 사라진다. 롤백은 그때만 쓰이므로 이 결함은
               //  **조용했다**(실측 로그가 `X → X · 코드 변경 없음` 인데 HEAD 는 옮겨져 있었다).
               TIGUCLAW_UPDATE_PREV_SHA: prevSha,
+              // 완료 로그·마커의 «무엇에서» — 빌드가 뒤처졌으면 돌고 있던 빌드(위 즉시 응답과 같은 값). **표시 전용**, 앵커는 위 값이다.
+              TIGUCLAW_UPDATE_REPORT_FROM: reportFrom,
               ...(deps.notify !== undefined
                 ? {
                     TIGUCLAW_UPDATE_NOTIFY_CHANNEL: deps.notify.channel,

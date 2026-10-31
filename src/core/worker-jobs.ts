@@ -44,7 +44,14 @@ import {
   upsertWorkerJob,
   updateWorkerJobStatus,
   listInterruptedWorkerJobs,
-  pruneTerminalWorkerJobs,
+  pruneTerminalWorkerJobsCounted,
+  finishWorkerJob,
+  getWorkerJobRow,
+  listTerminalWorkerJobsByThread,
+  getWorkerJobNotices,
+  type NoticeState,
+  type PersistedJobStatus,
+  type PersistedWorkerJob,
 } from "../store/worker-jobs.js";
 import { getEventBus } from "./eventbus.js";
 import type { TurnSpend } from "./llm-runtime/turn-spend.js";
@@ -52,6 +59,7 @@ import { formatDuration, formatDurationKo } from "./format-duration.js";
 import { translate } from "./i18n.js";
 import { isSubagentTool } from "./llm-runtime/subagent-tools.js";
 import { createSteeringChannel, isJobSide } from "./steering.js";
+import { beginInterruptedNotice, beginNoticeSending, settleFirstNotice } from "./job-report-delivery.js";
 import type { SteeringChannel, SteeringInput } from "./steering.js";
 import {
   KEEP_WORKING, NOTICE_CAP_PER_JOB, NOTICE_MAX_CHARS, checkNotice, hasNotices, isNoticeJoining, managerNoticeText,
@@ -169,6 +177,11 @@ const persistSafe = (label: string, fn: () => void): void => {
   }
 };
 
+/** 저장 상한을 넘겨 앞부분만 저장했을 때의 로그 한 줄(본문 없이 — 필드·앞 N/전체 M 단위). */
+const logStoredCap = (jobId: string) => (field: "result" | "error", kept: number, total: number): void => {
+  console.warn(`worker-jobs: 저장 상한 초과 — ${jobId} ${field} 앞 ${kept}/전체 ${total} 단위만 저장(메모리엔 전문)`);
+};
+
 // ─── 터미널 잡 캡 (2026-07-12, P1 runtime-maintenance) ───────────────────────
 // worker_jobs DB 미러가 무바운드로 계속 쌓이는 유일한 파생 store 였다(architect contract
 // §1). `events.ts RETENTION_KEEP` 동형이나 events(고volume, 10k) 보다 훨씬 저volume
@@ -180,9 +193,16 @@ export const TERMINAL_WORKER_JOB_KEEP = 1000;
 
 /** 터미널 전이(done/failed/cancelled/interrupted) 마다 호출 — best-effort(persistSafe 동형). */
 const pruneTerminalJobsSafe = (): void => {
-  persistSafe("pruneTerminalWorkerJobs", () =>
-    pruneTerminalWorkerJobs(TERMINAL_WORKER_JOB_KEEP),
-  );
+  persistSafe("pruneTerminalWorkerJobs", () => {
+    const { unconfirmed: u } = pruneTerminalWorkerJobsCounted(TERMINAL_WORKER_JOB_KEEP);
+    // ★전달 확인이 안 된 통지가 보관 상한 밖으로 나가면 **상태별로** 센다(2026-10-31 §4-2) — 조용히 사라지지 않게.
+    if (Object.keys(u).length > 0) {
+      console.warn(
+        `worker-jobs: 정리로 전달 미확인 통지가 보관 상한 밖으로 나감 — 미전달 ${u.undelivered ?? 0} · 보내는 중 ${u.sending ?? 0} · ` +
+          `재전달 중 ${u.recovering ?? 0} · 포기 ${u.gave_up ?? 0}`,
+      );
+    }
+  });
   pruneTerminalJobsInMemory();
 };
 
@@ -280,7 +300,19 @@ export type WorkerJobKind = "worker" | "agent";
  * 잡 하나의 끝 — 결과 또는 원인. `errorName` 은 원인이 타입 오류였을 때 그 이름이다
  * (문장이 아니라 이름으로 분류하려고 — `failureKind`). 문자열 오류면 없다.
  */
-export type WorkerOutcome = { result: string } | { error: string; errorName?: string; resumeAtMs?: number };
+export type WorkerOutcome =
+  | { result: string }
+  | {
+      error: string;
+      errorName?: string;
+      resumeAtMs?: number;
+      /**
+       * 실패 전에 **끝까지 완성된 본 보고**(있을 때만 — 매니저 마무리 턴 실패, 2026-10-31 완료 보고 복구 §4-1).
+       * ★`result` 라는 이름을 쓰지 않는다 — `"result" in outcome` 이 «성공» 판정이라 실패가 완료로 마킹된다.
+       *  원오류(`error`)에는 본 보고·꼬리표를 섞지 않는다 — 분류(`failureKind`)는 원오류만 읽어야 한다.
+       */
+      completedReport?: string;
+    };
 
 /**
  * 던져진 것 → 실패 outcome. 두 레지스트리(매니저·서브에이전트)가 이 한 곳을 쓴다 — 이름을 빠뜨리는 자리가 안 생기게.
@@ -355,7 +387,10 @@ export interface WorkerJobRecord {
   stallResumes?: number;
   /** 이미 센 무진전 재시도 id — 같은 사건을 두 번 세지 않게(바운드). 런타임 전용. */
   stallSeen?: string[];
-  /** status==="done" 시 매니저 출력 (재주입 전 — 채널 직행 절대 X, W-I1). */
+  /**
+   * 작업 **원결과** — done 이면 최종 보고, failed 면 «마무리 전에 완성된 본 보고»(있을 때만, 2026-10-31).
+   * ★«결과가 있다» 가 «성공» 이 아니다 — 성공 여부는 `status` 가 말한다.
+   */
   result?: string;
   /** status==="failed" 시 redact 된 원인 문자열. */
   error?: string;
@@ -512,8 +547,9 @@ export const markDone = (jobId: string, result: string): void => {
   job.status = "done";
   job.result = result;
   job.finishedAt = Date.now();
+  // 상태와 원결과를 **한 UPDATE** 로 — 재시작 뒤에도 정식 조회로 읽힌다(2026-10-31 §4-2).
   persistSafe("markDone", () =>
-    updateWorkerJobStatus(jobId, "done", job.finishedAt!),
+    finishWorkerJob(jobId, "done", job.finishedAt!, { resultText: result }, logStoredCap(jobId)),
   );
   dropCheckinEvidence(jobId);
   pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1, running 은 위 UPDATE 대상 아님).
@@ -583,8 +619,11 @@ const FAILURE_LOG_LABEL: Readonly<Record<FailureKind, string>> = {
 export const classifyFailure = (raw: string, errorName?: string): string =>
   FAILURE_LOG_LABEL[failureKind(raw, errorName)];
 
-/** 매니저 실패/타임아웃 — 원인 기록. */
-export const markFailed = (jobId: string, error: string, errorName?: string): void => {
+/**
+ * 매니저 실패/타임아웃 — 원인 기록. `completedReport` = 실패 전에 완성된 본 보고(마무리 실패, 2026-10-31) — **원결과 칸**(`result`)에 둔다.
+ * ★원오류(`error`)와 섞지 않는다 — 분류·통지·조회가 각자 제 칸을 읽는다(완료 보고 복구 설계 §4-1). 상태는 그대로 `failed`(«실패는 실패로»).
+ */
+export const markFailed = (jobId: string, error: string, errorName?: string, completedReport?: string): void => {
   const job = jobs.get(jobId);
   if (job === undefined) return;
   // 취소는 terminal·sticky (U-I4 개정 2026-07-17) — 늦게 도착한 실패가 사용자 취소를
@@ -594,6 +633,7 @@ export const markFailed = (jobId: string, error: string, errorName?: string): vo
   job.status = "failed";
   job.error = error;
   if (errorName !== undefined) job.errorName = errorName;
+  if (completedReport !== undefined && completedReport !== "") job.result = completedReport;
   job.finishedAt = Date.now();
   // ★실패를 **로그만으로 진단할 수 있게** (2026-08-12, 사용자: "확실하게 로그를 심어보자").
   //  종전엔 실패가 이벤트·DB 로만 남아, 원격 기계(회사 PC 는 접속 불가)에서 신고가 오면
@@ -601,10 +641,19 @@ export const markFailed = (jobId: string, error: string, errorName?: string): vo
   console.error(
     `[job-failed] '${job.label}' (${job.kind}:${jobId}) — ${Math.round(
       (job.finishedAt - job.startedAt) / 1000,
-    )}s 실행 후 실패 · 분류=${classifyFailure(error, errorName)} · thread=${job.threadKey} · 원인=${error.slice(0, 300)}`,
+    )}s 실행 후 실패 · 분류=${classifyFailure(error, errorName)} · thread=${job.threadKey} · 원인=${error.slice(0, 300)}` +
+      // 본문은 찍지 않는다 — 길이만(로그는 진단면이지 결과 보관소가 아니다).
+      (job.result !== undefined ? ` · 본보고=${job.result.length}자 보존` : ""),
   );
+  // 상태·원오류·원결과(있으면)를 **한 UPDATE** 로(2026-10-31 §4-2). 원오류는 빈 문자열이어도 쓴다 — «기록 이전 판» 과 가른다.
   persistSafe("markFailed", () =>
-    updateWorkerJobStatus(jobId, "failed", job.finishedAt!),
+    finishWorkerJob(
+      jobId,
+      "failed",
+      job.finishedAt!,
+      { errorText: error, ...(job.result !== undefined ? { resultText: job.result } : {}), ...(errorName !== undefined ? { errorName } : {}) },
+      logStoredCap(jobId),
+    ),
   );
   dropCheckinEvidence(jobId);
   pruneTerminalJobsSafe(); // 터미널 전이 — worker_jobs 캡(P1).
@@ -783,6 +832,100 @@ export const awaitJobOutcome = async (
 
 export const getJob = (jobId: string): WorkerJobRecord | undefined =>
   jobs.get(jobId);
+
+/**
+ * 조회용 잡 — 메모리(런타임 진실) 또는 재시작·정리 뒤의 저장 행. 조회 도구·대시보드 단건이 쓴다(2026-10-31 완료 보고 복구 §4-3).
+ * ★진행 중 판정·취소·합류엔 쓰지 마라 — 그쪽 근거는 메모리다(끝난 저장 행을 섞으면 «목록에 없는 running = 끝남» 판정이 무너진다).
+ */
+export interface ReadableJob {
+  jobId: string;
+  label: string;
+  status: PersistedJobStatus;
+  threadKey: string;
+  startedAt: number;
+  finishedAt?: number;
+  task?: string;
+  /** 원결과 — 저장 행이면 저장 상한까지. */
+  result?: string;
+  error?: string;
+  errorName?: string;
+  /** 저장 상한으로 앞부분만 남았다(저장 행일 때만) — 앞 `kept`/전체 `total` 단위. */
+  resultCapped?: { kept: number; total: number };
+  errorCapped?: { kept: number; total: number };
+  /** 이 잡이 **본문 저장 이전 판**에서 끝났다(저장 행에 본문 열이 비었다) — «없음» 이 아니라 사유를 말해야 한다. */
+  bodyPredates?: boolean;
+  /** 저장 행에서 읽었다(메모리에 없음 — 재시작·정리 뒤). */
+  fromStore: boolean;
+  /** 통지 전달 상태 — **정본은 표 하나**라 메모리에 있는 잡도 표에서 읽는다(PK 한 번). 행이 없거나 못 읽으면 없음. */
+  notice?: { state?: NoticeState; session?: string; attempts?: number; at?: number };
+}
+
+const noticeOfRow = (r: PersistedWorkerJob): NonNullable<ReadableJob["notice"]> => ({
+  ...(r.noticeState !== undefined ? { state: r.noticeState } : {}),
+  ...(r.noticeSession !== undefined ? { session: r.noticeSession } : {}),
+  ...(r.noticeAttempts !== undefined ? { attempts: r.noticeAttempts } : {}),
+  ...(r.noticeAt !== undefined ? { at: r.noticeAt } : {}),
+});
+
+const cappedOf = (text: string | undefined, total: number | undefined): { kept: number; total: number } | undefined =>
+  text !== undefined && total !== undefined && text.length < total ? { kept: text.length, total } : undefined;
+
+export const getJobForRead = (jobId: string): ReadableJob | undefined => {
+  const m = jobs.get(jobId);
+  if (m !== undefined) {
+    let notice: ReadableJob["notice"];
+    try {
+      const r = getWorkerJobNotices([jobId]).get(jobId);
+      if (r !== undefined) notice = noticeOfRow(r);
+    } catch {
+      /* 전달 상태만 못 읽는다 — 조회는 나간다 */
+    }
+    return {
+      ...(notice !== undefined ? { notice } : {}),
+      jobId: m.jobId,
+      label: m.label,
+      status: m.status,
+      threadKey: m.threadKey,
+      startedAt: m.startedAt,
+      ...(m.finishedAt !== undefined ? { finishedAt: m.finishedAt } : {}),
+      task: m.task,
+      ...(m.result !== undefined ? { result: m.result } : {}),
+      ...(m.error !== undefined ? { error: m.error } : {}),
+      ...(m.errorName !== undefined ? { errorName: m.errorName } : {}),
+      fromStore: false,
+    };
+  }
+  let row: ReturnType<typeof getWorkerJobRow>;
+  try {
+    row = getWorkerJobRow(jobId);
+  } catch (e) {
+    console.error(`worker-jobs: 저장 행 조회 실패(${jobId}): ${e instanceof Error ? e.message : String(e)}`);
+    return undefined;
+  }
+  if (row === undefined) return undefined;
+  // 종료 기록은 done 이면 원결과, failed 면 원오류를 **반드시** 쓴다(빈 문자열이어도) — 둘 다 비면 그 기록을 안 하던 판이다.
+  const predates =
+    (row.status === "done" && row.resultText === undefined) ||
+    (row.status === "failed" && row.errorText === undefined && row.resultText === undefined);
+  const resultCapped = cappedOf(row.resultText, row.resultChars);
+  const errorCapped = cappedOf(row.errorText, row.errorChars);
+  return {
+    jobId: row.jobId,
+    label: row.label,
+    status: row.status,
+    threadKey: row.threadKey,
+    startedAt: row.startedAt,
+    ...(row.finishedAt !== null ? { finishedAt: row.finishedAt } : {}),
+    ...(row.resultText !== undefined ? { result: row.resultText } : {}),
+    ...(row.errorText !== undefined ? { error: row.errorText } : {}),
+    ...(row.errorName !== undefined ? { errorName: row.errorName } : {}),
+    ...(resultCapped !== undefined ? { resultCapped } : {}),
+    ...(errorCapped !== undefined ? { errorCapped } : {}),
+    ...(predates ? { bodyPredates: true } : {}),
+    fromStore: true,
+    notice: noticeOfRow(row),
+  };
+};
 
 export interface ListJobsOpts {
   /** 진행 중만 (status==="running"). 미지정 = 전체. */
@@ -1806,6 +1949,17 @@ export const listChildJobs = (
       startedAt: j.startedAt,
     });
   }
+  // ★재시작·정리 뒤에도 목록에서 되찾게 — 저장된 **종료** 행을 jobId 로 합친다(메모리 우선, 2026-10-31 §4-3).
+  //  길이는 원문 전체 길이(`result_chars`) — 저장 상한으로 잘렸으면 단건 조회가 그 사실을 붙인다.
+  try {
+    const seen = new Set(all.map((r) => r.jobId));
+    for (const r of listTerminalWorkerJobsByThread(parentThreadKey)) {
+      if (seen.has(r.jobId)) continue;
+      all.push({ jobId: r.jobId, label: r.label, status: r.status, resultChars: r.resultChars ?? 0, startedAt: r.startedAt });
+    }
+  } catch (e) {
+    console.error(`worker-jobs: 저장된 자식 목록 조회 실패 — 메모리 목록만: ${e instanceof Error ? e.message : String(e)}`);
+  }
   all.sort(childNewerFirst);
   // ★**offset 이 아니라 커서다** (2026-09-14). 최신순 목록에 새 자식이 끼면 offset 은 한 칸씩
   //  밀려 **이미 본 것을 다시 주거나 못 본 것을 건너뛴다.** 커서는 «이 키보다 오래된 것» 이라
@@ -1854,10 +2008,11 @@ export const takeUndeliveredChildResults = (
     if (j.threadKey !== parentThreadKey) continue;
     if (j.status === "running") continue; // 아직 도는 자식은 기존 거두기 루프가 기다린다.
     if (j.resultDelivered === true) continue; // 이미 결과함으로 갔다.
+    // ★상태로 가른다(2026-10-31) — 실패에도 원결과(완성된 본 보고)가 있을 수 있어 «result 있음 = 완료» 로 읽으면 실패가 완료로 점호된다.
     const outcome =
-      j.result !== undefined
-        ? { result: j.result }
-        : { error: j.error ?? "(원인 미상)" };
+      j.status === "done"
+        ? { result: j.result ?? "" }
+        : { error: j.error ?? "(원인 미상)", ...(j.result !== undefined ? { completedReport: j.result } : {}) };
     j.resultDelivered = true; // take — 다음 라운드에 중복 주입 0.
     out.push({ jobId: j.jobId, label: j.label, text: summonerDeliveryText(j, outcome) });
   }
@@ -3046,7 +3201,7 @@ export const jobSessionLabel = (threadKey: string): { labelSession?: string } =>
   return owner !== "" && isHumanSessionKey(owner) ? { labelSession: owner } : {};
 };
 
-const reacquireReply = (
+export const reacquireReply = (
   dest: WorkerNotifyDest,
   opts?: { observe?: boolean; sessionThreadKey?: string; originThreadKey?: string; labelSession?: string },
 ): ((text: string, opts?: ReplyOptions) => Promise<void>) => {
@@ -3407,31 +3562,97 @@ export const humanizeWorkerError = (raw: string, errorName?: string): string => 
  * 통지가 영영 안 가는 deadlock 을 막는다. recoverInterruptedJobs 의 raw 통지와 동형.
  * failed 는 humanizeWorkerError 로 *왜·언제 다시* 를 담는다(actionable, 임무 §2).
  */
-const buildRawNotice = (job: WorkerJobRecord): string => {
-  if (job.status === "done") {
-    return translate("srv.job.done", { label: job.label, result: job.result ?? translate("srv.job.noResult") });
+/**
+ * 통지에 쓰는 한도 재개 상태. **첫 발송**은 메모리 `job.limitResume`(armed·capped — 실패 출구 직후라 그 값이 곧 현재),
+ * **재전달**은 발송 직전에 재개 저장소에서 읽은 현재 상태(waiting·resuming·unknown·unreadable — 설계 §4-4).
+ */
+export type JobNoticeLimit =
+  | ResumeNote
+  | { kind: "waiting"; scheduleId: number; runAt: number }
+  | { kind: "resuming" }
+  | { kind: "unknown" }
+  | { kind: "unreadable" };
+
+/** 통지 렌더 입력 — 메모리 잡 레코드와 저장 행 둘 다 이 모양으로 바꿔 넣는다(첫 발송·재전달이 같은 렌더러 — 설계 §3). */
+export interface JobNoticeInput {
+  label: string;
+  status: "done" | "failed" | "cancelled" | "interrupted";
+  result?: string;
+  error?: string;
+  errorName?: string;
+  limit?: JobNoticeLimit;
+}
+
+/** 실패 원인 칸 + 재개 한 줄(있으면) — 한도 재개 상태에 따라. 마무리 실패·일반 실패가 같은 규칙을 쓴다(설계 §3). */
+const failureCauseOf = (n: JobNoticeInput, now: number): { cause: string; resume?: string } => {
+  const limit = n.limit;
+  if (limit === undefined) return { cause: humanizeWorkerError(n.error ?? "", n.errorName) };
+  if (limit.kind === "armed") {
+    // ★한도 자동 이어가기 (2026-10-23 §3.8) — 재개를 걸었으면 «다시 시켜주세요»·«알려주시면» 대신 «{when} 이어서 · 취소 길» 을 **같은 메시지**에.
+    const ms = parseCooldownMs(n.error ?? "") ?? Math.max(0, limit.wakeAt - RESUME_MARGIN_MS - now);
+    return {
+      cause: translate("srv.job.error.limitPaused", { when: formatResetAt(ms, now) }),
+      resume: resumeNoteLine(limit, now),
+    };
   }
-  if (job.status === "cancelled") {
-    return translate("srv.job.cancelled", { label: job.label });
+  if (limit.kind === "capped") {
+    return { cause: humanizeWorkerError(n.error ?? "", n.errorName), resume: resumeNoteLine(limit) };
   }
+  // ── 재전달 — 원오류의 «N초 뒤 풀림» 은 실패 당시 기준이라 지금은 낡았다(설계 §4-4 ⑱ 실측). 시각은 지금 읽은 예약에서만 낸다.
+  if (limit.kind === "waiting") {
+    const note: ResumeNote = { kind: "armed", scheduleId: limit.scheduleId, wakeAt: limit.runAt };
+    return {
+      cause: translate("srv.job.error.limitPaused", { when: formatResetAt(Math.max(0, limit.runAt - RESUME_MARGIN_MS - now), now) }),
+      resume: resumeNoteLine(note, now),
+    };
+  }
+  // 진행 중 · 예약 없음 · 확인 불가 — «다시 시켜 주세요» 를 내지 않는다(자동 재개와 겹쳐 중복 실행을 부른다).
+  const resumeKey =
+    limit.kind === "resuming" ? "srv.limitResume.inProgress" : limit.kind === "unknown" ? "srv.limitResume.none" : "srv.limitResume.unreadable";
+  return { cause: translate("srv.job.error.limitStopped"), resume: translate(resumeKey) };
+};
+
+/**
+ * 잡 종료 통지 **렌더러 하나** — 첫 발송(실패 원문·안전망)·재시작 중단 통지·회수 재전달이 같은 분기를 쓴다(2026-10-31 완료 보고 복구 §3).
+ * 통지 본문은 저장하지 않는다 — 언제나 잡 기록(상태·라벨·원결과·원오류) → 여기. 그래서 통지와 원결과가 두 곳에서 갈릴 수 없다.
+ */
+export const renderJobNotice = (n: JobNoticeInput, now: number = Date.now()): string => {
+  if (n.status === "done") {
+    return translate("srv.job.done", { label: n.label, result: n.result ?? translate("srv.job.noResult") });
+  }
+  if (n.status === "cancelled") return translate("srv.job.cancelled", { label: n.label });
+  if (n.status === "interrupted") return translate("srv.job.interruptedByRestart", { label: n.label });
   // 부분 진행 힌트 — daemon 경계엔 정확한 처리 건수가 없다(매니저 thread 의 부수효과로만
   // 존재, region 도메인). 카운트를 *지어내지 않고* 일부 진행 가능성을 정직히 안내해
   // 사용자가 이어서/처음부터 중 결정하게 한다(임무 §3 — feasible 범위 한도).
-  // 원인이 비면(`job.error` 없음) `humanizeWorkerError` 가 «알 수 없는 오류» 를 사용자 언어로 낸다.
-  // ★한도 자동 이어가기 (2026-10-23 §3.8) — 재개를 걸었으면 «다시 시켜주세요»·«알려주시면» 대신 «{when} 이어서 · 취소 길» 을 **같은 메시지**에.
-  const note = job.limitResume;
-  if (note?.kind === "armed") {
-    const now = Date.now();
-    const ms = parseCooldownMs(job.error ?? "") ?? Math.max(0, note.wakeAt - RESUME_MARGIN_MS - now);
-    return translate("srv.job.failedLimitResume", {
-      label: job.label,
-      cause: translate("srv.job.error.limitPaused", { when: formatResetAt(ms, now) }),
-      resume: resumeNoteLine(note, now),
+  // 원인이 비면(`error` 없음) `humanizeWorkerError` 가 «알 수 없는 오류» 를 사용자 언어로 낸다.
+  const { cause, resume } = failureCauseOf(n, now);
+  if (n.result !== undefined && n.result !== "") {
+    // ★마무리 단계 실패 — 본 작업은 끝났다. «처음부터 다시» 를 권하지 않고, 완성된 본 보고 전문을 싣는다(설계 §4-1). 상태는 실패 그대로.
+    return translate("srv.job.failedAfterReport", {
+      label: n.label,
+      cause,
+      resume: resume !== undefined ? `\n${resume}` : "",
+      report: n.result,
     });
   }
-  const failed = translate("srv.job.failed", { label: job.label, cause: humanizeWorkerError(job.error ?? "", job.errorName) });
-  return note?.kind === "capped" ? `${failed}\n${resumeNoteLine(note)}` : failed;
+  if (n.limit !== undefined && n.limit.kind !== "capped") {
+    return translate("srv.job.failedLimitResume", { label: n.label, cause, resume: resume ?? "" });
+  }
+  const failed = translate("srv.job.failed", { label: n.label, cause });
+  return resume !== undefined ? `${failed}\n${resume}` : failed;
 };
+
+/** 메모리 잡 → 첫 발송 통지(한도 재개는 메모리 `limitResume` — 실패 출구 직후의 현재 상태). */
+const buildRawNotice = (job: WorkerJobRecord): string =>
+  renderJobNotice({
+    label: job.label,
+    status: job.status === "running" ? "failed" : job.status,
+    ...(job.result !== undefined ? { result: job.result } : {}),
+    ...(job.error !== undefined ? { error: job.error } : {}),
+    ...(job.errorName !== undefined ? { errorName: job.errorName } : {}),
+    ...(job.limitResume !== undefined ? { limit: job.limitResume } : {}),
+  });
 
 /** 작업자가 끝난 뒤 도착해 반영 못 한 지시 — raw 통지 꼬리. 비면 "". */
 export const lateNotice = (late: readonly string[], label: string): string =>
@@ -3583,7 +3804,7 @@ const buildCompletionPrompt = (
  */
 export const summonerDeliveryText = (
   job: WorkerJobRecord,
-  outcome: { result: string } | { error: string },
+  outcome: { result: string } | { error: string; completedReport?: string },
 ): string =>
   // ★세 가지를 **구분**한다 (ADR 위험 목록 "취소 결과의 의미"). 종전엔 취소도
   //  `[… 완료] 실패했습니다: 사용자 요청으로 취소되었습니다.` 로 나갔다 — 한 문장에
@@ -3600,11 +3821,15 @@ export const summonerDeliveryText = (
       `사용자에게 먼저 물어보세요.`
     : "result" in outcome
       ? `[백그라운드 서브에이전트 '${job.label}' 완료] 결과:\n${outcome.result}`
-      : `[백그라운드 서브에이전트 '${job.label}' 실패] ${outcome.error}`;
+      : outcome.completedReport !== undefined && outcome.completedReport !== ""
+        // 마무리 단계 실패 — 본 작업은 끝났다. 종전엔 본 보고가 오류 문자열에 섞여 같이 갔다 — 부모가 받던 본 보고를 잃지 않는다(설계 §4-1).
+        ? `[백그라운드 서브에이전트 '${job.label}' 실패(마무리 단계)] 원인: ${outcome.error}\n` +
+          `본 작업은 끝났고 마무리 단계에서 실패했습니다 — 마무리 전에 완성된 본 보고:\n${outcome.completedReport}`
+        : `[백그라운드 서브에이전트 '${job.label}' 실패] ${outcome.error}`;
 
 const deliverToSummoner = (
   job: WorkerJobRecord,
-  outcome: { result: string } | { error: string },
+  outcome: { result: string } | { error: string; completedReport?: string },
 ): boolean => {
   const parentId = parentJobIdOf(job.threadKey);
   if (parentId === undefined) return false; // 소환자가 세션 — 새 턴 경로.
@@ -3701,7 +3926,13 @@ const deliverCompletionInner = async (
   } else {
     // 시크릿 누수 0 — redactSecrets 통과 후 기록 (architect §7).
     const { redactSecrets } = await import("./outbound-sanitize.js");
-    markFailed(jobId, redactSecrets(outcome.error), outcome.errorName);
+    // 완성된 본 보고도 같은 redact — 종전엔 오류 문자열 안에 섞여 이 redact 를 지났다(같은 처리 유지 · 설계 §4-1).
+    markFailed(
+      jobId,
+      redactSecrets(outcome.error),
+      outcome.errorName,
+      outcome.completedReport !== undefined ? redactSecrets(outcome.completedReport) : undefined,
+    );
     // ★한도 자동 이어가기 (2026-10-23 §3.6) — 마킹 **바로 다음, await 없이**: 합류 쪽이 상태를 읽을 때 이미 칸이 있다.
     noteJobLimitStop(jobId, outcome);
   }
@@ -3806,11 +4037,19 @@ const routeCompletion = async (
         })()
       : found;
 
+  // ─── 여기서부터 **사용자 대상 종료 통지** 갈래다 — 전달 상태를 연다(2026-10-31 완료 보고 복구 §5-2) ───────────
+  //  위 두 갈래(소환자 결과함 · 연쇄 취소)는 «미전달» 이 아니다(부모가 받았거나 상위 알림이 갈음) — NULL 그대로.
+  //  ★앞의 상태 마킹과 같은 동기 구간(사이에 await 없음)이라 «마킹 뒤 sending 전» 창은 강제 종료로만 생긴다(§5-5 ①).
+  //  자동 회수 대상 = 잡을 띄운 **사람 대화**(세션 라벨과 같은 판정) — 아니면 조회만.
+  const noticeSession = jobSessionLabel(found.threadKey).labelSession;
+  beginNoticeSending(jobId, noticeSession);
+
   if (mainHandler === undefined) {
     queueNoticeTurns();
     console.error(
       `worker-jobs: 메인 핸들러 미등록 — 매니저 '${job.label}'(${jobId}) 완료 보고 불가`,
     );
+    settleFirstNotice(jobId, false, noticeSession);
     return false;
   }
 
@@ -3837,11 +4076,13 @@ const routeCompletion = async (
     queueNoticeTurns(); // 실패 raw 갈래 — 완료 턴이 없다(마킹 직후와 같은 동기 구간).
     try {
       await baseReply(buildRawNotice(job));
+      settleFirstNotice(jobId, true, noticeSession);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(
         `worker-jobs: ${job.status} 통지 전송 실패 (job='${job.label}' ${jobId} thread=${job.threadKey}): ${reason}`,
       );
+      settleFirstNotice(jobId, false, noticeSession);
     }
     return false;
   }
@@ -3956,12 +4197,17 @@ const routeCompletion = async (
       console.warn(
         `worker-jobs: 완료 재주입 통지 미도달 — raw 안전망 통지 발화 (job='${job.label}' ${jobId})`,
       );
+      settleFirstNotice(jobId, true, noticeSession);
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(
         `worker-jobs: raw 안전망 통지마저 실패 (job='${job.label}' ${jobId}): ${reason}`,
       );
+      settleFirstNotice(jobId, false, noticeSession);
     }
+  } else {
+    // 재주입 턴이 한 줄이라도 보냈다 — 기존 `trackedReply` 계약 그대로 전달로 본다(일부만 갔어도 — §5-5 ⑧).
+    settleFirstNotice(jobId, true, noticeSession);
   }
   return true;
 };
@@ -4143,7 +4389,16 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
       publishInterrupted(job);
       continue;
     }
-    const text = translate("srv.job.interruptedByRestart", { label: job.label });
+    // ★상태 `interrupted` 와 전달 상태 `sending` 을 **보내기 전에** 한 UPDATE 로(2026-10-31 §5-3) — 보내는 도중 죽으면 다음 부팅의
+    //  잔여 정리가 `undelivered` 로 돌려 다음 사람 메시지 때 회수된다(종전엔 `running` 으로 남아 다음 부팅에 다시 통지했다).
+    //  부팅 시점엔 메모리에 부모가 없어 사람 대화 판정은 `thread_key` 가 사람 대화일 때만 성립한다(같은 함수 — 설계 §5-3).
+    const noticeSession = jobSessionLabel(job.threadKey).labelSession;
+    if (!beginInterruptedNotice(job.jobId, noticeSession)) {
+      // 기록 실패 — 종전처럼 통지 뒤 상태만 바꾼다(전달 상태 없음 · 회수 없음).
+      persistSafe("recover", () => updateWorkerJobStatus(job.jobId, "interrupted", Date.now()));
+    }
+    const text = renderJobNotice({ label: job.label, status: "interrupted" });
+    let sent = false;
     try {
       // 영속된 notifyDest(store 가 미러)가 있으면 그걸로, 없으면 channel/threadKey 폴백 →
       // 재시작 후에도 스케줄 매니저 통지가 올바른 chatId 로 도달(정직 통지 강화). store 가
@@ -4158,15 +4413,14 @@ export const recoverInterruptedJobs = async (): Promise<void> => {
         { sessionThreadKey: notifySessionThreadKey(job.threadKey), ...jobSessionLabel(job.threadKey) },
       );
       await reply(text);
+      sent = true;
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       console.error(
         `worker-jobs: 중단 통지 전송 실패 (job='${job.label}' ${job.jobId}): ${reason}`,
       );
     }
-    persistSafe("recover", () =>
-      updateWorkerJobStatus(job.jobId, "interrupted", Date.now()),
-    );
+    settleFirstNotice(job.jobId, sent, noticeSession);
     publishInterrupted(job);
   }
   // 터미널 전이(interrupted) 배치 종료 후 1회만 prune — 루프 안에서 N번 부르지 않음(§5 얇게).

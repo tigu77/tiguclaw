@@ -1263,6 +1263,11 @@
       .bg-timer-stop:disabled { opacity:.5; cursor:default; }
       .bg-jobs-body { display:flex; flex-direction:column; }
       .bg-group-body .bg-filter { flex:none; }
+      /* 상태 필터는 공통 스크롤 칸 윗변에 남는다(2026-10-30 모바일 신고 «스크롤영역 상단이 겹치네»). 칸을 하나로 합친 뒤
+         이 줄이 스크롤에 실려 칸 윗변(=범위 토글 바로 밑)에서 반쯤 잘려, 같은 모양의 두 버튼 줄이 겹쳐 보였다.
+         sticky 의 기준은 자기 묶음 본문이라 작업 필터는 작업 카드가 보이는 동안만, 셸 필터는 셸 묶음에서만 남는다.
+         카드로 이동(alignCardTop)은 이 줄 아래를 윗변으로 본다. */
+      #bg-scroll .bg-group-body > .bg-filter { position:sticky; top:0; z-index:1; background:rgb(var(--panel-solid-rgb) / .92); backdrop-filter:blur(14px); }
       /* 세션 스코프(2026-07-16) — 기본은 활성 세션(activeThreadKey)이 띄운 잡만. 카드의 .bg-in-scope
          는 JS 가 세션 전환/카드 생성 때마다 갱신(threadKey==activeThreadKey 또는 threadKey 없음=레거시
          항상 소속). 상태필터(위)와 독립 클래스 → 두 규칙이 겹쳐 AND 로 숨김(둘 중 하나만 걸려도 숨김). */
@@ -1394,6 +1399,7 @@
       .bg-job-todo { font-size:0.6875rem; color:var(--text-dim); margin-top:3px; }
       .bg-job-notice { font-size:0.6875rem; color:var(--warn); margin-top:3px; white-space:pre-wrap; overflow-wrap:anywhere; }
       .bg-job-notice.answered { color:var(--text-dim); }
+      .bg-job-report { font-size:0.6875rem; color:var(--text-dim); margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; }
       .bg-job-todo-head { font-weight:700; cursor:pointer; user-select:none; display:flex; align-items:baseline; gap:4px; min-width:0; }
       .bg-job-todo-head > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       .bg-job-todo-head:hover { color:var(--text); }

@@ -942,7 +942,13 @@ export const createSpawnAgentMcpServer = (
             entries.push({ jobId: id, label: job.label, status: "🚫 취소됨", body: "" });
           } else {
             // 한도로 멈춰 재개를 걸었으면(또는 상한이면) raw 통지와 **같은 칸**의 한 줄을 붙인다(2026-10-23 §3.8).
-            entries.push({ jobId: id, label: job.label, status: `🔴 실패 — ${job.error ?? "(원인 미상)"}${jobLimitResumeLine(job)}`, body: "" });
+            // 마무리 단계 실패면 완성된 본 보고(원결과)를 본문으로 — 상태는 실패 그대로(2026-10-31 완료 보고 복구 §4-1). 자르기는 `join-response.ts` 그대로.
+            entries.push({
+              jobId: id,
+              label: job.label,
+              status: `🔴 실패${job.result !== undefined ? "(마무리 단계 — 본 보고는 아래)" : ""} — ${job.error ?? "(원인 미상)"}${jobLimitResumeLine(job)}`,
+              body: job.result ?? "",
+            });
           }
         }
         // 취소된 대기는 결과를 넘기지 않는다 — 받는 턴이 이미 죽었다. 보류된 결과는 아래 해제가 소환자 보고로 보낸다.
@@ -996,11 +1002,20 @@ export const createSpawnAgentMcpServer = (
     },
     async (args) => {
       try {
-        const { getJob, listChildJobs } = await import("../../worker-jobs.js");
+        const { getJobForRead, listChildJobs } = await import("../../worker-jobs.js");
+        const { noticeListNote, noticeSingleLine } = await import("../../job-report-delivery.js");
         if (args.job_id === undefined || args.job_id === "") {
           // ★목록 — 압축이 본문과 jobId 를 치운 뒤에도 **대상을 되찾는 자리**다.
           const page = listChildJobs(parentInput.threadKey ?? "", { cursor: args.cursor });
           if (page.total === 0) return okText("띄운 작업자가 없습니다.");
+          // 전달 상태 한 마디(목록은 짧게 — 미전달·보내는 중·실패만). 정본은 표 — 이 쪽의 jobId 묶음으로 한 번 읽는다(최대 100건).
+          let notes = new Map<string, string>();
+          try {
+            const { getWorkerJobNotices } = await import("../../../store/worker-jobs.js");
+            notes = new Map([...getWorkerJobNotices(page.rows.map((r) => r.jobId))].map(([id, r]) => [id, noticeListNote(r)]));
+          } catch {
+            /* 전달 상태만 생략 — 목록은 나간다 */
+          }
           if (page.rows.length === 0) {
             return okText(
               `이 쪽에는 더 없습니다 — 보관 중인 작업자는 모두 ${page.total}건입니다(cursor 없이 다시 부르면 처음부터).`,
@@ -1014,7 +1029,8 @@ export const createSpawnAgentMcpServer = (
                 .map(
                   (r) =>
                     `· ${r.label} (${r.jobId}): ${r.status}` +
-                    (r.resultChars > 0 ? ` · 결과 ${r.resultChars.toLocaleString()}자` : ""),
+                    (r.resultChars > 0 ? ` · 결과 ${r.resultChars.toLocaleString()}자` : "") +
+                    (notes.get(r.jobId) ?? ""),
                 )
                 .join("\n") +
               (page.nextCursor === undefined
@@ -1022,7 +1038,8 @@ export const createSpawnAgentMcpServer = (
                 : `\n— 더 오래된 작업자가 있습니다: read_worker_result(cursor="${page.nextCursor}")`),
           );
         }
-        const job = getJob(args.job_id);
+        // ★메모리에 없으면 저장 행에서 — 재시작·정리 뒤에도 같은 도구로 읽힌다(2026-10-31 완료 보고 복구 §4-3). 소유 확인은 종전과 같다(id 로 읽는다).
+        const job = getJobForRead(args.job_id);
         // ★**빈 문자열로 «성공» 을 흉내 내지 않는다** — 못 읽는 이유를 각각 말한다.
         if (job === undefined) {
           return errText(
@@ -1032,11 +1049,25 @@ export const createSpawnAgentMcpServer = (
         if (job.status === "running") {
           return errText(`'${job.label}' 은 아직 진행 중입니다 — 결과가 아직 없습니다.`);
         }
-        if (job.status === "cancelled") return errText(`'${job.label}' 은 중지됐습니다.`);
+        // 사용자 통지가 갔는지 — 표의 전달 상태(없으면 생략). «이 대화» 라고 쓰지 않는다(다른 대화에서도 단건을 읽는다).
+        const noticeLine =
+          job.notice === undefined
+            ? ""
+            : `\n${noticeSingleLine({ noticeState: job.notice.state, noticeSession: job.notice.session, noticeAttempts: job.notice.attempts })}`;
+        if (job.status === "cancelled") return errText(`'${job.label}' 은 중지됐습니다.${noticeLine}`);
+        if (job.status === "interrupted") {
+          return errText(`'${job.label}' 은 데몬 재시작으로 중단됐습니다 — 결과가 남지 않았습니다.${noticeLine}`);
+        }
+        if (job.bodyPredates === true) {
+          return errText(`'${job.label}' 은 본문 저장 이전 판에서 끝나 결과가 남아 있지 않습니다 — 상태: ${job.status}${noticeLine}`);
+        }
+        const cappedNote = (c: { kept: number; total: number } | undefined): string =>
+          c === undefined ? "" : ` · 저장 상한으로 앞부분만 보존(앞 ${c.kept.toLocaleString()}/전체 ${c.total.toLocaleString()}자)`;
         if (job.result === undefined) {
           return errText(
             `'${job.label}' 은 결과 본문이 없습니다 — ${job.status}` +
-              (job.error !== undefined ? ` · ${job.error}` : ""),
+              (job.error !== undefined ? ` · ${job.error}${cappedNote(job.errorCapped)}` : "") +
+              noticeLine,
           );
         }
         const page = sliceResultPage(job.result, args.offset, args.limit);
@@ -1045,13 +1076,17 @@ export const createSpawnAgentMcpServer = (
             `범위를 넘었습니다 — '${job.label}' 결과는 ${page.total.toLocaleString()}자입니다(offset 0~${page.total - 1}).`,
           );
         }
+        // 실패에 원결과가 있으면 마무리 단계 실패다 — 상태를 머리에 밝힌다(본 보고를 «성공 결과» 로 읽지 않게, 2026-10-31).
+        const failedHead =
+          job.status === "failed" ? `실패(마무리 단계) · 원인: ${job.error ?? "(원인 미상)"}\n아래는 마무리 전에 완성된 본 보고입니다.\n` : "";
         return okText(
-          `${job.label} (${args.job_id}) · 전체 ${page.total.toLocaleString()}자 · ` +
+          failedHead +
+          `${job.label} (${args.job_id}) · 전체 ${page.total.toLocaleString()}자${cappedNote(job.resultCapped)} · ` +
             `이 구간 ${page.start.toLocaleString()}~${page.end.toLocaleString()}` +
             (page.done
               ? " · 마지막 구간입니다."
               : ` · 다음은 read_worker_result("${args.job_id}", ${page.end}).`) +
-            `\n──\n${page.text}`,
+            `${noticeLine}\n──\n${page.text}`,
         );
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);

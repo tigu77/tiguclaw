@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A bundled `tiguclaw-bug-report` skill. On request, it turns a problem with Tiguclaw itself into a bug report that can go straight to the developers. It doesn't submit or send anything.
+- A bundled `plugin-creator` skill. It helps create and modify plugins, build widgets, and package them for sharing, and only does the step you ask for. Installing, enabling, or sharing happens only when you ask for it separately.
+- Plugins can pass `profile` to `host.ask` to call the model with that profile from the model settings. Only that profile's models are used, with no fallback to other profiles, and a name that can't be selected returns a failure without calling a model. When reported, the result includes the model that actually answered and the usage.
+
+### Changed
+- Every plugin `host.ask` call now has a 300-second limit and stops when the work that made the call is cancelled.
+- On macOS, when the connection error `EADDRNOTAVAIL` appears in the logs, the daemon records the TCP state counts and the processes using the most sockets at that moment — once per 24 hours and at most three times per daemon process; set `TIGUCLAW_SOCKET_SNAPSHOT=0` to turn it off. This is a diagnostic record; it doesn't fix the network problem behind the error.
+
+### Fixed
+- On Windows, `/update` said it would restart in about 5 seconds even though it restarts only after installing dependencies and rebuilding, and an update that only rebuilt (with no new commits) reported going from a version to the same version. The completion message now starts from the build that was actually running.
+- When a background job's completion or failure notice couldn't be delivered, there was no way to send it again, and after a restart its result and error could no longer be looked up.
+  - The next regular message (not a slash command) in the conversation that started the job now resends the undelivered report to wherever that message came from — up to three reports per message and three attempts per job. If part of it had already arrived, you may receive the same content twice. Jobs started by schedules or watches aren't resent automatically but can still be looked up.
+  - Results and errors are saved in the database (including its automatic backups) for the 1,000 most recently finished jobs, up to 256,000 characters each, so the assistant can read them again and dashboard cards show them after a restart. Anything longer keeps only the beginning and is marked as truncated.
+- A job whose main work finished but whose wrap-up step failed showed the failure cause and the completed report as one block. It's still shown as failed, but the cause and the report are now shown separately, and the dashboard card shows whether the report was delivered.
+- Plugins installed in the home folder couldn't use `host.fetch` even for hosts declared in their manifest.
+- `host.fetch` checked only the first URL against the declaration and then followed redirects as-is, so a declared host redirecting to an undeclared one sent the request there (including the body for 307 and 308). Each redirect is now checked before the request goes out — an undeclared target returns an error — and redirects within the declaration are followed up to 5 times.
+- Scrolling the background panel cut off the status filter row under the scope toggle so the two rows appeared to overlap, and jumping to a card hid the card's header under that row.
+- When a next-message suggestion arrived for another conversation, the suggestion in the conversation you were viewing disappeared, and sending a message there could end the other conversation's suggestion instead.
+
 ## [0.79.1] - 2026-10-30
 
 ### Fixed

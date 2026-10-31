@@ -26,10 +26,10 @@ type Ghost = {
     endChatSuggestion: (tk: string, ts: number) => void;
   };
   shown: () => string | null;
-  input: { value: string };
+  input: { value: string; dispatchEvent: (e: { type: string; [k: string]: unknown }) => boolean };
 };
 
-const boot = (src: string, store: Record<string, string>): Ghost => {
+const boot = (src: string, store: Record<string, string>, opts: { noActiveCheck?: boolean } = {}): Ghost => {
   const mk = () => {
     const l: Record<string, Array<(e: unknown) => void>> = {};
     return {
@@ -45,8 +45,9 @@ const boot = (src: string, store: Record<string, string>): Ghost => {
     localStorage: { getItem: (k: string) => store[k] ?? null, setItem: (k: string, v: string) => { store[k] = v; } },
     Event: class { type: string; constructor(t: string) { this.type = t; } },
     activeThreadKey: TK,
-    isActiveThread: (tk: string) => tk === TK,
   };
+  // constants.js 의 판정과 같은 꼴(키 없음 = 활성) — 활성 세션은 ctx.activeThreadKey 를 바꿔 옮긴다.
+  if (!opts.noActiveCheck) ctx.isActiveThread = (tk: string) => !tk || tk === ctx.activeThreadKey;
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(src, ctx);
@@ -107,6 +108,99 @@ export const check: RegressionCheck = {
       out.push(assert("★다른 길로 들어온 메시지(인바운드)가 그 세션의 제안을 끝낸다 · 새로고침해도 안 돌아온다", afterIn === null && reloaded.shown() === null, { afterIn, reloaded: reloaded.shown() }));
       out.push(assert("다음 턴의 새 제안은 뜬다(끝낸 표시가 새 제안을 막지 않는다)", next === "새 제안", next));
       out.push(assert("제안보다 앞선 인바운드(replay)·다른 세션의 인바운드는 제안을 끝내지 않는다", afterOldIn === "새 제안" && afterOtherThread === "새 제안", { afterOldIn, afterOtherThread }));
+    }
+
+    // ③ 다른 세션의 제안 수신 (2026-10-31) — SSE 는 모든 세션 이벤트를 받는다. B 의 제안이 A 의 표시·수락·종료 대상을 덮으면 안 된다.
+    {
+      const TB = "dashboard:other";
+      const store: Record<string, string> = {};
+      const g = boot(src, store);
+      const saved = (tk: string) => (JSON.parse(store["dash.suggestion.v1"] ?? "{}") as Record<string, { text: string }>)[tk]?.text;
+      const key = (k: string) => g.input.dispatchEvent({ type: "keydown", key: k, preventDefault() {}, stopPropagation() {} });
+      const typeIn = (v: string) => { g.input.value = v; g.input.dispatchEvent({ type: "input" }); };
+      g.ctx.applyChatSuggestion({ threadKey: TK, text: "A 제안" }, T0);
+      g.ctx.applyChatSuggestion({ threadKey: TB, text: "B1" }, T0 + 1_000);
+      const afterB1 = g.shown();
+      g.ctx.applyChatSuggestion({ threadKey: TB, text: "B2" }, T0 + 2_000);
+      g.ctx.applyChatSuggestion({ threadKey: TB, text: "B1" }, T0 + 1_000); // replay(옛것)
+      g.ctx.applyChatSuggestion({ threadKey: TB, text: "B2" }, T0 + 2_000); // replay(같은 것)
+      const afterBs = g.shown();
+      key("Tab");
+      const accepted = g.input.value;
+      typeIn("");
+      out.push(assert(
+        "★다른 세션 제안이 신규·반복·replay 로 와도 지금 세션 제안의 표시와 수락 대상은 그대로 · 그 세션 것은 최신으로 저장된다",
+        afterB1 === "A 제안" && afterBs === "A 제안" && accepted === "A 제안" && saved(TB) === "B2",
+        { afterB1, afterBs, accepted, savedB: saved(TB) },
+      ));
+      g.ctx.activeThreadKey = TB; g.ctx.refreshChatSuggestion();
+      const onB = g.shown();
+      g.ctx.activeThreadKey = TK; g.ctx.refreshChatSuggestion();
+      const backA = g.shown();
+      typeIn("초안");
+      g.ctx.applyChatSuggestion({ threadKey: TB, text: "B3" }, T0 + 3_000);
+      const draft = g.input.value;
+      const whileDraft = g.shown();
+      typeIn("");
+      const afterDraft = g.shown();
+      out.push(assert(
+        "세션을 옮기면 그 세션의 최신 제안, 돌아오면 원래 제안 · 초안 중 다른 세션 제안이 와도 초안 유지, 비우면 지금 세션 제안",
+        onB === "B2" && backA === "A 제안" && draft === "초안" && whileDraft === null && afterDraft === "A 제안",
+        { onB, backA, draft, whileDraft, afterDraft },
+      ));
+      // A 에서 Esc → A 만 끝난다. 새 A 제안 → 뜬다. A 에서 전송·인바운드 → A 만 끝난다(B 는 살아 있다).
+      key("Escape");
+      const escA = saved(TK), escB = saved(TB);
+      g.ctx.applyChatSuggestion({ threadKey: TK, text: "A2" }, T0 + 4_000);
+      const newA = g.shown();
+      g.ctx.applyChatSuggestion({ threadKey: TB, text: "B4" }, T0 + 4_500);
+      g.ctx.clearChatSuggestion();
+      const sentA = saved(TK), sentB = saved(TB), shownAfterSend = g.shown();
+      g.ctx.applyChatSuggestion({ threadKey: TK, text: "A3" }, T0 + 5_000);
+      g.ctx.applyChatSuggestion({ threadKey: TB, text: "B5" }, T0 + 5_500);
+      g.ctx.endChatSuggestion(TK, T0 + 6_000);
+      const inA = g.shown(), inB = saved(TB);
+      g.ctx.activeThreadKey = TB; g.ctx.refreshChatSuggestion();
+      const finalB = g.shown();
+      out.push(assert(
+        "★지금 세션에서 Esc·전송·인바운드로 끝내도 다른 세션 제안은 안 끝난다 · 지금 세션의 새 제안은 뜬다",
+        escA === "" && escB === "B3" && newA === "A2" && sentA === "" && sentB === "B4" && shownAfterSend === null &&
+          inA === null && inB === "B5" && finalB === "B5",
+        { escA, escB, newA, sentA, sentB, shownAfterSend, inA, inB, finalB },
+      ));
+    }
+
+    // ④ 메모리가 빈 채(새로고침 직후 초안 복원) 대시보드 밖 세션(tg:) 제안이 온다 — 그래도 지금 세션 것만 뜨고 끝난다
+    {
+      const TG = "tg:12345";
+      const store: Record<string, string> = {};
+      boot(src, store).ctx.applyChatSuggestion({ threadKey: TK, text: "A 제안" }, T0);
+      const g = boot(src, store);
+      const saved = (tk: string) => (JSON.parse(store["dash.suggestion.v1"] ?? "{}") as Record<string, { text: string }>)[tk]?.text;
+      g.input.value = "초안";
+      g.ctx.refreshChatSuggestion();
+      g.ctx.applyChatSuggestion({ threadKey: TG, text: "TG 제안" }, T0 + 1_000);
+      g.input.value = ""; g.input.dispatchEvent({ type: "input" });
+      const restored = g.shown();
+      g.input.dispatchEvent({ type: "keydown", key: "Tab", preventDefault() {}, stopPropagation() {} });
+      const accepted = g.input.value;
+      g.input.value = "";
+      g.ctx.clearChatSuggestion();
+      out.push(assert(
+        "★메모리가 빈 채 다른 채널 세션(tg:) 제안이 와도 비우면 지금 세션 제안·Tab 은 지금 세션 것 · 보내면 지금 세션만 끝난다",
+        restored === "A 제안" && accepted === "A 제안" && saved(TK) === "" && saved(TG) === "TG 제안",
+        { restored, accepted, savedA: saved(TK), savedTG: saved(TG) },
+      ));
+    }
+
+    // 호환 — 키 없는 제안은 지금 세션 것으로 뜬다(저장은 안 함) · 세션 판정 함수가 없으면 거르지 않는다(구버전)
+    {
+      const g = boot(src, {});
+      g.ctx.applyChatSuggestion({ text: "키 없음" }, T0);
+      const noKey = g.shown();
+      const legacy = boot(src, {}, { noActiveCheck: true });
+      legacy.ctx.applyChatSuggestion({ threadKey: "dashboard:other", text: "판정 없음" }, T0);
+      out.push(assert("호환: 키 없는 제안은 뜨고 · 세션 판정 함수가 없으면 거르지 않는다", noKey === "키 없음" && legacy.shown() === "판정 없음", { noKey, legacy: legacy.shown() }));
     }
 
     // 배선 — 인바운드마다, 합성·대기 버블 분기의 이른 return 보다 앞에서

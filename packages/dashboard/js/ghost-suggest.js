@@ -50,6 +50,9 @@
         };
 
         const visible = () => !ghostEl.hidden;
+        // 이 제안이 **지금 보고 있는 세션**의 것인가 — 표시 판정(sync)과 수신(apply)이 같이 쓰는 한 자리.
+        //  키 없음 = 활성으로 취급(isActiveThread 의 미지정 폴백과 동형) · 판정 함수가 없으면 거르지 않는다(구버전 호환).
+        const belongsHere = (tk) => tk === null || typeof isActiveThread !== "function" || isActiveThread(tk);
 
         // ★안내문(placeholder)은 여기서 정하지 않는다 — 고스트가 뜬다는 **사실만** 알리고,
         //  무슨 문구가 맞는지는 util.js 의 단일 판정이 정한다. 종전엔 여기서 초기값을
@@ -75,13 +78,7 @@
               suggestionThread = tk;
             }
           }
-          if (
-            suggestion === null ||
-            input.value !== "" ||
-            (suggestionThread !== null &&
-              typeof isActiveThread === "function" &&
-              !isActiveThread(suggestionThread))
-          ) {
+          if (suggestion === null || input.value !== "" || !belongsHere(suggestionThread)) {
             hide();
             return;
           }
@@ -191,9 +188,13 @@
           const prev = tk === null ? null : lsAll()[tk];
           const prevTs = prev && typeof prev.ts === "number" ? prev.ts : 0;
           if (ts > 0 && prevTs > 0 && ts <= prevTs) return; // 같거나 더 오래된 것 = replay
+          lsSave(tk, text, ts);
+          // ★다른 세션의 제안은 **저장만** 한다 (2026-10-31). SSE 는 모든 세션 이벤트를 받는데, 종전엔 여기서 표시 상태를
+          //  B 것으로 덮어 sync 가 숨겼고 — 저장소 복원은 메모리가 비었을 때만이라 — 지금 세션 A 의 제안이 사라졌다.
+          //  덮인 suggestionThread 는 A 에서 보내도(clearChatSuggestion) B 의 제안을 끝냈다. B 는 탭 전환 때 저장소에서 되살아난다.
+          if (!belongsHere(tk)) return;
           suggestion = text;
           suggestionThread = tk;
-          lsSave(tk, text, ts);
           sync();
         };
 

@@ -234,11 +234,17 @@
        * ★`GET /api/worker-jobs` 는 **메모리에 사는 잡**만 전문을 준다(DB 엔 `task` 컬럼이
        *  없다). 끝나서 내려간 잡은 원문이 어디에도 없으므로 **그 사실을 말한다** — 잘린
        *  채로 조용히 두면 사용자는 그게 원문인 줄 안다.
-       * ★한 번만 시도한다(성공이든 부재든). 펼칠 때마다 두드리면 목록 전체를 매번 받는다.
+       * ★지시문 복원은 한 번만 시도한다(성공이든 부재든).
+       * ★끝난 카드는 **펼칠 때마다** 단건을 한 번 부른다(2026-10-31) — 같은 응답의 원결과·보고 전달 상태를 적용한다. 회수로 전달 상태가
+       *  바뀌어도 새 이벤트 없이 다음 펼침에 최신이 보인다(단건은 PK 조회라 싸다 · 새 알림 이벤트를 만들지 않는다).
        */
       const hydrateFullTask = (jobId, entry) => {
-        if (!entry || !entry.taskTruncated || entry.taskHydrateTried) return;
-        entry.taskHydrateTried = true;
+        if (!entry) return;
+        // 끝난 카드만(상태가 정해진 카드 — 진행 중 카드는 종전대로 잘린 지시문일 때만 묻는다).
+        const terminal = typeof entry.status === "string" && entry.status !== "running";
+        const wantTask = !!entry.taskTruncated && !entry.taskHydrateTried;
+        if (!terminal && !wantTask) return;
+        if (wantTask) entry.taskHydrateTried = true;
         // ★**단건**으로 묻는다 — 목록(`/api/worker-jobs`)은 `runningOnly` 라 끝난 잡을 안 준다.
         //  카드는 끝난 뒤에도 남고 사람이 읽는 시점은 대개 «끝난 뒤» 라, 목록으로 물으면
         //  거의 항상 «사라졌습니다» 가 뜬다(v0.48.0 검토 P-4).
@@ -251,6 +257,8 @@
             return r.json();
           })
           .then((d) => {
+            if (terminal) applyJobReport(entry, d);
+            if (!wantTask) return;
             const full = d && typeof d.task === "string" ? d.task : "";
             if (full.length > (entry.task || "").length) {
               entry.task = full;
@@ -265,7 +273,52 @@
             entry.taskEl.textContent =
               i18n("bg.task.full", { v: entry.task || "" }) + i18n("bg.task.truncated");
           })
-          .catch(() => { entry.taskHydrateTried = false; /* 다음 펼침에 재시도 */ });
+          .catch(() => { if (wantTask) entry.taskHydrateTried = false; /* 다음 펼침에 재시도 */ });
+      };
+
+      /**
+       * 끝난 카드의 **보고** — 서버 단건의 원결과(실패면 «마무리 전에 완성된 본 보고»)와 «보고 전달» 상태(2026-10-31 완료 보고 복구 §4-3).
+       * ★전달 문구는 서버 판정(`notice.recover` — 회수 선점과 같은 함수)으로만 고른다 — 소유 세션을 화면에서 다시 추론하지 않는다.
+       */
+      const reportDeliveryLine = (n) => {
+        if (!n || typeof n !== "object") return "";
+        const tries = typeof n.attempts === "number" ? n.attempts : 0;
+        const max = typeof n.max === "number" ? n.max : 3;
+        if (n.state === null || n.state === undefined) return i18n("bg.report.none");
+        if (n.state === "delivered") return tries === 0 ? i18n("bg.report.delivered") : i18n("bg.report.redelivered", { n: tries });
+        if (n.state === "sending" || n.state === "recovering") return i18n("bg.report.sending");
+        if (n.recover === "exhausted") return i18n("bg.report.gaveUp", { n: tries, max });
+        if (n.recover === "owner_archived") return i18n("bg.report.archived");
+        if (n.recover === "not_human_owner") return i18n("bg.report.notHuman");
+        if (n.recover === "auto") return i18n("bg.report.auto", { n: tries, max });
+        return i18n("bg.report.undelivered");
+      };
+      const applyJobReport = (entry, d) => {
+        if (!d || typeof d !== "object") return;
+        // ★이벤트로 받은 값은 잘린 요약이다(결과 1,200자 · 오류 300자 — `publishWorkerLifecycle`). 펼침의 단건은 원문(재시작 뒤면 저장본)이라 **덮는다**.
+        if (typeof d.result === "string" && d.result !== "" && (d.status === "failed" || d.status === "done")) {
+          entry.result = d.result;
+          entry.resultCapped = d.resultCapped || null; // 같은 카드를 읽는 에이전트 상세·복사도 표기한다(`storedCapNote`).
+          entry.resultEl.textContent =
+            i18n(d.status === "failed" ? "bg.result.wrapupFailed" : "bg.result.full", { v: d.result }) + storedCapNote(entry.resultCapped);
+          entry.resultEl.style.display = ""; entry.hasResult = true; updateChev(entry);
+        }
+        if (typeof d.error === "string" && d.error !== "" && d.status === "failed" && entry.errEl) {
+          entry.errorText = d.error;
+          entry.errorCapped = d.errorCapped || null;
+          entry.errEl.textContent = d.error + storedCapNote(entry.errorCapped);
+          entry.errEl.style.display = "";
+        }
+        if (!entry.reportEl) {
+          const detail = entry.el && entry.el.querySelector(".bg-job-detail");
+          if (!detail) return;
+          entry.reportEl = document.createElement("div");
+          entry.reportEl.className = "bg-job-report";
+          detail.appendChild(entry.reportEl);
+        }
+        const line = d.notice !== undefined ? reportDeliveryLine(d.notice) : "";
+        entry.reportEl.textContent = line;
+        entry.reportEl.style.display = line === "" ? "none" : "";
       };
 
       /**
@@ -303,8 +356,8 @@
         if (!entry || !navigator.clipboard) return;
         const parts = [entry.label || ""];
         if (entry.task) parts.push(i18n("bg.copy.task", { v: entry.task }));
-        if (entry.result) parts.push(i18n("bg.copy.result", { v: entry.result }));
-        if (entry.errorText) parts.push(i18n("bg.copy.error", { v: entry.errorText }));
+        if (entry.result) parts.push(i18n("bg.copy.result", { v: entry.result + storedCapNote(entry.resultCapped) }));
+        if (entry.errorText) parts.push(i18n("bg.copy.error", { v: entry.errorText + storedCapNote(entry.errorCapped) }));
         try { await navigator.clipboard.writeText(parts.join("\n")); } catch {}
       });
       // 세션으로 이동 — 그 작업을 띄운 세션(threadKey)으로 점프(전체활동 activity.jump 동형).
@@ -322,7 +375,7 @@
       registerBuiltinHandler("job.copyResult", async (ctx) => {
         const entry = jobCards.get(ctx.targetId);
         if (!entry || !navigator.clipboard || !entry.result) return;
-        try { await navigator.clipboard.writeText(entry.result); } catch {}
+        try { await navigator.clipboard.writeText(entry.result + storedCapNote(entry.resultCapped)); } catch {}
       });
       registerBuiltinHandler("job.copyId", async (ctx) => {
         if (!navigator.clipboard) return;
@@ -668,7 +721,11 @@
       const alignCardTop = (card) => {
         const pane = card && typeof card.closest === "function" ? card.closest("#bg-scroll") : null;
         if (pane) {
-          bgSetScrollTop(pane.scrollTop + card.getBoundingClientRect().top - pane.getBoundingClientRect().top - 8);
+          // 묶음의 상태 필터가 칸 윗변에 붙어 있다(app.css sticky) — 카드 윗변은 그 줄 아래에 둔다.
+          const body = card.closest(".bg-group-body");
+          const filter = body ? body.querySelector(":scope > .bg-filter") : null;
+          const sticky = filter ? filter.getBoundingClientRect().height : 0;
+          bgSetScrollTop(pane.scrollTop + card.getBoundingClientRect().top - pane.getBoundingClientRect().top - sticky - 8);
           return;
         }
         if (card && card.scrollIntoView) card.scrollIntoView({ block: "nearest" });
@@ -1502,12 +1559,16 @@
         renderDoing(entry);
         if ((status === "failed" || status === "cancelled") && p.error) {
           entry.errorText = String(p.error); // 원문 보관(에이전트 뷰 펼침 상세가 읽음).
-          entry.errEl.textContent = p.error;
+          // ★잘림 메타는 **받은 값을 따른다** — SSE 이벤트엔 없어 null(요약으로 바뀐 본문과 짝이 맞는다), 재연결 복구(`recoverJobState`)가
+          //  넘기는 서버 단건엔 있어 보존된다(2026-10-31 GPT R3 — 무조건 비우면 단건의 저장 상한 표기를 버렸다).
+          entry.errorCapped = p.errorCapped || null;
+          entry.errEl.textContent = p.error + storedCapNote(entry.errorCapped);
           entry.errEl.style.display = "";
         }
         if (status === "done" && p.result) {
           entry.result = String(p.result); // 원문 보관(에이전트 뷰 펼침 상세가 읽음).
-          entry.resultEl.textContent = i18n("bg.result.full", { v: p.result });
+          entry.resultCapped = p.resultCapped || null; // 위 오류 메타와 같은 규칙.
+          entry.resultEl.textContent = i18n("bg.result.full", { v: p.result }) + storedCapNote(entry.resultCapped);
           entry.resultEl.style.display = ""; entry.hasResult = true; updateChev(entry);
         }
         capBgList();

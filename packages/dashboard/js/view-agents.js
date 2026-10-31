@@ -95,13 +95,13 @@
           if (e.result) {
             const r = document.createElement("div"); r.className = "agent-card-detail-block";
             const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("agents.result");
-            const b = document.createElement("div"); b.className = "acd-body result"; b.textContent = e.result;
+            const b = document.createElement("div"); b.className = "acd-body result"; b.textContent = e.result + storedCapNote(e.resultCapped);
             r.appendChild(h); r.appendChild(b); detail.appendChild(r);
           }
           if (e.errorText) {
             const er = document.createElement("div"); er.className = "agent-card-detail-block";
             const h = document.createElement("div"); h.className = "acd-label"; h.textContent = i18n("agents.error");
-            const b = document.createElement("div"); b.className = "acd-body error"; b.textContent = e.errorText;
+            const b = document.createElement("div"); b.className = "acd-body error"; b.textContent = e.errorText + storedCapNote(e.errorCapped);
             er.appendChild(h); er.appendChild(b); detail.appendChild(er);
           }
           if (e.stepCount > 0 && e.stepsEl) {

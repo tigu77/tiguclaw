@@ -21,10 +21,6 @@
 export const addendumHeader = (round: number): string =>
   `── 이후 도착한 작업자 결과 반영 (${round}회째) — 위 본문과 어긋나면 **이쪽이 최신 판단**이다 ──`;
 
-/** 거두기 턴이 실패·중단됐음을 보고서에 남기는 꼬리표. 조용히 잃지 않기 위한 것이다. */
-export const harvestFailureNote = (reason: string): string =>
-  `── The wrap-up turn didn't finish: ${reason} — the main report above was completed before that ──`;
-
 /**
  * 본 보고서 + 거두기 턴 산출물들 → 최종 결과 한 덩어리.
  *

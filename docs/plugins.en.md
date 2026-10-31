@@ -317,7 +317,7 @@ Handed to `getDataRoutes` handlers and tool implementations.
 
 | | |
 |---|---|
-| `host.fetch(url, init)` | Outbound. Only hosts listed in `needs.network` |
+| `host.fetch(url, init)` | Outbound. Only hosts listed in `needs.network` — redirects get the same check before they're followed, and an undeclared target is an error. Redirects within the declaration are followed up to 5 times (pass `redirect: "manual"` or `"error"` to not follow them) |
 | `host.settings` | Only *your* settings (§5). Not other plugins', not core's |
 | `host.dataDir` | Your storage (`<home>/plugins/<name>`) |
 | `host.locale` | The language in use (the one set in settings, else this computer's, else English) — for passing to external APIs |
@@ -325,7 +325,7 @@ Handed to `getDataRoutes` handlers and tool implementations.
 | `host.postCard({text, widget, data})` | Attach a card to **the reply in progress** |
 | `host.on(type, fn)` | Subscribe to core events. Trailing `.` means prefix (`"worker."`) |
 | `host.say({channel, target, text})` | Speak **on your own** (`needs.outbound`) |
-| `host.ask({prompt, scope})` | Ask the model (`needs.llm`) |
+| `host.ask({prompt, scope, profile})` | Ask the model (`needs.llm`) — optionally with one of the user's profiles |
 | `host.registerAuthProvider(p)` | Turn on subscription auth (`needs.auth`). Call it from `startService(bus, host)` at boot |
 
 ★**`say` and `ask` report failure only in their return value** — nothing is logged. Always
@@ -346,6 +346,39 @@ if (a.ok) host.log(a.text);                     // ★using `a` directly prints 
 decide that, so your plugin keeps working whichever backend they switch to. The conversation
 key isn't a parameter either; it's derived as `plugin:<name>:<scope>`, so you can't reach someone
 else's conversation.
+
+**Running on a particular profile.** Pass `profile` with the name of a profile that can be selected
+in the model settings — one the user defined, or the built-in `default` while the user hasn't
+defined any. The call then runs only on **that profile's own pool** (if a candidate in
+the pool fails, the next candidate in the same pool is tried; it never moves on to the profile's
+`.fallback` or to the default profile). Leave it out and the default pool is used, as before.
+
+- The user owns what a profile *is*; **your plugin chooses which name to pass.** If the user should
+  choose, declare a setting for it and pass that value:
+  `host.ask({ prompt, profile: host.settings.profile })`.
+- A name that can't be selected — a typo, a deleted profile, a `provider:model` string, a tier
+  name that isn't one of the selectable profiles, or a profile whose models can't run here — is refused **without calling any model**:
+  `{ ok: false, reason: "profile" }`. It never silently falls back to another model.
+
+**What comes back.** On success: `{ ok: true, text, model?, usage? }` — `model` is the model that
+actually answered and `usage` is exactly what the backend reported (missing when it reported
+nothing; never filled with zeros). On failure: `{ ok: false, error, reason }`, where `reason` is
+one of `"llm-not-declared"`, `"profile"`, `"timeout"`, `"cancelled"`, `"model"`. Branch on
+`reason`, not on the wording of `error`.
+
+**Limits.**
+
+- Every `ask` has a time limit (5 minutes) and stops when the conversation that called your tool
+  is cancelled (`/stop`, a cancelled background job).
+- The model gets **no tools**. Do the fetching, reading and post-processing in your plugin code
+  (`host.fetch` etc.) and use `ask` for the judgement or synthesis in between. Web pages and API
+  responses are untrusted data — mark them as such in the prompt.
+- The same `scope` continues the earlier `ask` history. For independent calls, use a different
+  `scope`.
+- If the calling model gives up on your tool call (tool time limits), an `ask` already running
+  can keep going until its own time limit, and your handler can still start new ones. There is
+  no cap on the number or total cost of `ask` calls in one tool call — avoid calling `ask`
+  repeatedly in one tool call, and don't put it after long work.
 
 **Want to do something periodically?** Just use `setInterval`. Nothing stops you — clean it up
 in `stop()` / `dispose()`.

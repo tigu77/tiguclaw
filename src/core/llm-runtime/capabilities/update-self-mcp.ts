@@ -32,6 +32,7 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+  restartNotice,
   runSelfUpdate,
   type SelfUpdateNotifyDest,
   type SelfUpdateResult,
@@ -46,7 +47,7 @@ const okText = (text: string) => ({
  * SelfUpdateResult → 사람말 content (architect R3 — status 별 4가지, 어댑터 분기 0).
  * 슬래시(/update)의 formatSelfUpdateResult 와 의미 동형 — 둘 다 동일 루틴 결과를 렌더.
  */
-const renderResult = (r: SelfUpdateResult): string => {
+export const renderResult = (r: SelfUpdateResult): string => {
   switch (r.status) {
     case "up-to-date": {
       const v = r.to ?? r.from;
@@ -62,11 +63,8 @@ const renderResult = (r: SelfUpdateResult): string => {
       const files =
         r.changedFiles !== undefined ? `, ${r.changedFiles}개 파일` : "";
       const npm = r.ranNpmInstall === true ? ", 의존성 갱신" : "";
-      const sec = Math.round((r.restartInMs ?? 5000) / 1000);
-      return (
-        `업데이트 적용했습니다 (${span}${files}${npm}). ` +
-        `약 ${sec}초 뒤 재시작되고, 끝나면 알려드릴게요.`
-      );
+      // «언제 재시작하나» 는 슬래시와 같은 한 곳(`restartNotice` — 카탈로그 키). Windows 위임은 시각을 지어내지 않는다.
+      return `업데이트 적용했습니다 (${span}${files}${npm}). ${restartNotice(r)}`;
     }
     case "busy":
       return "이미 업데이트가 진행 중입니다. 잠시 후 완료 알림이 옵니다.";

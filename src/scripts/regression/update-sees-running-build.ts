@@ -96,6 +96,23 @@ export const check: RegressionCheck = {
       // git 을 못 찾는 환경 — 옛 기록이 남으면 다른 커밋을 거짓으로 말한다.
       const rcNoGit = copy([], { PATH: path.join(tmp, "no-such-bin") });
       out.push(assert("★git 을 못 읽으면 기록이 없다(이전 기록도 남기지 않는다)", rcNoGit === 0 && !existsSync(path.join(dist, BUILD_COMMIT_FILE)), `rc=${rcNoGit} 기록=${existsSync(path.join(dist, BUILD_COMMIT_FILE))}`));
+
+      // ★복사가 **도중에** 실패하면 기록이 없다 (2026-10-30 v0.79.1 적대 검토 G3). 기록 쓰기를 자산 복사 앞으로 옮긴 변이가 위 검사를 전부
+      //  통과했다 — 위 사례는 복사가 다 성공하거나(기록 = HEAD) git 만 실패해서(기록 없음) «기록이 복사보다 뒤인가» 를 묻지 않았다.
+      //  마지막 복사 단계(packages)를 실패시킨다: 소스는 폴더인데 dist 쪽 같은 이름이 파일이면 `fs.cp` 가 던진다(OS 무관 — chmod 에 기대지 않는다).
+      //  기록이 그 앞 어디로 옮겨져도 여기서 남는다. 이전 빌드 기록도 남지 않아야 한다(시작에서 지운다).
+      mkdirSync(path.join(tmp, "packages", "p"), { recursive: true });
+      writeFileSync(path.join(tmp, "packages", "p", "asset.txt"), "x\n");
+      writeFileSync(path.join(dist, "packages"), "not a directory\n");
+      writeFileSync(path.join(dist, BUILD_COMMIT_FILE), `${"c".repeat(40)}\n`);
+      const rcMid = copy([]);
+      out.push(
+        assert(
+          "★복사 도중 실패(마지막 단계 packages) = 실패 종료 + 기록 없음(새 HEAD 도, 이전 기록도) — 기록은 복사가 **다 끝난 뒤**에만",
+          rcMid !== 0 && !existsSync(path.join(dist, BUILD_COMMIT_FILE)),
+          `rc=${rcMid} 기록=${existsSync(path.join(dist, BUILD_COMMIT_FILE)) ? readFileSync(path.join(dist, BUILD_COMMIT_FILE), "utf8").trim() : "없음"}`,
+        ),
+      );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

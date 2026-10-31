@@ -1932,6 +1932,8 @@ export const runRegionA = async (
               threadKey: rawInput.threadKey,
               channel: rawInput.channel,
               target: rawInput.channelAddress ?? null,
+              // 플러그인 도구 안의 `host.ask` 가 이 턴의 외부 취소를 따라 끊기게(호스트가 `turn` 과 따로 받는다).
+              ...(rawInput.abortSignal !== undefined ? { abortSignal: rawInput.abortSignal } : {}),
             }),
           };
   // 풀 체인 조립 — 프로파일 간(inter) 폴백을 *분리된 풀들*로 운반한다(평탄화 금지).

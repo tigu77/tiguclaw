@@ -34,6 +34,7 @@ import { compactOldToolOutputs } from "../../core/llm-runtime/adapters/openai-co
 import { packJoinResponse } from "../../core/llm-runtime/capabilities/join-response.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../../core/llm-runtime/types.js";
 import { addendumHeader } from "../../core/worker-report.js";
+import { registerChannelOutbound, unregisterChannelOutbound } from "../../core/channel-outbound.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /** settle 대기 — 상한이 있어 무한대기 0. */
@@ -283,13 +284,29 @@ export const check: RegressionCheck = {
           `${empty.finalResult.length}자 · status=${empty.status}`,
         ),
       );
-      const failed = await runManagerTurn(true, "throw");
+      // ★«전달된다» 를 **통지 내용**으로 잰다(2026-10-31 완료 보고 복구 §11-1④) — 종전엔 잡 기록에 남는지만 봐서, 사용자 통지에
+      //  본 보고가 실리는지·실패 원인 칸이 깨끗한지는 아무도 안 쟀다. 가짜 전송기로 실제 발송 문구를 받는다(실제 발송 0).
+      const sent: string[] = [];
+      registerChannelOutbound("dashboard", { deliver: async (_t: string | null, text: string) => { sent.push(text); } } as never);
+      let failed: Awaited<ReturnType<typeof runManagerTurn>>;
+      try {
+        failed = await runManagerTurn(true, "throw");
+        await until(() => sent.length > 0);
+      } finally {
+        unregisterChannelOutbound("dashboard");
+      }
+      const notice = sent.join("\n");
       out.push(
         assert(
-          "★거두기 턴이 터져도 본 보고서가 전달된다 — 그리고 **실패는 실패로** 남는다",
-          `${failed.finalResult}${failed.finalError}`.includes("[본 보고서]") &&
-            failed.status !== "done",
+          "★거두기 턴이 터져도 본 보고서가 **원결과 칸**에 남는다 — 그리고 **실패는 실패로** 남는다(원오류엔 본 보고가 섞이지 않는다)",
+          failed.finalResult.includes("[본 보고서]") && !failed.finalError.includes("[본 보고서]") && failed.status === "failed",
           `status=${failed.status} · result ${failed.finalResult.length}자 · error ${failed.finalError.length}자`,
+        ),
+        assert(
+          "★사용자 통지에 본 보고 전문이 실린다 — 원인 칸은 원오류뿐, «처음부터 다시» 를 권하지 않는다",
+          notice.includes("[본 보고서]") && notice.includes(MAIN_REPORT) && notice.includes("거두기 턴이 터졌다") &&
+            !/처음부터 다시|start over/.test(notice),
+          `통지 ${sent.length}건 · ${notice.length}자 · 머리 ${JSON.stringify(notice.slice(0, 80))}`,
         ),
       );
     }

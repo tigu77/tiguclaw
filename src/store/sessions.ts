@@ -744,6 +744,28 @@ export const initStore = (): void => {
       `ALTER TABLE worker_jobs ADD COLUMN detached INTEGER NOT NULL DEFAULT 0`,
     );
   }
+  // ─── 완료 보고 복구: 원결과·원오류·통지 전달 상태 (2026-10-31, 설계 docs/decisions/2026-10-31-completion-report-recovery-design.md §4-2) ──
+  // ★«메타만» 이던 이 표가 원결과·원오류를 갖는다 — 재시작 뒤에도 정식 조회(`read_worker_result`·대시보드)로 읽히게. 같은 행이라
+  //  보관 상한(최신 1,000 종료 행)이 그대로 수명을 정한다. 전달 상태(notice_*)의 정본은 이 표 하나다(메모리 미러 없음).
+  //  `*_chars` = 원문 **전체** 길이(JS length = UTF-16 코드 단위) — 읽은 값이 더 짧으면 저장 상한으로 앞부분만 보존한 것이다.
+  //  ★구버전 행(새 열 NULL)은 «기록 없음» 으로 읽는다(자동 회수 안 함 · 본문 없음을 사유와 함께 말한다).
+  for (const [name, decl] of [
+    ["result_text", "TEXT"],
+    ["result_chars", "INTEGER"],
+    ["error_text", "TEXT"],
+    ["error_chars", "INTEGER"],
+    ["error_name", "TEXT"],
+    ["notice_state", "TEXT"],
+    ["notice_session", "TEXT"],
+    ["notice_attempts", "INTEGER NOT NULL DEFAULT 0"],
+    ["notice_at", "INTEGER"],
+  ] as const) {
+    if (!wjCols.some((c) => c.name === name)) handle.exec(`ALTER TABLE worker_jobs ADD COLUMN ${name} ${decl}`);
+  }
+  // 사람 메시지마다 한 번 도는 회수 조회용 — 미전달 행만 담는 부분 색인(평시 0행).
+  handle.exec(
+    `CREATE INDEX IF NOT EXISTS idx_worker_jobs_notice ON worker_jobs(notice_session) WHERE notice_state = 'undelivered'`,
+  );
 
   // ─── 프로젝트 레지스트리 인덱스 (2026-07-06, ADR projects-feature) ──────────────
   // 등록된 프로젝트 경로 조회 캐시. ★진실은 각 폴더 <path>/PROJECT.md — 이 테이블은
@@ -1341,6 +1363,8 @@ export const INTERNAL_THREAD_PREFIXES = [
   "endpoint:",
   "gateway:",
   "scheduler:",
+  // 플러그인 `host.ask` 의 좌표(`plugin:<이름>:<scope>`) — 사람의 대화가 아니다(2026-10-31). 프루닝 대상에도 든다(`scheduler:` 만 빠지는 파생).
+  "plugin:",
 ] as const;
 
 /** 서브에이전트 파생 스레드 마커(접두 아닌 중간 삽입). */
@@ -1425,6 +1449,7 @@ const INTERNAL_THREAD_PRUNABLE_PREFIXES = INTERNAL_THREAD_PREFIXES.filter(
  *  - `agent:<uuid>`        awaited 서브에이전트 잡
  *  - `endpoint:<name>:…`   http 엔드포인트 합성 턴
  *  - `gateway:<uuid>`      게이트웨이 합성 턴
+ *  - `plugin:<이름>:<scope>` 플러그인 `host.ask`(30일 안 쓴 scope 만 — 쓰는 scope 는 `last_used_at` 이 갱신돼 남는다)
  *  - `<parent>::sub::…`    서브에이전트 파생(마커 포함, 어느 접두든)
  *
  * `olderThanMs` 이전에 `last_used_at` 이 갱신된 행만 삭제(살아있는/최근 잡은 안 건드림 —

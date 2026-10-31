@@ -2842,6 +2842,11 @@ const runUpdate = (c) => {
       : headAtStart;
   // 위임이면 호출자(데몬)가 **이미 pull 했다** — HEAD 는 새것인데 돌고 있는 빌드는 옛것이다.
   const pulledByCaller = !headAtStart.startsWith(prevSha) && !prevSha.startsWith(headAtStart);
+  // ★완료 표시의 «무엇에서» 는 앵커와 다른 값이다 (2026-10-30 v0.79.1 잔여 P2). 받을 커밋 없이 빌드만 뒤처져 위임되면 pull 전 HEAD == 새 HEAD 라
+  //  완료 로그·마커가 «B → B» 였다(호출자의 즉시 응답은 실행 빌드 기준 «A → B»). 호출자가 실제로 돌던 빌드를 따로 주면 **표시에만** 쓴다 —
+  //  롤백·되돌리기 앵커는 언제나 `prevSha`(pull 전 HEAD)다. 없거나 형식이 틀리면 종전대로 `prevSha`.
+  const reportFromEnv = process.env.TIGUCLAW_UPDATE_REPORT_FROM?.trim();
+  const reportFrom = reportFromEnv !== undefined && /^[0-9a-f]{7,40}$/i.test(reportFromEnv) ? reportFromEnv : prevSha;
   const table = handlers[process.platform];
 
   /**
@@ -3203,7 +3208,7 @@ const runUpdate = (c) => {
         path.join(c.homeAbs, ".update-complete"),
         `${JSON.stringify(
           {
-            from: prevSha.slice(0, 7),
+            from: reportFrom.slice(0, 7),
             to: newSha.slice(0, 7),
             changedFiles: 0,
             ts: Date.now(),
@@ -3264,7 +3269,7 @@ const runUpdate = (c) => {
   if (restartFailed) {
     console.error(
       `🔴 The update was applied, but **the daemon failed to restart**: ` +
-        `${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} (runtime=${c.runtime}).\n` +
+        `${reportFrom.slice(0, 7)} → ${newSha.slice(0, 7)} (runtime=${c.runtime}).\n` +
         `   Check the error above and start it manually — it will not come back on its own.`,
     );
     return;
@@ -3272,7 +3277,7 @@ const runUpdate = (c) => {
   // ★«다시 띄웠다» 는 실제로 띄운 경로에서만 말한다 (2026-10-29 Windows 현장: 돌지 않던 홈에도 «Daemon resumed.» 를 찍었다 — 위 단계 8 이 이미
   //  «안 돌고 있었다/미등록» 을 말한 뒤 마지막 줄이 그걸 뒤집었다).
   console.log(
-    `✅ update complete: ${prevSha.slice(0, 7)} → ${newSha.slice(0, 7)} ` +
+    `✅ update complete: ${reportFrom.slice(0, 7)} → ${newSha.slice(0, 7)} ` +
       `(runtime=${c.runtime}). ${wasRunning ? "Daemon resumed." : "The daemon was not running, so it was not started."}`,
   );
 };

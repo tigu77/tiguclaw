@@ -271,6 +271,33 @@ export const cancelLimitResume = (session: string): { wakeAt: number } | undefin
   }
 };
 
+/**
+ * **이 작업의 재개가 지금 어떤 상태인가** — 미전달 완료 보고를 다시 보낼 때 문구를 고르려고 읽는다(2026-10-31 완료 보고 복구 §4-4). 읽기만 한다.
+ *  - `waiting`: 이 대화 것인 켜진 타이머가 있고 대기 목록에 이 작업 — 깨우는 시각은 타이머 행의 **현재** `runAt`(합쳐져 늦춰졌을 수 있다).
+ *  - `resuming`: 이 대화 것인 타이머를 도는 재개 턴이 넘겨받은 목록에 이 작업.
+ *  - `none`: 그 밖(행 없음 · 타이머 없음/옮겨짐/꺼짐 · 목록에 없음) — «이미 처리됨·취소·상한·옵션 꺼짐» 을 가르지 못한다(새 원장을 두지 않는다).
+ *  - `unreadable`: 저장소 조회가 던졌다 — «없음» 이 아니다(있다고도 없다고도 말하지 않는다).
+ * ★«이 대화 것인가»·«대기 세대» 판정은 위 `noteLimitStop`·`cancelLimitResume` 과 **같은 식**이다(같은 판단의 네 번째 자리 — 설계 §4-4 보고).
+ */
+export const limitResumeStatusOf = (
+  session: string,
+  jobId: string,
+): { kind: "waiting"; scheduleId: number; runAt: number } | { kind: "resuming" } | { kind: "none" } | { kind: "unreadable" } => {
+  try {
+    const state = getLimitResume(session);
+    if (state === undefined || state.scheduleId == null) return { kind: "none" };
+    const found = getSchedule(state.scheduleId);
+    const row = found !== undefined && found.originThreadKey === session ? found : undefined; // 옮긴 타이머는 이 대화 것이 아니다
+    if (row === undefined) return { kind: "none" };
+    const has = (items: readonly LimitStopItem[]): boolean => items.some((it) => it.kind === "job" && it.jobId === jobId);
+    if (row.enabled && has(state.items)) return { kind: "waiting", scheduleId: row.id, runAt: row.runAt ?? Date.now() };
+    if (state.claimed && has(state.claimedItems)) return { kind: "resuming" };
+    return { kind: "none" };
+  } catch {
+    return { kind: "unreadable" };
+  }
+};
+
 /** 안내 한 줄 — 걸었으면 «{when} 이어서 · 취소 길», 상한이면 «멈췄습니다». `{when}` = 여유가 더해진 실제로 깨우는 시각. */
 export const resumeNoteLine = (note: ResumeNote, now: number = Date.now()): string =>
   note.kind === "armed"

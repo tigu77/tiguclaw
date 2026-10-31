@@ -11,7 +11,9 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { updateFailedText } from "../../core/self-update.js";
+import { formatSelfUpdateResult, updateFailedText } from "../../core/self-update.js";
+import { renderResult as renderUpdateSelfResult } from "../../core/llm-runtime/capabilities/update-self-mcp.js";
+import { translate } from "../../core/i18n.js";
 import { type Assertion, type RegressionCheck } from "./_framework.js";
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도 인스턴스 환경 유실 · 저장본이 PATH·.env 를 영구 고정 · pull 뒤 고착 · lock 드리프트 영구 거절 · 거짓 실패 통지", name: "windows-update-environment", run: async () => {
@@ -107,7 +109,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     const source = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     const body = source.slice(source.indexOf("const runUpdate = (c) => {"), source.indexOf("\n/**\n * @param {Ctx} c\n * @param {string} cmd", source.indexOf("const runUpdate = (c) => {")));
     type Scenario = "success" | "npm-fail" | "dirty" | "lock-only" | "rollback-dirty" | "corrupt-env" | "pull-fail";
-    type SimOpts = { notify?: boolean; handoff?: string; resetFails?: boolean; stopFails?: boolean; startFails?: "exit" | "throw"; revivedDuringCi?: boolean; platform?: "win32" | "darwin" | "linux";
+    type SimOpts = { notify?: boolean; handoff?: string; reportFrom?: string; resetFails?: boolean; stopFails?: boolean; startFails?: "exit" | "throw"; revivedDuringCi?: boolean; platform?: "win32" | "darwin" | "linux";
       // ★2026-10-29 — 포트와 무관한 존재 판정 · 의존성 트리 옮겨 두기. `deps` 를 주면 이 케이스만의 레포에 진짜 `node_modules` 를 만든다
       //  (tree = 폴더 · link = 다른 폴더를 가리키는 링크). fs 는 진짜이고, 실패만 골라 주입한다.
       presence?: "running" | "stopped" | "unknown"; portClosed?: boolean; registered?: boolean; deps?: "tree" | "link"; leftovers?: string[];
@@ -146,7 +148,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const processFake = { platform: opts.platform ?? "win32", execPath: process.execPath, pid: process.pid, exitCode: 0, stdout: { write: () => {} },
         on: (ev: string, fn: () => void) => { if (ev === "exit") exitHandlers.push(fn); },
         env: { HTTP_BRIDGE_TOKEN: "opaque-fixture-secret", ...(opts.notify ? { TIGUCLAW_UPDATE_NOTIFY_CHANNEL: "fixture" } : {}),
-          ...(opts.handoff ? { TIGUCLAW_UPDATE_PREV_SHA: opts.handoff } : {}) } };
+          ...(opts.handoff ? { TIGUCLAW_UPDATE_PREV_SHA: opts.handoff } : {}), ...(opts.reportFrom !== undefined ? { TIGUCLAW_UPDATE_REPORT_FROM: opts.reportFrom } : {}) } };
       const spawnSync = (cmd: string, args: string[]) => {
         calls.push([cmd, ...args].join(" ")); let stdout = "", stderr = "", code = 0;
         if (cmd === "git" && args[0] === "rev-parse") stdout = ++rev === 1 ? "1111111" : "2222222";
@@ -251,6 +253,40 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const r = simulate("success", { notify: true }); assert.equal(r.exitCode, 0); assert(r.calls.includes("npm run build:prod")); assert(has(r.calls, /^START/));
       assert(r.calls.indexOf("git pull --ff-only") < r.calls.indexOf("STOP"));
       assert(fs.existsSync(path.join(r.home, ".update-complete")));
+    });
+    test("★완료 표시의 «무엇에서» 는 호출자가 준 실행 빌드 — 롤백·되돌리기 앵커는 여전히 pull 전 HEAD (v0.79.1 잔여 P2)", () => {
+      // 받을 커밋 없이 빌드만 뒤처져 위임되면 pull 전 HEAD == 새 HEAD 라 완료 로그·마커가 «B → B» 였다(Windows 실측 «0c555dd → 0c555dd»).
+      const done = (r: { home: string }) => JSON.parse(fs.readFileSync(path.join(r.home, ".update-complete"), "utf8")) as { from: string; to: string };
+      const ok = simulate("success", { notify: true, handoff: "1111111", reportFrom: "0abcdef9" });
+      assert.equal(ok.exitCode, 0, ok.messages.join(" | "));
+      assert.equal(done(ok).from, "0abcdef", JSON.stringify(done(ok)));
+      assert(ok.messages.some((m) => m.includes("update complete: 0abcdef → 2222222")), ok.messages.join(" | "));
+      // 실패 경로: 되돌리는 곳은 앵커(1111111)다 — 표시값으로 reset 하면 사용자 checkout 을 엉뚱한 곳으로 옮긴다.
+      const bad = simulate("npm-fail", { notify: true, handoff: "1111111", reportFrom: "0abcdef9" });
+      assert(bad.calls.includes("git reset --keep 1111111") && !has(bad.calls, /0abcdef/), bad.calls.join(" | "));
+      // 재가동 실패 요약도 같은 표시값.
+      const nostart = simulate("success", { notify: true, handoff: "1111111", reportFrom: "0abcdef9", startFails: "exit" });
+      assert(nostart.messages.some((m) => m.includes("0abcdef → 2222222")), nostart.messages.join(" | "));
+      // 없거나 형식이 틀리면 종전대로 앵커 — 셸 문자 같은 값을 그대로 싣지 않는다.
+      const plain = simulate("success", { notify: true, handoff: "1111111" });
+      const junk = simulate("success", { notify: true, handoff: "1111111", reportFrom: "zz; rm -rf" });
+      assert.equal(done(plain).from, "1111111"); assert.equal(done(junk).from, "1111111");
+      // 생산자: 위임 env 에 실행 빌드를 따로 싣는다(앵커 키와 다른 키).
+      const su = fs.readFileSync(path.join(repo, "src/core/self-update.ts"), "utf8");
+      assert(/TIGUCLAW_UPDATE_PREV_SHA: prevSha,/.test(su) && /TIGUCLAW_UPDATE_REPORT_FROM: reportFrom,/.test(su), "self-update 위임 env");
+      return `마커 from=${done(ok).from} · 실패 reset=1111111 · 없음/형식 오류=앵커`;
+    });
+    test("★Windows 위임 응답은 재시작 시각을 지어내지 않는다 — «약 5초» 는 직접 예약한 경로에서만 (실측 약 2분 49초)", () => {
+      const delegated = { status: "updating" as const, from: "aaaaaaa", to: "bbbbbbb", changedFiles: 3 };
+      const scheduled = { ...delegated, restartInMs: 5000 };
+      const slash = formatSelfUpdateResult(delegated);
+      assert(slash.includes(translate("srv.update.restartingAfterBuild")) && !slash.includes(translate("srv.update.restartingIn", { sec: 5 })), slash);
+      assert(formatSelfUpdateResult(scheduled).includes(translate("srv.update.restartingIn", { sec: 5 })), formatSelfUpdateResult(scheduled));
+      // 도구(update_self)도 같은 판단·같은 카탈로그 — 화면 언어를 따른다(이 스위트는 영어 카탈로그로 돈다: 한국어 리터럴이면 여기서 빨강).
+      const tool = renderUpdateSelfResult(delegated);
+      assert(tool.includes(translate("srv.update.restartingAfterBuild")) && !tool.includes(translate("srv.update.restartingIn", { sec: 5 })), tool);
+      assert(renderUpdateSelfResult(scheduled).includes(translate("srv.update.restartingIn", { sec: 5 })), renderUpdateSelfResult(scheduled));
+      return slash.split("\n").pop();
     });
     test("★멈춰 둔 사이 데몬이 다시 떴으면(설치 도중 되살아남) 빌드 뒤 **재시작**한다 — start 는 «이미 실행 중» 이라 옛 빌드가 남는다(윈도우돌쇠 10-19 실측)", () => {
       const r = simulate("success", { revivedDuringCi: true });

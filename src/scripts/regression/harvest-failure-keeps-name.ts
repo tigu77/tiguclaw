@@ -1,7 +1,7 @@
 /**
  * 회귀: 매니저의 **거두기 턴이 실패하면 오류 이름이 원인 분류까지 간다** (2026-10-05 적대 검토 F1).
  *
- * 거두기 실패 outcome 에는 원문 + **완성된 보고서 전문**이 실린다(보고서를 잃지 않으려고). 그런데 이름이
+ * 거두기 실패 outcome 에는 원문 + **완성된 보고서 전문**이 실린다(보고서를 잃지 않으려고 — 2026-10-31 부터 원결과 칸에 따로). 그런데 이름이
  * 빠져 분류가 문자열로 떨어졌고, 문자열 분류는 한도를 시간 종료보다 먼저 본다 — 보고서에 «rate limit» 이
  * 한 번만 나와도(API 조사 보고서면 흔하다) 실제 원인(시간 상한)이 «사용량 한도» 로 통지·로그됐다.
  *
@@ -69,7 +69,12 @@ const harvestFails = async (makeErr: () => Error): Promise<Assertion[] & { error
     const kind = job?.error !== undefined ? failureKind(job.error, job.errorName) : undefined;
     const out: Assertion[] & { errorName?: string; kind?: string } = [
       assert("거두기 턴까지 돌고 실패로 닫혔다(전제)", turns >= 2 && job?.status === "failed", `턴 ${turns} · ${job?.status}`),
-      assert("보고서는 실패 안에 남는다(전제 — 문자열엔 «rate limit» 이 있다)", /rate limit/.test(job?.error ?? ""), `실패 문자열 ${(job?.error ?? "").length}자`),
+      // 2026-10-31 완료 보고 복구 §4-1 — 보고서는 원결과 칸에 남고 원오류에는 안 섞인다(종전엔 원오류 문자열 안에 있었다).
+      assert(
+        "보고서는 원결과 칸에 남고(전제 — 거기엔 «rate limit» 이 있다) 원오류에는 섞이지 않는다",
+        /rate limit/.test(job?.result ?? "") && !/rate limit/.test(job?.error ?? ""),
+        `원결과 ${(job?.result ?? "").length}자 · 원오류 ${(job?.error ?? "").length}자`,
+      ),
       assert(
         "★실패에 오류 이름이 실리고, 분류는 «시간 종료» 다(«사용량 한도» 아님)",
         job?.errorName === "WorkerTimeoutError" && kind === "wall",

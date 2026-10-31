@@ -184,6 +184,8 @@ export const check: RegressionCheck = {
         "src/core/prompt-options-egress.ts", // egress 선택지 = 물어본 세션
         "src/core/outbound.ts", // 채널에 명시 라벨 메타 전달(글은 채널이 결정)
         "src/core/worker-jobs.ts", // 잡 보고 = jobSessionLabel
+        // 완료 보고 재전달(2026-10-31) = 잡 보고와 같은 출처 — `notice_session` 은 첫 통지 때 `jobSessionLabel` 판정으로 저장한 사람 대화다.
+        "src/core/job-report-delivery.ts",
         "src/index.ts", // 대시보드 사본·선택지 텍스트 사본 = 물어본 세션
       ];
       out.push(assert(

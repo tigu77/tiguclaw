@@ -79,7 +79,7 @@ import {
 from "../../worker-jobs.js";
 import { getLastWorkerActivity, getLastToolSlow } from "../../../store/events.js";
 import { workerActivityLine } from "../../worker-activity-line.js";
-import { composeWorkerReport, harvestFailureNote } from "../../worker-report.js";
+import { composeWorkerReport } from "../../worker-report.js";
 import type { RegionASdkInput, RegionASdkOutput } from "../types.js";
 import { findDuplicateSpawn, rememberSpawn, spawnKey } from "../../spawn-dedupe.js";
 import { onDemand } from "../tool-load-policy.js";
@@ -462,7 +462,7 @@ export const runWorkerJob = (
           // ★거두기 턴이 **터져도 본 보고서를 잃지 않는다** (2026-09-14). 종전엔 이
           //  reject 가 catch 로 빠져 `outcome = { error }` 가 되고, 이미 완성된 전체
           //  보고서가 **통째로 사라졌다** — 조용히. 실패는 실패로 보고하되(숨기지 않는다)
-          //  보고서는 꼬리표와 함께 남긴다.
+          //  보고서는 실패 outcome 의 `completedReport` 로 남긴다(2026-10-31 — 원오류와 섞지 않는다).
           try {
             out =
               hardDeadline === undefined
@@ -472,7 +472,7 @@ export const runWorkerJob = (
             // ★**상태 의미를 뒤집지 않는다.** 여기서 `{result}` 로 닫으면 시한 초과·모델
             //  실패가 «완료» 로 보고돼 대시보드·부모 매니저·통지가 전부 오독한다
             //  ([[feedback_scope_of_a_fix]] 조건반전→도달 입력 전수). 실패는 실패로 두고,
-            //  **이미 완성된 본 보고서를 그 안에 실어** 잃지 않게만 한다.
+            //  **이미 완성된 본 보고서를 원결과 칸으로 실어** 잃지 않게만 한다.
             // 지시 채널에서 꺼낸 것은 되돌린다 — 턴이 못 받았으니 finally 가 출처대로(사용자 «반영 못 한 지시» 통지 · 작업 쪽 글 «버림» 로그) 받는다.
             if (fromSteer.length > 0) steerCh?.restore(fromSteer);
             harvestFailure = e instanceof Error ? e.message : String(e);
@@ -502,9 +502,12 @@ export const runWorkerJob = (
           harvestFailure === undefined
             ? { result: report }
             : {
-                error: `${harvestFailure}\n\n${harvestFailureNote(harvestFailure)}\n${report}`,
+                // ★원오류만 — 본 보고는 따로 싣는다(2026-10-31 완료 보고 복구 §4-1). 종전엔 «원오류 + 꼬리표 + 본 보고» 한 문자열이라
+                //  분류가 본 보고 낱말에 흔들렸고(진단 S5), 조회·통지가 «실패 원인» 칸에서 본 보고를 읽었다.
+                error: harvestFailure,
                 ...(harvestFailureName !== undefined ? { errorName: harvestFailureName } : {}),
                 ...(harvestResumeAtMs !== undefined ? { resumeAtMs: harvestResumeAtMs } : {}),
+                ...(report !== "" ? { completedReport: report } : {}),
               };
       }
     } catch (e) {
@@ -608,11 +611,13 @@ const formatElapsed = (fromMs: number, toMs: number): string => {
   return `${hr}시간 ${min % 60}분`;
 };
 
-const STATUS_LABEL: Record<WorkerJobRecord["status"], string> = {
+const STATUS_LABEL: Record<WorkerJobRecord["status"] | "interrupted", string> = {
   running: "진행 중",
   done: "완료",
   failed: "실패",
   cancelled: "취소됨",
+  // 재시작 뒤 저장 행에서만 온다(2026-10-31 — 끝난 작업을 재시작 뒤에도 목록에 보인다).
+  interrupted: "중단됨(재시작)",
 };
 
 /**
@@ -752,10 +757,30 @@ export const createWorkerMcpServer = (
         const ownSession = resolveOwnerThreadKey(parentInput.threadKey);
         const scoped = ownSession !== "";
         const running = args.running_only === true;
-        const jobs = listJobs({
+        const memJobs = listJobs({
           runningOnly: running,
           ...(scoped ? { ownerThreadKey: ownSession } : {}),
         });
+        // ★재시작·정리 뒤에도 끝난 작업이 보이게 — 이 대화가 **직접** 띄운 저장 종료 행을 합친다(메모리 우선 · 손자는 메모리에서만, 2026-10-31 §4-3).
+        type Row = { jobId: string; label: string; status: keyof typeof STATUS_LABEL; startedAt: number; finishedAt?: number };
+        const jobs: Row[] = memJobs.map((j) => ({ jobId: j.jobId, label: j.label, status: j.status, startedAt: j.startedAt, ...(j.finishedAt !== undefined ? { finishedAt: j.finishedAt } : {}) }));
+        let noticeNotes = new Map<string, string>();
+        try {
+          const { listTerminalWorkerJobsByThread, getWorkerJobNotices } = await import("../../../store/worker-jobs.js");
+          const { noticeListNote } = await import("../../job-report-delivery.js");
+          if (!running && scoped) {
+            const seen = new Set(jobs.map((j) => j.jobId));
+            for (const r of listTerminalWorkerJobsByThread(ownSession)) {
+              if (seen.has(r.jobId) || r.status === "running") continue;
+              jobs.push({ jobId: r.jobId, label: r.label, status: r.status, startedAt: r.startedAt, ...(r.finishedAt !== null ? { finishedAt: r.finishedAt } : {}) });
+            }
+            jobs.sort((a, b) => b.startedAt - a.startedAt);
+          }
+          const ended = jobs.filter((j) => j.status !== "running").map((j) => j.jobId);
+          noticeNotes = new Map([...getWorkerJobNotices(ended)].map(([id, r]) => [id, noticeListNote(r)]));
+        } catch {
+          /* 저장소를 못 읽으면 메모리 목록만 — 목록 자체는 항상 나간다 */
+        }
         // 다른 세션에서 도는 건수 — 숨기지 않되 내 것과 섞지 않는다.
         const otherRunning = scoped
           ? listJobs({ runningOnly: true }).filter(
@@ -796,7 +821,7 @@ export const createWorkerMcpServer = (
             }
             return `- '${j.label}' — ${status} (${elapsed} 경과${activity})`;
           }
-          return `- '${j.label}' — ${status} (${elapsed} 소요)`;
+          return `- '${j.label}' — ${status} (${elapsed} 소요)${noticeNotes.get(j.jobId) ?? ""}`;
         });
         const header = scoped ? "## 백그라운드 매니저 (이 대화)" : "## 백그라운드 매니저 (전체 대화)";
         return okText(`${header}\n\n${lines.join("\n")}${otherNote}`);

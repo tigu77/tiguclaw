@@ -32,6 +32,7 @@ import path from "node:path";
 import { format } from "node:util";
 import { resolveHome } from "./paths.js";
 import { redactSecrets } from "./outbound-sanitize.js";
+import { noteLogLineForSocketSnapshot } from "./net/socket-snapshot.js";
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 
@@ -192,6 +193,9 @@ export const initFileLogging = (): string | null => {
       } catch {
         /* 미러 실패 — 무시 (원래 출력은 이미 됨) */
       }
+      // ★`EADDRNOTAVAIL` 이 지나가면 그 순간의 소켓 상태를 한 번 남긴다 (2026-10-31). 판정·상한·수명은 그 모듈이 쥐고,
+      //  이 줄을 기다리지 않는다(수집은 다음 차례에 비동기) · 던지지 않는다.
+      noteLogLineForSocketSnapshot(line);
     };
   }
 

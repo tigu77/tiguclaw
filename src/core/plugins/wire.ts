@@ -214,7 +214,7 @@ export const wirePlugin = async (
           registerMcpServer(lp.manifest.name, (ctx) => {
             // ★턴 좌표를 **호스트로 감싸서** 준다 — 플러그인은 좌표가 아니라 능력을 받는다.
             const fresh = getMcpServer(
-              createPluginHost(lp.manifest.name, needs, ctx, lp.manifest.settings ?? []),
+              createPluginHost(lp.manifest.name, needs, ctx, lp.manifest.settings ?? [], ctx?.abortSignal),
             );
             if (fresh === undefined) {
               throw new Error(
@@ -258,7 +258,7 @@ export const wirePlugin = async (
             buildToolServer(
               lp.manifest.name,
               tv.specs,
-              createPluginHost(lp.manifest.name, needs, ctx, lp.manifest.settings ?? []),
+              createPluginHost(lp.manifest.name, needs, ctx, lp.manifest.settings ?? [], ctx?.abortSignal),
             ),
           );
           result.wired.push("tools");

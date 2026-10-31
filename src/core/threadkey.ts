@@ -43,6 +43,8 @@ export const DERIVED_THREAD_PREFIXES = [
   "agent:",
   "endpoint:",
   "gateway:",
+  // 플러그인 `host.ask` 턴(`plugin:<이름>:<scope>`) — 사람이 말을 건 대화가 아니다(2026-10-31).
+  "plugin:",
 ] as const;
 
 /** 이 좌표가 파생 턴인가(= 사람이 말을 건 대화가 아닌가). */

@@ -74,7 +74,7 @@ export const check: RegressionCheck = {
     //  이 축은 **소스 대조**다. 다만 종전(검사 0)과 달리 세 가지를 **개별로** 못박는다 —
     //  하나라도 빠지면 2라운드가 통과시킨 그 변이가 살아난다.
     const hostTs = read("src/core/plugins/host.ts");
-    const askBody = /ask: async \(\{ prompt, scope \}\) => \{[\s\S]*?\n  \},/.exec(hostTs)?.[0] ?? "";
+    const askBody = /ask: async \(\{ prompt, scope, profile \}\) => \{[\s\S]*?\n  \},/.exec(hostTs)?.[0] ?? "";
     const carried: Array<[string, boolean]> = [
       ["toolPolicy", /toolPolicy: toolPolicyFor\(/.test(askBody)],
       ["좌표 파생", /threadKey: pluginThreadKey\(plugin, scope\)/.test(askBody)],

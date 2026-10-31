@@ -19,6 +19,7 @@ import { readMemoryIndexCapBytes } from "./settings.js";
 import { poolSpecs, type ModelProfile } from "./settings.js";
 import { listLiveChildJobs, resolveOwnerThreadKey } from "./worker-jobs.js";
 import { pendingOptionsLine } from "./pending-options.js";
+import { takeRecoveryNoticeLine } from "./job-report-delivery.js";
 import { scopeConstitution } from "./constitution-scope.js";
 import { turnKindOf } from "./llm-runtime/capability-reach.js";
 import { readFileSync } from "node:fs";
@@ -365,6 +366,9 @@ export const formatConversationContext = ({
   //  그래서 «원인 확인만» 같은 답이 **새 지시**로 읽혀 «무엇을 확인할까요» 가 나왔다.
   //  한 턴만 살고 읽으면 지운다 — 옛 질문이 따라다니면 그게 오염이다.
   const asked = pendingOptionsLine(threadKey);
+  // ★앞서 전달 못 한 작업 보고를 **따로 다시 보내는 중** (2026-10-31 완료 보고 복구 §5-4) — 원문 통지는 모델 대화 기록에 안 들어가므로,
+  //  이 줄이 없으면 사용자가 «결과 어떻게 됐어?» 할 때 모델이 같은 작업을 새로 띄운다(10-31 사고). 회수가 생긴 턴에만 · 읽으면 지운다.
+  const recovering = takeRecoveryNoticeLineSafe(threadKey);
   // 이 대화에 연결한 프로젝트(2026-10-08) — 이름·경로·한 줄 설명만. 없으면 0줄.
   const linked = linkedProjectsLinesSafe(threadKey);
   return [
@@ -373,8 +377,18 @@ export const formatConversationContext = ({
     ...linked,
     ...(live !== "" ? [live] : []),
     ...(asked !== "" ? [asked] : []),
+    ...(recovering !== "" ? [recovering] : []),
     '스케줄·알림 등을 "지금 이 대화로" 보낼 때 위 dest_channel/dest_target 를 사용하세요.',
   ].join("\n");
+};
+
+/** 회수 한 턴 줄 — 조립이 대화를 막지 않게(실패하면 0줄). */
+const takeRecoveryNoticeLineSafe = (threadKey: string): string => {
+  try {
+    return takeRecoveryNoticeLine(threadKey);
+  } catch {
+    return "";
+  }
 };
 
 /**

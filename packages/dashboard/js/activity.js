@@ -632,7 +632,7 @@
       const MAX_SURFACED_TABS = 10;
       // dev DB 노이즈(test:·bridge:·내부 파생)를 목록에서 배제 — prod 엔 없지만 라이브 dev DB 방어.
       // 서버 excludeInternal 과 belt-and-suspenders(worker:/agent:/endpoint:/gateway:/scheduler:/::sub::).
-      const NON_CONVO_PREFIXES = ["worker:", "agent:", "endpoint:", "gateway:", "scheduler:", "test:", "bridge:"];
+      const NON_CONVO_PREFIXES = ["worker:", "agent:", "endpoint:", "gateway:", "scheduler:", "plugin:", "test:", "bridge:"];
       const isSurfaceableSession = (tk) => {
         if (typeof tk !== "string" || tk === "") return false;
         if (tk.indexOf("::sub::") !== -1) return false;

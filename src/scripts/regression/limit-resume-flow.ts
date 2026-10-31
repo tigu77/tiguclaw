@@ -102,9 +102,10 @@ export const check: RegressionCheck = {
     const armsReset = /const queueHandler: MessageHandler = \(msg\) => \{\n[^\n]*\n\s*if \(msg\.synthetic !== true\) resetLimitResumeArms\(turnSessionOf\(msg\)\);/.test(idx);
     const boot = idx.indexOf("resetLimitResumeClaims();") > idx.indexOf("initStore();") && idx.indexOf("resetLimitResumeClaims();") < idx.indexOf("await wirePlugin(lp,") && /setLimitResumeRuntime\(\{ schedulerLive: /.test(idx);
     const reg = readSourceSync("src/core/llm-runtime/capabilities/agent-registry.ts");
-    const joinTail = /🔴 실패 — \$\{job\.error \?\? "\(원인 미상\)"\}\$\{jobLimitResumeLine\(job\)\}/.test(reg);
+    // 2026-10-31 — 실패 머리에 «(마무리 단계)» 표지가 낄 수 있다(완료 보고 복구 §4-1). 꼬리는 같은 칸 그대로.
+    const joinTail = /🔴 실패\$\{[^`]*\} — \$\{job\.error \?\? "\(원인 미상\)"\}\$\{jobLimitResumeLine\(job\)\}/.test(reg);
     const wj = readSourceSync("src/core/worker-jobs.ts");
-    const jobExit = between(wj, "    markFailed(jobId, redactSecrets(outcome.error), outcome.errorName);", "  const found = jobs.get(jobId);").includes("noteJobLimitStop(jobId, outcome);");
+    const jobExit = between(wj, "      redactSecrets(outcome.error),", "  const found = jobs.get(jobId);").includes("noteJobLimitStop(jobId, outcome);");
     out.push(
       assert("[배선] 재개 턴 «넘겨받음» 은 줄에서 `beforeTurn` 통과 **직후** · 핸들러 직전", claimAfterSkip, queue.slice(0, 200)),
       assert("[배선] 실패 출구 — 사용자 중지·작업 취소를 지난 뒤에만 걸고 · 인입 응답과 egress 가 **같은 글**", exitOrder && oneText, JSON.stringify({ exitOrder, oneText })),

@@ -143,6 +143,7 @@ import {
 import { initFileLogging, logFatal } from "./core/logging.js";
 import { acquireHomeLock } from "./store/home-lock.js";
 import { channelRefsField, startEventPersistence } from "./core/event-persist.js";
+import { reconcileNoticeStatesAtBoot, recoverUndeliveredNotices } from "./core/job-report-delivery.js";
 import { replyPreviewOf } from "./core/reply-preview.js";
 import { chatRowCoords } from "./store/chat-log.js";
 import {
@@ -161,8 +162,8 @@ import {
   UPDATE_COMPLETE_MARKER,
   UPDATE_FAILED_MARKER,
   updateFailedText,
+  formatSelfUpdateResult,
   type SelfUpdateNotifyDest,
-  type SelfUpdateResult,
 } from "./core/self-update.js";
 import { deliverOutbound } from "./core/outbound.js";
 import { replyQuoteRefOf, withReplyQuote } from "./core/reply-quote.js";
@@ -386,6 +387,9 @@ restoreCooldowns();
 // 한도 자동 이어가기 (2026-10-23) — 끊긴 재개 턴의 «넘겨받음» 표시를 풀고(플러그인 시작 전 = 시작된 재개 턴이 있을 수 없다),
 //  «스케줄러가 떠 있나» 를 꽂는다(안 떠 있으면 걸지 않는다 — 걸어도 안 운다).
 resetLimitResumeClaims();
+// 완료 보고 전달 상태 — 이전 프로세스가 보내다 끊긴 것(`sending`·`recovering`)을 **채널 시작 전에** 되돌린다(2026-10-31 §5-3). 채널이 받는 첫
+//  메시지 시점에 이전 프로세스의 그 상태가 남아 있으면, 회수 선점과 정리가 같은 행을 두 번 보내게 된다.
+reconcileNoticeStatesAtBoot();
 setLimitResumeRuntime({ schedulerLive: () => listLivePlugins().some((p) => p.name === "scheduler" && p.wired.includes("trigger")) });
 
 // ★구독 인증은 **번들 플러그인**이 등록한다 (2026-09-01) — 여기엔 없다.
@@ -1530,34 +1534,6 @@ const restartDaemon = (source: string): boolean => {
 // 슬래시(/update)는 명시 restart 주입(우선) — 레지스트리와 공존(명시 > 레지스트리 > noop).
 setSelfUpdateRestart(() => restartDaemon("self-update:tool"));
 
-// 자가 업데이트 결과 → 사용자 친화 문구 (LLM 무경유 결정론 렌더 — 채널 무관, 슬래시·도구
-// 공용 톤). status 4종 each. updating 은 from→to·파일수·"곧 재시작" 고지.
-const formatSelfUpdateResult = (r: SelfUpdateResult): string => {
-  if (r.status === "busy") {
-    return translate("srv.update.busy");
-  }
-  if (r.status === "up-to-date") {
-    return translate("srv.update.upToDate");
-  }
-  if (r.status === "updating") {
-    const span =
-      r.from !== undefined && r.to !== undefined ? `${r.from} → ${r.to}` : translate("srv.update.latest");
-    // 버전 뒤에 붙는 주석 칸(파일 수 · 의존성) — 칸마다 키 하나, 앞 공백·쉼표까지 카탈로그 값이다.
-    const files =
-      r.changedFiles !== undefined
-        ? translate(r.changedFiles === 1 ? "srv.update.fileCount.one" : "srv.update.fileCount.other", { count: r.changedFiles })
-        : "";
-    const deps = r.ranNpmInstall === true ? translate("srv.update.depsUpdated") : "";
-    const sec = Math.round((r.restartInMs ?? 5000) / 1000);
-    return `${translate("srv.update.applied", { span, files, deps })}\n${translate("srv.update.restartingIn", { sec })}`;
-  }
-  // failed — 의존성 설치·빌드 실패 시 자동 롤백·데몬 생존을 명시(먹통 아님).
-  const state = translate(r.rolledBack === true ? "srv.update.state.rolledBack" : "srv.update.state.running");
-  return r.error !== undefined && r.error !== ""
-    ? translate("srv.update.failedWithCause", { state, error: r.error })
-    : translate("srv.update.failed", { state });
-};
-
 // 슬래시·통지가 쓰는 notify dest 도출 — 메시지의 channel/threadKey 에서 generic 좌표 추출.
 // telegram threadKey "tg:<chatId>" → chatId(worker-jobs deriveTargetFromThreadKey 동형, 비트 동일).
 // 마커에 적재돼 *다음 부팅* 이 "업데이트 완료" 통지를 이 좌표로 보낸다(요청자에게 회신).
@@ -1649,6 +1625,8 @@ let shuttingDown = false;
 const queueHandler: MessageHandler = (msg) => {
   // 사람이 쓴 메시지 — 한도 자동 재개 횟수를 처음부터(2026-10-23 §3.4). 표가 비면 PK 조회 한 번.
   if (msg.synthetic !== true) resetLimitResumeArms(turnSessionOf(msg));
+  // 사람의 일반 메시지 — 그 대화의 미전달 완료 보고를 **이 메시지가 온 곳으로** 다시 보낸다(2026-10-31 §5-4). 선점은 동기, 발송은 기다리지 않는다.
+  if (steerable(msg)) void recoverUndeliveredNotices(msg);
   // 아웃오브밴드 /restart — enqueueThreadTurn 직렬 큐를 건너뛰고 즉시 재시작.
   // 멈춘 턴(앞 턴 미완)이 있어도 큐 무관하게 프로세스를 죽여 respawn. /restart 는 프로세스를
   // 종료하므로 인플라이트 턴과 race 없음(다른 상태변경 명령 /clear 등은 in-band 유지).

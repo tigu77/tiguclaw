@@ -32,6 +32,7 @@ import {
   type AuthLogin,
 } from "../llm-runtime/auth-registry.js";
 import { pluginFetch } from "../plugin-fetch.js";
+import type { RegionASdkOutput } from "../llm-runtime/types.js";
 import { resolveOwnerThreadKey } from "../worker-jobs.js";
 import { isHumanSessionKey } from "../../store/sessions.js";
 import {
@@ -403,11 +404,33 @@ export interface PluginHost {
    *
    * @param scope 같은 플러그인 안에서 대화를 가르고 싶을 때(기본 `"default"`).
    *              실제 좌표는 `plugin:<이름>:<scope>` 이므로 남의 대화엔 못 닿는다.
+   *              ★같은 `scope` 는 앞선 `ask` 이력을 이어 본다 — 독립 호출이면 `scope` 를 갈라라.
+   * @param profile 모델 설정에서 **고를 수 있는 프로필 이름**(2026-10-31) — 사용자가 정의한 프로필, 아직 하나도 정의하지 않았으면
+   *              빌트인 `default`(화면 목록과 같은 판정 `isSelectableProfile`). 그 프로필의 **자기 풀**로만 돈다
+   *              (풀 안 후보 간 폴백은 그대로 · 명시 `.fallback`·기본 프로필로는 안 간다). 고를 수 없는 이름
+   *              (오타·삭제·`provider:model`·사용자 프로필이 있을 때의 등급 별칭)이면 **모델을 부르지 않고**
+   *              `reason:"profile"`. 비우면 기본 풀(종전과 같음). ★정의는 언제나 사용자 것이고, **어느 이름을 쓸지는
+   *              플러그인이 정한다**(사용자가 고르게 하려면 설정 칸을 두고 그 값을 넘긴다).
+   * ★모든 `ask` 는 `ASK_TIMEOUT_MS` 시한과 부르는 턴의 외부 취소(`/stop`·잡 취소)를 따른다. 반환의 `model` 은 실제 응답
+   *  모델, `usage` 는 그 실행의 어댑터 보고값 그대로(미보고면 없음 — 0 으로 채우지 않는다).
    */
-  ask(input: { prompt: string; scope?: string }): Promise<
-    { ok: true; text: string } | { ok: false; error: string }
-  >;
+  ask(input: { prompt: string; scope?: string; profile?: string }): Promise<PluginAskResult>;
 }
+
+/** `host.ask` 의 결과 — 실패는 언제나 값이다(데몬은 무사하다). */
+export type PluginAskResult =
+  | { ok: true; text: string; model?: string; usage?: NonNullable<RegionASdkOutput["usage"]> }
+  | { ok: false; error: string; reason: PluginAskFailure };
+
+/** 실패 갈래 — 플러그인이 문구가 아니라 이 값으로 분기한다. */
+export type PluginAskFailure = "llm-not-declared" | "profile" | "timeout" | "cancelled" | "model";
+
+/**
+ * `host.ask` 한 번의 시한 — **코어 상수**(플러그인 옵션 아님). 도구 0개 단발 호출이라 긴 정상 작업이 없지만,
+ * 큰 입력 종합·고강도 추론을 짧게 자르면 «돌고 있었는데 잘린 것» 이 된다. 기본 도구 호출 천장(660초) 안에서
+ * «선행 I/O + `ask` 1회» 가 끝날 여유를 남긴 값이다. ★도구 호출 전체의 상한 보장 수단은 아니다(설계 R5-3).
+ */
+export const ASK_TIMEOUT_MS = 300_000;
 
 /**
  * 구독 필터 — 이 구독이 이 이벤트를 받나. **순수 판정.**
@@ -463,12 +486,22 @@ export const pluginThreadKey = (plugin: string, scope?: string): string => {
   return `plugin:${plugin}:${s === undefined || s === "" ? "default" : s}`;
 };
 
+/**
+ * @param parentSignal 이 호스트를 낳은 턴의 외부 취소 신호(코어 내부 전용) — `ask` 의 수명에만 잇고 `turn` 엔 싣지 않는다.
+ *   부팅·데이터 라우트 호스트는 부모 턴이 없어 비운다(그땐 시한만).
+ */
 export const createPluginHost = (
   plugin: string,
   needs: PluginNeeds,
-  turn?: PluginTurn,
+  turnIn?: PluginTurn,
   settingsSpec: readonly PluginSettingSpec[] = [],
-): PluginHost => ({
+  parentSignal?: AbortSignal,
+): PluginHost => {
+  // ★좌표 셋만 옮긴다 — 호출부가 코어 좌표(`PluginTurnContext`, 내부 신호 포함)를 그대로 넘겨도 플러그인 표면엔
+  //  직렬화 가능한 값만 남는다(이 파일 머리말 «직렬화 가능한 인자만»).
+  const turn: PluginTurn | undefined =
+    turnIn === undefined ? undefined : { threadKey: turnIn.threadKey, channel: turnIn.channel, target: turnIn.target };
+  return {
   ...(turn !== undefined ? { turn } : {}),
   turnSession: (): string | null => {
     if (turn === undefined) return null;
@@ -478,10 +511,12 @@ export const createPluginHost = (
   // ★읽을 때마다 새로 — 설정 언어를 바꾸면 재시작 없이 다음 호출부터(설정류는 매번 fresh, 2026-10-01). 종전엔 플러그인 시작 때
   //  한 번 읽어, 언어를 바꿔도 구독 인증 버튼·안내가 재시작 전까지 옛 언어였다.
   get locale(): string { return readLocale(); },
-  // ★**매 호출 새로 읽는다** — 이 레포는 설정류를 매 턴 fresh 하게 읽으므로
-  //  ([[reference_config_reload_boundary]]) 값을 바꾸면 재시작 없이 다음 호출부터 먹는다.
-  settings: effectiveSettings(plugin, settingsSpec),
-  fetch: (url, init) => pluginFetch(plugin, url, init),
+  // ★**읽을 때마다 새로** — 이 레포는 설정류를 매 턴 fresh 하게 읽으므로
+  //  ([[reference_config_reload_boundary]]) 값을 바꾸면 재시작 없이 다음 읽기부터 먹는다.
+  //  ★종전엔 값을 호스트를 만들 때 한 번 계산해(2026-10-31 전), 부팅 때 한 번 만드는 `start()` 호스트는 재시작 전까지 옛 값을
+  //   봤다 — 주석과 실제가 갈려 있었다. `locale` 과 같은 모양으로 맞춘다.
+  get settings(): Readonly<Record<string, PluginSettingValue>> { return effectiveSettings(plugin, settingsSpec); },
+  fetch: (url, init) => pluginFetch(plugin, needs.network ?? [], url, init),
   postCard: async ({ text, widget, data }) => {
     // ★**왜 안 붙었는지 말한다** (2026-08-28 실사용 신고: "도구는 쓰는 것 같은데 위젯이
     //  안 나오네"). 종전엔 세 갈래 전부 조용히 `false` 였고, 그래서 도구가 네 번 불렸는데
@@ -645,34 +680,101 @@ export const createPluginHost = (
     return r.delivered ? { ok: true } : { ok: false, error: r.reason ?? "전달 실패" };
   },
 
-  ask: async ({ prompt, scope }) => {
+  ask: async ({ prompt, scope, profile }) => {
     if (needs.llm !== true) {
       return {
         ok: false,
+        reason: "llm-not-declared",
         error:
           `plugin '${plugin}': 모델을 부르려면 package.json 의 tiguclaw.needs.llm 을 ` +
           `true 로 두세요.`,
       };
     }
+    // ★지연 로드 — 어댑터 스택 전체가 딸려 오므로 부팅 경로에 얹지 않는다. 로드 실패도 값으로(던지지 않는다는 계약).
+    let runtime: typeof import("../llm-runtime/index.js");
     try {
-      // ★지연 로드 — 어댑터 스택 전체가 딸려 오므로 부팅 경로에 얹지 않는다.
-      const { runRegionA } = await import("../llm-runtime/index.js");
-      const out = await runRegionA({
-        text: prompt,
-        // 좌표는 **인자가 아니라 정체성에서** 나온다. 남의 대화엔 못 닿는다.
-        threadKey: pluginThreadKey(plugin, scope),
-        channel: plugin as never,
-        toolPolicy: toolPolicyFor(needs),
-        // ★**메인 턴이 아니다** (2026-08-29, 적대 검토 A). 깊이를 안 넘기면 `turnKindOf` 가
-        //  `main` 을 주고, 그러면 사다리 최상단(`update_self`·`model-settings`·`mcp-admin`)
-        //  이 열린다. `ask` 는 위임받아 도는 턴이므로 서브에이전트 층이 맞다.
-        //  ★재귀 상한도 여기서 온다 — 플러그인 도구 → ask → 같은 도구 가 무한히 못 돈다.
-        subagentDepth: ASK_TURN_DEPTH,
-      });
-      return { ok: true, text: out.text };
+      runtime = await import("../llm-runtime/index.js");
+    } catch (e) {
+      return { ok: false, reason: "model", error: e instanceof Error ? e.message : String(e) };
+    }
+    const { runRegionA, resolveSessionProfilePool } = runtime;
+    // ── 프로필: 이름 판정은 세션 프로필과 **같은 함수**(`resolveSessionProfilePool` = 화면 목록 판정 + 자기 풀) ──
+    //  ★자기 풀만 넘긴다(체인 길이 1) — 구조적 실패여도 다른 프로필로 안 간다. 풀 간 폴백은 사용자용 고지 문구를
+    //   텍스트에 붙이고(플러그인이 후처리하는 데이터를 오염) 지정하지 않은 모델로 비용을 낸다(설계 R5-2 ③).
+    //  ★빈 풀(고를 수 없는 이름·실행 가능한 후보 0)을 `chain` 으로 넘기면 `runRegionA` 가 기본 풀로 바꿔 끼운다 —
+    //   여기서 먼저 거절해야 조용한 대체가 없다.
+    let opts: { chain: ReturnType<typeof resolveSessionProfilePool>[] } | undefined;
+    if (profile !== undefined && (typeof profile !== "string" || profile.trim() !== "")) {
+      const name = typeof profile === "string" ? profile.trim() : "";
+      const pool = name === "" ? [] : resolveSessionProfilePool(name);
+      if (pool.length === 0) {
+        return {
+          ok: false,
+          reason: "profile",
+          error:
+            `plugin '${plugin}': 프로필 '${String(profile)}' 을(를) 고를 수 없습니다 — 모델 설정에서 고를 수 있는 프로필 이름이어야 ` +
+            `합니다(모델 이름·provider:model 은 받지 않습니다). 모델을 부르지 않았습니다.`,
+        };
+      }
+      opts = { chain: [pool] };
+    }
+    // 함수로 읽는다 — 아래 `await` 뒤에도 그 순간의 값을 본다(속성 좁히기가 await 를 넘어 남지 않게).
+    const parentAborted = (): boolean => parentSignal?.aborted === true;
+    if (parentAborted()) {
+      return { ok: false, reason: "cancelled", error: `plugin '${plugin}': 부른 작업이 이미 취소됐습니다 — 모델을 부르지 않았습니다.` };
+    }
+    // ── 수명: 시한 + 부른 턴의 외부 취소를 **컨트롤러 하나**로 — 풀 안 후보가 바뀌어도 초기화되지 않는다 ──
+    //  (WebFetch 추출과 같은 관용구 — `webfetch-extract.ts`). 프로필 유무와 무관하게 모든 `ask` 에 건다.
+    // ★**먼저 끊은 쪽이 한 번만 정해진다** — 부모 취소 뒤 어댑터가 늦게 끝나는 사이 시한이 지나도 «취소» 가 «시한» 으로
+    //  바뀌지 않는다(반대도 같다). 신호의 사유와 반환 `reason` 이 같은 사건을 말해야 한다(GPT 코드 검토 R1).
+    const ac = new AbortController();
+    let endedBy: "timeout" | "cancelled" | undefined;
+    const end = (by: "timeout" | "cancelled", why: unknown): void => {
+      if (endedBy !== undefined) return;
+      endedBy = by;
+      ac.abort(why);
+    };
+    const timer = setTimeout(
+      () => end("timeout", new Error(`plugin ask timed out after ${String(ASK_TIMEOUT_MS)}ms`)),
+      ASK_TIMEOUT_MS,
+    );
+    // 부모의 사유를 그대로 넘긴다 — 사용자 `/stop` 이면 코어가 «실패 아님» 으로 다룬다(`stoppedByUser`).
+    const onParentAbort = (): void => end("cancelled", parentSignal?.reason);
+    parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+    try {
+      const out = await runRegionA(
+        {
+          text: prompt,
+          // 좌표는 **인자가 아니라 정체성에서** 나온다. 남의 대화엔 못 닿는다.
+          threadKey: pluginThreadKey(plugin, scope),
+          channel: plugin as never,
+          toolPolicy: toolPolicyFor(needs),
+          // ★**메인 턴이 아니다** (2026-08-29, 적대 검토 A). 깊이를 안 넘기면 `turnKindOf` 가
+          //  `main` 을 주고, 그러면 사다리 최상단(`update_self`·`model-settings`·`mcp-admin`)
+          //  이 열린다. `ask` 는 위임받아 도는 턴이므로 서브에이전트 층이 맞다.
+          //  ★재귀 상한도 여기서 온다 — 플러그인 도구 → ask → 같은 도구 가 무한히 못 돈다.
+          subagentDepth: ASK_TURN_DEPTH,
+          abortSignal: ac.signal,
+        },
+        opts,
+      );
+      return {
+        ok: true,
+        text: out.text,
+        ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
+        // 어댑터가 보고한 그대로 — 없으면 필드도 없다(0·추정으로 채우지 않는다).
+        ...(out.usage !== undefined ? { usage: out.usage } : {}),
+      };
     } catch (e) {
       // ★플러그인의 모델 호출 실패가 데몬을 죽이면 안 된다 — 값으로 답한다.
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      const error = e instanceof Error ? e.message : String(e);
+      // 갈래는 **누가 먼저 끊었나**로 정한다(오류 문구가 아니라).
+      const reason: PluginAskFailure = endedBy ?? "model";
+      return { ok: false, reason, error };
+    } finally {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", onParentAbort);
     }
   },
-});
+  };
+};

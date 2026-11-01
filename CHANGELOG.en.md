@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.81.0] - 2026-11-01
+
+### Added
+- On wide screens, the dashboard main menu can be collapsed into a narrow icon-only bar. Collapsed items show their names on hover or keyboard focus, and each browser remembers whether the menu is collapsed. The mobile layout is unchanged.
+
+### Changed
+- The `notify_owner` worker-notice tool, disabled since 0.79.0, is available again. When a running manager or subagent reports that it is blocked, the assistant handles it first.
+- When the assistant resolves a worker notice internally, it no longer sends a separate reply about it. The dashboard records a one-line notice and shows any text written while handling it as internal activity, and these notices do not increase the conversation tab's unread count. It still tells you about important issues and asks when a new approval or decision is needed.
+- Messages sent while a worker notice is being handled are answered separately.
+
+### Fixed
+- A system notice that arrived while the assistant was replying could disappear when the conversation history was reloaded.
+
 ## [0.80.0] - 2026-11-01
 
 ### Added
@@ -1231,7 +1244,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.80.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...HEAD
+[0.81.0]: https://github.com/tigu77/tiguclaw/compare/v0.80.0...v0.81.0
 [0.80.0]: https://github.com/tigu77/tiguclaw/compare/v0.79.1...v0.80.0
 [0.79.1]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...v0.79.1
 [0.79.0]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...v0.79.0

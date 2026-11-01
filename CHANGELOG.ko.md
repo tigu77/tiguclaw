@@ -8,6 +8,19 @@
 
 ## [Unreleased]
 
+## [0.81.0] - 2026-11-01
+
+### 추가
+- 넓은 화면의 대시보드에서 메인 메뉴를 아이콘만 남긴 좁은 막대로 접을 수 있습니다. 접은 메뉴는 항목에 마우스를 올리거나 키보드로 초점을 옮기면 이름을 보여 주고, 접힘 여부는 브라우저마다 기억합니다. 모바일 화면은 바뀌지 않습니다.
+
+### 변경
+- 0.79.0부터 일시 중단했던 `notify_owner` 작업자 알림 도구를 다시 사용할 수 있습니다. 실행 중인 매니저·서브에이전트가 막힌 점을 알리면 비서가 먼저 처리합니다.
+- 비서가 내부에서 해결한 작업자 알림은 처리 내용을 별도 답변으로 보내지 않습니다. 대시보드에는 내부 처리 알림 한 줄을 남기고 처리 중 쓴 글은 내부 기록으로 표시하며, 이 알림은 대화 탭의 읽지 않은 메시지 수에 들어가지 않습니다. 새 승인·결정이 필요하거나 중요한 문제가 있으면 기존처럼 알리거나 묻습니다.
+- 작업자 알림을 처리하는 동안 보낸 메시지는 그 처리와 별도로 답합니다.
+
+### 수정
+- 비서가 답하는 중에 도착한 시스템 알림이 대화 기록을 다시 불러오면 사라질 수 있던 문제를 수정했습니다.
+
 ## [0.80.0] - 2026-11-01
 
 ### 추가
@@ -2781,7 +2794,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.80.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...HEAD
+[0.81.0]: https://github.com/tigu77/tiguclaw/compare/v0.80.0...v0.81.0
 [0.80.0]: https://github.com/tigu77/tiguclaw/compare/v0.79.1...v0.80.0
 [0.79.1]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...v0.79.1
 [0.79.0]: https://github.com/tigu77/tiguclaw/compare/v0.78.0...v0.79.0

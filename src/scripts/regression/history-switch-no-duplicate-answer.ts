@@ -24,6 +24,7 @@ import { stepSuggestionStream } from "../../core/llm-runtime/adapters/_delta-str
 import { extractInlineSuggestion } from "../../core/next-message-suggestion.js";
 import { readFile } from "node:fs/promises";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { internalTextHelpersSource } from "./_mini-dom.js";
 
 type Act = { ts: number; threadKey: string; kind?: string; seq: number; text?: string; model?: string; reasoning?: string; spend?: unknown; turnId?: string };
 type Entry = { ts: number; role: string; threadKey: string; text: string; kind?: string; notice?: boolean; attachments?: unknown[]; model?: string; reasoning?: string; spend?: unknown; turnId?: string };
@@ -52,6 +53,7 @@ export const check: RegressionCheck = {
       vm.runInContext(
         `const renderedMsgKeys = new Set();
          const msgKey = (ts, role) => ts + "|" + role;
+         ${internalTextHelpersSource()}
          ${cb[0]}
          ${gm[0]}
          ${sp[0]}

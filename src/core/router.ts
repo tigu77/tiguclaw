@@ -38,6 +38,8 @@ export interface RouteOutput {
    * LLM 런타임 output 에서 그대로 전달 — 이 turn 응답을 트리거 메시지 직접 답글로 마킹.
    */
   replyToTrigger?: boolean;
+  /** 생략 증명 — 런타임 output 그대로(어댑터가 깨끗한 종료에서만 싣고, 호스트 안내가 붙으면 지워진 뒤). 소비는 핸들러(허용 메시지일 때만). */
+  reportOmitted?: true;
   /**
    * 인라인 다음-메시지 제안 — 런타임이 답변 꼬리에서 뜯어낸 한 줄(2026-08-25).
    * `text` 에선 이미 제거돼 있다. 없으면 미지정("확신 없음"이지 실패가 아니다).
@@ -181,6 +183,8 @@ export const route = async (
       //  ★`inbound` 는 «정규 인입 경로» 라는 뜻이지 «사람이 쳤다» 가 아니다.
       //   라우터를 우회하는 직접 호출은 미지정으로 남아 로그가 `unknown` 을 찍는다.
       turnOrigin: msg.turnOrigin ?? (msg.synthetic === true ? "synthetic-other" : "inbound"),
+      // 보고 기본 생략 허용 — 메시지의 필드 하나로만(notify-owner-report-contract §3-1). 출처 표식(`turnOrigin`)으로 만들지 않는다.
+      ...(msg.reportDefault === "omit" ? { reportOmittable: true as const } : {}),
       // 트리거가 사람의 대화에 넣은 턴(만든 대화에서 처리되는 파일 감시)의 표식 — 모델 컨텍스트의 «감시(#id)의 실행» 줄(2026-10-20).
       ...(msg.triggerRun !== undefined ? { triggerRun: msg.triggerRun } : {}),
       ...(msg.notifyDest !== undefined ? { notifyDest: msg.notifyDest } : {}),
@@ -261,6 +265,7 @@ export const route = async (
   return {
     text: out.text,
     replyToTrigger: out.replyToTrigger,
+    ...(out.reportOmitted === true ? { reportOmitted: true as const } : {}),
     nextSuggestion: out.nextSuggestion,
     modelOverrideRejected: out.modelOverrideRejected,
     ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),

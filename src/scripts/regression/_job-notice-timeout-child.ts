@@ -43,9 +43,8 @@ const textOf = (r: ToolResult): string => r.content.map((c) => c.text ?? "").joi
 const job = (label: string, threadKey: string, kind: "worker" | "agent" = "worker"): string =>
   wj.registerJob({ label, task: `${label} 지시`, threadKey, channel: CH as never, channelUserId: "u", notifyDest: { channel: CH as never, target: "c" }, kind, detached: true } as never);
 /**
- * 코어 `notifyOwner()` 를 **동기로** 부른다 — abort 리스너 안에서 부르려고. ★이번 릴리스 보류로 도구 서버가 없다
- * (`docs/decisions/2026-10-29-notify-owner-release-hold.md`) — 핸들러 본문과 같은 호출이다. 옛 `srv !== undefined` 분기는 지웠다
- * (남기면 알림 없이 조용히 지나간다).
+ * 코어 `notifyOwner()` 를 **동기로** 부른다 — abort 리스너 안에서 부르려고. 도구 핸들러 본문과 같은 호출이다(노출은 `job-notice` ⑥).
+ * ★서버가 있을 때만 보내는 `srv !== undefined` 분기를 두지 마라 — 서버가 안 생기면 알림 없이 조용히 지나간다.
  */
 const notifyNow = (id: string, message: string): void => {
   wj.notifyOwner(`agent:${id}`, message);

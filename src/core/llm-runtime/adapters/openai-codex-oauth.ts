@@ -834,10 +834,12 @@ export const runOpenAiCodex = async (
   // reply-intent — per-call factory. 무인자 도구 실행 시 클로저로 플래그 set
   // (bridge tool 이라 callTool → onCalled). 함수 지역 변수 → turn 별 격리 (contract §5.2).
   let replyToTrigger = false;
+  // 보고 표시 — 보고 기본 생략 턴(`input.reportOmittable`)에만 `report_to_user` 가 실린다(notify-owner-report-contract §3-2). 시도마다 새 클로저.
+  let reportMarked = false;
   const replyIntentBridge = await adaptClaudeMcpServer(
     createReplyIntentMcpServer(() => {
       replyToTrigger = true;
-    }),
+    }, input.reportOmittable === true ? { onReport: () => { reportMarked = true; } } : undefined),
     "reply-intent",
   );
   // 런타임 유지보수 detect (2026-07-12, P1) — maintenance_status. 읽기전용·저위험 =
@@ -1333,6 +1335,7 @@ export const runOpenAiCodex = async (
     channel: input.channel,
     threadKey: input.threadKey,
     adapter: "codex",
+    ...(input.reportOmittable === true ? { audience: "internal" as const } : {}),
     model,
   });
   // 대시보드 인터리브(2026-07-13) — codex 는 도구가 iteration SSE 완전 소비 후 사후
@@ -1358,6 +1361,8 @@ export const runOpenAiCodex = async (
           model,
           seq: segSeq,
           kind: "text",
+          // 보고 기본 생략 턴의 글은 «내부 기록» — 대시보드가 답 말풍선으로 그리지 않는다(notify-owner-report-contract §3-5).
+          ...(input.reportOmittable === true ? { audience: "internal" as const } : {}),
           label: "text",
           text,
         } satisfies RegionAActivityPayload,
@@ -1456,6 +1461,8 @@ export const runOpenAiCodex = async (
   // throw 금지(중복 회피) — 대신 정직한 fallback 텍스트 반환. 부작용 0(순수 읽기/빈 턴)
   // 일 때만 throw 해 안전하게 풀 폴백 유도.
   let sideEffectExecuted = false;
+  /** 이 시도가 **호스트가 쓴 글**로 끝났나 — 부작용 뒤 오류를 안내문으로 삼킴 · 빈 글 대체 문구. 그 턴은 생략을 증명하지 못한다(notify-owner-report-contract §3-3). */
+  let hostComposedEnd = false;
   // 2026-06-05 — agentic loop 중 *성공적으로 실행된* MCP 도구 이름 누적. 빈 응답 nudge
   //  와 fallback 메시지에 사용 (사용자가 텔레그램 응답에서 "방금 무엇을 했는지" 즉시 인지).
   //  Set 이라 중복 자동 제거 — 같은 도구 N번 실행도 1개로 노출 (이름 노출이 목적).
@@ -3183,6 +3190,7 @@ export const runOpenAiCodex = async (
       rethrow(e);
     }
     if (sideEffectExecuted) {
+      hostComposedEnd = true;
       const ranList =
         executedToolNames.size > 0
           ? `\n\n${translate("srv.codex.toolsRan", { tools: [...executedToolNames].join(", ") })}`
@@ -3362,6 +3370,7 @@ export const runOpenAiCodex = async (
         ? `\n\n${translate("srv.codex.toolsRan", { tools: [...executedToolNames].join(", ") })}`
         : "";
     finalText = `${translate("srv.codex.noSummary")}${ranList}\n\n${translate("srv.codex.checkOrAskAgain")}`;
+    hostComposedEnd = true;
   }
 
   return {
@@ -3373,6 +3382,9 @@ export const runOpenAiCodex = async (
     model,
     ...(turnReasoning !== undefined ? { reasoning: turnReasoning } : {}),
     replyToTrigger,
+    // 생략 증명(notify-owner-report-contract §3-3) — 보고 기본 생략 턴 · 표시 없음 · **모델이 낸 최종 글로** 끝남
+    //  (오류 삼킴 안내·빈 글 대체 문구·도구 한도 강제 마무리는 호스트가 끝낸 것이라 평소대로 전달).
+    ...(input.reportOmittable === true && !reportMarked && !hostComposedEnd && !finalFlushRequested ? { reportOmitted: true as const } : {}),
     usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
     timing: summarizeTurnTiming(turnSpans, turnBounds()),
     turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),

@@ -112,11 +112,14 @@ export const check: RegressionCheck = {
       const fan = callArgTexts("src/index.ts", "fanOutEgress");
       const fanBy = (text: string): string[][] => fan.filter((a) => a[1] === text);
       const fanBody = idx.slice(idx.indexOf("const fanOutEgress = async ("), idx.indexOf("const maybeSuggestNextMessage"));
+      // 성공 답은 `deliverTurnReply` 가 원본 좌표를 사본 클로저에 넘긴다(2026-11-01 진입점에서 옮김) — 진입점의 그 클로저 호출(`text`)이 `original` 을 넘기는지 본다.
+      const rc = stripComments(readSourceSync("src/core/entry/reply-command.ts"));
       const wiring = {
-        success: fanBy("replyText").map((a) => a[4] ?? null),
+        success: fanBy("text").map((a) => a[4] ?? null),
+        successForwards: /const original = publishReplyOut\(t\.bus, \{[\s\S]*?\}\);\s*await t\.fanOut\(t\.replyText, original\);/.test(rc),
         failure: fanBy("failText").map((a) => a[4] ?? null),
         stopped: fanBy("STOPPED_NOTICE()").map((a) => a[4] ?? null),
-        publishBinds: (idx.match(/const original = publishReplyOut\(bus, \{/g) ?? []).length,
+        publishBinds: (idx.match(/const original = publishReplyOut\(bus, \{/g) ?? []).length + (rc.match(/const original = publishReplyOut\(t\.bus, \{/g) ?? []).length,
         replyBinds: (idx.match(/const original = await replyCommand\(msg, (?:failText|STOPPED_NOTICE\(\)), \{ turnFailed: true \}\);/g) ?? []).length,
         forwards: /deliverOutbound\(\{[\s\S]*copyOfRecorded: true,\s*\.\.\.\(copyOf !== undefined \? \{ copyOf \} : \{\}\)/.test(fanBody),
       };
@@ -139,7 +142,7 @@ export const check: RegressionCheck = {
           plain !== undefined && plain.threadKey === SESSION && plain.replyToRef === undefined,
           { tk: plain?.threadKey, ref: plain?.replyToRef ?? null }),
         assert("④ 배선 — 성공·실패·작업취소는 원본 발행의 반환을 넘기고 멈춤 안내 두 곳은 안 넘긴다 · fanOutEgress 가 deliverOutbound 에 넘긴다",
-          JSON.stringify(wiring.success) === '["original"]' && JSON.stringify(wiring.failure) === '["original"]' &&
+          JSON.stringify(wiring.success) === '["original"]' && wiring.successForwards && JSON.stringify(wiring.failure) === '["original"]' &&
             wiring.stopped.filter((x) => x === "original").length === 1 && wiring.stopped.filter((x) => x === null).length === 2 &&
             wiring.publishBinds === 1 && wiring.replyBinds === 2 && wiring.forwards,
           wiring),

@@ -150,8 +150,10 @@ export const sessionNoticeText = (it: InboxItem): string =>
   `[작업자 알림] ${kindWord(it.kind)} '${it.label}'(job_id ${it.jobId}, notice_id ${it.noticeId})이 실행 중에 알립니다: «${it.text}»` +
   (it.note !== undefined ? ` ${it.note}` : "") +
   `\n작업자는 기다리지 않고 계속 일하고 있습니다. 맥락으로 풀 수 있으면 ${ANSWER_HOW} 로 답하세요. ` +
-  `사용자만 정할 수 있으면(사용자 앱·결정·범위 밖) 사용자에게 알리거나 prompt_options 로 물은 뒤 그 답을 ${ANSWER_HOW} 로 전하세요. ` +
-  `이미 풀렸거나 할 일이 없으면 아무 말도 안 해도 됩니다.`;
+  `이미 승인된 범위면 사용자에게 다시 묻지 말고 답하세요. 사용자만 정할 수 있으면(새 승인·결정, 사용자 앱, 범위 밖) prompt_options 로 물은 뒤 그 답을 ${ANSWER_HOW} 로 전하세요.\n` +
+  // ★이 턴의 글은 기본적으로 사용자에게 가지 않는다(2026-11-01 notify-owner-report-contract §3-7) — 알릴 것이 있을 때만 표시한다.
+  `이 턴의 글은 기본적으로 사용자에게 가지 않습니다(내부 기록). 사용자에게 꼭 알려야 할 것(새 승인·결정, 중요한 오류·예상 밖 영향, 복구해도 진행 불가)이 있을 때만 ` +
+  `report_to_user 를 부르고 보고를 쓰세요.`;
 
 /** 도는 매니저가 받는 본문(설계 §5.6) — 스티어로 들어가 다음 판단 시점에 읽힌다. */
 export const managerNoticeText = (it: InboxItem): string =>
@@ -179,4 +181,5 @@ export const NOTICE_ID_DESCRIBE =
 
 /** 도구 반환의 꼬리 — 언제나(설계 §4-7). */
 export const KEEP_WORKING =
-  "답을 기다리지 말고 할 수 있는 일을 계속하세요. 답이 오면 다음 판단 시점에 지시로 들어옵니다.";
+  "답을 기다리지 말고 할 수 있는 일을 계속하세요. **새 사용자 승인·결정이 필요한 행동만** 답 전에 하지 마세요(이미 승인된 일·풀린 자원 문제는 답과 무관하게 진행). " +
+  "답이 오면 다음 판단 시점에 지시로 들어옵니다.";

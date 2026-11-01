@@ -1,6 +1,6 @@
 /**
  * `job-notice` 의 자식 — `notify_owner`(2026-10-25, [설계](../../../docs/decisions/2026-10-23-notify-owner-design.md) §14)를 실제 부품으로 돌린다:
- * 실제 코어 `notifyOwner()`(★이번 릴리스 보류로 도구 서버가 없어 핸들러 본문과 같은 호출을 직접 — `2026-10-29-notify-owner-release-hold.md`) · 실제 `wait_for_worker`/`steer_worker`(메인 `workers`·매니저 `agents`) · 실제 `steerJob`/채널 ·
+ * 실제 코어 `notifyOwner()`(도구 핸들러 본문과 같은 호출을 직접 — 노출은 ⑥ 이 따로 잰다) · 실제 `wait_for_worker`/`steer_worker`(메인 `workers`·매니저 `agents`) · 실제 `steerJob`/채널 ·
  * 실제 매니저 러너(`runWorkerJob`, 모델 호출만 주입) · 실제 완료 출구 · 실제 셸 대기(`BashOutput`) · 실제 진행 알림 틱.
  * 메인 핸들러·배달 채널만 대역이다(외부 송신 0 — 등록한 가짜 채널이 문자열만 모은다).
  *
@@ -71,8 +71,8 @@ const textOf = (r: ToolResult): string => r.content.map((c) => c.text ?? "").joi
 const coord = (id: string): string => (wj.getJob(id)?.kind === "agent" ? `agent:${id}` : `worker:${id}`);
 /**
  * 작업자 `id` 의 알림을 **코어 `notifyOwner()` 로 직접** 보낸다 — 반환까지 걸린 시간도 잰다(영원히 안 끝나는 메인 핸들러로도 즉시 돌아와야 한다).
- * ★이번 릴리스 보류로 도구 팩토리가 서버를 만들지 않는다(`docs/decisions/2026-10-29-notify-owner-release-hold.md`) — 휴면 배달 코드는
- *  도구 핸들러 본문과 같은 호출(`notifyOwner(threadKey, message)`)로 계속 잰다. ★동기로 부른다 — 옛 핸들러도 첫 await 전에 코어를 불렀다
+ * 도구 핸들러 본문과 같은 호출(`notifyOwner(threadKey, message)`)이다(2026-10-29 보류 때 핸들러 경유에서 바꿨고, 2026-11-01 해제 뒤에도 둔다 —
+ *  노출·등록은 ⑥ 이 어댑터 요청 경계로 따로 잰다). ★동기로 부른다 — 핸들러도 첫 await 전에 코어를 부른다
  *  (③c·③d 는 abort 리스너 **안에서** 알림이 들어가야 성립한다).
  */
 const notify = async (id: string, message: string): Promise<{ text: string; ms: number }> => {
@@ -261,19 +261,21 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
   };
 }
 
-// ── ⑥ 노출 — ★이번 릴리스 보류: 메인·엔드포인트·실행 중인 매니저·서브·끝난 잡 **모두** 서버 없음 · 정의(설명 600자 이내)는 보존 ───────
+// ── ⑥ 노출 — 메인·엔드포인트 턴엔 없다 · 실행 중인 매니저·서브 턴엔 있다(도구 하나) · 끝난 잡엔 없다 · 설명 600자 이내 ───────────────────
 {
   reset();
   const M = job("노출매니저", S);
   const C = job("노출서브", `worker:${M}`, "agent");
   const E = job("끝난", S); wj.markDone(E, "끝");
+  const mgr = createNotifyOwnerMcpServer({ threadKey: `worker:${M}` });
   out.exposure = {
     main: createNotifyOwnerMcpServer({ threadKey: S }) === undefined,
     endpoint: createNotifyOwnerMcpServer({ threadKey: "endpoint:x" }) === undefined,
-    manager: wj.getJob(M)?.status === "running" && createNotifyOwnerMcpServer({ threadKey: `worker:${M}` }) === undefined,
-    sub: wj.getJob(C)?.status === "running" && createNotifyOwnerMcpServer({ threadKey: `agent:${C}` }) === undefined,
+    manager: mgr !== undefined && Object.keys(toolsOf(mgr)).join() === "notify_owner",
+    sub: createNotifyOwnerMcpServer({ threadKey: `agent:${C}` }) !== undefined,
     ended: createNotifyOwnerMcpServer({ threadKey: `worker:${E}` }) === undefined,
-    descLen: [...NOTIFY_OWNER_DESCRIPTION].length,
+    descLen: [...(mgr === undefined ? "" : toolsOf(mgr).notify_owner?.description ?? "")].length,
+    descIsExport: mgr !== undefined && toolsOf(mgr).notify_owner?.description === NOTIFY_OWNER_DESCRIPTION,
     mainSteerHasNoticeId: JSON.stringify(toolsOf(createWorkerMcpServer(mainInput())).steer_worker?.inputSchema ?? {}).includes("notice_id"),
     mgrSteerHasNoticeId: JSON.stringify(toolsOf(createSpawnAgentMcpServer(managerInput(M))).steer_worker?.inputSchema ?? {}).includes("notice_id"),
   };

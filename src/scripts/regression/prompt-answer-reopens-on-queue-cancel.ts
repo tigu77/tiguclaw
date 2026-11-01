@@ -235,8 +235,10 @@ export const check: RegressionCheck = {
     {
       const idx = await readFile(path.join(HERE, "../../index.ts"), "utf8");
       const qh = /const queueHandler: MessageHandler = \(msg\) => \{[\s\S]*?\n\};\n/.exec(idx)?.[0] ?? "";
-      const enq = qh.slice(qh.lastIndexOf("return enqueueThreadTurn("));
-      const wired = /id: msg\.correlationId,/.test(enq) &&
+      // 줄 세우기는 `admitTurn`(2026-11-01 진입점에서 옮김) — 진입점은 상관 id·재개방을 `queueOpts` 로 넘기고, 함수가 그대로 큐에 준다.
+      const enq = qh.slice(qh.lastIndexOf("return admitTurn("));
+      const life = await readFile(path.join(HERE, "../../core/entry/turn-lifecycle.ts"), "utf8");
+      const wired = /id: msg\.correlationId,/.test(enq) && /queueOpts: \{/.test(enq) && /d\.queueOpts,\s*\);/.test(life) &&
         /msg\.promptAnswerId !== undefined \? \{ onCancel: \(\) => \{ reopenPromptAnswer\(msg\.promptAnswerId!?\); \} \}/.test(enq);
       out.push(assert("⑧ 배선 — 메인 큐가 그 메시지의 상관 id 와 함께 promptAnswerId 재개방을 onCancel 로 넘긴다", wired, enq === "" ? "queueHandler 를 못 찾음" : "배선"));
     }

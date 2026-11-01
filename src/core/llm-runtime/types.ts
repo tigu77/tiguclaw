@@ -86,6 +86,12 @@ export interface RegionASdkInput {
    * ★요청 payload 에 실리지 않는다.
    */
   turnOrigin?: TurnOrigin;
+  /**
+   * 이 턴은 **사용자 보고 기본 생략 허용**(2026-11-01 — `docs/decisions/2026-11-01-notify-owner-report-contract.md`). 라우터가
+   *  `IncomingMessage.reportDefault === "omit"` 일 때만 싣는다. 어댑터는 이 턴에만 `report_to_user` 를 노출하고, 깨끗하게 끝났는데
+   *  표시가 없으면 `reportOmitted` 를 싣고, 글 조각(활동·델타)에 `audience:"internal"` 을 단다. 요청 payload 에는 실리지 않는다.
+   */
+  reportOmittable?: true;
   channel: ChannelName;
   /**
    * 신규(additive, 2026-07-15) — **세션-정체성 저장 채널** (채널/세션 분리 Phase 1,
@@ -387,6 +393,12 @@ export interface RegionASdkOutput {
    */
   replyToTrigger?: boolean;
   /**
+   * 사용자 보고 **생략 증명**(2026-11-01) — 입력이 `reportOmittable` 이고, 모델이 `report_to_user` 를 부르지 않았고, 이 시도가 **깨끗하게**
+   *  끝났을 때만 어댑터가 싣는다(흡수된 실패·대체 문구·패스스루·도구 없는 재시도엔 없음). 어댑터 반환 뒤 호스트가 사용자에게 갈 안내를
+   *  본문에 덧붙이면 그 자리가 이 필드를 지운다(`runRegionA` 폴백 안내). 소비는 핸들러 한 곳 — 허용 없는 메시지면 무시한다.
+   */
+  reportOmitted?: true;
+  /**
    * 인라인 다음-메시지 제안 (2026-08-25) — 모델이 답변 꼬리에 `<next-message>` 로 붙인 한 줄.
    * ★`text` 에서는 **이미 제거돼 있다**(`callAdapter` 반환 직후, persist·publish 보다 앞).
    *  어댑터는 이 필드를 모른다 — 코어가 한 곳에서 뜯는다(LLM-agnostic).
@@ -514,6 +526,11 @@ export interface RegionAActivityPayload {
    *    denylist 파이프 그대로 탄다). 빈 세그먼트는 발행 안 함(closeSegment() no-op).
    */
   kind: "tool" | "turn" | "text";
+  /**
+   * 글 조각의 출처(2026-11-01, additive) — `"internal"` 이면 사용자 보고 기본 생략 턴(`RegionASdkInput.reportOmittable`)의 글이다.
+   *  대시보드는 답 말풍선이 아니라 그 턴의 «내부 기록» 스텝으로 그린다(라이브·재연결·이력이 같은 뜻). 그 밖의 턴엔 없다. `kind:"text"` 에만 싣는다.
+   */
+  audience?: "internal";
   /**
    * 사람이 읽는 한 줄. kind="tool" 이면 도구명, kind="turn" 이면 코어스 문구.
    */
@@ -700,6 +717,8 @@ export interface RegionADeltaPayload {
    * coalesce(어댑터측 ~80ms ∥ ~120자) 후의 묶음일 수 있다.
    */
   delta: string;
+  /** 글 조각의 출처 — `RegionAActivityPayload.audience` 와 같은 뜻(보고 기본 생략 턴이면 `"internal"`). 대시보드는 이 델타를 진행 말풍선으로 그리지 않는다. */
+  audience?: "internal";
 }
 
 /**

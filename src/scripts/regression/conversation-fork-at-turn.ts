@@ -410,7 +410,10 @@ export const check: RegressionCheck = {
       const wired = {
         codex: /appendApiTurn\(\{[\s\S]{0,600}?\}\);\s*output\.turn = apiTurnMark\(/.test(facade),
         claude: /indexJsonlIfNeeded\(\{[^}]*\}\);\s*const mark = claudeTurnMark\(/.test(facade) && !/void Promise\.resolve\(\)\s*\.then\(\(\) =>\s*indexJsonlIfNeeded/.test(facade),
-        out: /out\.turn !== undefined && \(steeringCh\?\.pending\(\) \?\? 0\) === 0 \? \{ turn: out\.turn \}/.test(entry),
+        // 답 이벤트는 `deliverTurnReply`(2026-11-01 진입점에서 옮김) — 진입점이 «끼워넣기 잔여 없음» 을 넘기고 함수가 그때만 싣는다.
+        // ★판정은 채널 답 **뒤**, 기록을 만드는 그 순간(함수로 넘긴다) — 시점은 `notice-report-contract` 가 실행으로 잰다(전송 중 끼어든 입력).
+        out: /out\.turn !== undefined && t\.turnMarkable\(\) \? \{ turn: out\.turn \}/.test(await readSource("../../core/entry/reply-command.ts")) &&
+          /turnMarkable: \(\) => \(steeringCh\?\.pending\(\) \?\? 0\) === 0,/.test(entry),
         router: /out\.turn !== undefined \? \{ turn: out\.turn \}/.test(await readSource("../../core/router.ts")),
         persist: /channel\.message\.out" && payload\.turn/.test(persist),
       };

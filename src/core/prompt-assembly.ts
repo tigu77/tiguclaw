@@ -322,11 +322,14 @@ export const formatConversationContext = ({
   threadKey,
   channelAddress,
   triggerRun,
+  reportOmittable,
 }: {
   channel: string;
   threadKey: string;
   channelAddress?: string;
   triggerRun?: TriggerRun;
+  /** 보고 기본 생략 턴(작업자 알림 턴) — 사람 턴 몫의 한 번짜리 줄(직전 질문·회수)을 꺼내지 않는다(notify-owner-report-contract §3-6). */
+  reportOmittable?: true;
 }): string => {
   // ★자기 세션 정체성 (2026-07-29 사용자 질문 "메인비서가 현재 세션을 알고 있나?" → 몰랐다).
   //  종전 블록엔 **배달 좌표**(dest_channel/dest_target)만 있고 "나는 어느 대화인가"가
@@ -365,10 +368,12 @@ export const formatConversationContext = ({
   //  도착하고, 질문은 도구 인자에 있어 턴 사이 이력(`{role,content}` 텍스트)에 안 남는다.
   //  그래서 «원인 확인만» 같은 답이 **새 지시**로 읽혀 «무엇을 확인할까요» 가 나왔다.
   //  한 턴만 살고 읽으면 지운다 — 옛 질문이 따라다니면 그게 오염이다.
-  const asked = pendingOptionsLine(threadKey);
+  // ★보고 기본 생략 턴은 꺼내지 않는다(2026-11-01 §3-6) — 같은 대화 줄에 그 턴이 먼저 서 있으면 «다음 사람 턴» 몫을 먹어 버리고,
+  //  그 턴의 글은 사용자에게 안 가니 아무도 모른다. 안 꺼냈으니 다음 사람 턴이 그대로 받는다.
+  const asked = reportOmittable === true ? "" : pendingOptionsLine(threadKey);
   // ★앞서 전달 못 한 작업 보고를 **따로 다시 보내는 중** (2026-10-31 완료 보고 복구 §5-4) — 원문 통지는 모델 대화 기록에 안 들어가므로,
   //  이 줄이 없으면 사용자가 «결과 어떻게 됐어?» 할 때 모델이 같은 작업을 새로 띄운다(10-31 사고). 회수가 생긴 턴에만 · 읽으면 지운다.
-  const recovering = takeRecoveryNoticeLineSafe(threadKey);
+  const recovering = reportOmittable === true ? "" : takeRecoveryNoticeLineSafe(threadKey);
   // 이 대화에 연결한 프로젝트(2026-10-08) — 이름·경로·한 줄 설명만. 없으면 0줄.
   const linked = linkedProjectsLinesSafe(threadKey);
   return [

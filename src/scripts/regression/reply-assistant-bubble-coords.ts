@@ -23,7 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { assert, assertIsolated, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
-import { makeDomContext } from "./_mini-dom.js";
+import { internalTextHelpersSource, makeDomContext } from "./_mini-dom.js";
 import { initStore } from "../../store/sessions.js";
 import { chatRowCoords, recordChatMessage } from "../../store/chat-log.js";
 import { replyPreviewOf, type ReplyPreview } from "../../core/reply-preview.js";
@@ -90,6 +90,7 @@ const screen = (tk: string) => {
   run(section(virt, "      const createDeltaGroup = (p, ts, adapter, thread) => {", "      // 진행(타이핑) 버블을"));
   run(section(virt, "      const ensureReplyBubble = (card, ts) => {", "\n\n"));
   run(section(hist, "      const buildHistoryDiv = (entry) => {", "      // ── 페이지네이션 상태"));
+  run(internalTextHelpersSource(false)); // 라이브·이력이 같이 쓰는 «내부 기록 글» 판정(util.js 원문, 2026-11-01)
   run(src("packages/dashboard/js/token-delta.js"));
   run(section(src("packages/dashboard/js/channel-hints.js"), "      const renderChannelMessage = (ev, ts) => {", null));
   run(src("packages/dashboard/js/sse.js"));

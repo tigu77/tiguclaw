@@ -49,6 +49,8 @@ export interface DeltaStreamConfig {
   adapter: "claude" | "codex" | "openai";
   /** 어댑터가 아는 시점의 사용 모델(있으면). 없으면 publish 시 생략. */
   model?: string;
+  /** 보고 기본 생략 턴(`input.reportOmittable`)이면 `"internal"` — 델타마다 그대로 싣는다(`RegionADeltaPayload.audience`). */
+  audience?: "internal";
 }
 
 export interface DeltaStream {
@@ -180,6 +182,7 @@ export function createDeltaStream(config: DeltaStreamConfig): DeltaStream {
           ...(model !== undefined ? { model } : {}),
           seq: seq++,
           delta,
+          ...(config.audience !== undefined ? { audience: config.audience } : {}),
         } satisfies RegionADeltaPayload,
       });
     } catch {

@@ -597,9 +597,11 @@ export const runClaude = async (
   // reply-intent — per-call factory. 무인자 도구 호출 시 클로저로 플래그 set.
   // 함수 지역 변수 → 동시 turn 별 별 클로저 (교차 오염 0). contract §5.1.
   let replyToTrigger = false;
+  // 보고 표시 — 보고 기본 생략 턴(`input.reportOmittable`)에만 `report_to_user` 가 실린다(notify-owner-report-contract §3-2). 시도마다 새 클로저.
+  let reportMarked = false;
   const replyIntentServer = createReplyIntentMcpServer(() => {
     replyToTrigger = true;
-  });
+  }, input.reportOmittable === true ? { onReport: () => { reportMarked = true; } } : undefined);
 
   // send-file — per-turn dedup Set(클로저 지역). 같은 경로 재호출 시 실제 전송 차단.
   // 함수 지역 변수 → 동시 turn 별 격리 (reply-intent per-turn flag 와 동형, 멱등 핵심).
@@ -1596,6 +1598,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     channel: input.channel,
     threadKey: input.threadKey,
     adapter: "claude",
+    ...(input.reportOmittable === true ? { audience: "internal" as const } : {}),
     model: lastModel ?? undefined,
   });
 
@@ -1618,6 +1621,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
           model: lastModel ?? undefined,
           seq: segSeq,
           kind: "text",
+          // 보고 기본 생략 턴의 글은 «내부 기록» — 대시보드가 답 말풍선으로 그리지 않는다(notify-owner-report-contract §3-5).
+          ...(input.reportOmittable === true ? { audience: "internal" as const } : {}),
           label: "text",
           text,
         } satisfies RegionAActivityPayload,
@@ -2611,7 +2616,12 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   //  49개를 모아도 마감이 `""` 를 골라 **빈 말풍선 + ok:true** 가 그대로 재현된다.
   //  경계를 늦게 잡는 것만으론 반쪽이었다 — 마감도 "내용 있는 쪽"을 골라야 닫힌다.
   const chunkText = assistantTextChunks.slice(chunkBase).join("");
-  const currentText = resultText !== undefined && resultText !== "" ? resultText : chunkText;
+  // 이 턴의 답이 성공 result 본문에서 나오는가 — 아니면 답은 result 가 덮지 않은 글 조각이다.
+  //  생략 증명(아래 반환)도 이 판정을 쓴다: 앞서 온 빈 성공 result(묶인 알림의 합성 턴)가 세운 `succeeded` 로
+  //  그 **뒤에 온 글 조각**의 완료를 증명하지 않는다(2026-11-01 공개 전 적대 검토 P1).
+  const resultBody = resultText !== undefined && resultText !== "" ? resultText : undefined;
+  const answerFromResult = resultBody !== undefined;
+  const currentText = resultBody ?? chunkText;
   // 이어 받은 턴이 있으면 앞 답 + 이 턴의 답(실패했으면 안내) — 없으면 종전 그대로.
   const text =
     settledAnswer === undefined
@@ -2673,6 +2683,12 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       jsonlPath: jsonl,
       ...(lastAssistantUuid !== undefined && !turnHadFailure && !steerTurnFailed ? { lastMessageUuid: lastAssistantUuid } : {}),
       replyToTrigger,
+      // 생략 증명(notify-owner-report-contract §3-3) — 보고 기본 생략 턴 · 표시 없음 · **깨끗한 종료**(성공 결과를 받았고 흡수한 실패 없음).
+      //  성공 없이 글만 있는 반환·흡수된 실패(`turnHadFailure`·`keepAnswerOnThrow`)·이어 받던 턴 실패·성공 result 가 덮지 않은 글 조각
+      //  (`answerFromResult` — 빈 성공 result 뒤에 온 답)은 여기서 빠져 평소대로 전달된다. 글이 없는 깨끗한 종료는 증명된다.
+      ...(input.reportOmittable === true && !reportMarked && succeeded && (answerFromResult || chunkText === "") && !turnHadFailure && !steerTurnFailed
+        ? { reportOmitted: true as const }
+        : {}),
       usage: requestUsage.withUsage(lastUsage),
       timing: requestTimeline.summary(),
     };

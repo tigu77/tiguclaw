@@ -63,10 +63,18 @@ export const check: RegressionCheck = {
     // ★정리 턴(`fork-carry`)엔 끼워넣기 채널을 안 붙인다 — 붙이면 그 사이 가지에 친 말이 정리에 섞여 «결론» 으로 원래 대화에 가고,
     //  그 말은 «보냄» 앞이라 다음 보내기에서도 빠졌다(릴리스 레드팀 F2). 원래 대화 턴(②)은 종전대로 받는다.
     {
+      // ★판정은 `turnTakesSteering` 한 곳으로 옮겼다(2026-11-01 — 보고 기본 생략 턴도 같은 판정에 들어왔다). 동작은 함수로, 배선은 진입점이 그 함수로 채널을 여는지로 본다.
       const { readSourceSync, stripComments } = await import("./_wiring.js");
+      const { openTurnSteering } = await import("../../core/entry/turn-lifecycle.js");
       const entry = stripComments(readSourceSync("src/index.ts"));
-      out.push(assert("★진입점: 끼워넣기 채널은 `fork-carry` 턴에 안 만든다",
-        /if\s*\(\s*STEERING_ENABLED\s*&&\s*msg\.turnOrigin\s*!==\s*"fork-carry"\s*\)/.test(entry),
+      const opened = (turnOrigin?: string): boolean => {
+        const m = new Map();
+        const ch = openTurnSteering({ threadKey: "regr:fork-open", ...(turnOrigin !== undefined ? { turnOrigin: turnOrigin as never } : {}) }, m, new AbortController().signal, true);
+        return ch !== undefined && m.get("regr:fork-open") === ch;
+      };
+      out.push(assert("★진입점: 끼워넣기 채널은 `fork-carry` 턴에 안 만든다(원래 대화 턴·일반 인입은 받는다)",
+        /steeringCh = openTurnSteering\(msg, steeringChannels, turnAc\.signal, STEERING_ENABLED\)/.test(entry) &&
+          !opened("fork-carry") && opened("inbound") && opened(),
         entry.split("\n").filter((l) => l.includes("STEERING_ENABLED")).map((l) => l.trim())));
     }
 

@@ -125,7 +125,7 @@ export const check: RegressionCheck = {
       /if \(msg\.text\.trim\(\) === "\/restart"\) \{/,
       /if \(msg\.text\.trim\(\)\.split\(\/\\s\+\/\)\[0\] === "\/logs"\) \{/,
       /if \(msg\.text\.trim\(\) === "\/diagnose"\) \{/,
-      /return enqueueThreadTurn\(/,
+      /return admitTurn\(msg, \{/, // 직렬 줄은 `admitTurn` 안(2026-11-01 진입점에서 옮김) — 그 호출보다 앞이면 줄 앞이다
     ]);
     out.push(
       assert(

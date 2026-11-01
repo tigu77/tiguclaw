@@ -51,6 +51,14 @@ export const check: RegressionCheck = {
     const three = stopReplyText(0, 3);
     const both = stopReplyText(2, 1);
     const idx = readFileSync(new URL("../../index.ts", import.meta.url), "utf8");
+    // 진입점이 쓰는 그 함수로 실제로 열고 /stop 을 건다 — 묶였으면 그 뒤 push 는 거절된다.
+    const { openTurnSteering } = await import("../../core/entry/turn-lifecycle.js");
+    const openedThenStopped = (() => {
+      const ac = new AbortController();
+      const ch = openTurnSteering({ threadKey: "regr:stop-open" }, new Map(), ac.signal, true);
+      ac.abort(new UserCancelledError());
+      return ch !== undefined && ch.push(toSteeringInput({ channel: "cli", channelUserId: "u", threadKey: "regr:stop-open", text: "늦은 말", reply: async () => undefined } as never)) === false;
+    })();
     const life = readFileSync(new URL("../../core/entry/turn-lifecycle.ts", import.meta.url), "utf8"); // 턴 출구 판정(2026-10-09 index.ts 에서 옮김)
     const facade = readFileSync(new URL("../../core/llm-runtime/index.ts", import.meta.url), "utf8");
     // 통로: 돌던 턴에 /stop · 통로를 열기 전에 이미 /stop · 무응답 시한으로 끝남
@@ -104,11 +112,12 @@ export const check: RegressionCheck = {
         `코덱스 요약=${isCancelled(new UserCancelledError())}`,
       ),
       assert(
-        "배선 — 통로를 열 때 /stop 에 묶는다 · 런타임 facade 는 같은 판정을 쓴다(이름 문자열을 다시 쓰지 않는다)",
-        /closeWhenStopped\(steeringCh, turnAc\.signal\)/.test(idx) &&
+        "배선 — 통로를 열 때 /stop 에 묶는다(진입점은 `openTurnSteering` 으로 열고, 그 함수가 묶는다 — 2026-11-01 옮김) · 런타임 facade 는 같은 판정을 쓴다(이름 문자열을 다시 쓰지 않는다)",
+        /steeringCh = openTurnSteering\(msg, steeringChannels, turnAc\.signal, STEERING_ENABLED\)/.test(idx) &&
+          /closeWhenStopped\(ch, signal\)/.test(life) && openedThenStopped &&
           (facade.match(/stoppedByUser\(input\.abortSignal\)/g) ?? []).length === 2 &&
           !/"UserCancelledError"/.test(idx + facade),
-        `통로=${/closeWhenStopped\(steeringCh/.test(idx)} · facade=${(facade.match(/stoppedByUser\(input\.abortSignal\)/g) ?? []).length}`,
+        `통로=${/openTurnSteering\(msg/.test(idx)}·${/closeWhenStopped\(ch, signal\)/.test(life)}·멈춤 뒤 push=${!openedThenStopped} · facade=${(facade.match(/stoppedByUser\(input\.abortSignal\)/g) ?? []).length}`,
       ),
       assert(
         "배선 — 끼워넣기를 받을 때 그 턴에 센다 · /stop 답이 그 수를 쓴다 · 재주입은 /stop 판정을 거친다",

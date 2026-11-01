@@ -30,6 +30,8 @@ interface HistoryActivity {
   kind?: "tool" | "text";
   /** kind==="text" 일 때만 — 그 세그먼트의 마크다운 원문. 2026-07-13. */
   text?: string;
+  /** kind==="text" 이고 보고 기본 생략 턴의 글이면 `"internal"`(2026-11-01) — 화면은 답 말풍선이 아니라 «내부 기록» 스텝. */
+  audience?: "internal";
 }
 export const historyActivities = (
   entries: Array<{ ts: number }>,
@@ -93,6 +95,7 @@ export const historyActivities = (
         diff?: unknown;
         output?: unknown;
         text?: unknown;
+        audience?: unknown;
         plan?: unknown;
       };
       try {
@@ -138,6 +141,8 @@ export const historyActivities = (
           detail: "",
           kind: "text",
           text: typeof p.text === "string" ? p.text : "",
+          // 보고 기본 생략 턴의 글 — 이력도 라이브와 같은 뜻으로 «내부 기록» 스텝이 된다(notify-owner-report-contract §3-5).
+          ...(p.audience === "internal" ? { audience: "internal" as const } : {}),
         });
         continue;
       }

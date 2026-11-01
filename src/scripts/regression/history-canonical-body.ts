@@ -21,6 +21,7 @@
 import vm from "node:vm";
 import { readFile } from "node:fs/promises";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { internalTextHelpersSource } from "./_mini-dom.js";
 
 export const check: RegressionCheck = {
   name: "history-canonical-body",
@@ -55,6 +56,7 @@ export const check: RegressionCheck = {
       vm.runInContext(
         `const renderedMsgKeys = new Set();
          const msgKey = (ts, role) => ts + "|" + role;
+         ${internalTextHelpersSource()}
          ${hp[0]}
          ${gm[0]}
          this.group = groupMergedItems;`,

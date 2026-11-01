@@ -256,6 +256,13 @@
           params[name] === undefined ? whole : String(params[name]),
         );
       };
+      /**
+       * 보고 기본 생략 턴(작업자 알림 턴)의 글 조각인가 — 라이브(`token-delta.js`)·이력(`history-render.js`)이 **같은 판정**을 쓴다
+       *  (2026-11-01, docs/decisions/2026-11-01-notify-owner-report-contract.md §3-5). 이런 글은 답 말풍선이 아니라 그 턴의 «내부 기록» 스텝이다.
+       */
+      const isInternalText = (p) => !!p && p.kind === "text" && p.audience === "internal";
+      /** 내부 기록 글 조각 → 스텝 모양. 펼치면(상세) 본문 전체가 보인다 — `detail` 이 그 자리다. */
+      const internalTextAsStep = (p) => ({ ...p, kind: "note", label: i18n("chat.internalNote"), detail: String(p.text || "") });
       const currentLocale = () =>
         (window.__TIGU_I18N__ && window.__TIGU_I18N__.locale) || "ko";
 

@@ -188,7 +188,9 @@ const run = async (): Promise<Assertion[]> => {
         : "★표식 없음 — 같은 답이 대화 기록에 두 줄로 남는다",
     });
     // 인입 응답(원본)엔 붙으면 안 된다 — 붙으면 대화가 통째로 기록에서 사라진다.
-    const reply = idx.slice(idx.indexOf("await msg.reply("), idx.indexOf("await msg.reply(") + 400);
+    // 인입 응답 본체는 `deliverTurnReply`(2026-11-01 진입점에서 옮김) 다 — 거기서 본다.
+    const rc = await readFile(new URL("../../core/entry/reply-command.ts", import.meta.url), "utf8");
+    const reply = rc.slice(rc.indexOf("await msg.reply("), rc.indexOf("await msg.reply(") + 400);
     out.push({
       name: "★원본 응답 경로엔 그 표식이 없다(대화가 기록에서 사라지지 않게)",
       ok: !/copyOfRecorded/.test(reply),

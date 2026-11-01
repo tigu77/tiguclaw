@@ -4,9 +4,8 @@
 //  읽어 굳혔고, 홈 .env 의 29개 키(WORKER_TIMEOUT_MS·MCP_CALL_TIMEOUT_MS·CODEX_* 등)가 **조용히 무시**됐다.
 //  회귀 `env-loads-before-any-read` 가 이 파일의 import 순서 그대로 모듈을 올려 «로드 전에 읽힌 키 0» 을 잰다.
 import "./core/load-env.js";
-import { EVENT_TEXT_MAX, publishReplyOut, replyCommand, type OutCoords } from "./core/entry/reply-command.js";
+import { EVENT_TEXT_MAX, deliverTurnReply, finishTurnOutput, replyCommand, type OutCoords } from "./core/entry/reply-command.js";
 import { migrateLegacyModelEnv } from "./core/legacy-model-env.js";
-import { turnSpend } from "./core/llm-runtime/turn-spend.js";
 import {
   handleCompact,
   handleFork,
@@ -22,7 +21,7 @@ import {
 import { formatResetAt, parseCooldownMs } from "./core/llm-runtime/rate-limit.js";
 import { signInGuideFor } from "./core/llm-runtime/sign-in-guide.js";
 import { flushEnvLoadLog } from "./core/load-env.js";
-import { endTurn, refuseWhileClosing } from "./core/entry/turn-lifecycle.js";
+import { admitTurn, endTurn, openTurnSteering, refuseWhileClosing } from "./core/entry/turn-lifecycle.js";
 import { repairRipgrepAtBoot } from "./core/ripgrep.js";
 import "./core/net-config.js"; // ★네트워크 전 — IPv4 우선(IPv6 블랙홀 환경서 텔레그램 전멸 방지).
 import os from "node:os";
@@ -87,10 +86,7 @@ import {
 } from "./core/self-maintenance.js";
 import { stripInternalRuntimeScaffolding, redactSecrets } from "./core/outbound-sanitize.js";
 import { route } from "./core/router.js";
-import {
-  createSteeringChannel,
-  type SteeringChannel,
-} from "./core/steering.js";
+import { type SteeringChannel } from "./core/steering.js";
 import { followHomeCredentials, unresolvedModelSpecs, unresolvedOverrideNote } from "./core/llm-runtime/index.js";
 import { appVersion, appBuildId } from "./core/version.js";
 import {
@@ -168,11 +164,9 @@ import {
 import { deliverOutbound } from "./core/outbound.js";
 import { replyQuoteRefOf, withReplyQuote } from "./core/reply-quote.js";
 import {
-  closeWhenStopped,
   stopReplyIdleWithJobs,
   stopReplyText,
   stoppedByUser,
-  toSteeringInput,
   UserCancelledError,
 } from "./core/steering.js";
 import {
@@ -1308,12 +1302,10 @@ const handler: MessageHandler = async (msg) => {
   let steeringCh: SteeringChannel | undefined;
   // 가지 결론 정리 턴은 끼워넣기를 받지 않는다 — 그 사이 친 말이 정리에 섞여 «결론» 으로 원래 대화에 갔다(릴리스 레드팀 F2). 채널이 없으면
   //  들어온 말은 다음 턴으로 줄을 선다.
-  if (STEERING_ENABLED && msg.turnOrigin !== "fork-carry") {
-    steeringCh = createSteeringChannel();
-    steeringChannels.set(msg.threadKey, steeringCh);
-    // `/stop` 뒤에 온 메시지는 이 턴에 끼우지 않고 새 턴으로 — 위 await 사이에 이미 멈췄어도 같다(`closeWhenStopped`).
-    closeWhenStopped(steeringCh, turnAc.signal);
-  }
+  // ★끼워넣기를 받지 않는 턴(가지 결론 정리 · 보고 기본 생략 작업자 알림 턴)엔 채널을 안 만든다 — 판정은 `turnTakesSteering` 한 곳.
+  //  채널이 없으니 그 사이 사람 메시지는 새 턴으로 줄 선다(아래 인입 분기의 fall-through).
+  //  `/stop` 뒤에 온 메시지는 이 턴에 끼우지 않고 새 턴으로 — 위 await 사이에 이미 멈췄어도 같다(`closeWhenStopped`, 안에서 건다).
+  steeringCh = openTurnSteering(msg, steeringChannels, turnAc.signal, STEERING_ENABLED);
   // 세션 정규화 지시(채널/세션 분리 ADR 2026-07-15) — 사용자 대면 채널이 msg.session 을
   // 채워 보내면 route 가 인입을 canonical 세션으로 정규화한다. 미지정(스케줄러·매니저 재주입·
   // 서브에이전트·엔드포인트 등 내부 파생 turn)이면 forward 안 함 = 현행 passthrough(회귀 0).
@@ -1361,41 +1353,29 @@ const handler: MessageHandler = async (msg) => {
     } else {
       replyText = sanitized;
     }
-    // 인입 채널 응답 — **항상**(현행 그대로, 바이트 동일). egress fan-out 은 이 뒤에 opt-in 추가.
-    // 반환 = 실제로 보낸 채널 메시지 id(있는 채널만) — 아래 송신 이벤트에 실어 대화 기록 행에 묶는다(답글 원문 정확 조회, 2026-10-19).
-    const sentRef = await msg.reply(
-      replyText,
-      out.replyToTrigger === true ? { replyToTrigger: true } : undefined,
-    );
-    // V1 단순+견고: route() 결과만 publish. 슬래시 응답 publish 는 V2
-    // (msg.reply wrap 또는 분기별 명시 — 현 단계 회귀 위험 회피).
-    // 반환 = 이 송신 이벤트의 좌표 — egress 사본이 이 원본 행을 짚는다(2026-10-25).
-    const original = publishReplyOut(bus, {
-      channel: msg.channel,
-      threadKey: msg.threadKey,
-      text: out.text.slice(0, EVENT_TEXT_MAX),
-      ...channelRefsField(msg.channel, sentRef),
-      // 실제 응답 모델(2026-07-27) — chat_log 로 영속돼 새로고침 후에도 답변에 모델이 붙는다.
-      //  종전엔 활동 이벤트에만 있어, 활동이 다른 스레드(스케줄 등)에 속한 답변은 표시가 없었다.
-      ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
-      // 실제로 보낸 추론 강도·턴 비용(2026-09-29) — 답변 행에 같이 영속돼 새로고침·다른 기기에서도 같은 줄이 뜬다.
-      //  비용은 실시간 카드와 **같은 판정**(`turnSpend`)으로 고른다 — 두 벌이면 두 화면이 다른 수를 보인다.
-      ...(typeof out.reasoning === "string" && out.reasoning !== "" ? { reasoning: out.reasoning } : {}),
-      // 완료 턴 표식(2026-10-15) — 저장이 확인된 정상 답에만 있다. 화면 기록에 같이 남아 «여기까지로 갈라내기» 의 좌표가 된다.
-      //  ★끼워넣기 통로에 남은 입력이 있으면 싣지 않는다 — 그 입력은 다음 턴으로 가는데 화면엔 이 답보다 앞에 이미 있어,
-      //   이 답에서 갈라내면 가지 화면엔 보이고 모델은 모른다(2026-10-15 적대 검토 P2). 확인 못 하면 표식 없음.
-      ...(out.turn !== undefined && (steeringCh?.pending() ?? 0) === 0 ? { turn: out.turn } : {}),
-      ...((): Record<string, unknown> => {
-        const spend = turnSpend(out.usage);
-        if (spend === undefined) return {};
-        const missing = out.usage?.unreportedRequests;
-        return { spend: { ...spend, ...(typeof missing === "number" && missing > 0 ? { unreportedRequests: missing } : {}) } };
-      })(),
+    // ★결과의 마지막 단계 — 보고 기본 생략 턴이 **깨끗하게** 끝났고 보고 표시가 없으면(판정 `omitsTurnReport`: 허용 × 증명 × Stop 훅이 덧붙인 글 없음)
+    //  «내부 처리» 통지만 남기고 끝낸다(notify-owner-report-contract §3-4). 채널 답·기록·사본·제안은 **전부 `deliver` 안에만** 있다 —
+    //  생략 갈래는 구조상 그걸 부를 수 없다. 허용 없는 메시지(일반·완료 재주입·점검)는 출력에 증명이 있어도 늘 `deliver` 다.
+    const fate = await finishTurnOutput({
+      msg,
+      out,
+      appended: stopHook.additionalContext,
+      bus,
+      // 채널 답 → 기록·화면 → 사본 → 제안(순서·필드는 `deliverTurnReply` 한 곳). 사본 좌표·제안 설정만 여기 클로저에서 넘긴다.
+      deliver: () =>
+        deliverTurnReply({
+          msg,
+          out,
+          replyText,
+          bus,
+          turnMarkable: () => (steeringCh?.pending() ?? 0) === 0,
+          fanOut: (text, original) => fanOutEgress(egressTargets, text, bus, msg.threadKey, original),
+          suggest: () => maybeSuggestNextMessage(msg, out.nextSuggestion),
+        }),
     });
-    // egress fan-out — 해석해 둔 좌표로(위 턴 시작). 실패 경로도 같은 헬퍼를 쓴다.
-    await fanOutEgress(egressTargets, replyText, bus, msg.threadKey, original);
-    // 다음 메시지 제안 — 답을 보낸 **뒤** 발사하고 기다리지 않는다(턴을 늦추지 않는다).
-    maybeSuggestNextMessage(msg, out.nextSuggestion);
+    if (fate === "omitted") {
+      console.log(`[report] ${msg.threadKey} 작업자 알림 턴 — 내부 처리, 사용자 보고 생략(최종 글 ${out.text.length}자는 모델 대화 기록에만)`);
+    }
   } catch (e) {
     // 사용자 /stop 으로 중단된 턴 — 에러 아님. /stop 이 이미 안내·out 발행했으므로 조용히 종료
     // (에러 메시지 이중 발신 방지). turnAc.signal.reason 으로 판별(어댑터가 뭘 throw 하든 무관).
@@ -1810,54 +1790,42 @@ const queueHandler: MessageHandler = (msg) => {
   // 의 map delete 사이(수 초 가능한 async 구간)에 도착한 메시지는 채널이 이미 닫혀 있어
   // push 가 false 를 반환한다 — 이때 fall-through 해 아래 enqueueThreadTurn = **새 턴**(ADR
   // "result 후 도착 = 다음 턴" 시맨틱 정합, 조용한 드롭 0).
-  if (STEERING_ENABLED && steerable(msg)) {
-    const accepted =
-      steeringChannels.get(msg.threadKey)?.push(toSteeringInput(msg)) === true;
-    if (accepted) {
-      console.log(inboundLine(msg, "steer"));
-      const turn = inflightTurns.get(msg.threadKey);
+  // ★끼워넣기 → 아니면 직렬 줄 → 차례에 `beforeTurn` → 턴 — 순서·판정은 `admitTurn` 한 곳(2026-11-01 뽑음, 실행으로 잰다).
+  //  ★Part B — 끼워넣기 게이트는 push 반환값(채널 존재+open). 결과 뒤 꼬리 창(채널이 이미 닫힘)·받지 않는 턴(채널 없음)에 온 말은 **새 턴**이다
+  //   (ADR "result 후 도착 = 다음 턴", 조용한 드롭 0). flag off 면 끼워넣기 판정을 건너뛴다 = 줄 경로 그대로.
+  // 큐-취소(ADR 2026-07-15) — 클라 correlationId 를 큐 항목 식별 키로 전달. 미부여(텔레그램·cli·스케줄·합성 turn)는 익명 항목 = 취소 불가.
+  return admitTurn(msg, {
+    steeringEnabled: STEERING_ENABLED,
+    steerable,
+    channels: steeringChannels,
+    onSteered: (m) => {
+      console.log(inboundLine(m, "steer"));
+      const turn = inflightTurns.get(m.threadKey);
       if (turn !== undefined) turn.steered = (turn.steered ?? 0) + 1;
-      publishInboundEcho(msg); // 사용자 메시지 landed 표시(별도 턴 안 만듦).
-      // enqueueThreadTurn 안 함 — 진행 턴이 경계에서 소비. ★단, 이 핸들러는 *즉시* resolve
-      // 하므로 이를 await 하는 POST /messages 가 **원래 턴 종료 전에** 반환한다 → 대시보드 클라가
-      // "턴 완료"로 오인해 작업중을 조기에 끄던 버그(2026-07-20). STEERED_TURN_RESULT sentinel 로
-      // resolve 해 http-bridge 가 `{steered:true}` 로 응답 → 클라가 작업중 유지(실제 종료 = 원래
-      // 턴의 SSE out/turn_done). CANCELLED_TURN_RESULT 와 동형. 비-대시보드 채널(telegram/cli)은
-      // 반환값을 작업표시에 안 쓰므로 무영향(#2 채널무관). flag off 면 이 분기 미도달 = 회귀 0.
-      return Promise.resolve(STEERED_TURN_RESULT as unknown as void);
-    }
-    // 미적재(채널 없음=진행 턴 없음 / 닫힘=result 후 꼬리창) → 아래로 fall-through, 새 턴.
-  }
-  // 큐-취소(ADR 2026-07-15) — 클라 correlationId 를 큐 항목 식별 키로 전달. 대기 중(미시작)
-  // 항목을 대시보드 ✕ 버튼→POST /cancel-queued→cancelQueuedTurn 이 지목 취소 가능. 미부여
-  // (텔레그램·cli·스케줄·합성 turn)는 익명 항목 = 취소 불가·현행 동작(회귀 0). 취소된 항목은
-  // CANCELLED_TURN_RESULT 로 no-op resolve → POST 핸들러가 {cancelled:true} 응답(G1).
-  console.log(inboundLine(msg, threadHasQueuedTurn(msg.threadKey) ? "queued" : "new"));
-  return enqueueThreadTurn(
-    msg.threadKey,
-    () => {
-      // 트리거가 넣은 턴 — 차례가 온 지금 아직 유효한가(`IncomingMessage.beforeTurn`). 아니면 모델을 안 부르고 넘어간다.
-      const skip = msg.beforeTurn?.() ?? null;
-      if (skip !== null) {
-        console.log(`${inboundLine(msg, "skipped")} — ${skip}`);
-        return Promise.resolve();
-      }
-      // ★재개 턴이 **실제로 시작됐다** — `beforeTurn` 이 그 순간의 목록을 글에 박은 바로 다음, 같은 동기 구간(한도 자동 이어가기 §3.4 «울렸다» 의 정의).
+      publishInboundEcho(m); // 사용자 메시지 landed 표시(별도 턴 안 만듦).
+      // ★이 핸들러는 *즉시* resolve 하므로 POST /messages 가 원래 턴 종료 전에 반환한다 — STEERED_TURN_RESULT 로 http-bridge 가
+      //  `{steered:true}` 를 답해 대시보드가 작업 중을 유지한다(2026-07-20). 비-대시보드 채널은 반환값을 안 쓴다.
+      return STEERED_TURN_RESULT as unknown as void;
+    },
+    onQueued: (m) => console.log(inboundLine(m, threadHasQueuedTurn(m.threadKey) ? "queued" : "new")),
+    onSkipped: (m, skip) => console.log(`${inboundLine(m, "skipped")} — ${skip}`),
+    enqueue: enqueueThreadTurn,
+    run: (m) => {
+      // ★재개 턴이 **실제로 시작됐다** — 차례의 `beforeTurn` 이 통과한 바로 다음(한도 자동 이어가기 §3.4 «울렸다» 의 정의).
       //  끝나면(무엇으로 끝나든) 그 턴이 맡은 세대를 내려놓는다 — 안 그러면 끝난 항목이 재시작 때 대기로 돌아온다.
-      if (msg.triggerRun?.kind === "schedule") {
-        const run = { id: msg.triggerRun.id, session: turnSessionOf(msg) };
+      if (m.triggerRun?.kind === "schedule") {
+        const run = { id: m.triggerRun.id, session: turnSessionOf(m) };
         claimLimitResume(run.id, run.session);
-        return handler(msg).finally(() => releaseLimitResume(run.id, run.session));
+        return handler(m).finally(() => releaseLimitResume(run.id, run.session));
       }
-      return handler(msg);
+      return handler(m);
     },
     // ★선택지 답이 시작 전에 취소되면 그 질문을 다시 연다(2026-10-28) — 이 항목은 이후 절대 시작되지 않는다(`gatedTask` 의 sentinel).
-    //  시작·끼워넣기·`/stop`·throw·시한은 되돌리지 않는다(설계 `2026-10-28-prompt-choice-release-followup.md` §1.4).
-    {
+    queueOpts: {
       id: msg.correlationId,
       ...(msg.promptAnswerId !== undefined ? { onCancel: () => { reopenPromptAnswer(msg.promptAnswerId!); } } : {}),
     },
-  );
+  });
 };
 
 // 채널·재주입이 받는 입구 — 종료 중이면 맨 앞에서 거절한다(2026-10-09 적대 검토: 종료 중 도착한 메시지가 새 턴을

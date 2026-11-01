@@ -3,6 +3,7 @@
   "resource-store.js",
   "constants.js",
   "side-panels.js",
+  "nav-rail.js",
   "update-chip.js",
   "context-menu.js",
   "view-overview.js",

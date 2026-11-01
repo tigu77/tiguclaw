@@ -902,7 +902,10 @@ export const createSpawnAgentMcpServer = (
         //  재주입으로 새어 나가 이중 보고가 된다.
         // ★2026-10-23 — 권리는 **이 작업의 직속 소환자**일 때만 생기고(좌표는 호출 문맥, 인자 아님) 이 호출의 토큰으로 든다.
         //  소환자가 아니어도 기다려 결과를 받는 건 된다(관찰) — 그 작업의 소환자 보고는 그대로 나간다(외부 GPT 검토 P1·P2).
-        const claims = args.job_ids.map((id) => claimJobJoin(id, parentInput.threadKey, signals));
+        // ★보고 기본 생략 턴(작업자 알림 턴)은 권리를 얻지 않는다 — 관찰만(notify-owner-report-contract §3-1, GPT R1 #2). 권리가 있으면 완료 배달이
+        //  보류되고 «넘겨받음» 으로 정산돼, 표시 없이 끝나는 이 턴이 최종 결과의 유일한 전달을 삼킨다. 알림 깨우기 좌표(`joinThread`)는 그대로 둔다.
+        const claimAs = parentInput.reportOmittable === true ? undefined : parentInput.threadKey;
+        const claims = args.job_ids.map((id) => claimJobJoin(id, claimAs, signals));
         const handed = new Set<string>(); // 응답에 «최종 상태» 로 실은 작업 — 그것만 «넘겨받음» 이다.
         let returned = false;
         const deadline = Date.now() + capMs;

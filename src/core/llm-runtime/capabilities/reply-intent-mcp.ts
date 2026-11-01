@@ -35,13 +35,36 @@ const okText = (text: string) => ({
  * 양 어댑터(claude=mcpServers map / codex=adaptClaudeMcpServer bridge) 가 동형으로
  * 사용 → parity (원칙 1·2).
  */
+const REPORT_TO_USER_DESCRIPTION =
+  "작업자 알림 턴 전용 — 이 턴의 글은 기본적으로 사용자에게 가지 않습니다(내부 기록). 사용자에게 꼭 알려야 할 것 — 이미 받은 승인 밖의 " +
+  "**새 승인·결정**, **중요한 오류·예상 밖 영향**, 합리적으로 복구해도 **진행 불가** — 이 있을 때만 부르세요. 부른 뒤 쓴 마지막 글이 사용자에게 갑니다. " +
+  "물어볼 것은 prompt_options 로(그건 이 표시와 무관하게 갑니다). 내부로 해결했으면(steer_worker 로 답함·이미 풀림) 부르지 마세요. 무인자.";
+
+/**
+ * @param opts.onReport 있으면 **사용자 보고 기본 생략 턴**이다 — 둘째 도구 `report_to_user` 를 싣는다(2026-11-01,
+ *  `docs/decisions/2026-11-01-notify-owner-report-contract.md` §3-2). 어댑터 호출마다 새 클로저라 다른 후보 폴백에 이어지지 않는다.
+ */
 export const createReplyIntentMcpServer = (
   onCalled: () => void,
-): McpSdkServerConfigWithInstance =>
-  coreMcpServer({
+  opts?: { onReport?: () => void },
+): McpSdkServerConfigWithInstance => {
+  const onReport = opts?.onReport;
+  return coreMcpServer({
     name: "reply-intent",
     version: "1.0.0",
     tools: [
+      ...(onReport !== undefined
+        ? [
+            // ★이름은 글자 그대로 쓴다 — 재실행 분류 검사(`fix-fallout`)가 `tool("이름"` 으로 등록 도구를 긁는다(상수면 분류표 밖으로 샌다).
+            tool("report_to_user", REPORT_TO_USER_DESCRIPTION, {}, async () => {
+              onReport();
+              // reply_to_current_message 와 같은 이유 — «완료» 어조면 본문 0자로 끝내는 오인이 생긴다.
+              return okText(
+                "사용자 보고 표시 완료. 이 턴의 마지막 글이 사용자에게 갑니다 — 보고 본문은 아직 비어 있으니 이제 사용자에게 알릴 내용을 쓰세요.",
+              );
+            }),
+          ]
+        : []),
       tool(
         "reply_to_current_message",
         "이 응답을 사용자의 방금 그 메시지에 대한 *직접 답글* 로 표시합니다. 채널이 지원하면 답글 형식으로 렌더(telegram); 아니면 일반 응답. 무인자. 여러 화제가 오가 어느 메시지에 답하는지 명확히 할 상황에 호출하세요.",
@@ -58,3 +81,4 @@ export const createReplyIntentMcpServer = (
       ),
     ],
   });
+};

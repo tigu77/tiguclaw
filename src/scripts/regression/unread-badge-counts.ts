@@ -38,9 +38,11 @@ const run = async (): Promise<Assertion[]> => {
     got: iBump < 0 ? "★bumpUnread 호출 없음" : `bump@${iBump} vs gate@${iGate}`,
   });
 
-  const onlyOut = /if \(ev\.type === "channel\.message\.out"\) bumpUnread\(tk\);/.test(sse);
+  // `unread:false` 통지(보고 기본 생략 턴의 «내부 처리», 2026-11-01)는 사용자에게 알릴 것이 아니라 뺀다 — in 은 여전히 안 센다.
+  const onlyOut = /if \(ev\.type === "channel\.message\.out" && !\(ev\.payload && ev\.payload\.unread === false\)\) bumpUnread\(tk\);/.test(sse) &&
+    !/channel\.message\.in"[^\n]*bumpUnread/.test(sse);
   out.push({
-    name: "비서 답변(out)만 센다(내가 다른 채널에서 친 말은 '안 본' 이 아니다)",
+    name: "비서 답변(out)만 센다(내가 다른 채널에서 친 말은 '안 본' 이 아니다) · «내부 처리» 통지(`unread:false`)는 안 센다",
     ok: onlyOut,
     got: onlyOut ? "out 한정" : "★in 까지 세면 텔레그램에서 말할 때마다 내 탭이 빨개진다",
   });

@@ -1997,8 +1997,10 @@ export const runRegionA = async (
         `\n\n${translate("srv.model.fallback", { model: requestedLabel })}` +
         (reason === "" ? "" : `\n${translate("srv.model.fallbackReason", { reason })}`) +
         `\n${translate("srv.model.fallbackHowTo")}`;
+      // ★사용자에게 갈 안내를 본문에 덧붙였다 — 어댑터의 생략 증명은 «그 시도» 것이라 여기서 지운다(notify-owner-report-contract §3-3).
+      const { reportOmitted: _attemptOmitted, ...kept } = output;
       return {
-        ...output,
+        ...kept,
         text: output.text === "" ? output.text : `${output.text}${notice}`,
         modelOverrideRejected: {
           requested: requestedLabel,

@@ -477,7 +477,7 @@
           while (activityEnd < end) {
             const a = merged[activityEnd].a;
             if (prev && (a.seq ?? 0) <= (prev.seq ?? 0)) break;
-            if (a.kind === "text") text = a.text;
+            if (a.kind === "text" && !isInternalText(a)) text = a.text; // 내부 기록은 답의 짝이 아니다
             prev = a;
             activityEnd++;
           }
@@ -535,7 +535,8 @@
             // ★단 첨부(send_file) 를 실은 assistant 행은 텍스트 세그먼트의 중복이 아니므로 절대 드롭
             // 하지 않는다(아웃바운드 첨부 카드 보존, #2). 순수 텍스트 행만 세그먼트 중복으로 간주.
             const mHasAtt = it.m.attachments && it.m.attachments.length;
-            if (it.m.role === "assistant" && !mHasAtt && sawTextThread && it.m.threadKey === sawTextThread) {
+            // ★통지 행은 세그먼트의 중복이 아니다(2026-11-01) — 위 답 행 이동 판정이 이미 `notice !== true` 로 뺀다. 두 자리를 맞춘다.
+            if (it.m.role === "assistant" && it.m.notice !== true && !mHasAtt && sawTextThread && it.m.threadKey === sawTextThread) {
               // ★버리기 전에 **본문을 정본으로 올린다** (2026-08-08 사용자 신고).
               //  세그먼트(`llm.activity kind:"text"`)는 events 에 있고 그 테이블엔 페이로드
               //  상한이 있어 **긴 답변이 잘린 채 저장될 수 있다**(실측: 12,650자 답변이 301자).
@@ -572,7 +573,7 @@
             else if (it.m.role === "user") openTurnUnits = []; // 턴 경계 — 앞 턴 카드에 뒤 턴 강도가 붙지 않게.
             units.push({ kind: "msg", entry: it.m });
           } else {
-            const a = it.a; const seq = typeof a.seq === "number" ? a.seq : 0;
+            const a = isInternalText(it.a) ? internalTextAsStep(it.a) : it.a; const seq = typeof a.seq === "number" ? a.seq : 0;
             if (a.kind === "text") {
               flush();                                  // 텍스트 앞의 도구 런 마감(seq 순 교차).
               const tu = { kind: "text", act: a };       // 항상 보이는 마크다운 버블(도구 런과 교차).

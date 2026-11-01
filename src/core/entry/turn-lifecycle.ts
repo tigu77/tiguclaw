@@ -8,8 +8,78 @@
  */
 import type { IncomingMessage, MessageHandler } from "../../channels/types.js";
 import { translate } from "../i18n.js";
-import { reinjectUnlessStopped, stoppedByUser, type SteeringChannel } from "../steering.js";
+import { closeWhenStopped, createSteeringChannel, reinjectUnlessStopped, stoppedByUser, toSteeringInput, type SteeringChannel } from "../steering.js";
 import { replyCommand } from "./reply-command.js";
+
+/**
+ * **이 턴이 끼워넣기(진행 중 사람 입력)를 받나** — 판정 한 곳(2026-11-01, 진입점 조건에서 뽑음).
+ *  ①`fork-carry`(가지 결론 정리) — 사이에 친 말이 정리에 섞여 «결론» 으로 원래 대화에 갔다(릴리스 레드팀 F2).
+ *  ②보고 기본 생략 턴(작업자 알림 턴) — 섞이면 사람의 일반 질문 답까지 생략에 걸린다(notify-owner-report-contract §3-1, GPT R1 #1).
+ *  받지 않는 턴엔 채널을 안 만든다 — 그 사이 사람 메시지는 새 턴으로 줄 선다(인입 분기의 fall-through).
+ */
+export const turnTakesSteering = (msg: Pick<IncomingMessage, "turnOrigin" | "reportDefault">): boolean =>
+  msg.turnOrigin !== "fork-carry" && msg.reportDefault !== "omit";
+
+/**
+ * 이 턴의 끼워넣기 채널을 연다 — 받지 않는 턴(`turnTakesSteering`)이거나 기능이 꺼져 있으면 **열지 않는다**(`undefined`).
+ *  연 채널은 대화 키로 지도에 걸리고, `/stop` 뒤엔 닫힌다(`closeWhenStopped`). 진입점 클로저에서 뽑았다(2026-11-01 — 실행으로 잰다).
+ */
+export const openTurnSteering = (
+  msg: Pick<IncomingMessage, "turnOrigin" | "reportDefault" | "threadKey">,
+  channels: Map<string, SteeringChannel>,
+  signal: AbortSignal,
+  enabled: boolean,
+): SteeringChannel | undefined => {
+  if (!enabled || !turnTakesSteering(msg)) return undefined;
+  const ch = createSteeringChannel();
+  channels.set(msg.threadKey, ch);
+  closeWhenStopped(ch, signal);
+  return ch;
+};
+
+/**
+ * 들어온 사람 메시지를 **지금 그 대화에서 도는 턴**에 끼워 넣는다 — 받았으면 `true`(새 턴을 만들지 않는다), 아니면 `false`(새 턴으로 줄 선다).
+ *  채널이 없거나(받지 않는 턴·진행 턴 없음) 닫혔으면(결과 뒤 꼬리 창) `false` 다. 진입점 인입 분기에서 뽑았다.
+ */
+export const steerIntoTurn = (channels: Map<string, SteeringChannel>, msg: IncomingMessage): boolean =>
+  channels.get(msg.threadKey)?.push(toSteeringInput(msg)) === true;
+
+/**
+ * **들어온 메시지를 턴으로 들인다** — 지금 그 대화에서 도는 턴에 끼워 넣거나(`steerIntoTurn`), 아니면 그 대화의 직렬 줄에 세우고, 차례가 오면
+ *  트리거가 단 `beforeTurn` 을 마지막으로 물은 뒤(문자열이면 모델 없이 건너뜀) 턴을 돌린다(2026-11-01 진입점 인입 분기에서 뽑음 — 실행으로 잰다).
+ * ★줄에 세우는 것은 **들어온 그 메시지**다 — 앞 턴(예: 보고 기본 생략 작업자 알림 턴)의 `reportDefault`·`beforeTurn` 이 옮겨 붙을 자리가 없다.
+ * 끼워넣기를 받은 메시지는 `onSteered` 의 반환값으로 끝난다(진입점은 대시보드 «작업 중» 유지용 표식을 돌려준다).
+ */
+export const admitTurn = <S>(
+  msg: IncomingMessage,
+  d: {
+    steeringEnabled: boolean;
+    steerable: (m: IncomingMessage) => boolean;
+    channels: Map<string, SteeringChannel>;
+    onSteered: (m: IncomingMessage) => S;
+    onQueued: (m: IncomingMessage) => void;
+    onSkipped: (m: IncomingMessage, reason: string) => void;
+    enqueue: (threadKey: string, task: () => Promise<void>, opts?: { id?: string; onCancel?: () => void }) => Promise<void>;
+    run: (m: IncomingMessage) => Promise<void>;
+    queueOpts?: { id?: string; onCancel?: () => void };
+  },
+): Promise<void | S> => {
+  if (d.steeringEnabled && d.steerable(msg) && steerIntoTurn(d.channels, msg)) return Promise.resolve(d.onSteered(msg));
+  // 미적재(채널 없음 = 진행 턴 없음·받지 않는 턴 / 닫힘 = 결과 뒤 꼬리 창) → 새 턴.
+  d.onQueued(msg);
+  return d.enqueue(
+    msg.threadKey,
+    () => {
+      const skip = msg.beforeTurn?.() ?? null;
+      if (skip !== null) {
+        d.onSkipped(msg, skip);
+        return Promise.resolve();
+      }
+      return d.run(msg);
+    },
+    d.queueOpts,
+  );
+};
 
 /**
  * **종료 중엔 새 턴을 열지 않는다** (2026-10-09 적대 검토 P2~3).

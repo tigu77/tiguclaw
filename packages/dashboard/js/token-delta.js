@@ -5,6 +5,8 @@
       const renderDelta = (p, ts) => {
         const delta = String(p.delta || "");
         if (delta === "") return;
+        // 보고 기본 생략 턴의 글은 진행 말풍선을 만들지 않는다 — 확정 세그먼트가 «내부 기록» 스텝으로 온다(notify-owner-report-contract §3-5).
+        if (p.audience === "internal") return;
         const thread = p.threadKey || activeThreadKey;
         if (isEndpointThread(thread)) return; // 엔드포인트 스트리밍은 채팅에 안 뿌린다(뷰 데이터는 endpoint.call 이벤트).
         const adapter = ADAPTERS.includes(p.adapter) ? p.adapter : "other";
@@ -27,6 +29,8 @@
       };
 
       const renderActivity = (p, ts) => {
+        // 보고 기본 생략 턴의 글 조각 = 답 말풍선이 아니라 스텝 한 줄(이력과 같은 판정 — util.js `isInternalText`).
+        if (isInternalText(p)) p = internalTextAsStep(p);
         const thread = p.threadKey || "?";
         // dedup(기능 B) — chat-history 가 이미 그린 영속 스텝/세그먼트면 SSE replay 는 스킵(중복 차단).
         const ak = actKey(p.ts != null ? p.ts : ts, thread, p.seq);

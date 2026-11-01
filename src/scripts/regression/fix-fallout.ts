@@ -68,6 +68,11 @@ export const check: RegressionCheck = {
     );
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const registered = new Set<string>();
+    // ★상수로 등록한 도구도 센다 (2026-11-01 — `notify_owner` 보류 해제 GPT 검토). 리터럴만 긁으면 `tool(NOTIFY_OWNER_TOOL, …)`·
+    //  `DAEMON_SUBAGENT_TOOL`·`DAEMON_TODO_TOOL`·`TOOL_RECALL_NAME` 등록이 통째로 이 검사 밖이었다(«등록 이름이 곧 정의점» 관례가 오히려 숨겼다).
+    //  이름은 `export const 상수 = "이름"` 정의에서 푼다 — 못 풀거나 값이 둘이면 실패(조용히 빠지지 않게).
+    const toolRefs = new Map<string, string>();
+    const consts = new Map<string, Set<string>>();
     const walk = async (dir: string): Promise<void> => {
       for (const e of await readdir(dir, { withFileTypes: true })) {
         const p = path.join(dir, e.name);
@@ -84,10 +89,44 @@ export const check: RegressionCheck = {
         for (const m of src.matchAll(/\btool\(\s*\n?\s*"([a-zA-Z][\w]*)"/g)) {
           registered.add(m[1]);
         }
+        for (const m of src.matchAll(/\btool\(\s*(?:\/\/[^\n]*\n\s*)*([A-Z][A-Z0-9_]+)\s*,/g)) toolRefs.set(m[1], path.relative(repoRoot, p));
+        for (const m of src.matchAll(/\bexport const ([A-Z][A-Z0-9_]+)\s*=\s*"([a-zA-Z][\w]*)"/g)) {
+          consts.set(m[1], (consts.get(m[1]) ?? new Set()).add(m[2]));
+        }
       }
     };
     await walk(path.join(repoRoot, "src/core"));
     await walk(path.join(repoRoot, "plugins"));
+    // 상수 정의는 등록 자리 밖(`src/store/tool-recall.ts` 등)에도 산다 — 정의만 더 긁는다.
+    for (const sub of ["src/store", "src/channels", "src/auth"]) {
+      const scan = async (dir: string): Promise<void> => {
+        for (const e of await readdir(dir, { withFileTypes: true })) {
+          const p = path.join(dir, e.name);
+          if (e.isDirectory()) { await scan(p); continue; }
+          if (!e.name.endsWith(".ts")) continue;
+          for (const m of (await readFile(p, "utf8")).matchAll(/\bexport const ([A-Z][A-Z0-9_]+)\s*=\s*"([a-zA-Z][\w]*)"/g)) {
+            consts.set(m[1], (consts.get(m[1]) ?? new Set()).add(m[2]));
+          }
+        }
+      };
+      await scan(path.join(repoRoot, sub));
+    }
+    const unresolvedRefs: string[] = [];
+    const resolvedRefs: string[] = [];
+    for (const [ident, file] of toolRefs) {
+      const vs = consts.get(ident);
+      if (vs === undefined || vs.size !== 1) { unresolvedRefs.push(`${ident}(${file}${vs === undefined ? "" : `: ${[...vs].join("|")}`})`); continue; }
+      const name = [...vs][0]!;
+      registered.add(name);
+      resolvedRefs.push(`${ident}=${name}`);
+    }
+    out.push(
+      assert(
+        "★상수로 등록한 도구도 이름을 풀어 센다 — 못 풀거나 값이 둘인 상수 0 · (양성) notify_owner·spawn_agent 를 상수에서 풀었다",
+        unresolvedRefs.length === 0 && resolvedRefs.includes("NOTIFY_OWNER_TOOL=notify_owner") && resolvedRefs.includes("DAEMON_SUBAGENT_TOOL=spawn_agent"),
+        unresolvedRefs.length === 0 ? `풀었음 ${resolvedRefs.join(" ")}` : `못 풂 ${unresolvedRefs.join(" ")}`,
+      ),
+    );
 
     /** 읽기 전용 = 폴백이 다시 실행해도 무해한 것. 그 밖은 전부 부작용(보수적). */
     const EXPECT_READ_ONLY = new Set([
@@ -122,6 +161,12 @@ export const check: RegressionCheck = {
       "BashOutput",
       // 사용자에게 선택지를 다시 띄운다 — 표시 중복.
       "prompt_options",
+      // ★소환자에게 알림을 배달한다(합성 턴·지시 채널·대기 깨움) — 되부르면 알림이 두 번 간다(중복 방지는 같은 글만). 2026-11-01 보류 해제 때 기재.
+      "notify_owner",
+      // ★보고 표시(2026-11-01, 작업자 알림 턴 전용) — 클로저 플래그 하나라 재실행 자체는 무해하지만, **분류를 바꾸지 않는다**(지금 판정 기재).
+      //  «재실행 무해» 로 옮기는 것은 재실행 안전 정책 변경이라 별도 승인 사안이다(notify-owner-report-contract §8 D8). 부작용이면 표시 뒤 폴백이 막혀
+      //  실패가 그대로 전달된다 — 안전 쪽이다.
+      "report_to_user",
       // ★`archive_memory` 는 **되돌릴 수 있지만 부작용**이다 — 인덱스에서 내려가므로
       //  폴백이 다시 부르면 «이미 내린 것» 위에 또 실행된다(멱등이긴 하나 상태를 바꾼다).
       //  되돌릴 수 있다는 건 승인 문턱을 낮출 뿐, 읽기전용으로 분류할 근거가 아니다.

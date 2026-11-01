@@ -8,6 +8,11 @@
  * ★호출부(진입점 20곳)는 한 글자도 안 바뀐다 — import 만 늘었다.
  */
 import { getEventBus, type EventBus } from "../eventbus.js";
+import { translate } from "../i18n.js";
+import { channelRefsField } from "../event-persist.js";
+import { turnSpend } from "../llm-runtime/turn-spend.js";
+import type { RouteOutput } from "../router.js";
+import type { ChannelMessageRef } from "../../channels/types.js";
 
 /** 관측 이벤트에 싣는 본문 상한 — 진입점과 명령 응답이 **같은 값**을 써야 한다. */
 export const EVENT_TEXT_MAX = 50_000;
@@ -28,6 +33,97 @@ export const publishReplyOut = (bus: EventBus, payload: { threadKey: string } & 
   bus.publish({ type: "channel.message.out", ts, payload });
   return { threadKey: payload.threadKey, ts };
 };
+
+/**
+ * **이 턴의 최종 답을 생략하나** — 판정 한 곳(2026-11-01, `docs/decisions/2026-11-01-notify-owner-report-contract.md` §3-3·§3-4).
+ *  허용(메시지의 `reportDefault`) × 생략 증명(런타임 출력 — 어댑터가 깨끗한 종료에서만 싣고 호스트 안내가 붙으면 지워진 값) × 덧붙인 안내 없음(Stop 훅).
+ *  ★허용 없는 메시지면 출력에 증명이 있어도 **무시한다** — 완료 재주입·raw 안전망의 경계가 이 한 조건이다.
+ */
+export const omitsTurnReport = (
+  msg: { reportDefault?: "omit" },
+  out: { reportOmitted?: true },
+  appended: string,
+): boolean => msg.reportDefault === "omit" && out.reportOmitted === true && appended === "";
+
+/**
+ * 생략한 턴의 흔적 — 대화 기록에 «내부 처리» 시스템 통지 한 줄(`notice:true` → `chat_log`, 새로고침 뒤에도 통지로 그린다).
+ *  `unread:false` — 사용자에게 알릴 것이 아니라 안 읽음 배지를 올리지 않는다. 채널로는 안 간다(버스 발행만).
+ */
+/**
+ * 턴 결과의 마지막 단계 — **생략이면 «내부 처리» 통지만 내고 돌아가고, 아니면 `deliver`(채널 답·기록·사본·제안)를 부른다.**
+ *  채널로 나가는 일은 전부 `deliver` 안에만 있다 — 생략 갈래는 구조상 그걸 부를 수 없다(진입점이 그렇게 넘긴다).
+ *  `deliver` 가 던지면(전송 실패) 그대로 올린다 — 생략으로 바꾸지 않는다(전달 실패 ≠ 생략, 설계 §3-4).
+ */
+export const finishTurnOutput = async (t: {
+  msg: { reportDefault?: "omit"; channel: string; threadKey: string };
+  out: { reportOmitted?: true };
+  appended: string;
+  bus: EventBus;
+  deliver: () => Promise<void>;
+}): Promise<"omitted" | "delivered"> => {
+  if (omitsTurnReport(t.msg, t.out, t.appended)) {
+    publishInternalHandled(t.bus, { channel: t.msg.channel, threadKey: t.msg.threadKey });
+    return "omitted";
+  }
+  await t.deliver();
+  return "delivered";
+};
+
+/**
+ * **턴의 답을 보낸다** — 채널 답(`msg.reply`) → 대화 기록·화면(`channel.message.out`) → 함께 보낼 채널 사본 → 다음 메시지 제안(2026-11-01 진입점에서 뽑음 —
+ *  `finishTurnOutput` 의 `deliver` 가 이걸 부른다). 순서·필드는 옮기기 전 진입점과 같다. 사본·제안은 진입점 클로저(좌표·설정)를 넘겨받는다.
+ * ★실패는 그대로 던진다 — 진입점 catch 가 실패 안내를 낸다(전송 실패 ≠ 생략).
+ */
+export const deliverTurnReply = async (t: {
+  msg: { channel: string; threadKey: string; reply: (text: string, opts?: { replyToTrigger?: boolean }) => Promise<void | ChannelMessageRef> };
+  out: Pick<RouteOutput, "text" | "replyToTrigger" | "model" | "reasoning" | "turn" | "usage">;
+  replyText: string;
+  bus: EventBus;
+  /**
+   * 완료 턴 표식을 실어도 되나 — 끼워넣기 통로에 남은 입력이 없을 때만(그 입력은 다음 턴으로 간다, 2026-10-15 적대 검토 P2).
+   * ★**함수**다 — 채널 답(`msg.reply`)을 보낸 **뒤** 기록 이벤트를 만드는 그 순간에 묻는다. 값으로 미리 받으면 전송을 기다리는 사이 끼어든
+   *  입력을 못 보고 표식을 단다(2026-11-01 GPT R3 — 진입점에서 옮기며 시점이 앞당겨졌던 것).
+   */
+  turnMarkable: () => boolean;
+  /** 함께 보낼 채널 사본 — 원본 행 좌표를 짚는다. */
+  fanOut: (text: string, original: OutCoords) => Promise<void>;
+  /** 다음 메시지 제안 — 답을 보낸 **뒤** 발사하고 기다리지 않는다. */
+  suggest: () => void;
+}): Promise<void> => {
+  const { msg, out } = t;
+  // 인입 채널 응답 — 반환 = 실제로 보낸 채널 메시지 id(있는 채널만) — 송신 이벤트에 실어 대화 기록 행에 묶는다(답글 원문 정확 조회, 2026-10-19).
+  const sentRef = await msg.reply(t.replyText, out.replyToTrigger === true ? { replyToTrigger: true } : undefined);
+  // 반환 = 이 송신 이벤트의 좌표 — egress 사본이 이 원본 행을 짚는다(2026-10-25).
+  const original = publishReplyOut(t.bus, {
+    channel: msg.channel,
+    threadKey: msg.threadKey,
+    text: out.text.slice(0, EVENT_TEXT_MAX),
+    ...channelRefsField(msg.channel, sentRef),
+    // 실제 응답 모델(2026-07-27) — chat_log 로 영속돼 새로고침 후에도 답변에 모델이 붙는다.
+    ...(typeof out.model === "string" && out.model !== "" ? { model: out.model } : {}),
+    // 실제로 보낸 추론 강도·턴 비용(2026-09-29) — 비용은 실시간 카드와 **같은 판정**(`turnSpend`)으로 고른다.
+    ...(typeof out.reasoning === "string" && out.reasoning !== "" ? { reasoning: out.reasoning } : {}),
+    // 완료 턴 표식(2026-10-15) — 저장이 확인된 정상 답에만, 끼워넣기 잔여가 없을 때만.
+    ...(out.turn !== undefined && t.turnMarkable() ? { turn: out.turn } : {}),
+    ...((): Record<string, unknown> => {
+      const spend = turnSpend(out.usage);
+      if (spend === undefined) return {};
+      const missing = out.usage?.unreportedRequests;
+      return { spend: { ...spend, ...(typeof missing === "number" && missing > 0 ? { unreportedRequests: missing } : {}) } };
+    })(),
+  });
+  await t.fanOut(t.replyText, original);
+  t.suggest();
+};
+
+export const publishInternalHandled = (bus: EventBus, at: { channel: string; threadKey: string }): OutCoords =>
+  publishReplyOut(bus, {
+    channel: at.channel,
+    threadKey: at.threadKey,
+    text: translate("srv.notice.handledInternally"),
+    notice: true,
+    unread: false,
+  });
 
 /**
  * 슬래시 명령 응답 — 그 채널로 보내고 **대화 기록에도 남긴다**(관측 발행 → chat_log·대시보드).

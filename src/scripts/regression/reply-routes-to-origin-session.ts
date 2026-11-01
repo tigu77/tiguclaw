@@ -136,7 +136,8 @@ const run = async (): Promise<Assertion[]> => {
     const { sourceHas } = await import("./_wiring.js");
     const has = await sourceHas("../../index.ts", [
       /fanOutEgress = async \(\s*\n?\s*targets[\s\S]{0,220}?originThreadKey\?: string,/,
-      /fanOutEgress\(egressTargets, replyText, bus, msg\.threadKey, original\)/,
+      // 성공 답의 사본은 `deliverTurnReply` 가 원본 좌표와 함께 넘긴다(2026-11-01 진입점에서 옮김) — 진입점은 발원 세션을 싣는 이 클로저를 준다.
+      /fanOut: \(text, original\) => fanOutEgress\(egressTargets, text, bus, msg\.threadKey, original\)/,
     ]);
     out.push({
       name: "★egress fan-out 이 발원 세션을 싣는다(안 실으면 공통 세션으로 떨어진다)",

@@ -405,7 +405,10 @@ export const check: RegressionCheck = {
       ),
     );
     const idx = stripComments(readSourceSync("src/index.ts"));
-    const wired = /enqueueThreadTurn\(\s*msg\.threadKey,\s*\(\) => \{\s*const skip = msg\.beforeTurn\?\.\(\) \?\? null;\s*if \(skip !== null\) \{[\s\S]{0,300}?return Promise\.resolve\(\);\s*\}\s*(?:if \(msg\.triggerRun\?\.kind === "schedule"\) \{[\s\S]{0,400}?claimLimitResume\([\s\S]{0,200}?return handler\(msg\)\.finally\([\s\S]{0,120}?\}\s*)?return handler\(msg\);/.test(idx);
+    // ★차례의 `beforeTurn` 은 `admitTurn`(2026-11-01 진입점에서 옮김) 이 줄 안에서 묻는다 — 진입점은 그 함수로 들이고, 실행은 `run` 이 핸들러로.
+    const life = stripComments(readSourceSync("src/core/entry/turn-lifecycle.ts"));
+    const wired = /return d\.enqueue\(\s*msg\.threadKey,\s*\(\) => \{\s*const skip = msg\.beforeTurn\?\.\(\) \?\? null;\s*if \(skip !== null\) \{[\s\S]{0,300}?return Promise\.resolve\(\);\s*\}\s*return d\.run\(msg\);/.test(life) &&
+      /return admitTurn\(msg, \{[\s\S]{0,2500}?enqueue: enqueueThreadTurn,[\s\S]{0,1200}?return handler\(m\);/.test(idx);
     const router = stripComments(readSourceSync("src/core/router.ts"));
     out.push(
       assert(

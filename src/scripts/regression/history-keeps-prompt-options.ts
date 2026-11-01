@@ -29,6 +29,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { internalTextHelpersSource } from "./_mini-dom.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -71,6 +72,7 @@ export const check: RegressionCheck = {
     vm.runInContext(
       `const renderedMsgKeys = new Set();
        const msgKey = (ts, role) => ts + "|" + role;
+       ${internalTextHelpersSource()}
        ${helper === null ? "const canonicalBodyFor = () => null;" : helper[0]}
        ${m[0]}
        this.groupMergedItems = groupMergedItems;`,

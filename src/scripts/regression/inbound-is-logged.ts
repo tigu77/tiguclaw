@@ -6,6 +6,7 @@
  *  됐는지가 안 보였다). 원격이 안 되는 기계는 로그가 유일한 진단면이다.
  * ★본문은 절대 싣지 않는다 — 사용자가 로그 파일을 통째로 건넨다.
  */
+import { readFileSync } from "node:fs";
 import { formatInboundLog } from "../../core/inbound-log.js";
 import { readEntrySource, stripComments } from "./_wiring.js";
 import type { Assertion, RegressionCheck } from "./_framework.js";
@@ -32,8 +33,10 @@ const run = async (): Promise<Assertion[]> => {
     {
       name: "★진입점이 steer 수락과 큐 적재 **둘 다**에서 남긴다(한쪽만이면 두 번째 메시지가 또 안 보인다)",
       ok:
-        /if \(accepted\) \{\s*console\.log\(inboundLine\(msg, "steer"\)\)/.test(src) &&
-        /console\.log\(inboundLine\(msg, threadHasQueuedTurn\(msg\.threadKey\) \? "queued" : "new"\)\);\s*return enqueueThreadTurn\(/.test(src) &&
+        // 끼워넣기 수락·줄 적재의 갈림은 `admitTurn`(2026-11-01 진입점에서 옮김) — 갈래마다 진입점이 넘긴 기록 함수를 부른다.
+        /onSteered: \(m\) => \{\s*console\.log\(inboundLine\(m, "steer"\)\)/.test(src) &&
+        /onQueued: \(m\) => console\.log\(inboundLine\(m, threadHasQueuedTurn\(m\.threadKey\) \? "queued" : "new"\)\)/.test(src) &&
+        /steerIntoTurn\(d\.channels, msg\)\) return Promise\.resolve\(d\.onSteered\(msg\)\);\s*[\s\S]{0,200}?d\.onQueued\(msg\);\s*return d\.enqueue\(/.test(readFileSync(new URL("../../core/entry/turn-lifecycle.ts", import.meta.url), "utf8")) &&
         /synthetic: msg\.synthetic === true,/.test(src) &&
         // 즉시 처리 명령 다섯 갈래 모두 — 큐를 안 타니 위 두 자리에 안 걸린다.
         (src.match(/console\.log\(inboundLine\(msg, "command"\)\);\s*publishInboundEcho\(msg\);/g) ?? []).length >= 5,

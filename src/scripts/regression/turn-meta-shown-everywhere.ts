@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { internalTextHelpersSource } from "./_mini-dom.js";
 
 const read = (file: string): string => readFileSync(new URL(`../../../${file}`, import.meta.url), "utf8");
 const fn = (source: string, name: string): string => {
@@ -109,7 +110,7 @@ export const check: RegressionCheck = {
     vm.runInContext(
       [fn(token, "fmtTokens"), fn(token, "effortOf"), fn(token, "modelWithEffort"), fn(token, "renderModelLabel"), fn(token, "setTurnModel"), fn(token, "setTurnEffort"),
         fn(token, "turnMetaByThread") /* metaEffort 까지 같이 온다(한 줄 선언) */, fn(token, "setTurnMeta"), fn(token, "markTurnCardDone"), fn(token, "usageSummary"), fn(token, "setTurnCost"), fn(token, "costLine"),
-        fn(historySrc, "canonicalBodyFor"), fn(historySrc, "groupMergedItems"), fn(historySrc, "buildHistoryTextEl"), fn(drawerSrc, "setJobModel"),
+        internalTextHelpersSource(false), fn(historySrc, "canonicalBodyFor"), fn(historySrc, "groupMergedItems"), fn(historySrc, "buildHistoryTextEl"), fn(drawerSrc, "setJobModel"),
         "globalThis.api = { modelWithEffort, setTurnModel, setTurnEffort, setTurnMeta, markTurnCardDone, setTurnCost, metaEffort, costLine, groupMergedItems, buildHistoryTextEl, setJobModel };"].join("\n"),
       ctx,
     );
@@ -386,8 +387,9 @@ export const check: RegressionCheck = {
       claude: /const e = claudeEffort;/.test(claude) && /const shownEffort = claudeEffort \?\? REASONING_NOT_SENT;/.test(claude) &&
         /publishTurnMeta\(\{[^}]*reasoning: shownEffort \}\)/.test(claude) && (claude.match(/\n\s+reasoning: shownEffort,/g) ?? []).length === 2,
       openai: (openai.match(/\.\.\.\(reasoningEffort !== undefined \? \{ reasoning: reasoningEffort \} : \{\}\)/g) ?? []).length === 2,
-      outEvent: /\.\.\.\(typeof out\.reasoning === "string" && out\.reasoning !== "" \? \{ reasoning: out\.reasoning \} : \{\}\)/.test(entry) &&
-        /const spend = turnSpend\(out\.usage\);\s*if \(spend === undefined\) return \{\};\s*const missing = out\.usage\?\.unreportedRequests;\s*return \{ spend: \{ \.\.\.spend, \.\.\.\(typeof missing === "number" && missing > 0 \? \{ unreportedRequests: missing \} : \{\}\) \} \};/.test(entry),
+      // 답 이벤트는 `deliverTurnReply`(2026-11-01 진입점에서 옮김) — 진입점은 그 함수를 부른다.
+      outEvent: /deliverTurnReply\(\{/.test(entry) && /\.\.\.\(typeof out\.reasoning === "string" && out\.reasoning !== "" \? \{ reasoning: out\.reasoning \} : \{\}\)/.test(read("src/core/entry/reply-command.ts")) &&
+        /const spend = turnSpend\(out\.usage\);\s*if \(spend === undefined\) return \{\};\s*const missing = out\.usage\?\.unreportedRequests;\s*return \{ spend: \{ \.\.\.spend, \.\.\.\(typeof missing === "number" && missing > 0 \? \{ unreportedRequests: missing \} : \{\}\) \} \};/.test(read("src/core/entry/reply-command.ts")),
       router: /\.\.\.\(typeof out\.reasoning === "string" && out\.reasoning !== "" \? \{ reasoning: out\.reasoning \} : \{\}\),\s*\.\.\.\(out\.usage !== undefined \? \{ usage: out\.usage \} : \{\}\),/.test(read("src/core/router.ts")),
       history: /renderModelLabel\(mEl, entry\.model\.trim\(\), entry\.reasoning\)/.test(history) &&
         /buildHistoryTurnEl\(u\.acts, u\.reasoning\)/.test(history) && /renderModelLabel\(modelEl, mLast, reasoning\)/.test(history) &&

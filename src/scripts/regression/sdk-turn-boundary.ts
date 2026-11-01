@@ -54,7 +54,8 @@ export const check: RegressionCheck = {
       //  그 턴의 result 까지 미룬다(`queued-steer-keeps-input-open`) — 부르는 자리는 그대로다.
       /closeSteeringUnlessQueued\(\);[\s\S]{0,1200}const hasOwnAnswer = isOwnTurnEnd/,
       // 마감이 **빈 result 에도 조각으로 폴백**한다(적대 검토 A — `??` 는 ""에 폴백 안 한다).
-      /resultText !== undefined && resultText !== "" \? resultText : chunkText/,
+      //  2026-11-01: 생략 증명과 같은 판정을 쓰려고 «내용 있는 result 본문» 을 `resultBody` 로 뽑았다 — 빈 본문은 `undefined` 라 `??` 가 조각으로 간다.
+      /const resultBody = resultText !== undefined && resultText !== "" \? resultText : undefined;[\s\S]{0,400}const currentText = resultBody \?\? chunkText;/,
     ]);
     // ★순서가 곧 정확성이다: 가드가 **타입 분기보다 앞**에 있어야 새 턴의 assistant·
     //  stream_event·result 가 전부 걸린다. 뒤에 두면 텍스트는 이미 조립된 뒤다.

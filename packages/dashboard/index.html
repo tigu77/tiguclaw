@@ -99,6 +99,8 @@
         <div class="nav-brand">
           <div class="nav-kicker" data-i18n="nav.kicker">제어 센터</div>
           <div class="nav-title" data-i18n="app.sub">대시보드</div>
+          <!-- 메뉴 접기(아이콘 레일) — 넓은 화면만 보인다(app.css). 이름·상태는 nav-rail.js 가 칠한다. -->
+          <button id="nav-rail-toggle" class="nav-rail-toggle" type="button" aria-controls="sidebar" aria-expanded="true"><span class="nrt-glyph" aria-hidden="true">‹</span></button>
         </div>
         <div class="nav-section" aria-label="main menu">
           <button class="nav-button active" data-view="overview" type="button"><span class="ic">🏠</span><span class="label" data-i18n="nav.overview">홈</span><span class="hint" data-i18n="nav.overview.hint">요약</span></button>
@@ -357,6 +359,7 @@
     <script src="/js/resource-store.js"></script>
     <script src="/js/constants.js"></script>
     <script src="/js/side-panels.js"></script>
+    <script src="/js/nav-rail.js"></script>
     <script src="/js/update-chip.js"></script>
     <script src="/js/context-menu.js"></script>
     <script src="/js/view-overview.js"></script>

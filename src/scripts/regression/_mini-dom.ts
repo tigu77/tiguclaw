@@ -547,6 +547,18 @@ export const makeDomContext = (extra: Record<string, unknown> = {}) => {
 // ── 대시보드 부팅 앞부분 ─────────────────────────────────────────────────
 export const DASH_JS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../packages/dashboard/js");
 export const dashSource = (name: string): string => readFileSync(path.join(DASH_JS, name), "utf8");
+/**
+ * `util.js` 의 «내부 기록 글 조각» 판정 두 줄(`isInternalText`·`internalTextAsStep`)의 **진짜 소스** — 이력 병합(`groupMergedItems`)을 떼어 vm 에서
+ *  돌리는 검사들이 같이 싣는다(2026-11-01 — 병합이 그 판정을 부르게 됐다). 스텁이 아니라 원문이라 판정이 바뀌면 검사도 따라간다.
+ * @param i18nStub `i18n` 이 컨텍스트에 없으면 키를 그대로 내는 대역을 같이 싣는다.
+ */
+export const internalTextHelpersSource = (i18nStub = true): string => {
+  const util = dashSource("util.js");
+  const a = /const isInternalText = [^\n]*\n/.exec(util)?.[0];
+  const b = /const internalTextAsStep = [^\n]*\n/.exec(util)?.[0];
+  if (a === undefined || b === undefined) throw new Error("util.js 에서 내부 기록 판정을 못 찾음");
+  return `${i18nStub ? "const i18n = (k) => k;\n" : ""}${a}${b}`;
+};
 /** 응답 대역 — 검사가 URL 마다 값을 정한다. */
 export const jsonResponse = (body: unknown, status = 200): any => ({
   ok: status >= 200 && status < 300,

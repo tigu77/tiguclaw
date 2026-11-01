@@ -187,7 +187,9 @@ export const check: RegressionCheck = {
         re === null ? "★null" : re.text.slice(0, 160)),
       assert("배선: 대시보드 id/ts · 텔레그램 원글 id→행 id·인입 id · 핸들러·deliverOutbound 가 보낸 id 를 이벤트에",
         /replyToRef: reply\.ref/.test(reply) && /ds\.id/.test(reply) && /chatIdForChannelMessage\("telegram"/.test(tg) && /channelMessageRef: \{ address: chatId, messageIds: \[ctx\.message\.message_id\] \}/.test(tg) &&
-          /const sentRef = await msg\.reply\(/.test(idx) && /channelRefsField\(msg\.channel, sentRef\)/.test(idx) && /channelRefsField\(msg\.channel, msg\.channelMessageRef\)/.test(idx) &&
+          // 답 발송 본체는 `deliverTurnReply`(2026-11-01 진입점에서 옮김) — 진입점은 그 함수를 부른다.
+          /const sentRef = await msg\.reply\(/.test(src("../../core/entry/reply-command.ts")) && /channelRefsField\(msg\.channel, sentRef\)/.test(src("../../core/entry/reply-command.ts")) &&
+          /deliverTurnReply\(\{/.test(idx) && /channelRefsField\(msg\.channel, msg\.channelMessageRef\)/.test(idx) &&
           /copy && copyOf === undefined \? \{\} : channelRefsField\(channel, sentRef\)/.test(outb),
         "소스 모양"),
       assert("★그 대화에서 읽히는 행만 좌표로(다른 대화의 행은 없음 — not_found 안내 방지) · 브리지도 남의 대화 id 를 거른다 · 매핑 조회 실패가 던지지 않는다",

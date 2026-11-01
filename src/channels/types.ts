@@ -108,6 +108,13 @@ export interface IncomingMessage {
    */
   beforeTurn?: () => string | null;
   /**
+   * **이 턴의 사용자 보고는 기본 생략**(2026-11-01 — `docs/decisions/2026-11-01-notify-owner-report-contract.md` §3-1). 붙이는 자리는 하나 —
+   *  작업자 알림을 받은 메인 비서의 합성 턴(`worker-jobs.ts` `enqueueNoticeTurn`). 모델이 `report_to_user` 로 표시하지 않고 깨끗하게 끝나면
+   *  최종 답을 보내지 않고 «내부 처리» 통지만 남긴다. 이 턴엔 끼워넣기 채널이 없고(사람 입력은 새 턴으로) 합류 권리도 없다.
+   *  ★허용은 이 필드로만 — `turnOrigin`·`synthetic`·본문으로 만들지 않는다.
+   */
+  reportDefault?: "omit";
+  /**
    * 이 턴의 **사람 도달 좌표**(2026-10-20 레드팀 P-2) — 실행되는 대화(채널·주소)와 결과가 나가는 곳이 다를 때(만든 대화에서 처리되는 감시: 대화는
    *  대시보드, 결과는 텔레그램). 라우터가 모델 입력의 `notifyDest` 로 나른다 → 그 턴이 띄운 매니저·서브의 완료 보고·쿨다운 알림이 여기로 간다.
    *  ★채널 주소(`channelAddress`)를 이 용도로 쓰지 않는다 — 그건 세션 채널 메타에 적혀, 그 대화의 다른 통지까지 엉뚱한 곳으로 보냈다.

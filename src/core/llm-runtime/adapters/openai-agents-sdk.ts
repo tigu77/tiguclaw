@@ -596,6 +596,10 @@ export const runOpenAi = async (
 
   // reply-intent — 무인자 도구 호출 시 클로저로 플래그 set (turn 별 격리, 함수 지역).
   let replyToTrigger = false;
+  // 보고 표시 — 보고 기본 생략 턴(`input.reportOmittable`)에만 `report_to_user` 가 실린다(notify-owner-report-contract §3-2).
+  let reportMarked = false;
+  /** 도구 미지원으로 도구 없이 다시 물었나 — 그 시도는 생략을 증명하지 못한다(§3-3). */
+  let toolsDropped = false;
 
   const mcpServers: MCPServer[] = toolsNone
     ? []
@@ -648,7 +652,7 @@ export const runOpenAi = async (
         await adaptClaudeMcpServer(
           createReplyIntentMcpServer(() => {
             replyToTrigger = true;
-          }),
+          }, input.reportOmittable === true ? { onReport: () => { reportMarked = true; } } : undefined),
           "reply-intent",
         ),
       ];
@@ -1417,6 +1421,7 @@ export const runOpenAi = async (
     channel: input.channel,
     threadKey: input.threadKey,
     adapter: "openai",
+    ...(input.reportOmittable === true ? { audience: "internal" as const } : {}),
     model,
   });
 
@@ -1439,6 +1444,8 @@ export const runOpenAi = async (
           model,
           seq: segSeq,
           kind: "text",
+          // 보고 기본 생략 턴의 글은 «내부 기록» — 대시보드가 답 말풍선으로 그리지 않는다(notify-owner-report-contract §3-5).
+          ...(input.reportOmittable === true ? { audience: "internal" as const } : {}),
           label: "text",
           text,
         } satisfies RegionAActivityPayload,
@@ -1778,6 +1785,8 @@ export const runOpenAi = async (
       //  steering 누적기는 반대다 — 그건 사용자 발화라 재시도에도 살아야 한다(1197행 주석).
       toolMediaWindow.reset();
       turnToolItems.length = 0; // 도구 없이 다시 묻는다 — 지난 시도의 도구 기록은 이 턴의 것이 아니다.
+      // 이 시도엔 `report_to_user`·`prompt_options` 가 없다 — 모델이 보고·질문을 낼 수 없으니 생략을 증명하지 않는다(notify-owner-report-contract §3-3).
+      toolsDropped = true;
       result = await runOnce(noToolsAgent, false);
     } else {
       throw e;
@@ -1842,6 +1851,8 @@ export const runOpenAi = async (
     model,
     ...(reasoningEffort !== undefined ? { reasoning: reasoningEffort } : {}),
     replyToTrigger,
+    // 생략 증명(notify-owner-report-contract §3-3) — 보고 기본 생략 턴 · 표시 없음 · 도구를 단 시도로 끝남 · 입력 잘림 없음.
+    ...(input.reportOmittable === true && !reportMarked && !toolsNone && !toolsDropped && truncated === null ? { reportOmitted: true as const } : {}),
     usage,
     ...openAiTurnItemsField(turnToolItems, text),
     ...(lastTimeline !== undefined ? { timing: lastTimeline.summary() } : {}),

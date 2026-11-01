@@ -87,9 +87,13 @@ export const check: RegressionCheck = {
 
     // ── 배선 — `src/index.ts` 핸들러 클로저 ───────────────────────────────────
     const idx = readSourceSync("src/index.ts");
-    const queue = between(idx, "const skip = msg.beforeTurn?.() ?? null;", "return handler(msg);");
-    const claimAfterSkip = queue.indexOf("if (skip !== null)") >= 0 && queue.indexOf("claimLimitResume(run.id, run.session)") > queue.indexOf("if (skip !== null)") &&
-      /return handler\(msg\)\.finally\(\(\) => releaseLimitResume\(run\.id, run\.session\)\)/.test(queue);
+    // ★줄 차례의 `beforeTurn` → 턴 실행은 `admitTurn`(2026-11-01 진입점에서 옮김) — 판정 통과 뒤에만 `run` 을 부르고, 진입점의 `run` 이 넘겨받음을 건다.
+    const life = readSourceSync("src/core/entry/turn-lifecycle.ts");
+    const gate = between(life, "const skip = msg.beforeTurn?.() ?? null;", "return d.run(msg);");
+    const runCb = between(idx, "    run: (m) => {", "      return handler(m);");
+    const claimAfterSkip = gate.indexOf("if (skip !== null)") >= 0 && /return Promise\.resolve\(\);\s*\}\s*$/.test(gate) &&
+      /return admitTurn\(msg, \{/.test(idx) && runCb.indexOf("claimLimitResume(run.id, run.session)") >= 0 &&
+      /return handler\(m\)\.finally\(\(\) => releaseLimitResume\(run\.id, run\.session\)\)/.test(runCb);
     const catchBody = between(idx, "  } catch (e) {\n    // 사용자 /stop 으로 중단된 턴", "  } finally {\n    // 활동 표시 해제");
     const exitOrder =
       catchBody.indexOf("stoppedByUser(turnAc.signal)") >= 0 &&
@@ -107,7 +111,7 @@ export const check: RegressionCheck = {
     const wj = readSourceSync("src/core/worker-jobs.ts");
     const jobExit = between(wj, "      redactSecrets(outcome.error),", "  const found = jobs.get(jobId);").includes("noteJobLimitStop(jobId, outcome);");
     out.push(
-      assert("[배선] 재개 턴 «넘겨받음» 은 줄에서 `beforeTurn` 통과 **직후** · 핸들러 직전", claimAfterSkip, queue.slice(0, 200)),
+      assert("[배선] 재개 턴 «넘겨받음» 은 줄에서 `beforeTurn` 통과 **직후** · 핸들러 직전", claimAfterSkip, JSON.stringify({ gate: gate.slice(0, 120), run: runCb.slice(0, 160) })),
       assert("[배선] 실패 출구 — 사용자 중지·작업 취소를 지난 뒤에만 걸고 · 인입 응답과 egress 가 **같은 글**", exitOrder && oneText, JSON.stringify({ exitOrder, oneText })),
       assert("[배선] R2 메인 턴은 실패 출구 한 곳에서만 부른다(성공 턴엔 안 닿는다)", onlyInCatch, `등장 ${idx.split("noteTurnLimitStop(").length - 1}`),
       assert("[배선] `/stop` 네 갈래(진행 중·외부 턴·시작 중·없음) 모두 예약 취소 줄을 같은 답에", stopBranches === 4, `withCancel 호출 ${stopBranches}`),

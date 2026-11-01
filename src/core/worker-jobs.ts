@@ -1303,6 +1303,9 @@ const summonerTurnMessage = (
     // 선택지도 같은 좌표로(완료 재주입과 같은 처방 — 없으면 «함께 보낼 채널» 에만 간다).
     ...(presenter !== undefined ? { presentOptions: presenter } : {}),
     ...(beforeTurn !== undefined ? { beforeTurn } : {}),
+    // ★작업자 알림 턴만 **사용자 보고 기본 생략**(2026-11-01 — docs/decisions/2026-11-01-notify-owner-report-contract.md §3-1).
+    //  점검(`worker-checkin`)은 대상이 아니다(사용자 미결 U-B). 허용은 이 한 줄이 정한다 — 빼면 알림 턴이 지금의 전달로 돌아간다(롤백 자리).
+    ...(turnOrigin === "worker-notice" ? { reportDefault: "omit" as const } : {}),
     text,
   };
 };

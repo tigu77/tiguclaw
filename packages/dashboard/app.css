@@ -263,6 +263,40 @@
       .nav-divider { height:1px; background:var(--border); margin:2px 4px; }
       .nav-note { margin-top:auto; padding:11px; border:1px solid var(--border); border-radius:14px; background:var(--card); color:var(--text-mute); font-size:0.6875rem; }
       .nav-note strong { color:var(--text); }
+      /* ── 메인 메뉴 접기(아이콘 레일, 2026-11-01 — docs/decisions/2026-10-31-main-menu-collapse-design.md) ──
+         ★효력은 **넓은 화면(901px 이상)만** — 아래 규칙은 전부 그 미디어 안이다. 900px 이하에선 `body.nav-rail` 이 남아도
+          효과 0 이고 드로어(이름이 늘 보인다)는 그대로다. 토글의 기본 숨김은 미디어 밖 최상위에 둔다(켜는 쪽만 넓은 화면).
+         ★이름(`.label`·`.hint`)은 `display:none` 이 아니라 **화면에서만** 감춘다 — 접근 이름이 펼침과 글자 그대로 같다.
+         ★레일 64px = 테두리 2 + 패딩 20 + 버튼 42(펼침 버튼의 아이콘 칸과 같은 폭). 늘 보이는 스크롤바가 생겨도
+          가로 패딩 0 이라 버튼만 줄고 아이콘은 가운데 남는다. 전환 애니메이션은 없다(패널 공간 판정이 바로 잰다). */
+      #nav-rail-toggle { display:none; }
+      .nav-rail-tip { position:fixed; z-index:60; transform:translateY(-50%); pointer-events:none; max-width:min(320px, 60vw);
+        padding:6px 10px; border-radius:9px; border:1px solid var(--border-strong); background:rgb(var(--bg-soft-rgb) / .96);
+        box-shadow:var(--shadow); color:var(--text); font-size:0.75rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      @media (min-width: 901px) {
+        /* 머리줄(브랜드+토글)은 사이드바 스크롤에 밀려 나가지 않는다 — 기존 sticky 머리줄 관례 그대로.
+           ★`top` 은 `-(#sidebar 위 패딩 14px)` — sticky 는 스크롤 상자의 **패딩 안쪽**에 붙는다(헤드리스 실측: top:0 이면 위 14px 띠로
+            항목이 비치고, Tab 자동 스크롤이 맞춘 항목 위 8px 가 머리줄 밑에 깔렸다). 그래서 패딩 띠까지 덮고, `scroll-padding-top`(패딩 상자
+            기준)이 머리줄 높이와 바로 맞물린다. 머리줄 높이는 nav-rail.js 가 `--nav-brand-h` 로 잰다. */
+        #sidebar { scroll-padding-top:calc(var(--nav-brand-h, 0px) + 6px); }
+        .nav-brand { position:sticky; top:-14px; z-index:1; display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:8px; align-items:start;
+          background:rgb(var(--panel-solid-rgb) / .92); backdrop-filter:blur(14px); }
+        .nav-brand > .nav-kicker, .nav-brand > .nav-title { grid-column:1; min-width:0; }
+        #nav-rail-toggle { display:inline-flex; grid-column:2; grid-row:1 / span 2; align-items:center; justify-content:center;
+          width:28px; height:28px; padding:0; border:1px solid var(--border); border-radius:9px; background:transparent;
+          color:var(--text-mute); font-size:1rem; line-height:1; cursor:pointer; }
+        #nav-rail-toggle:hover { background:var(--card-hover); color:var(--text); }
+        body.nav-rail main { grid-template-columns:64px minmax(0,1fr); }
+        body.nav-rail #sidebar { padding-inline:10px; }
+        body.nav-rail .nav-brand { grid-template-columns:minmax(0,1fr); padding-inline:0; }
+        body.nav-rail .nav-brand > .nav-kicker, body.nav-rail .nav-brand > .nav-title { display:none; }
+        body.nav-rail #nav-rail-toggle { grid-column:1; grid-row:1; justify-self:center; }
+        body.nav-rail .nav-button { position:relative; justify-content:center; padding-inline:0; }
+        body.nav-rail .nav-button .label, body.nav-rail .nav-button .hint {
+          position:absolute; width:1px; height:1px; margin:-1px; padding:0;
+          overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0;
+        }
+      }
       .cat { margin: 5px 0; }
       .cat-head { display:flex; align-items:center; gap:9px; padding:8px 9px; border-radius: 12px; cursor:pointer; user-select:none; }
       .cat-head:hover { background: var(--card-hover); }

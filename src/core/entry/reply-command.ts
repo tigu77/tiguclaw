@@ -46,10 +46,6 @@ export const omitsTurnReport = (
 ): boolean => msg.reportDefault === "omit" && out.reportOmitted === true && appended === "";
 
 /**
- * 생략한 턴의 흔적 — 대화 기록에 «내부 처리» 시스템 통지 한 줄(`notice:true` → `chat_log`, 새로고침 뒤에도 통지로 그린다).
- *  `unread:false` — 사용자에게 알릴 것이 아니라 안 읽음 배지를 올리지 않는다. 채널로는 안 간다(버스 발행만).
- */
-/**
  * 턴 결과의 마지막 단계 — **생략이면 «내부 처리» 통지만 내고 돌아가고, 아니면 `deliver`(채널 답·기록·사본·제안)를 부른다.**
  *  채널로 나가는 일은 전부 `deliver` 안에만 있다 — 생략 갈래는 구조상 그걸 부를 수 없다(진입점이 그렇게 넘긴다).
  *  `deliver` 가 던지면(전송 실패) 그대로 올린다 — 생략으로 바꾸지 않는다(전달 실패 ≠ 생략, 설계 §3-4).
@@ -116,6 +112,12 @@ export const deliverTurnReply = async (t: {
   t.suggest();
 };
 
+/**
+ * 생략한 턴의 흔적 — 대화 기록(`chat_log`)에 «내부 처리» 시스템 통지 한 줄을 **남긴다**(`notice:true`). 채널로는 안 간다(버스 발행만).
+ *  `audience:"internal"` — 내부 처리 표식(2026-11-02, notify-owner-report-contract §11·§12): 대시보드엔 짧은 시스템 상태 줄로 보이고(라이브·이력),
+ *   세션 목록 미리보기에서만 빠진다. 저장은 행 `data.audience` 로 따라간다(`event-persist`). 라이브는 이 out 이 그 턴 카드를 마감한다.
+ *  `unread:false` — 안 읽음 배지를 올리지 않는다(배지 판정은 이 필드 — `sse.js`).
+ */
 export const publishInternalHandled = (bus: EventBus, at: { channel: string; threadKey: string }): OutCoords =>
   publishReplyOut(bus, {
     channel: at.channel,
@@ -123,6 +125,7 @@ export const publishInternalHandled = (bus: EventBus, at: { channel: string; thr
     text: translate("srv.notice.handledInternally"),
     notice: true,
     unread: false,
+    audience: "internal",
   });
 
 /**

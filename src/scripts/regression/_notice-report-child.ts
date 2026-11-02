@@ -8,6 +8,7 @@
  *  fallback — 모델 폴백 안내를 덧붙인 결과에선 생략 증명이 지워진다(`runRegionA`)
  *  decide   — 핸들러 판정(`omitsTurnReport`)·끼워넣기 판정(`turnTakesSteering`)·«내부 처리» 통지 모양
  *  context  — 허용 턴은 사람 턴 몫의 한 번짜리 «직전 질문» 줄을 꺼내지 않는다(다음 사람 턴이 받는다)
+ *  persist  — «내부 처리» 통지는 대화 기록 행으로 남고 구조 표식(`data.audience`)을 단다 · 세션 미리보기는 그 행을 건너뛴다 · 같은 문구의 사용자 글·표식 없는 통지는 그대로(2026-11-02)
  * 출력: 마지막 줄 JSON 한 줄.
  */
 import { mkdtempSync } from "node:fs";
@@ -264,7 +265,7 @@ const job = (label: string, threadKey = S): string =>
   publishInternalHandled(getEventBus(), { channel: CH, threadKey: S });
   await sleep(10);
   unsub?.();
-  out.internalNotice = outs.map((p) => ({ notice: p.notice, unread: p.unread, text: p.text, turn: p.turn ?? null, threadKey: p.threadKey }));
+  out.internalNotice = outs.map((p) => ({ notice: p.notice, unread: p.unread, audience: p.audience ?? null, text: p.text, turn: p.turn ?? null, threadKey: p.threadKey }));
 
   // 진입점의 마지막 단계 함수를 그대로 — 생략이면 `deliver`(채널 답·기록·사본·제안이 사는 곳) 0회 · 통지 1, 아니면 deliver 1 · 통지 0. 전송 실패는 그대로 던진다(생략으로 안 바뀜).
   const { finishTurnOutput } = await import("../../core/entry/reply-command.js");
@@ -350,6 +351,42 @@ const job = (label: string, threadKey = S): string =>
   ins.run(t0 + 3, "llm.activity", JSON.stringify({ channel: "dashboard", threadKey: H, adapter: "codex", seq: 0, kind: "text", label: "text", text: "보통 답" }));
   const acts = historyActivities([{ ts: t0 }], H) as unknown as R[];
   out.history = acts.filter((a) => a.kind === "text").map((a) => ({ text: a.text, audience: a.audience ?? null }));
+}
+
+// ── persist(대화 기록 · 세션 미리보기) — «내부 처리» 통지는 행으로 **남고**(문구 그대로) 구조 표식(`data.audience`)을 단다 · 화면 판정은 그 표식만 본다(2026-11-02 §11) ─────────────
+{
+  const { startEventPersistence } = await import("../../core/event-persist.js");
+  startEventPersistence(getEventBus()); // 진짜 적재 구독자(chat_log) — 데몬과 같은 함수.
+  const { publishInternalHandled, publishReplyOut } = await import("../../core/entry/reply-command.js");
+  const { getRecentChatLog, isInternalChatEntry } = await import("../../store/chat-log.js");
+  const { translate } = await import("../../core/i18n.js");
+  const { sessionPreview } = await loadPluginModule<{ sessionPreview: (r: unknown[]) => string | undefined }>("../../../plugins/http-bridge/routes-sessions.js");
+  const bus = getEventBus();
+  const phrase = translate("srv.notice.handledInternally");
+  const userIn = (threadKey: string, text: string): void => bus.publish({ type: "channel.message.in", ts: Date.now(), payload: { channel: "dashboard", threadKey, text } });
+  const P1 = "dashboard:regr-persist-1", P2 = "dashboard:regr-persist-2", P3 = "dashboard:regr-persist-3", P4 = "dashboard:regr-persist-4";
+  // P1: 사람 → 보통 답 → 내부 처리(맨 끝)
+  userIn(P1, "앞 대화"); await sleep(3);
+  publishReplyOut(bus, { channel: "dashboard", threadKey: P1, text: "보통 답" }); await sleep(3);
+  publishInternalHandled(bus, { channel: "dashboard", threadKey: P1 }); await sleep(3);
+  // P2: 내부 처리만 셋(미리보기 창 3건이 전부 내부)
+  for (let i = 0; i < 3; i++) { publishInternalHandled(bus, { channel: "dashboard", threadKey: P2 }); await sleep(3); }
+  // P3: 내부 처리 → 사용자가 같은 문구를 직접 씀(숨기면 안 된다)
+  publishInternalHandled(bus, { channel: "dashboard", threadKey: P3 }); await sleep(3);
+  userIn(P3, phrase); await sleep(3);
+  // P4: 표식 없는 시스템 통지(옛 통지 행과 같은 모양 — notice 만) 가 맨 끝
+  publishReplyOut(bus, { channel: "dashboard", threadKey: P4, text: "보통 답" }); await sleep(3);
+  publishReplyOut(bus, { channel: "dashboard", threadKey: P4, text: "스케줄 실패 통지", notice: true }); await sleep(10);
+  const rows = (k: string): R[] => getRecentChatLog({ threadKey: k, limit: 50 }) as unknown as R[];
+  out.persist = {
+    phrase,
+    p1: rows(P1).map((r) => ({ role: r.role, text: r.text, notice: r.notice === true, aud: r.data?.audience ?? null, internal: isInternalChatEntry(r as never) })),
+    p3: rows(P3).map((r) => ({ role: r.role, text: r.text, notice: r.notice === true, aud: r.data?.audience ?? null, internal: isInternalChatEntry(r as never) })),
+    p4: rows(P4).map((r) => ({ role: r.role, text: r.text, notice: r.notice === true, aud: r.data?.audience ?? null, internal: isInternalChatEntry(r as never) })),
+    p2count: rows(P2).length,
+    // 세션 목록과 같은 창(최근 3건)으로
+    preview: Object.fromEntries([P1, P2, P3, P4].map((k, i) => [`p${i + 1}`, sessionPreview(getRecentChatLog({ threadKey: k, limit: 3 })) ?? null])),
+  };
 }
 
 out.sent = sent.length;

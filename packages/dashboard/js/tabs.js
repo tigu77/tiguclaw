@@ -450,6 +450,12 @@
         if (last.kind === "text" && entries.some((e) => isAnswerRow(e) && e.ts >= (last.ts ?? 0))) {
           return { hist: activities, live: [] };
         }
+        // ★내부 처리 행(보고를 생략한 알림 턴의 마감, 2026-11-02 GPT R1)이 마지막 활동 뒤에 있으면 그 런도 끝난 턴이다 — 답 행이 아니라서
+        //  위 판정에 안 걸리고, 그 행은 이력에서 상태 줄로 그려지며 키가 등록돼 재생된 out 이 카드를 닫지 못하니 진행 카드로 되살아나면
+        //  닫아 줄 것이 없다. 표식 없는 통지는 넓히지 않는다.
+        if (entries.some((e) => isInternalMessage(e) && typeof e.ts === "number" && e.ts >= (last.ts ?? 0))) {
+          return { hist: activities, live: [] };
+        }
         let start = activities.length - 1;
         while (start > 0 && (activities[start].seq ?? 0) > (activities[start - 1].seq ?? 0)) start--;
         return { hist: activities.slice(0, start), live: activities.slice(start) };

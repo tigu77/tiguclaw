@@ -12,6 +12,9 @@
  *  ⑤ 허용 턴은 합류 권리가 없다 — 최종 결과는 기존 완료 경로로(재주입 1) · 일반 턴은 그대로 넘겨받는다(양성 대조)
  *  ⑥ 허용 턴은 사람 턴 몫의 한 번짜리 줄을 꺼내지 않는다
  *  ⑦ 대시보드: 내부 기록 글은 라이브·이력 모두 답 말풍선이 아니라 스텝 · 통지 행은 세그먼트 뒤에도 안 버려진다
+ *  ⑧ «내부 처리» 통지(2026-11-02 §11·§12) — 기록 행은 남고(구조 표식 `data.audience`) · 대화엔 짧은 시스템 상태 줄 1(라이브·이력) · 턴 카드는 마감 ·
+ *     진행 턴 이어받기가 «끝난 턴» 증거로 쓴다 · 세션 미리보기에서만 빠진다 · 같은 문구의 사용자 글·표식 없는 통지는 그대로 ·
+ *     판정은 문구가 아니라 표식(대시보드·서버 두 판정에 같은 입력표) · 안 읽음은 ④·배선의 `unread:false`
  *
  * 등급: ①~⑥ 동작(자식 프로세스 — 실제 어댑터·라우터·런타임·작업 기록, 모델 호출 0 · 외부 송신 0) · ⑦ 동작(미니 DOM·병합 함수 vm) + 진입점 배선 대조.
  */
@@ -146,8 +149,8 @@ export const check: RegressionCheck = {
     ));
     const n = (d.internalNotice as R[])[0];
     out.push(assert(
-      "④ «내부 처리» 통지 = 시스템 통지(`notice:true`) · 배지 안 올림(`unread:false`) · 서버 문구 카탈로그 · 완료 턴 표식 없음",
-      (d.internalNotice as R[]).length === 1 && n.notice === true && n.unread === false && n.turn === null &&
+      "④ «내부 처리» 통지 = 시스템 통지(`notice:true`) · 배지 안 올림(`unread:false`) · 내부 처리 표식(`audience:\"internal\"`) · 서버 문구 카탈로그 · 완료 턴 표식 없음",
+      (d.internalNotice as R[]).length === 1 && n.notice === true && n.unread === false && n.audience === "internal" && n.turn === null &&
         NOTICE_TEXTS.every((t) => typeof t === "string" && t !== "") && NOTICE_TEXTS.includes(n.text),
       show(d.internalNotice),
     ));
@@ -164,6 +167,27 @@ export const check: RegressionCheck = {
       Array.isArray(h) && h.some((x) => x.text === "내부 메모" && x.audience === "internal") && h.some((x) => x.text === "보통 답" && x.audience === null),
       show(h),
     ));
+
+    const ps = d.persist as R | undefined;
+    {
+      const ph = ps?.phrase;
+      const p1 = (ps?.p1 ?? []) as R[], p3 = (ps?.p3 ?? []) as R[], p4 = (ps?.p4 ?? []) as R[];
+      out.push(assert(
+        "★⑧ 대시보드 적재(진짜 `event-persist`): «내부 처리» 통지는 대화 기록 행으로 **남는다**(문구·통지 표식 그대로) + 구조 표식 `data.audience:\"internal\"` · 일반 답·사용자 글·표식 없는 통지 행엔 표식 없음",
+        ps !== undefined && typeof ph === "string" && ph !== "" &&
+          p1.length === 3 && p1[2]!.notice === true && p1[2]!.text === ph && p1[2]!.aud === "internal" && p1[2]!.internal === true &&
+          p1[0]!.aud === null && p1[1]!.aud === null && !p1[0]!.internal && !p1[1]!.internal &&
+          p3.length === 2 && p3[1]!.role === "user" && p3[1]!.text === ph && p3[1]!.aud === null && !p3[1]!.internal &&
+          p4.length === 2 && p4[1]!.notice === true && p4[1]!.aud === null && !p4[1]!.internal && ps.p2count === 3,
+        show(ps),
+      ));
+      const pv = (ps?.preview ?? {}) as R;
+      out.push(assert(
+        "★⑧ 세션 목록 미리보기(최근 3건 창): 내부 기록 행을 건너뛴다(앞 일반 답) · 창이 전부 내부면 미리보기 없음(문구로 대체 안 함) · 같은 문구의 사용자 글·표식 없는 통지는 그대로",
+        pv.p1 === "보통 답" && pv.p2 === null && pv.p3 === ps?.phrase && pv.p4 === "스케줄 실패 통지",
+        show(pv),
+      ));
+    }
 
     // ── ② 세 어댑터 ───────────────────────────────────────────────────────────
     const runs: Record<string, R[] | string> = {};
@@ -271,6 +295,135 @@ export const check: RegressionCheck = {
         "⑦ 이력: 일반 텍스트 세그먼트 바로 뒤의 통지 행도 «세그먼트의 중복» 으로 버리지 않는다(답 행 이동 판정과 같은 규칙)",
         units2.some((u) => u.kind === "text") && units2.some((u) => u.kind === "msg" && u.entry?.notice === true),
         show(units2),
+      ));
+    }
+
+    // ── ⑧ 대시보드 — «내부 처리» 통지 = 짧은 시스템 상태 줄(2026-11-02 §12 — §11 의 비표시를 대체) ─────────────
+    {
+      const dash = bootDashboard({ clock: makeClock(), i18n: i18nForContext, allIds: true, upTo: "sse.js", fetch: async () => jsonResponse({}, 404) });
+      const PH = NOTICE_TEXTS[0];
+      const A = "dashboard:regr-hide-int", B = "dashboard:regr-hide-plain", C = "dashboard:regr-hide-user";
+      const turn = (k: string, base: number): void => {
+        dash.run(`renderActivity({ threadKey: "${k}", adapter: "codex", seq: 0, kind: "tool", label: "steer_worker", detail: "" }, ${base})`);
+        dash.run(`renderActivity({ threadKey: "${k}", adapter: "codex", seq: 1, kind: "text", audience: "internal", label: "text", text: "내부 메모" }, ${base + 1})`);
+      };
+      const out_ = (k: string, ts: number, extra: string): void =>
+        dash.run(`renderChannelMessage({ type: "channel.message.out", ts: ${ts}, payload: { threadKey: "${k}", text: ${JSON.stringify(PH)}, notice: true, unread: false${extra} } }, "t")`);
+      // 렌더된 트리 전부(가상 목록 + 묶음 안)에서 세는 도우미
+      dash.run(`globalThis.__walk = () => { const all = []; const w = (n) => { all.push(n); for (const c of (n.children || [])) w(c); }; for (const it of vtItems) w(it.node); return all; }`);
+      const count = (sel: string): number => dash.run(`__walk().filter((n) => (" " + (n.className || "") + " ").includes(" ${sel} ")).length`) as number;
+      const phrases = (): number => (dash.run(`__walk().filter((n) => (" " + (n.className || "") + " ").includes(" chat-message ")).map((n) => n.textContent)`) as string[]).filter((t) => String(t).includes(PH!)).length;
+      turn(A, 10);
+      const before = { notices: count("sys-notice"), chats: count("channel-chat") };
+      out_(A, 20, `, audience: "internal"`);
+      const a = dash.run(`(() => { const c = cardByThread.get("${A}"); return c ? { closed: !!c.closed, done: !!(c.el && c.el.classList.contains("done")) } : null; })()`) as R | null;
+      const afterA = { notices: count("sys-notice"), chats: count("channel-chat"), phrases: phrases() };
+      turn(B, 30);
+      out_(B, 40, "");
+      const afterB = { notices: count("sys-notice"), phrases: phrases() };
+      dash.run(`renderChannelMessage({ type: "channel.message.in", ts: 50, payload: { threadKey: "${C}", text: ${JSON.stringify(PH)} } }, "t")`);
+      const afterC = { chats: count("channel-chat"), phrases: phrases() };
+      out.push(assert(
+        "★⑧ 라이브: 내부 표식 out — 시스템 상태 줄(`sys-notice`) 1·그 문구 1(일반 답 말풍선 아님) · 그 턴 카드는 마감(닫힘·완료) / 표식 없는 통지도 상태 줄 1 / 같은 문구의 사용자 글은 사용자 말풍선으로 그대로 보인다",
+        a !== null && a.closed && a.done && afterA.notices === before.notices + 1 && afterA.chats === before.chats + 1 && afterA.phrases === 1 &&
+          afterB.notices === afterA.notices + 1 && afterB.phrases === 2 && afterC.chats === afterA.chats + 2 && afterC.phrases === 3,
+        show({ before, a, afterA, afterB, afterC }),
+      ));
+      // ★활동 없이 끝난 생략 턴(GPT 코드 R1, 2026-11-02 §12): 직전 턴이 텍스트 세그먼트로 답하고 마감돼 그 카드가 남아 있어도(`closed`·`sawTextSegment`),
+      //  내부 처리 out 은 그 답 말풍선의 «세그먼트 중복» 으로 흡수되지 않고 상태 줄 1로 보인다 — 직전 답의 행 좌표(`data-rowts`)도 그대로.
+      const D = "dashboard:regr-hide-silent";
+      dash.run(`renderActivity({ threadKey: "${D}", adapter: "codex", seq: 0, kind: "text", label: "text", text: "보통 답 세그먼트" }, 60)`);
+      dash.run(`renderChannelMessage({ type: "channel.message.out", ts: 61, payload: { threadKey: "${D}", text: "보통 답 세그먼트" } }, "t")`);
+      const rowtsOf = (): unknown => dash.run(`(() => { const c = cardByThread.get("${D}"); return c && c.lastTextBubble ? c.lastTextBubble.dataset.rowts ?? null : null; })()`);
+      const beforeD = { notices: count("sys-notice"), phrases: phrases(), rowts: rowtsOf() };
+      out_(D, 70, `, audience: "internal"`);
+      const afterD = { notices: count("sys-notice"), phrases: phrases(), rowts: rowtsOf() };
+      out.push(assert(
+        "★⑧ 라이브: 활동 없이 끝난 생략 턴 — 직전 답 카드(텍스트 세그먼트·마감)가 남아 있어도 내부 처리 out 은 상태 줄 1로 보이고, 직전 답 말풍선의 행 좌표를 바꾸지 않는다",
+        beforeD.rowts === "61" && afterD.notices === beforeD.notices + 1 && afterD.phrases === beforeD.phrases + 1 && afterD.rowts === "61",
+        show({ beforeD, afterD }),
+      ));
+      // ★남은 진행 말풍선(GPT 코드 R2): 앞 시도가 부분 글만 흘리고 답 없이 끝난(turn_error → `markTurnCardDone`) 뒤 생략 턴의 내부 처리 out 이 오면 —
+      //  상태 줄 1 · 부분 글은 덮어쓰지 않고 그대로 · 스트리밍 커서 0 · 카드의 진행 말풍선 참조 정리.
+      const E = "dashboard:regr-hide-stream";
+      dash.run(`renderDelta({ threadKey: "${E}", adapter: "codex", seq: 0, delta: "부분 답변" }, 80)`);
+      dash.run(`markTurnCardDone("${E}")`);
+      const streamingE = (): number => dash.run(`__walk().filter((n) => (" " + (n.className || "") + " ").includes(" streaming ")).length`) as number;
+      const beforeE = { notices: count("sys-notice"), streaming: streamingE(), partial: (dash.run(`__walk().filter((n) => (" " + (n.className || "") + " ").includes(" chat-message ") && n.textContent === "부분 답변").length`) as number) };
+      out_(E, 90, `, audience: "internal"`);
+      const afterE = {
+        notices: count("sys-notice"), streaming: streamingE(),
+        partial: (dash.run(`__walk().filter((n) => (" " + (n.className || "") + " ").includes(" chat-message ") && n.textContent === "부분 답변").length`) as number),
+        refs: dash.run(`(() => { const c = cardByThread.get("${E}"); return c ? { bubble: c.replyBubble === null, msg: c.replyMsg === null, raw: c.replyRaw } : null; })()`) as R | null,
+      };
+      out.push(assert(
+        "★⑧ 라이브: 남은 진행 말풍선(답 없이 끝난 앞 시도) 뒤 내부 처리 out — 상태 줄 1 · 부분 글 그대로(덮어쓰기 0) · 스트리밍 커서 0 · 진행 말풍선 참조 정리",
+        beforeE.streaming >= 1 && beforeE.partial === 1 && afterE.notices === beforeE.notices + 1 && afterE.streaming === 0 && afterE.partial === 1 &&
+          afterE.refs !== null && afterE.refs.bubble === true && afterE.refs.msg === true && afterE.refs.raw === "",
+        show({ beforeE, afterE }),
+      ));
+    }
+    {
+      const src = readFileSync(path.join(REPO, "packages/dashboard/js/history-render.js"), "utf8");
+      const tabs = readFileSync(path.join(REPO, "packages/dashboard/js/tabs.js"), "utf8");
+      const gm = /const groupMergedItems = \([\s\S]*?\n {6}\};/.exec(src);
+      const cb = /const canonicalBodyFor = \([\s\S]*?\n {6}\};/.exec(src);
+      const sp = /const splitLiveResume = \([\s\S]*?\n {6}\};/.exec(tabs);
+      const ctx: R = {};
+      vm.createContext(ctx);
+      vm.runInContext(`const renderedMsgKeys = new Set(); const msgKey = (ts, role) => ts + "|" + role;
+        ${internalTextHelpersSource()} ${cb?.[0] ?? ""} ${gm?.[0] ?? ""} ${sp?.[0] ?? ""}
+        this.group = groupMergedItems; this.split = splitLiveResume; this.keys = renderedMsgKeys; this.isInt = isInternalMessage;`, ctx);
+      const T = "dashboard:regr-hide-hist";
+      const PH = NOTICE_TEXTS[0];
+      const tool = (ts: number, seq: number): R => ({ ts, threadKey: T, seq, kind: "tool", label: "steer_worker", detail: "" });
+      const internalRow = { ts: 30, role: "assistant", threadKey: T, text: PH, notice: true, data: { audience: "internal" } };
+      const u1 = ctx.group([internalRow], [tool(10, 0), { ts: 20, threadKey: T, seq: 1, kind: "text", audience: "internal", label: "text", text: "내부 메모" }]) as R[];
+      // 내부 행이 런을 끊는다 — 뒤 턴의 활동이 seq 를 이어 가도 같은 카드로 합쳐지지 않는다(라이브에선 이 out 이 카드를 마감한다).
+      const u2 = ctx.group([internalRow], [tool(10, 0), tool(20, 1), tool(40, 2)]) as R[];
+      const legacy = ctx.group([{ ts: 30, role: "assistant", threadKey: T, text: PH, notice: true }], [tool(10, 0)]) as R[];
+      const userSame = ctx.group([{ ts: 30, role: "user", threadKey: T, text: PH }, { ts: 31, role: "user", threadKey: T, text: "내부 처리" }, { ts: 32, role: "assistant", threadKey: T, text: "내부 처리", notice: true }], []) as R[];
+      out.push(assert(
+        "★⑧ 이력(병합 함수 vm): 내부 표식 행 → 통지 단위 1(상태 줄 — 세그먼트 중복으로 안 버려짐)·그 턴 스텝은 남음·도구 런을 끊음 / 표식 없는 옛 통지 행 → 통지 단위 1 / 같은 문구·짧은 같은 말의 사용자 행·표식 없는 통지 → 전부 보임",
+        u1.filter((u) => u.kind === "msg" && u.entry?.notice === true && u.entry?.data?.audience === "internal").length === 1 && u1.some((u) => u.kind === "turn") &&
+          u2.filter((u) => u.kind === "turn").length === 2 &&
+          legacy.some((u) => u.kind === "msg" && u.entry?.notice === true) && userSame.length === 3 && userSame.every((u) => u.kind === "msg"),
+        show({ u1, u2, legacy, userSame }),
+      ));
+      const acts = [tool(10, 0), { ts: 20, threadKey: T, seq: 1, kind: "text", audience: "internal", label: "text", text: "내부 메모" }];
+      const s1 = ctx.split(acts, [internalRow], true) as R;
+      const s2 = ctx.split([...acts, tool(40, 0)], [internalRow], true) as R;
+      const s3 = ctx.split(acts, [{ ts: 30, role: "assistant", threadKey: T, text: PH, notice: true }], true) as R;
+      out.push(assert(
+        "★⑧ 진행 턴 이어받기: 내부 표식 행이 마지막 활동 뒤면 그 런은 끝난 턴(live 0 — 새 턴 활동 전 탭 복귀에 진행 카드로 되살아나지 않음) · 새 턴 활동이 있으면 그 런만 live(양성 대조) · 표식 없는 통지는 종전 그대로",
+        s1.live.length === 0 && s1.hist.length === 2 && s2.live.length === 1 && s2.live[0].ts === 40 && s3.live.length === 2,
+        show({ s1, s2, s3 }),
+      ));
+      // 두 판정(대시보드 `isInternalMessage` · 서버 `isInternalChatEntry`)에 같은 입력표 — 갈리면 화면과 목록이 다른 말을 한다.
+      const { isInternalChatEntry } = await import("../../store/chat-log.js");
+      const table: Array<[R, boolean]> = [
+        [{ data: { audience: "internal" } }, true],
+        [{ data: { audience: "internal" }, text: "아무 글", role: "user" }, true],
+        [{ data: { audience: "Internal" } }, false],
+        [{ data: { audience: "public" } }, false],
+        [{ data: { replyTo: { text: "x" } } }, false],
+        [{ data: null }, false],
+        [{}, false],
+        [{ text: PH, notice: true }, false],
+        [{ text: PH, role: "user" }, false],
+        // ★글 내용과 무관해야 한다 — 짧은 말·다른 언어·빈 글·보통 답 모두, 표식이 없으면 보이고 있으면 숨는다(문구 판정이 섞이면 여기서 갈린다 — 독립 변이 M07)
+        ...(["내부 처리", "Handled", NOTICE_TEXTS[1] ?? "", "", "보통 답", "작업자 알림"] as string[]).flatMap((t): Array<[R, boolean]> => [
+          [{ text: t, role: "user" }, false],
+          [{ text: t, role: "assistant", notice: true }, false],
+          [{ text: t, role: "assistant", notice: true, data: { audience: "internal" } }, true],
+        ]),
+      ];
+      const dashRes = table.map(([x]) => ctx.isInt(x) === true);
+      const srvRes = table.map(([x]) => isInternalChatEntry(x as never));
+      out.push(assert(
+        "⑧ 두 판정(대시보드·서버)이 같은 입력표에 같은 답 — 표식만 본다(문구·통지 표식만으로는 아니다) · 대시보드는 라이브 payload 의 `audience` 도 본다",
+        table.every(([, want], i) => dashRes[i] === want && srvRes[i] === want) && ctx.isInt({ audience: "internal" }) === true,
+        show({ dashRes, srvRes }),
       ));
     }
 

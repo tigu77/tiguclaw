@@ -556,8 +556,10 @@ export const internalTextHelpersSource = (i18nStub = true): string => {
   const util = dashSource("util.js");
   const a = /const isInternalText = [^\n]*\n/.exec(util)?.[0];
   const b = /const internalTextAsStep = [^\n]*\n/.exec(util)?.[0];
-  if (a === undefined || b === undefined) throw new Error("util.js 에서 내부 기록 판정을 못 찾음");
-  return `${i18nStub ? "const i18n = (k) => k;\n" : ""}${a}${b}`;
+  // 화면에 그리지 않는 내부 기록 메시지 판정(2026-11-02) — 이력 병합·진행 턴 이어받기가 부른다.
+  const c = /const isInternalMessage = [^\n]*\n/.exec(util)?.[0];
+  if (a === undefined || b === undefined || c === undefined) throw new Error("util.js 에서 내부 기록 판정을 못 찾음");
+  return `${i18nStub ? "const i18n = (k) => k;\n" : ""}${a}${b}${c}`;
 };
 /** 응답 대역 — 검사가 URL 마다 값을 정한다. */
 export const jsonResponse = (body: unknown, status = 200): any => ({

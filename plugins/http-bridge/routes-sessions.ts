@@ -7,11 +7,22 @@
 import { writeJson } from "../../src/core/net/write-json.js";
 import { DEFAULT_SESSION_ID } from "../../src/core/threadkey.js";
 import { setSessionArchived } from "../../src/store/channel-session.js";
-import { getFirstUserText, getRecentChatLog } from "../../src/store/chat-log.js";
+import { getFirstUserText, getRecentChatLog, isInternalChatEntry, type ChatLogEntry } from "../../src/store/chat-log.js";
 import { SESSION_STORAGE_CHANNEL, getSessionModelProfile, listThreads, sessionDisplayName, setThreadName } from "../../src/store/sessions.js";
 import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import { getLineage } from "../../src/store/thread-members.js";
 import type { RouteCtx } from "./route-ctx.js";
+
+/**
+ * 세션 목록 프리뷰 — 최근 행(조회 창 3건) 중 **글이 있는 마지막 행** 요약(80자 슬라이스). 없으면 undefined(빈 프리뷰).
+ *  글 없는 행(첨부만·선택지·가지 구분선)은 건너뛴다 — 갓 갈라진 대화는 마지막 행이 구분선이라 1건만 보면 미리보기가 빈다(2026-10-15).
+ *  «내부 처리» 행(`isInternalChatEntry` — 2026-11-02)도 건너뛴다: 사용자에게 보고하지 않은 처리의 상태 줄이 그 대화의 요약이 되면 안 된다. 창 안이 전부 그런 행이면 빈 프리뷰.
+ */
+export const sessionPreview = (recent: ReadonlyArray<Pick<ChatLogEntry, "text" | "data">>): string | undefined => {
+  const last = recent.filter((e) => e.text !== "" && !isInternalChatEntry(e)).slice(-1)[0];
+  const previewText = last !== undefined ? last.text : "";
+  return previewText.trim() !== "" ? previewText.replace(/\s+/g, " ").slice(0, 80) : undefined;
+};
 
 export const handleSessions = async (ctx: RouteCtx): Promise<void> => {
   const { res } = ctx;
@@ -19,14 +30,7 @@ export const handleSessions = async (ctx: RouteCtx): Promise<void> => {
     // 사용자에게 보이는 목록 — 프로브·검증 흔적 제외(대시보드 세션 목록과 /sessions 공통 기준).
     const threads = listThreads({ excludeInternal: true });
     const sessions = threads.map((t) => {
-      // 프리뷰 — 최근 3건 중 **글이 있는 마지막 행** 요약(80자 슬라이스). 글 없는 행(첨부만·선택지·가지 구분선)은 건너뛴다 —
-      //  갓 갈라진 대화는 마지막 행이 구분선이라 1건만 보면 미리보기가 빈다(2026-10-15). 셋 다 글이 없으면 빈 프리뷰.
-      const recent = getRecentChatLog({ threadKey: t.threadKey, limit: 3 }).filter((e) => e.text !== "").slice(-1);
-      const previewText = recent.length > 0 ? recent[recent.length - 1]!.text : "";
-      const preview =
-        previewText.trim() !== ""
-          ? previewText.replace(/\s+/g, " ").slice(0, 80)
-          : undefined;
+      const preview = sessionPreview(getRecentChatLog({ threadKey: t.threadKey, limit: 3 }));
       // 세션 모델 프로파일(대시보드 드롭다운 상태 복원용, additive — 기존 소비자 무영향,
       // ADR model-dropdown §3-c). 미기재 세션 → null(드롭다운 default 로 hydrate).
       const modelProfile = getSessionModelProfile(

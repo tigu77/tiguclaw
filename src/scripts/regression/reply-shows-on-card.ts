@@ -28,6 +28,7 @@ import { chatMessageById, chatRowCoords, getRecentChatLog, recordChatMessage } f
 import { REPLY_PREVIEW_MAX_CHARS, replyPreviewFromPayload, replyPreviewOf } from "../../core/reply-preview.js";
 import { createEventBus } from "../../core/eventbus.js";
 import { startEventPersistence } from "../../core/event-persist.js";
+import { internalTextHelpersSource } from "./_mini-dom.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const src = (rel: string): string => readFileSync(path.join(ROOT, rel), "utf8");
@@ -153,6 +154,8 @@ const dashboardRun = async (): Promise<Assertion[]> => {
   const hist = src("packages/dashboard/js/history-render.js");
   vm.runInContext(section(hist, "      const buildHistoryDiv = (entry) => {", "      // 보낸 메시지 버블 안 첨부 미리보기"), ctx);
   vm.runInContext(section(hist, "      const replyTargetPick = (rt) => (items, strongOnly) => {", "      // 메시지 유닛 → element"), ctx);
+  // 라이브 렌더는 «내부 처리» 통지 판정(util.js `isInternalMessage`)을 부른다 — 제품 소스 그대로 싣는다(2026-11-02).
+  vm.runInContext(internalTextHelpersSource(false), ctx);
   vm.runInContext(section(src("packages/dashboard/js/channel-hints.js"), "      const renderChannelMessage = (ev, ts) => {", null), ctx);
   vm.runInContext(
     "var pendingQueued = []; var cancelQueuedBubble = () => {}; var buildAttachmentsPreview = () => document.createElement('div');" +

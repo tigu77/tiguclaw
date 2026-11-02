@@ -263,6 +263,8 @@
       const isInternalText = (p) => !!p && p.kind === "text" && p.audience === "internal";
       /** 내부 기록 글 조각 → 스텝 모양. 펼치면(상세) 본문 전체가 보인다 — `detail` 이 그 자리다. */
       const internalTextAsStep = (p) => ({ ...p, kind: "note", label: i18n("chat.internalNote"), detail: String(p.text || "") });
+      /** «내부 처리» 통지인가(2026-11-02, notify-owner-report-contract §11·§12 — 보고를 생략한 알림 턴의 마감 행. 화면엔 짧은 상태 줄로 보이고, 진행 턴 이어받기가 «끝난 턴» 증거로 쓴다). 라이브 payload 는 `audience`, 이력 행은 `data.audience` — 두 모양을 이 한 함수로 본다(문구로 판정하지 않는다 · 서버 `chat-log.ts` `isInternalChatEntry` 와 같은 필드). */
+      const isInternalMessage = (m) => !!m && (m.audience === "internal" || (!!m.data && typeof m.data === "object" && m.data.audience === "internal"));
       const currentLocale = () =>
         (window.__TIGU_I18N__ && window.__TIGU_I18N__.locale) || "ko";
 

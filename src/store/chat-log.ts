@@ -84,6 +84,14 @@ export interface ChatLogEntry {
   turnId?: string;
 }
 
+/**
+ * «내부 처리» 행인가 — 보고를 생략한 작업자 알림 턴의 통지(2026-11-02, notify-owner-report-contract §11·§12). 대화엔 짧은 상태 줄로 보이고,
+ *  세션 목록 미리보기에서만 건너뛴다(`routes-sessions.ts` `sessionPreview`).
+ *  ★문구가 아니라 구조 표식(`data.audience`)으로만 판정한다 — 같은 글을 사용자가 써도 미리보기에서 빠지지 않고, 표식 없는 옛 통지 행도 그대로다.
+ *  대시보드는 같은 필드를 `util.js` `isInternalMessage` 로 본다(런타임이 달라 자리가 둘 — 같은 필드·같은 값).
+ */
+export const isInternalChatEntry = (e: Pick<ChatLogEntry, "data">): boolean => e.data?.audience === "internal";
+
 interface ChatLogRow {
   id: number;
   ts: number;

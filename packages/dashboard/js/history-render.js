@@ -184,6 +184,9 @@
             dl.setAttribute("download", name);
             dl.title = i18n("hist.receive");
             dl.textContent = "⬇";
+            // ★받기 클릭이 부모 칩의 «열기»(`window.open`)로 번지지 않게 — 번지면 한 번 눌러 두 번 받는다(2026-11-02 실측: ZIP 이 `a[download]` 와
+            //  새 탭 열기로 2건). 전파만 끊고 기본 동작(이 `a` 의 다운로드·파일명)은 그대로 둔다 — `preventDefault` 를 쓰면 받기 자체가 죽는다.
+            dl.addEventListener("click", (e) => e.stopPropagation());
             chip.appendChild(dl);
           }
           cell.appendChild(chip);

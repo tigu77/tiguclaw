@@ -443,7 +443,18 @@
         // 누적 평문 델타는 폐기되고 out 전체본으로 치환 = 부분 렌더 오차 자가치유.
         // 완료 턴 표식(2026-10-15) — 저장이 확인된 정상 답에만 온다. 메뉴 «여기까지로 갈라내기» 가 이 값을 찾는다(통지엔 없다).
         const turnId = isOut && payload.notice !== true && payload.turn && typeof payload.turn.id === "string" ? payload.turn.id : "";
-        if (isOut) {
+        // ★«내부 처리» 통지(`audience:"internal"`, 2026-11-02 notify-owner-report-contract §12)는 답이 아니다 — 아래 답 승격·세그먼트 중복
+        //  분기에 들이지 않는다. 활동 없이 끝난 생략 턴이면 직전 턴의 마감된 카드가 남아 있어, 들이면 그 답 말풍선에 흡수돼 상태 줄이
+        //  사라지고 직전 답의 행 좌표(`data-rowts`)까지 바뀐다(GPT 코드 R1 재현). 아래 통지 경로가 상태 줄 + 열린 카드 마감을 한다.
+        //  남은 진행 말풍선(답 없이 끝난 앞 시도의 부분 글 등)은 글을 덮어쓰지 않고 커서·참조만 정리한다 — 안 하면 마감된 카드에
+        //  스트리밍 커서가 남는다(GPT 코드 R2 재현). 승격 분기가 하던 정리 중 «본문 교체» 만 빼고 같다.
+        if (isOut && isInternalMessage(payload)) {
+          const card = cardByThread.get(thread);
+          if (card) {
+            if (card.replyMsg) card.replyMsg.classList.remove("streaming");
+            card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
+          }
+        } else if (isOut) {
           const card = cardByThread.get(thread);
           // 인터리브(2026-07-13): 이 턴이 kind:"text" 세그먼트를 냈으면 마지막 텍스트는 이미
           // 세그먼트 버블이 소유 → 최종 답변 버블을 따로 만들거나 승격하지 않는다(중복 방지). 턴만 마감.

@@ -7,6 +7,9 @@
  *  ① 허용은 알림 턴에만(생산자 한 줄) · 완료 재주입엔 없음
  *  ② 세 어댑터: 허용 턴에만 `report_to_user` 노출 · 표시 없이 깨끗하게 끝나면 생략 증명 · 표시·흡수된 실패·대체 문구·오류 삼킴·도구 없는 재시도엔 없음 ·
  *     허용 턴의 글 조각(활동·델타)은 `audience:"internal"`
+ *  ②b 선택지를 못 전달해 텍스트로 대신 물은 질문이 남은 허용 턴 — 증명 없음(2026-11-02) · 같은 질문 재시도 성공·처음부터 성공은 증명 유지 ·
+ *     일부만 성공하면 남은 질문 보호 유지 · 명시 표시는 재시도 성공이 지우지 않음 · 남은 질문은 다음 호출로 새지 않음 ·
+ *     공통 팩토리: 예외는 그대로 전파(보호로 바꾸지 않음)
  *  ③ 라우터·런타임: 허용을 입력으로, 증명을 결과로 옮김 · 폴백 안내를 덧붙인 결과엔 증명이 없음
  *  ④ 핸들러 판정: 허용 × 증명 × 덧붙인 안내 없음일 때만 생략 · 허용 턴은 끼워넣기를 안 받음 · «내부 처리» 통지(배지 안 올림)
  *  ⑤ 허용 턴은 합류 권리가 없다 — 최종 결과는 기존 완료 경로로(재주입 1) · 일반 턴은 그대로 넘겨받는다(양성 대조)
@@ -190,8 +193,10 @@ export const check: RegressionCheck = {
     }
 
     // ── ② 세 어댑터 ───────────────────────────────────────────────────────────
+    // ★`omitnext` 는 `optfail` 바로 뒤여야 한다 — 뒤 장면들(재시도 성공)이 같은 질문을 지워서, 집합이 호출 밖으로 새도 끝에선 비어 보인다(아래 단언이 순서도 본다).
+    const OPT_SCENES = "optfail,omitnext,optunavail,optretry,optok,optpartial,optmark";
     const runs: Record<string, R[] | string> = {};
-    for (const [ad, sc] of [["claude", "plain,omit,mark,fail,noresult,emptyhead,silent,ctx,ctxplain"], ["codex", "plain,omit,mark,fail,swallow,flush,ctx,ctxplain"], ["openai", "plain,omit,mark,fail,trunc,ctx,ctxplain"]] as const) {
+    for (const [ad, sc] of [["claude", `plain,omit,mark,fail,noresult,emptyhead,silent,ctx,ctxplain,${OPT_SCENES}`], ["codex", `plain,omit,mark,fail,swallow,flush,ctx,ctxplain,${OPT_SCENES}`], ["openai", `plain,omit,mark,fail,trunc,ctx,ctxplain,${OPT_SCENES}`]] as const) {
       const rr = await spawnWithin(120_000, `notice-report-${ad}`, ["--import", "tsx", path.join(HERE, "_notice-report-adapters-child.ts"), ad, sc], {
         stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TIGUCLAW_REGRESSION_NO_LIVE_MODEL: "1" },
       });
@@ -239,11 +244,68 @@ export const check: RegressionCheck = {
         ));
         out.push(assert("★② claude: 글 없이 성공 result 로 깨끗하게 끝난 허용 턴 — 증명 있음(양성 대조)", si !== undefined && si.err === undefined && si.exposed && si.omitted, show(si)));
       }
+      // ②b 선택지 전달 실패 뒤 대체 질문 — 렌더 횟수로 «모델이 실제로 도구를 불렀다» 를 같이 본다(안 불렀으면 증명이 그대로라 거짓 초록).
+      {
+        const o = (sc: string, renders: number, omitted: boolean): boolean => {
+          const x = by(sc);
+          return x !== undefined && x.err === undefined && x.exposed && x.renders === renders && x.omitted === omitted && String(x.text).length > 0;
+        };
+        out.push(assert(
+          `★②b ${ad}: 선택지 전달 실패·이 턴 불가 뒤 텍스트로 대신 물은 허용 턴 — \`report_to_user\` 없이 끝나도 증명 없음(대체 질문이 내부 기록으로 묻히지 않는다)`,
+          o("optfail", 1, false) && o("optunavail", 1, false),
+          show({ f: by("optfail"), u: by("optunavail") }),
+        ));
+        out.push(assert(
+          `★②b ${ad}: 실패 뒤 같은 질문 재시도 성공 · 처음부터 성공 — 증명 유지(선택지 성공만으로 최종 글을 더 보내지 않는다)`,
+          o("optretry", 2, true) && o("optok", 1, true),
+          show({ r: by("optretry"), k: by("optok") }),
+        ));
+        out.push(assert(
+          `★②b ${ad}: 두 질문 중 하나만 성공 — 남은 질문 보호 유지 · 명시 표시 뒤 재시도 성공 — 표시가 지워지지 않는다(둘 다 증명 없음)`,
+          o("optpartial", 2, false) && o("optmark", 2, false),
+          show({ p: by("optpartial"), m: by("optmark") }),
+        ));
+        // 순서 전제(`optfail` 바로 뒤)도 여기서 본다 — 결과 배열 = 실행 순서. 장면이 끼면 집합 누수가 다시 안 보인다(§5c R2).
+        const nx = by("omitnext");
+        const nxRight = nx !== undefined && rs.indexOf(nx) === rs.findIndex((x) => x.scenario === "optfail") + 1;
+        out.push(assert(
+          `★②b ${ad}: 대체 질문이 남은 호출(optfail) 바로 다음, 같은 프로세스의 표시 없는 허용 턴 — 증명 있음(미해결 질문은 그 호출에만 산다)`,
+          o("optfail", 1, false) && nxRight && nx.err === undefined && nx.exposed && nx.omitted && String(nx.text).length > 0,
+          show({ f: by("optfail"), n: nx }),
+        ));
+      }
       const cx = by("ctx"), cp = by("ctxplain");
       out.push(assert(
         `★⑥ ${ad}: 허용 턴은 어댑터가 조립할 때 «직전 질문» 줄을 꺼내지 않는다(남아 있음) · 허용 없는 턴은 꺼낸다(양성 대조 — 실제로 조립에 넘긴다)`,
         cx !== undefined && cp !== undefined && cx.err === undefined && cp.err === undefined && cx.askedLeft === true && cp.askedLeft === false,
         show({ cx, cp }),
+      ));
+    }
+
+    // ── ②b 공통 팩토리 — 예외는 그대로 전파되고 보호 집합을 건드리지 않는다 · 성공 뒤 중복 호출은 렌더·집합 변화 없음 ──
+    {
+      const { createPromptOptionsMcpServer } = await import("../../core/llm-runtime/capabilities/prompt-options-mcp.js");
+      type H = { handler: (a: unknown, e: unknown) => Promise<{ content: Array<{ text?: string }> }> };
+      const handlerOf = (srv: unknown): H => (srv as { instance: { _registeredTools: Record<string, H> } }).instance._registeredTools.prompt_options!;
+      const args = { question: "Q", options: [{ label: "예" }, { label: "아니요" }] };
+      const cancel = new Error("회귀: 취소");
+      const fbThrow = new Set<string>();
+      let thrown: unknown;
+      try {
+        await handlerOf(createPromptOptionsMcpServer(async () => { throw cancel; }, new Set(), "regr:qfb-throw", fbThrow)).handler(args, {});
+      } catch (e) { thrown = e; }
+      let n = 0;
+      const fbOk = new Set<string>(["Q"]);
+      const h = handlerOf(createPromptOptionsMcpServer(async () => { n += 1; return { ok: true }; }, new Set(), "regr:qfb-dup", fbOk));
+      await h.handler(args, {});
+      const afterFirst = fbOk.size;
+      await h.handler(args, {});
+      const fbNone = new Set<string>();
+      await handlerOf(createPromptOptionsMcpServer(undefined, new Set(), "regr:qfb-none", fbNone)).handler(args, {});
+      out.push(assert(
+        "★②b 공통 팩토리: 렌더 콜백 예외(취소)는 같은 객체로 전파되고 보호 집합에 안 남는다 · 성공이 앞선 실패 표시를 지우고 중복 호출은 재렌더·재표시 없음 · 미지원 분기는 표시",
+        thrown === cancel && fbThrow.size === 0 && afterFirst === 0 && n === 1 && fbOk.size === 0 && fbNone.has("Q"),
+        show({ same: thrown === cancel, throwSet: fbThrow.size, afterFirst, n, dupSet: fbOk.size, none: [...fbNone] }),
       ));
     }
 

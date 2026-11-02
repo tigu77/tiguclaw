@@ -15,10 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - The `notify_owner` worker notices, paused since 0.79.0, can now be turned on under Worker notices in the dashboard settings. They are off by default. When on, a running manager or subagent can report that it is blocked, and the assistant handles it first. When off, workers are not given this tool, and you still get task completion reports.
-- With worker notices on, when the assistant resolves a notice internally, it no longer sends a separate reply about it. The dashboard records a one-line notice and shows any text written while handling it as internal activity, and these notices do not increase the conversation tab's unread count. It still tells you about important issues and asks when a new approval or decision is needed.
+- With worker notices on, when the assistant resolves a notice internally, it no longer sends a separate reply about it. The dashboard records a one-line notice and shows any text written while handling it as internal activity, and these notices do not increase the conversation tab's unread count. It still tells you about important issues and asks when a new approval or decision is needed. If it cannot show you choices and asks in text instead, that question is still delivered.
 - Messages sent while a worker notice is being handled are answered separately.
 - After writing a bug report, the `tiguclaw-bug-report` skill now asks once whether to file it as a GitHub issue. If you agree, it first checks whether the same problem has already been reported, shows you the repository, title, and body, and files it with a GitHub tool you already have connected once you approve. Without such a tool, it explains how to file it yourself. Security vulnerabilities are never filed as public issues.
 - When checking a change, the built-in `verify` skill now picks checks based on the requested behavior and what actually changed, and does not rerun checks that already passed for the same change. Checks a project requires are still run.
+- When updating its to-do list, the assistant is now guided to mark as in progress only the steps it has actually started or is waiting on.
 
 ### Fixed
 - A system notice that arrived while the assistant was replying could disappear when the conversation history was reloaded.

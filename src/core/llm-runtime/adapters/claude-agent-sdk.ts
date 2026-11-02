@@ -608,6 +608,8 @@ export const runClaude = async (
   const sentFiles = new Set<string>();
   // prompt-options(축1) — per-turn dedup Set(같은 질문 재호출 시 중복 렌더 차단). send-file 동형.
   const askedQuestions = new Set<string>();
+  // 선택지를 전달하지 못해 텍스트로 대신 물어야 하는 질문 — 비어 있지 않으면 보고 생략을 증명하지 않는다(판정은 prompt-options 팩토리).
+  const fallbackQuestions = new Set<string>();
   // 중첩 메시지 경고 1회용(배경 소음 방지).
   let warnedNested = false;
 
@@ -702,6 +704,7 @@ export const runClaude = async (
                 input.presentOptions,
                 askedQuestions,
                 input.threadKey,
+                fallbackQuestions,
               ),
             }
           : {}),
@@ -2686,7 +2689,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       // 생략 증명(notify-owner-report-contract §3-3) — 보고 기본 생략 턴 · 표시 없음 · **깨끗한 종료**(성공 결과를 받았고 흡수한 실패 없음).
       //  성공 없이 글만 있는 반환·흡수된 실패(`turnHadFailure`·`keepAnswerOnThrow`)·이어 받던 턴 실패·성공 result 가 덮지 않은 글 조각
       //  (`answerFromResult` — 빈 성공 result 뒤에 온 답)은 여기서 빠져 평소대로 전달된다. 글이 없는 깨끗한 종료는 증명된다.
-      ...(input.reportOmittable === true && !reportMarked && succeeded && (answerFromResult || chunkText === "") && !turnHadFailure && !steerTurnFailed
+      //  선택지를 못 전달해 텍스트로 대신 물은 질문이 남았어도 빠진다(`fallbackQuestions`).
+      ...(input.reportOmittable === true && !reportMarked && fallbackQuestions.size === 0 && succeeded && (answerFromResult || chunkText === "") && !turnHadFailure && !steerTurnFailed
         ? { reportOmitted: true as const }
         : {}),
       usage: requestUsage.withUsage(lastUsage),

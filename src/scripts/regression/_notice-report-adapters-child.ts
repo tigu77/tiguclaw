@@ -16,6 +16,10 @@
  *   emptyhead — (claude) 빈 성공 result(묶인 알림의 합성 턴 모양)가 먼저 오고 → 글 조각 → 최종 result 없이 끝남 — 증명 없음(앞 성공이 뒤 글을 증명하지 않는다)
  *   silent  — (claude) 글 없이 성공 result 로 깨끗하게 끝남 — 증명 있음(양성 대조: 위 판정이 «글 없는 턴» 까지 막지 않는다)
  *   ctx / ctxplain — 허용 턴은 «직전 질문» 한 번짜리 줄을 꺼내지 않는다 / 허용 없는 턴은 꺼낸다(양성 대조 — 어댑터가 실제로 조립에 넘기는지)
+ *   opt*  — 허용 턴에서 모델이 `prompt_options` 를 부르고 글로 끝남(2026-11-02, 선택지 실패 뒤 대체 질문 보호). 렌더 콜백은 가짜:
+ *           optfail(전달 실패) · optunavail(이 턴 불가) — 증명 없음 / optretry(실패 → 같은 질문 성공) · optok(처음부터 성공) — 증명 있음 /
+ *           optpartial(Q1 실패 · Q2 성공) — 증명 없음 / optmark(`report_to_user` + 실패 → 같은 질문 성공) — 증명 없음(명시 표시는 그대로)
+ *   omitnext — omit 과 같은 장면. `optfail` 바로 뒤(같은 프로세스)에 둬서 미해결 질문 집합이 호출마다 새로 생기는지 본다 — 증명 있음
  * 출력: 마지막 줄 JSON 배열 `[{ scenario, exposed, omitted, text, textAud, deltaAud, calls, err? }]`.
  */
 process.env.OPENAI_API_KEY = "sk-regression-not-a-key";
@@ -25,7 +29,8 @@ import { mkdtempSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated, fakeNetwork } from "./_framework.js";
 
-type Scenario = "plain" | "omit" | "mark" | "fail" | "swallow" | "flush" | "trunc" | "noresult" | "emptyhead" | "silent" | "ctx" | "ctxplain";
+type Scenario = "plain" | "omit" | "mark" | "fail" | "swallow" | "flush" | "trunc" | "noresult" | "emptyhead" | "silent" | "ctx" | "ctxplain"
+  | "optfail" | "optunavail" | "optretry" | "optok" | "optpartial" | "optmark" | "omitnext";
 const adapter = process.argv[2] as "claude" | "codex" | "openai";
 const scenarios = (process.argv[3] ?? "plain,omit,mark,fail").split(",") as Scenario[];
 assertIsolated();
@@ -52,6 +57,33 @@ const hasReportTool = (names: string[]): boolean => names.some((n) => n === "rep
 
 let run: (input: Record<string, unknown>) => Promise<{ text?: string; reportOmitted?: true }>;
 
+// ── 선택지 장면 — 모델이 낼 호출 순서와 가짜 렌더 콜백(채널 결과만 흉내 낸다, 송신 0) ──
+const OPT: Partial<Record<Scenario, { asks: string[]; mark?: true }>> = {
+  optfail: { asks: ["Q1"] }, optunavail: { asks: ["Q1"] }, optretry: { asks: ["Q1", "Q1"] }, optok: { asks: ["Q1"] },
+  optpartial: { asks: ["Q1", "Q2"] }, optmark: { asks: ["Q1", "Q1"], mark: true },
+};
+/** 이 장면에서 모델이 차례로 부를 도구 — 선택지 질문들, 그다음 (있으면) 보고 표시. */
+const toolSeq = (s: Scenario): Array<{ name: string; args: Record<string, unknown> }> => {
+  const o = OPT[s];
+  if (o === undefined) return [];
+  return [
+    ...(o.mark === true ? [{ name: "report_to_user", args: {} }] : []),
+    ...o.asks.map((q) => ({ name: "prompt_options", args: { question: q, options: [{ label: "예" }, { label: "아니요" }] } })),
+  ];
+};
+let renders = 0;
+const renderSeen = new Map<string, number>();
+const presentOptions = async (q: string): Promise<{ ok: boolean; error?: string; unavailable?: true }> => {
+  renders += 1;
+  const n = (renderSeen.get(q) ?? 0) + 1;
+  renderSeen.set(q, n);
+  if (scenario === "optunavail") return { ok: false, error: "회귀: 이 턴에선 불가", unavailable: true };
+  if (scenario === "optfail") return { ok: false, error: "회귀: 전송 실패" };
+  if ((scenario === "optretry" || scenario === "optmark") && n === 1) return { ok: false, error: "회귀: 일시 실패" };
+  if (scenario === "optpartial" && q === "Q1") return { ok: false, error: "회귀: 전송 실패" };
+  return { ok: true };
+};
+
 if (adapter === "claude") {
   const { runClaude, withFakeClaudeQuery } = await import("../../core/llm-runtime/adapters/claude-agent-sdk.js");
   type Srv = { instance: { _registeredTools: Record<string, { handler: (a: unknown, e: unknown) => Promise<unknown> }> } };
@@ -62,6 +94,10 @@ if (adapter === "claude") {
     return (async function* () {
       yield { type: "system", subtype: "init", session_id: "s", model: "claude-fake" };
       if (scenario === "mark") await ri!.instance._registeredTools.report_to_user!.handler({}, {}); // 모델이 표시했다
+      for (const c of toolSeq(scenario)) {
+        const srv = (c.name === "report_to_user" ? ri : args.options.mcpServers?.["prompt-options"]) as Srv;
+        await srv.instance._registeredTools[c.name]!.handler(c.args, {});
+      }
       if (scenario === "silent") {
         yield { type: "result", subtype: "success", is_error: false, result: "", num_turns: 1, session_id: "s", modelUsage: {}, usage: { input_tokens: 1, output_tokens: 1 } };
         return; // 글 없이 깨끗하게 끝난 턴
@@ -103,7 +139,9 @@ if (adapter === "claude") {
             send({ type: "response.output_text.delta", delta: t });
             send({ type: "response.output_item.done", item: { type: "message", id: `m${req}`, role: "assistant", content: [{ type: "output_text", text: t }] } });
           };
-          if (scenario === "mark" && req === 1) call("report_to_user", {});
+          const seq = toolSeq(scenario);
+          if (req <= seq.length) call(seq[req - 1]!.name, seq[req - 1]!.args);
+          else if (scenario === "mark" && req === 1) call("report_to_user", {});
           else if ((scenario === "fail" || scenario === "swallow") && req === 1) call("steer_worker", { job_id: "nope", message: "회귀" }); // 부작용 도구 → 뒤 글이 비면 호스트 대체 문구 · 뒤 요청이 실패하면 삼킴
           else if (scenario === "fail") { /* 글 없이 끝남 */ }
           else if (scenario === "flush" && req <= 3) { /* 빈 응답 — 재촉 2회 뒤 호스트가 마무리를 강제한다 */ }
@@ -133,6 +171,12 @@ if (adapter === "claude") {
       // 도구 미지원 모델 — 첫 요청(도구 있음)이 거부되면 어댑터가 도구 없이 다시 묻는다.
       if (scenario === "fail" && turnCalls === 1) throw new Error("400 This model does not support tools");
       yield { type: "response_started" };
+      const seq = toolSeq(scenario);
+      if (turnCalls <= seq.length) {
+        const c = seq[turnCalls - 1]!;
+        yield { type: "response_done", response: { id: `r${turnCalls}`, usage: { inputTokens: 200000, outputTokens: 1, totalTokens: 200001, requests: 1 }, output: [{ type: "function_call", id: `fc${turnCalls}`, callId: `c${turnCalls}`, name: c.name, arguments: JSON.stringify(c.args), status: "completed" }] } };
+        return;
+      }
       if (scenario === "mark" && turnCalls === 1) {
         yield { type: "response_done", response: { id: "r0", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, requests: 1 }, output: [{ type: "function_call", id: "fc1", callId: "c1", name: "report_to_user", arguments: "{}", status: "completed" }] } };
         return;
@@ -149,7 +193,7 @@ if (adapter === "claude") {
 }
 
 const { rememberPendingOptions, pendingOptionsLine } = await import("../../core/pending-options.js");
-type Out = { scenario: Scenario; exposed: boolean; omitted: boolean; text: string; textAud: string[]; deltaAud: string[]; calls: number; err?: string; askedLeft?: boolean };
+type Out = { scenario: Scenario; exposed: boolean; omitted: boolean; text: string; textAud: string[]; deltaAud: string[]; calls: number; err?: string; askedLeft?: boolean; renders?: number };
 const out: Out[] = [];
 for (const s of scenarios) {
   scenario = s;
@@ -160,6 +204,9 @@ for (const s of scenarios) {
   const input: Record<string, unknown> = { text: "[작업자 알림] 회귀", threadKey: TK, channel: "cli", cwd: process.env.TIGUCLAW_HOME };
   if (s !== "plain" && s !== "ctxplain") input.reportOmittable = true;
   if (s === "ctx" || s === "ctxplain") rememberPendingOptions(TK, "배포할까요?", ["예", "아니요"]);
+  renders = 0;
+  renderSeen.clear();
+  if (OPT[s] !== undefined) input.presentOptions = presentOptions;
   let r: { text?: string; reportOmitted?: true } = {};
   let err: string | undefined;
   try {
@@ -172,6 +219,7 @@ for (const s of scenarios) {
   const askedLeft = s === "ctx" || s === "ctxplain" ? pendingOptionsLine(TK).includes("배포할까요?") : undefined;
   out.push({
     ...(askedLeft !== undefined ? { askedLeft } : {}),
+    ...(OPT[s] !== undefined ? { renders } : {}),
     scenario: s, exposed, omitted: r.reportOmitted === true, text: String(r.text ?? "").slice(0, 120),
     textAud: [...textAud], deltaAud: [...new Set(deltaAud)], calls: calls - before, ...(err !== undefined ? { err } : {}),
   });

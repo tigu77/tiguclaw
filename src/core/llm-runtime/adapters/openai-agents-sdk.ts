@@ -600,6 +600,8 @@ export const runOpenAi = async (
   let reportMarked = false;
   /** 도구 미지원으로 도구 없이 다시 물었나 — 그 시도는 생략을 증명하지 못한다(§3-3). */
   let toolsDropped = false;
+  // 선택지를 전달하지 못해 텍스트로 대신 물어야 하는 질문 — 비어 있지 않으면 보고 생략을 증명하지 않는다(판정은 prompt-options 팩토리).
+  const fallbackQuestions = new Set<string>();
 
   const mcpServers: MCPServer[] = toolsNone
     ? []
@@ -692,7 +694,7 @@ export const runOpenAi = async (
     const askedQuestions = new Set<string>();
     mcpServers.push(
       await adaptClaudeMcpServer(
-        createPromptOptionsMcpServer(input.presentOptions, askedQuestions, input.threadKey),
+        createPromptOptionsMcpServer(input.presentOptions, askedQuestions, input.threadKey, fallbackQuestions),
         "prompt-options",
       ),
     );
@@ -1852,7 +1854,7 @@ export const runOpenAi = async (
     ...(reasoningEffort !== undefined ? { reasoning: reasoningEffort } : {}),
     replyToTrigger,
     // 생략 증명(notify-owner-report-contract §3-3) — 보고 기본 생략 턴 · 표시 없음 · 도구를 단 시도로 끝남 · 입력 잘림 없음.
-    ...(input.reportOmittable === true && !reportMarked && !toolsNone && !toolsDropped && truncated === null ? { reportOmitted: true as const } : {}),
+    ...(input.reportOmittable === true && !reportMarked && fallbackQuestions.size === 0 && !toolsNone && !toolsDropped && truncated === null ? { reportOmitted: true as const } : {}),
     usage,
     ...openAiTurnItemsField(turnToolItems, text),
     ...(lastTimeline !== undefined ? { timing: lastTimeline.summary() } : {}),

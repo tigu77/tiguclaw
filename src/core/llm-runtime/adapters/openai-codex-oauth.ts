@@ -887,10 +887,12 @@ export const runOpenAiCodex = async (
   // per-turn dedup Set(클로저 지역) → 같은 질문 재호출 시 중복 렌더 차단. 채널 렌더
   // 클로저가 있을 때만 bridge 생성 → undefined 면 미등록(도구 노출 0). send-file 1:1 동형.
   const askedQuestions = new Set<string>();
+  // 선택지를 전달하지 못해 텍스트로 대신 물어야 하는 질문 — 비어 있지 않으면 보고 생략을 증명하지 않는다(판정은 prompt-options 팩토리).
+  const fallbackQuestions = new Set<string>();
   const promptOptionsBridge =
     input.presentOptions !== undefined
       ? await adaptClaudeMcpServer(
-          createPromptOptionsMcpServer(input.presentOptions, askedQuestions, input.threadKey),
+          createPromptOptionsMcpServer(input.presentOptions, askedQuestions, input.threadKey, fallbackQuestions),
           "prompt-options",
         )
       : undefined;
@@ -3384,7 +3386,7 @@ export const runOpenAiCodex = async (
     replyToTrigger,
     // 생략 증명(notify-owner-report-contract §3-3) — 보고 기본 생략 턴 · 표시 없음 · **모델이 낸 최종 글로** 끝남
     //  (오류 삼킴 안내·빈 글 대체 문구·도구 한도 강제 마무리는 호스트가 끝낸 것이라 평소대로 전달).
-    ...(input.reportOmittable === true && !reportMarked && !hostComposedEnd && !finalFlushRequested ? { reportOmitted: true as const } : {}),
+    ...(input.reportOmittable === true && !reportMarked && fallbackQuestions.size === 0 && !hostComposedEnd && !finalFlushRequested ? { reportOmitted: true as const } : {}),
     usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
     timing: summarizeTurnTiming(turnSpans, turnBounds()),
     turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),

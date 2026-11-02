@@ -29,7 +29,7 @@ const toolOf = (srv: unknown, name: string): ToolReg => {
 const callSend = async (cb: IncomingMessage["sendAttachment"]) =>
   textOf(await toolOf(createSendFileMcpServer(cb, new Set()), "send_file").handler({ path: "/tmp/report.md" }, {}));
 const callOptions = async (cb: IncomingMessage["presentOptions"]) =>
-  textOf(await toolOf(createPromptOptionsMcpServer(cb, new Set(), "regr:reinjected-tools"), "prompt_options").handler(
+  textOf(await toolOf(createPromptOptionsMcpServer(cb, new Set(), "regr:reinjected-tools", new Set()), "prompt_options").handler(
     { question: "어느 쪽?", options: [{ label: "가" }, { label: "나" }] }, {}));
 
 export const check: RegressionCheck = {

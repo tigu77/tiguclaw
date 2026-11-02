@@ -59,6 +59,13 @@ export const createPromptOptionsMcpServer = (
    * (2026-09-03). 선택은 다음 턴에 «값만» 도착하고 질문은 이력에 안 남는다.
    */
   threadKey: string,
+  /**
+   * 텍스트로 대신 물어야 하는 질문 — 이 도구가 «텍스트로 제시하라» 고 안내한 미지원·전달 실패 결과에서 넣고,
+   * 같은 질문을 나중에 전달하면 뺀다(2026-11-02). 어댑터는 이 집합이 비어 있지 않으면 보고 생략을 증명하지 않는다 —
+   * 사용자 보고 기본 생략 턴(작업자 알림)에서 대체 질문이 내부 기록으로 묻히지 않게. 수명은 `askedQuestions` 와 같다(어댑터 호출 하나).
+   * 예외(throw·취소)는 여기서 다루지 않는다 — 그대로 전파된다.
+   */
+  fallbackQuestions: Set<string>,
 ): McpSdkServerConfigWithInstance =>
   coreMcpServer({
     name: "prompt-options",
@@ -97,6 +104,7 @@ export const createPromptOptionsMcpServer = (
         async (args) => {
           // 채널 미지원(cli·http-bridge 미구현 등) — 렌더 없이 graceful 안내.
           if (presentOptions === undefined) {
+            fallbackQuestions.add(args.question);
             return okText(
               "이 채널은 선택지 UI 를 지원하지 않습니다. 질문과 보기를 텍스트(번호 목록 등)로 사용자에게 직접 제시하세요.",
             );
@@ -121,6 +129,7 @@ export const createPromptOptionsMcpServer = (
           //  (실패=미기록→즉시 재시도 허용, 성공=기록→중복 렌더 차단). send_file 동형.
           if (r.ok) {
             askedQuestions.add(args.question);
+            fallbackQuestions.delete(args.question);
             // ★다음 턴이 «무엇에 대한 답인지» 알 수 있게 질문을 남긴다 (2026-09-03).
             //  렌더 **성공** 시에만 — 사용자가 못 본 질문을 답으로 취급하면 안 된다.
             rememberPendingOptions(
@@ -128,6 +137,9 @@ export const createPromptOptionsMcpServer = (
               args.question,
               normalized.map((o) => o.label ?? String(o.value ?? "")),
             );
+          } else {
+            // 아래 두 실패 안내는 모두 «텍스트로 제시하라» 로 끝난다 — 재시도로 전달되면 위에서 빠진다.
+            fallbackQuestions.add(args.question);
           }
           // ★이 턴에선 원래 불가(예: 매니저 완료 재주입) — 재시도를 권하면 같은 호출을 되풀이한다.
           if (!r.ok && r.unavailable === true) {

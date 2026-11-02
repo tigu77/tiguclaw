@@ -90,7 +90,7 @@ import {
 } from "./http-body.js";
 import {
   handleSetDefaultProfile, handleSetProfileColor, handleSetSuggestion, handleSetLocale,
-  handleSetMemoryCap, handleGetMemoryCap, handleSetLimitResume, handleGetLimitResume,
+  handleSetMemoryCap, handleGetMemoryCap, handleSetLimitResume, handleGetLimitResume, handleSetNotifyOwner, handleGetNotifyOwner,
   handleSetTheme, handleSetEgress, handleGetEgress, handleGetSuggestion,
   handleSetSessionProfile, handleSetModuleEnabled, handleGetModelProfiles,
   handleGetProviders,
@@ -474,6 +474,8 @@ class HttpBridge implements Channel, Observer {
                 ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
               : pathname === "/set-limit-resume" && method === "POST"
                 ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
+              : pathname === "/set-notify-owner" && method === "POST"
+                ? "write" // 설정 파일을 쓴다 — set-limit-resume 과 같은 등급(작업자 알림 on/off).
               : pathname === "/set-locale" && method === "POST"
                 ? "write" // 설정 파일을 쓴다 — set-suggestion 과 같은 등급.
               : pathname === "/set-theme" && method === "POST"
@@ -742,6 +744,16 @@ class HttpBridge implements Channel, Observer {
     }
     if (pathname === "/limit-resume" && method === "GET") {
       await handleGetLimitResume(this.routeCtx(req, res, url));
+      return;
+    }
+    // /set-notify-owner — 작업자 알림(notify_owner) on/off. write 게이트(위 role 표). body { enabled: boolean }.
+    // settings.json 의 jobs.notifyOwner.enabled 한 키만 쓰고, 다시 읽은 유효값을 돌려준다. /notify-owner — 현재 유효값(read). 기본 꺼짐.
+    if (pathname === "/set-notify-owner" && method === "POST") {
+      await handleSetNotifyOwner(this.routeCtx(req, res, url));
+      return;
+    }
+    if (pathname === "/notify-owner" && method === "GET") {
+      await handleGetNotifyOwner(this.routeCtx(req, res, url));
       return;
     }
 

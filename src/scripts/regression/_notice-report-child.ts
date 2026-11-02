@@ -16,6 +16,8 @@ import { assertIsolated, loadPluginModule } from "./_framework.js";
 
 assertIsolated();
 process.env.TIGUCLAW_HOME = mkdtempSync(path.join(process.env.TIGUCLAW_HOME!, "notice-report-core-"));
+// ★작업자 알림은 기본 꺼짐이다(2026-11-02 `jobs.notifyOwner.enabled`) — 이 자식은 «켜짐» 동작을 잰다: 임시 홈 설정 파일로 **명시해** 켠다(제품 기본을 덮지 않는다).
+(await import("../../core/settings.js")).setNotifyOwnerEnabled(true);
 const { initStore } = await import("../../store/sessions.js");
 initStore();
 const wj = await import("../../core/worker-jobs.js");

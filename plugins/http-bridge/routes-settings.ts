@@ -17,7 +17,7 @@ import { writeJson } from "../../src/core/net/write-json.js";
 import { readSuggestionSettings } from "../../src/core/next-message-suggestion.js";
 import { collectInventory, isCoreModule, isSelfReferentialModule } from "../../src/core/plugins/inventory.js";
 import { collectModules } from "../../src/core/plugins/providers.js";
-import { setDefaultProfile, readEgressChannels, setEgressChannels, setModuleDisabled, setSuggestionEnabled, setMemoryIndexCapBytes, isMemoryIndexCapValue, readMemoryIndexCapBytes, MEMORY_INDEX_CAP_MIN, MEMORY_INDEX_CAP_MAX, loadLimitResumeEnabled, setLimitResumeEnabled } from "../../src/core/settings.js";
+import { setDefaultProfile, readEgressChannels, setEgressChannels, setModuleDisabled, setSuggestionEnabled, setMemoryIndexCapBytes, isMemoryIndexCapValue, readMemoryIndexCapBytes, MEMORY_INDEX_CAP_MIN, MEMORY_INDEX_CAP_MAX, loadLimitResumeEnabled, setLimitResumeEnabled, loadNotifyOwnerEnabled, setNotifyOwnerEnabled } from "../../src/core/settings.js";
 import { MEMORY_INDEX_CAP_BYTES } from "../../src/core/prompt-assembly.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
 import { SESSION_STORAGE_CHANNEL, clearSessionModelProfile, setSessionModelProfile } from "../../src/store/sessions.js";
@@ -167,10 +167,11 @@ export const handleGetMemoryCap = async (ctx: RouteCtx): Promise<void> => {
 };
 
 /**
- * `/set-limit-resume` — 한도 자동 이어가기 on/off. `handleSetSuggestion` 과 동형이되 **쓴 뒤 다시 읽은 유효값**을 돌려준다 —
+ * 켜고 끄는 설정 한 줄의 쓰기 라우트 — `handleSetSuggestion` 과 동형이되 **쓴 뒤 다시 읽은 유효값**을 돌려준다 —
  *  쓰기는 홈 파일이고 읽기는 레이어 병합이라, 프로젝트 레이어가 덮고 있으면 요청값과 다르다(화면은 실제로 적용되는 값을 그린다).
+ *  한도 자동 이어가기·작업자 알림이 같은 모양이라 한 곳에 둔다(2026-11-02). 기본값·판정은 각 코어 읽기 함수 한 곳.
  */
-export const handleSetLimitResume = async (ctx: RouteCtx): Promise<void> => {
+const boolSettingSetter = (write: (enabled: boolean) => void, read: () => boolean) => async (ctx: RouteCtx): Promise<void> => {
   const { req, res } = ctx;
   let body: Record<string, unknown>;
   try {
@@ -185,8 +186,8 @@ export const handleSetLimitResume = async (ctx: RouteCtx): Promise<void> => {
     return;
   }
   try {
-    setLimitResumeEnabled(body.enabled);
-    writeJson(res, 200, { ok: true, enabled: loadLimitResumeEnabled() });
+    write(body.enabled);
+    writeJson(res, 200, { ok: true, enabled: read() });
   } catch (e) {
     const m = e instanceof Error ? e.message : String(e);
     writeJson(res, 500, { error: m });
@@ -194,12 +195,19 @@ export const handleSetLimitResume = async (ctx: RouteCtx): Promise<void> => {
   return;
 };
 
-/** `/limit-resume` — 현재 유효값(설정 화면 줄이 그린다). 기본값·판정은 코어 `loadLimitResumeEnabled` 한 곳. */
-export const handleGetLimitResume = async (ctx: RouteCtx): Promise<void> => {
-  const { res } = ctx;
-  writeJson(res, 200, { enabled: loadLimitResumeEnabled() });
+/** 같은 줄의 읽기 라우트 — 현재 유효값(설정 화면 줄이 그린다). */
+const boolSettingGetter = (read: () => boolean) => async (ctx: RouteCtx): Promise<void> => {
+  writeJson(ctx.res, 200, { enabled: read() });
   return;
 };
+
+/** `/set-limit-resume`·`/limit-resume` — 한도 자동 이어가기 on/off (`limitResume.enabled`). */
+export const handleSetLimitResume = boolSettingSetter(setLimitResumeEnabled, () => loadLimitResumeEnabled());
+export const handleGetLimitResume = boolSettingGetter(() => loadLimitResumeEnabled());
+
+/** `/set-notify-owner`·`/notify-owner` — 작업자 알림 `notify_owner` on/off (`jobs.notifyOwner.enabled`, 기본 꺼짐 — 2026-11-02). */
+export const handleSetNotifyOwner = boolSettingSetter(setNotifyOwnerEnabled, () => loadNotifyOwnerEnabled());
+export const handleGetNotifyOwner = boolSettingGetter(() => loadNotifyOwnerEnabled());
 
 export const handleSetLocale = async (ctx: RouteCtx): Promise<void> => {
   const { req, res, bus } = ctx;

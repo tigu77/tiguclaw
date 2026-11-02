@@ -2607,6 +2607,19 @@ const markNoticeTaken = (it: InboxItem, route: NoticeRoute): void => {
   logNotice(job, n, `taken route=${route}${it.redelivery === true ? " (재배달)" : ""}`);
 };
 
+/**
+ * 설정이 꺼져 **배달하지 않고 끝낸** 알림(2026-11-02 G3·G4) — 기록은 남기고(`recorded`) 한 번 발행한다. 지우지 않는다(카드 «막힘» 줄·이벤트 보존).
+ * 세션 알림 턴(`turn`)과 매니저 거두기 대기(`steer`)가 같이 쓴다.
+ */
+export const settleDisabledNotice = (jobId: string, noticeId: string, route: NoticeRoute, target: string): void => {
+  const job = jobs.get(jobId);
+  const n = job?.notices?.find((x) => x.id === noticeId);
+  if (job === undefined || n === undefined) return;
+  n.state = "recorded";
+  publishNotice(job, "skipped", n, { route, target, reason: "disabled" });
+  logNotice(job, n, `설정 꺼짐 — 배달하지 않고 기록만(route=${route})`);
+};
+
 const noticeItem = (job: WorkerJobRecord, n: JobNotice, threadKey: string, o: { note?: string; redelivery?: boolean }): InboxItem => ({
   jobId: job.jobId,
   noticeId: n.id,
@@ -2649,6 +2662,12 @@ const enqueueNoticeTurn = (sender: WorkerJobRecord, it: InboxItem): void => {
       const n = job?.notices?.find((x) => x.id === it.noticeId);
       if (job !== undefined && n !== undefined) publishNotice(job, "skipped", n, { route: "turn", target: it.threadKey });
       return "작업자 알림이 이미 다른 자리(합류)로 전달돼 건너뜀";
+    }
+    // ★설정이 꺼졌으면(2026-11-02 G3) 알림을 처리하려고 따로 여는 이 턴을 모델 없이 건너뛴다 — 꺼낸 **뒤**에 본다: 합류가 먼저 가져간 알림
+    //  (위 갈래)의 `taken/join`·`answeredAt` 은 건드리지 않는다. 꺼낸 알림은 수신함에 되돌리지 않는다(그 알림의 전용 배달이 여기서 끝났다).
+    if (!loadNotifyOwnerEnabled()) {
+      settleDisabledNotice(got.jobId, got.noticeId, "turn", got.threadKey);
+      return "작업자 알림이 설정에서 꺼져 있어 모델 없이 건너뜀";
     }
     markNoticeTaken(got, "turn");
     return null;
@@ -2740,6 +2759,13 @@ export const notifyOwner = (turnThreadKey: string, message: unknown): string => 
   if (job === undefined || job.status !== "running") {
     console.warn(`[job-notice] 작업자 턴이 아닌 호출 거절 (thread=${turnThreadKey})`);
     return "작업자 턴이 아닙니다 — 이 도구는 실행 중인 매니저·서브에이전트만 씁니다. 보내지 않았습니다.";
+  }
+  // ★설정이 꺼져 있으면(2026-11-02 G2, 기본 꺼짐) 기록·수신함·배달·합성 턴 0 — 켜진 채 시작한 턴이 도는 중에 끄면 이미 등록된 도구가 여기로 온다.
+  //  거절도 남긴다(남발·오용을 사후에 셀 수 있게 — 대시보드는 rejected 를 그리지 않는다).
+  if (!loadNotifyOwnerEnabled()) {
+    publishNotice(job, "rejected", undefined, { reason: "disabled" });
+    console.warn(`[job-notice] '${job.label}' (${job.kind}:${job.jobId}) 거절 — 설정 꺼짐(jobs.notifyOwner.enabled)`);
+    return "작업자 알림(notify_owner)이 설정에서 꺼져 있어 보내지 않았습니다. 답을 기다리지 말고 할 수 있는 일을 계속하고, 소환자만 풀 수 있는 막힘은 결과 보고 첫 줄에 적으세요.";
   }
   const prior = job.notices ?? [];
   const c = checkNotice(prior, message);
@@ -3170,7 +3196,7 @@ import {
   actionsSince, commitsMade, composeProgressNotice, isFileWriteTool, isProgressDue, pushRecentAction,
   type ProgressAction, type ProgressOutputs,
 } from "./job-progress.js";
-import { readProgressNoticeSettings } from "./settings.js";
+import { loadNotifyOwnerEnabled, readProgressNoticeSettings } from "./settings.js";
 import { readLocale } from "./i18n.js";
 // 통지 문구는 판정과 같은 자리(tool-watchdog)에서 만든다 — 두 곳에 두면 한쪽만 늙는다.
 import { formatToolSlowNotice } from "./llm-runtime/tool-watchdog.js";

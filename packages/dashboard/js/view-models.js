@@ -315,6 +315,7 @@
         page.appendChild(row);
         page.appendChild(buildHomeDirectoryRow());
         page.appendChild(buildLimitResumeRow());
+        page.appendChild(buildNotifyOwnerRow());
         page.appendChild(buildMemoryCapRow());
         page.appendChild(buildLocaleRow());
         page.appendChild(buildThemeRow());
@@ -419,9 +420,11 @@
       };
 
       /**
-       * 한도 자동 이어가기 — 켜짐/꺼짐 한 줄 (2026-10-23 사용자 요청, docs/decisions/2026-10-23-limit-resume-dashboard-toggle.md).
+       * 서버 값을 켜고 끄는 설정 한 줄 — 한도 자동 이어가기(2026-10-23, docs/decisions/2026-10-23-limit-resume-dashboard-toggle.md)와
+       *  작업자 알림(2026-11-02, docs/decisions/2026-11-02-notify-owner-setting.md)이 같이 쓴다. 토글마다 `make…` 를 한 번 불러 **자기 상태**
+       *  (지금 줄·저장 세대·저장 잠금)를 갖는다 — 두 줄의 잠금이 섞이지 않는다.
        * ★스스로 조회해 그린다(아래 메모리 캡 줄과 같은 모양). 조회 전·실패면 버튼을 잠근다 — «꺼짐» 으로 추정해 그리면 화면과 실제가
-       *  갈리고, 한 번 누르면 의도와 반대 값을 쓴다(제안 토글의 교훈). 기본값은 서버(코어 `loadLimitResumeEnabled`)가 정한다.
+       *  갈리고, 한 번 누르면 의도와 반대 값을 쓴다(제안 토글의 교훈). 기본값은 서버(코어 읽기 함수)가 정한다.
        * ★다시 그릴 땐 **서버가 돌려준 유효값**을 쓴다 — 프로젝트 설정이 덮고 있으면 누른 값과 다를 수 있다.
        * ★저장 결과는 **그때 화면에 붙어 있는 줄**에 그린다(GPT R1) — 저장을 기다리는 사이 설정 화면이 통째로 다시 그려지면(제안 토글·설정 재진입)
        *  누른 버튼은 이미 떨어져 있고, 새 줄의 조회는 저장 전 값을 받을 수 있다. 그래서 그리기 함수를 «지금 줄» 하나로 두고, 저장이 끝난 뒤
@@ -430,83 +433,92 @@
        *  응답이 뒤 저장의 결과를 덮는다(서버는 꺼짐인데 화면은 켜짐). 저장은 한 번에 하나 — 조회가 끝나도 이 잠금은 풀리지 않고, 저장이
        *  성공하든 실패하든 끝날 때 지금 줄에서 푼다.
        */
-      let limitResumePaintNow = null;
-      let limitResumeSaves = 0;
-      let limitResumeSaving = false;
-      const buildLimitResumeRow = () => {
-        const row = document.createElement("div");
-        row.className = "settings-row";
-        row.setAttribute("data-settings-row", "limit-resume");
-        const meta = document.createElement("div");
-        meta.className = "settings-meta";
-        const name = document.createElement("div");
-        name.className = "settings-name";
-        name.textContent = i18n("settings.limitResume.head");
-        const desc = document.createElement("div");
-        desc.className = "settings-desc";
-        desc.textContent = i18n("settings.limitResume.hint");
-        meta.appendChild(name);
-        meta.appendChild(desc);
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "settings-toggle";
-        btn.disabled = true;
-        btn.textContent = i18n("common.loading");
-        let enabled = null; // null = 아직 모름(조회 전·실패)
-        // v 가 불리언이면 그 값으로 그리고, 없으면(저장 실패) 값은 두고 잠금만 다시 맞춘다.
-        const apply = (v) => {
-          if (typeof v === "boolean") {
-            enabled = v;
-            btn.className = "settings-toggle" + (enabled ? " on" : "");
-            btn.textContent = enabled ? i18n("common.on") : i18n("common.off");
-            btn.removeAttribute("title");
-          }
-          btn.disabled = enabled === null || limitResumeSaving;
-        };
-        limitResumePaintNow = apply;
-        const savesAtLoad = limitResumeSaves;
-        const readEnabled = async (r) => {
-          const d = await r.json().catch(() => ({}));
-          if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
-          if (typeof d.enabled !== "boolean") throw new Error("enabled missing");
-          return d.enabled;
-        };
-        btn.addEventListener("click", async () => {
-          if (enabled === null || limitResumeSaving) return;
-          limitResumeSaving = true;
+      const makeServerToggleRow = ({ rowId, i18nKey, getUrl, setUrl }) => {
+        let paintNow = null;
+        let saves = 0;
+        let saving = false;
+        return () => {
+          const row = document.createElement("div");
+          row.className = "settings-row";
+          row.setAttribute("data-settings-row", rowId);
+          const meta = document.createElement("div");
+          meta.className = "settings-meta";
+          const name = document.createElement("div");
+          name.className = "settings-name";
+          name.textContent = i18n(i18nKey + ".head");
+          const desc = document.createElement("div");
+          desc.className = "settings-desc";
+          desc.textContent = i18n(i18nKey + ".hint");
+          meta.appendChild(name);
+          meta.appendChild(desc);
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "settings-toggle";
           btn.disabled = true;
-          let v; // undefined = 저장 실패
-          try {
-            const r = await fetch("/api/set-limit-resume", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ enabled: !enabled }),
-            });
-            v = await readEnabled(r);
-            limitResumeSaves += 1;
-            showToast(i18n("settings.limitResume.toggled", { state: v ? i18n("common.on") : i18n("common.off") }), "good");
-          } catch (e) {
-            showToast(i18n("models.settings.saveFailed", { err: e.message }), "bad");
-          }
-          limitResumeSaving = false;
-          apply(v);
-          if (limitResumePaintNow !== apply) limitResumePaintNow(v); // 그 사이 다시 그려졌으면 지금 줄에도(값·잠금 해제)
-        });
-        row.appendChild(meta);
-        row.appendChild(btn);
-        void (async () => {
-          try {
-            const v = await readEnabled(await fetch("/api/limit-resume"));
-            if (limitResumeSaves !== savesAtLoad) return; // 이 조회가 나간 뒤 저장이 끝났다 — 저장이 이미 그렸고, 이 값은 저장 전 것일 수 있다
+          btn.textContent = i18n("common.loading");
+          let enabled = null; // null = 아직 모름(조회 전·실패)
+          // v 가 불리언이면 그 값으로 그리고, 없으면(저장 실패) 값은 두고 잠금만 다시 맞춘다.
+          const apply = (v) => {
+            if (typeof v === "boolean") {
+              enabled = v;
+              btn.className = "settings-toggle" + (enabled ? " on" : "");
+              btn.textContent = enabled ? i18n("common.on") : i18n("common.off");
+              btn.removeAttribute("title");
+            }
+            btn.disabled = enabled === null || saving;
+          };
+          paintNow = apply;
+          const savesAtLoad = saves;
+          const readEnabled = async (r) => {
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+            if (typeof d.enabled !== "boolean") throw new Error("enabled missing");
+            return d.enabled;
+          };
+          btn.addEventListener("click", async () => {
+            if (enabled === null || saving) return;
+            saving = true;
+            btn.disabled = true;
+            let v; // undefined = 저장 실패
+            try {
+              const r = await fetch(setUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: !enabled }),
+              });
+              v = await readEnabled(r);
+              saves += 1;
+              showToast(i18n(i18nKey + ".toggled", { state: v ? i18n("common.on") : i18n("common.off") }), "good");
+            } catch (e) {
+              showToast(i18n("models.settings.saveFailed", { err: e.message }), "bad");
+            }
+            saving = false;
             apply(v);
-          } catch {
-            if (enabled !== null) return; // 그 사이 저장이 그렸다
-            btn.textContent = "—"; // 못 읽으면 조작 불가로 둔다(거짓 값을 보여주지 않는다).
-            btn.title = i18n("settings.limitResume.unknown");
-          }
-        })();
-        return row;
+            if (paintNow !== apply) paintNow(v); // 그 사이 다시 그려졌으면 지금 줄에도(값·잠금 해제)
+          });
+          row.appendChild(meta);
+          row.appendChild(btn);
+          void (async () => {
+            try {
+              const v = await readEnabled(await fetch(getUrl));
+              if (saves !== savesAtLoad) return; // 이 조회가 나간 뒤 저장이 끝났다 — 저장이 이미 그렸고, 이 값은 저장 전 것일 수 있다
+              apply(v);
+            } catch {
+              if (enabled !== null) return; // 그 사이 저장이 그렸다
+              btn.textContent = "—"; // 못 읽으면 조작 불가로 둔다(거짓 값을 보여주지 않는다).
+              btn.title = i18n(i18nKey + ".unknown");
+            }
+          })();
+          return row;
+        };
       };
+      const buildLimitResumeRow = makeServerToggleRow({
+        rowId: "limit-resume", i18nKey: "settings.limitResume", getUrl: "/api/limit-resume", setUrl: "/api/set-limit-resume",
+      });
+      // 작업자 알림 `notify_owner` — 기본 꺼짐(2026-11-02 정태님 «설정으로 컨트롤 · 기본은 일단 꺼놓고»). 한도 줄 바로 아래(둘 다 작업자 동작).
+      const buildNotifyOwnerRow = makeServerToggleRow({
+        rowId: "notify-owner", i18nKey: "settings.notifyOwner", getUrl: "/api/notify-owner", setUrl: "/api/set-notify-owner",
+      });
 
       /**
        * 메모리 인덱스 크기 — 슬라이더 한 줄 (2026-09-03 정태님 요청).

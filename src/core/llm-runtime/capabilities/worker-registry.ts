@@ -26,6 +26,7 @@ import { untrustedDelegationNote } from "../../project-trust.js";
 import { coreMcpServer } from "./_core-server.js";
 import { answerHead, NOTICE_ID_DESCRIBE } from "../../job-notice.js";
 import { tierDescription, unresolvableTierText } from "./tier-description.js";
+import { loadNotifyOwnerEnabled } from "../../settings.js";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -73,6 +74,7 @@ import {
   parentJobIdOf,
   failureOutcome,
   findJobNotice,
+  settleDisabledNotice,
   markNoticeAnswered,
   type WorkerOutcome,
 }
@@ -391,6 +393,21 @@ export const runWorkerJob = (
             //  반송만으로 «지시 도착 — 먼저 반영하세요 · 남은 자식을 cancel_worker 로 정리» 턴이 열렸다(독립 검토 10-25 B-3 — 합류로 결과를 받은
             //  자식의 반송이 다른 자식을 기다리는 대기를 깨운 재현).
             for (const m of fromSteer) (isJobSide(m) ? arrived : steers).push(m);
+            // ★작업자 알림이 설정에서 꺼졌으면(2026-11-02 G4) 알림만으로 거두기 턴을 열지 않는다 — 켜짐 때 지시 채널에 들어간 알림이 끈 뒤 여기서
+            //  깨운다. 그 알림은 기록만 남기고(`settleDisabledNotice`) 입력과 **실패 복원 목록 둘 다에서** 뺀다(GPT 설계 R2 — `arrived` 만 빼면 이 턴이
+            //  실패할 때 `fromSteer` 복원 → 잔여 회수 → 완료 배달 재배달로 되살아난다). 결과·사용자/소환자 지시는 그대로 지난다(`isNoticeDelivery` 한 판정).
+            if (arrived.some((m) => isNoticeDelivery(m)) && !loadNotifyOwnerEnabled()) {
+              for (const m of arrived) {
+                if (isNoticeDelivery(m) && m.noticeOf !== undefined) {
+                  settleDisabledNotice(m.noticeOf.jobId, m.noticeOf.noticeId, "steer", `worker:${job.jobId}`);
+                }
+              }
+              arrived = arrived.filter((m) => !isNoticeDelivery(m));
+              for (let i = fromSteer.length - 1; i >= 0; i -= 1) if (isNoticeDelivery(fromSteer[i]!)) fromSteer.splice(i, 1);
+              // 알림만 왔으면 끝내지 않고 다시 기다린다(`break` 는 채널 종료 뜻 — 살아 있는 자식의 결과를 안 거두고 끝나게 된다). 남은 자식이 없으면
+              //  `shouldKeepReaping` 이 그대로 루프를 닫는다.
+              if (arrived.length === 0 && steers.length === 0) continue;
+            }
           }
           if (arrived.length === 0 && steers.length === 0) break; // 채널 종료·취소 — 안전망(유령좌표 환원)이 받는다.
           rounds += 1;

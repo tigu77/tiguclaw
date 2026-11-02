@@ -1081,15 +1081,48 @@ export const loadSchedulerRetryEnabled = (
  */
 export const loadLimitResumeEnabled = (
   cwd: string = process.cwd(),
-): boolean => {
-  let enabled = false;
+): boolean => layeredBool(cwd, ["limitResume", "enabled"]) ?? false;
+
+/**
+ * 레이어(홈 → 프로젝트 → 레거시)를 돌며 `path` 의 **불리언만** 본다 — **뒤가 이긴다**, 불리언이 아니거나 없으면 그 레이어는 건너뛴다.
+ * 켜고 끄는 설정 줄(`limitResume.enabled`·`jobs.notifyOwner.enabled`)이 같은 규칙이라 한 곳에 둔다(2026-11-02 GPT 설계 검토 — 같은 정책의 두 번째 자리).
+ */
+const layeredBool = (cwd: string, path: readonly string[]): boolean | undefined => {
+  let out: boolean | undefined;
   for (const layer of loadSettingsLayers(cwd)) {
-    const sec = (layer as Record<string, unknown>).limitResume;
-    if (sec === null || typeof sec !== "object" || Array.isArray(sec)) continue;
-    const v = (sec as Record<string, unknown>).enabled;
-    if (typeof v === "boolean") enabled = v;
+    let cur: unknown = layer;
+    for (const k of path) cur = cur !== null && typeof cur === "object" && !Array.isArray(cur) ? (cur as Record<string, unknown>)[k] : undefined;
+    if (typeof cur === "boolean") out = cur;
   }
-  return enabled;
+  return out;
+};
+
+/**
+ * 작업자 알림 `notify_owner` 켜기 — `settings.json` `jobs.notifyOwner.enabled` (2026-11-02 정태님 «설정으로 컨트롤 · 기본은 일단 꺼놓고»,
+ * 설계 docs/decisions/2026-11-02-notify-owner-setting.md). ★기본 **꺼짐** — 키가 없는 기존 설치도 꺼짐이고, 명시한 `true` 만 켠다.
+ * 꺼짐 = 작업자에게 도구를 안 주고(`notify-owner-mcp.ts`), 이미 등록된 도구의 호출도 거절하고(`notifyOwner`), 알림 때문에 따로 여는 모델
+ * 호출(세션 알림 턴·매니저 거두기 깨움)을 하지 않는다. 그 자리들이 **매번 새로 읽는다** — 재시작 없이 반영된다.
+ * ★`jobs.progressNotice`(하네스의 주기 진행 알림)와 다른 기능이다 — 서로 읽지도 쓰지도 않는다.
+ */
+export const loadNotifyOwnerEnabled = (
+  cwd: string = process.cwd(),
+): boolean => layeredBool(cwd, ["jobs", "notifyOwner", "enabled"]) ?? false;
+
+/**
+ * 작업자 알림 켜기 쓰기 — 대시보드 설정 줄이 부른다. 홈 `settings.json` 의 `jobs.notifyOwner.enabled` **한 키만** 바꾼다
+ * (`jobs.progressNotice`·같은 블록의 다른 키·다른 설정 보존 · 깨진 파일 위엔 쓰지 않는다 — 형제 `setLimitResumeEnabled` 와 같은 모양).
+ */
+export const setNotifyOwnerEnabled = (enabled: boolean): void => {
+  const file = getPaths().settings;
+  const root = readSettingsRootForWrite(file);
+  const obj = (v: unknown): Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  const jobs = obj(root.jobs);
+  const notifyOwner = obj(jobs.notifyOwner);
+  notifyOwner.enabled = enabled;
+  jobs.notifyOwner = notifyOwner;
+  root.jobs = jobs;
+  writeSettingsRootAtomic(file, root);
 };
 
 /**

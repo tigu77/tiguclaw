@@ -2,7 +2,7 @@
  * `notify_owner` 도구 — 작업자(매니저·서브에이전트)가 **소환자만 풀어 줄 수 있는 것**을 한 줄 알리고 계속 일한다 (2026-10-25).
  *
  * 설계: `docs/decisions/2026-10-23-notify-owner-design.md` §6. 판단은 코어(`job-notice.ts` 판정 · `worker-jobs.ts` 배달) 한 곳이고,
- * 여기는 도구 껍데기다. ★팩토리가 **자기 잡이 없으면 `undefined`** 를 돌려준다(메인 턴·엔드포인트 턴) — «이 턴에 자기 잡이 있나» 는
+ * 여기는 도구 껍데기다. ★팩토리가 **자기 잡이 없거나 설정이 꺼져 있으면(기본 — 2026-11-02 `jobs.notifyOwner.enabled`) `undefined`** 를 돌려준다(메인 턴·엔드포인트 턴) — «이 턴에 자기 잡이 있나» 는
  * 사다리(`REACH`)로 못 적는 정체 판정이라 여기 한 곳에 둔다. 어댑터는 `send-file` 과 같은 모양으로 붙인다(있으면 등록).
  * ★접지 않는다(`onDemand` 미적용) — «막혔을 때» 떠올려야 하는 도구라 이름만 두면 안 쓰인다. 대신 설명을 짧게(설계 Q8).
  */
@@ -12,6 +12,7 @@ import { tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-
 import { getJob, notifyOwner, parentJobIdOf } from "../../worker-jobs.js";
 import { NOTICE_CAP_PER_JOB, NOTICE_MAX_CHARS } from "../../job-notice.js";
 import type { RegionASdkInput } from "../types.js";
+import { loadNotifyOwnerEnabled } from "../../settings.js";
 
 /** 도구 이름 — 회귀가 노출을 대조하는 정본. */
 export const NOTIFY_OWNER_TOOL = "notify_owner";
@@ -32,6 +33,9 @@ export const createNotifyOwnerMcpServer = (
   const threadKey = typeof input.threadKey === "string" ? input.threadKey : "";
   const own = parentJobIdOf(threadKey);
   if (own === undefined || getJob(own)?.status !== "running") return undefined;
+  // ★설정으로 켠 때만(2026-11-02, 기본 꺼짐 — `jobs.notifyOwner.enabled`). 시도마다 새로 읽는다 → 재시작 없이 다음 작업자 시도부터 반영.
+  //  신원 판정 **뒤**에 두어 메인 턴은 파일을 읽지 않는다. 켜진 채 시작한 턴이 도는 중에 끄면 이미 등록된 도구는 코어 `notifyOwner` 가 거절한다.
+  if (!loadNotifyOwnerEnabled()) return undefined;
   return coreMcpServer({
     name: "notify-owner",
     version: "1.0.0",

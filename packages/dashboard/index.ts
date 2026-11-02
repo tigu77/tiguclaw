@@ -953,6 +953,20 @@ const server = http.createServer((req, res) => {
       await proxyJson(res, "/limit-resume");
       return;
     }
+    // 작업자 알림(notify_owner) on/off — 설정 화면 한 줄이 읽고 쓴다. /set-limit-resume 과 동형(write 토큰 server-side 주입).
+    if (pathname === "/api/set-notify-owner" && method === "POST") {
+      const body = await readBody(req);
+      await proxyJson(res, "/set-notify-owner", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return;
+    }
+    if (pathname === "/api/notify-owner" && method === "GET") {
+      await proxyJson(res, "/notify-owner");
+      return;
+    }
     if (pathname === "/api/set-suggestion" && method === "POST") {
       const body = await readBody(req);
       await proxyJson(res, "/set-suggestion", {

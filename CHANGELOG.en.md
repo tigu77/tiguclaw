@@ -8,14 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.81.0] - 2026-11-01
+## [0.81.0] - 2026-11-02
 
 ### Added
 - On wide screens, the dashboard main menu can be collapsed into a narrow icon-only bar. Collapsed items show their names on hover or keyboard focus, and each browser remembers whether the menu is collapsed. The mobile layout is unchanged.
 
 ### Changed
-- The `notify_owner` worker-notice tool, disabled since 0.79.0, is available again. When a running manager or subagent reports that it is blocked, the assistant handles it first.
-- When the assistant resolves a worker notice internally, it no longer sends a separate reply about it. The dashboard records a one-line notice and shows any text written while handling it as internal activity, and these notices do not increase the conversation tab's unread count. It still tells you about important issues and asks when a new approval or decision is needed.
+- The `notify_owner` worker notices, paused since 0.79.0, can now be turned on under Worker notices in the dashboard settings. They are off by default. When on, a running manager or subagent can report that it is blocked, and the assistant handles it first. When off, workers are not given this tool, and you still get task completion reports.
+- With worker notices on, when the assistant resolves a notice internally, it no longer sends a separate reply about it. The dashboard records a one-line notice and shows any text written while handling it as internal activity, and these notices do not increase the conversation tab's unread count. It still tells you about important issues and asks when a new approval or decision is needed.
 - Messages sent while a worker notice is being handled are answered separately.
 
 ### Fixed

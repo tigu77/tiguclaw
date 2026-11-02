@@ -10,7 +10,9 @@
  *  (보류 때 카탈로그 항목을 뺐다 — 서버 도구 설명에서 요약을 다시 만드는 경로가 실제로 도는지).
  * ★**한 프로세스에서 순서대로** 돈다(데몬과 같은 모양) — 종전엔 턴마다 별도 프로세스였다: OpenAI Agents SDK 가 MCP 도구 목록을 서버 이름으로
  *  전역 캐시해 매니저 턴 뒤 메인 턴이 `steer_worker` 중복으로 죽던 결함(2026-10-26 고침 — `openai-mcp-tools-per-turn`)을 피하려던 우회였다.
- * 출력: 마지막 줄 JSON 배열 `[{ which, has, role, calls, … }]`(턴 순서대로). 인자: 어댑터 이름 · 쉼표로 이은 턴 순서(`worker`|`main`).
+ * ★설정(2026-11-02 `jobs.notifyOwner.enabled`, 기본 꺼짐) — 순서에 `on`·`off` 를 끼우면 그 자리에서 임시 홈 설정 파일을 바꾼다(**재시작 없이** 다음 턴부터
+ *  반영되는가). 처음엔 키가 없다(= 제품 기본). 서브 턴(`sub` — 실제 서브 입력 모양 `agent:`·`turnOrigin:"subagent"`·`subagentDepth:1`)도 같이 잰다(GPT 설계 R1 #3).
+ * 출력: 마지막 줄 JSON 배열 `[{ which, on, has, role, calls, … }]`(턴 순서대로 — `on`/`off` 는 기록 안 함). 인자: 어댑터 이름 · 쉼표로 이은 순서(`worker`|`main`|`sub`|`on`|`off`).
  */
 process.env.OPENAI_API_KEY = "sk-regression-not-a-key";
 process.env.ANTHROPIC_API_KEY = "sk-ant-regression-not-a-key"; // 인증 판정 통과용(가짜 SDK 라 쓰이지 않는다)
@@ -20,17 +22,20 @@ import path from "node:path";
 import { assertIsolated, fakeNetwork } from "./_framework.js";
 
 const adapter = process.argv[2] as "claude" | "codex" | "openai";
-const seq = (process.argv[3] ?? "").split(",") as Array<"worker" | "main">;
+const seq = (process.argv[3] ?? "").split(",") as Array<"worker" | "main" | "sub" | "on" | "off">;
 assertIsolated();
 process.env.TIGUCLAW_HOME = mkdtempSync(path.join(process.env.TIGUCLAW_HOME!, `job-notice-${adapter}-`));
 const { initStore } = await import("../../store/sessions.js");
 initStore();
 const wj = await import("../../core/worker-jobs.js");
 const W = wj.registerJob({ label: "작업자", task: "t", threadKey: "dashboard:regr-notice-ad", channel: "cli", channelUserId: "u", kind: "worker" } as never);
+const A = wj.registerJob({ label: "서브", task: "t", threadKey: `worker:${W}`, channel: "cli", channelUserId: "u", kind: "agent" } as never);
 const inputs = {
   worker: { text: "해줘", threadKey: `worker:${W}`, channel: "cli", cwd: process.env.TIGUCLAW_HOME, workerDepth: 1, turnOrigin: "worker" },
   main: { text: "해줘", threadKey: "dashboard:regr-notice-ad", channel: "cli", cwd: process.env.TIGUCLAW_HOME },
+  sub: { text: "[Subagent Task]: 해줘", threadKey: `agent:${A}`, channel: "cli", cwd: process.env.TIGUCLAW_HOME, subagentDepth: 1, turnOrigin: "subagent" },
 };
+const { setNotifyOwnerEnabled, loadNotifyOwnerEnabled } = await import("../../core/settings.js");
 
 /** 그 턴의 모델 요청에 실린 도구 이름(또는 서버 키)을 한 줄로 모은다 — 접힌 묶음(`namespace`) 안의 도구도 편다. */
 let seen = "";
@@ -119,11 +124,13 @@ const roleOf = (s: string): string => {
   const [mgrKey, mainKey] = adapter === "claude" ? ["agents", "workers"] : ["spawn_agent", "run_in_background"];
   const mgr = ns.some((n) => n === mgrKey || n.endsWith(`__${mgrKey}`));
   const main = ns.some((n) => n === mainKey || n.endsWith(`__${mainKey}`));
-  return mgr && !main ? "manager" : main ? "main" : "unknown";
+  // 서브 = 매니저 도구도 메인 도구도 없는데 도구는 실렸다(서브는 자식을 못 띄운다 — depth 게이트).
+  return mgr && !main ? "manager" : main ? "main" : ns.some((n) => n !== "") ? "sub" : "unknown";
 };
-type Out = { which: string; has: boolean; role: string; calls: number; err?: string; seen: string; ms: number; fc?: typeof fcOut };
+type Out = { which: string; on: boolean; has: boolean; role: string; calls: number; err?: string; seen: string; ms: number; fc?: typeof fcOut };
 const out: Out[] = [];
 for (const which of seq) {
+  if (which === "on" || which === "off") { setNotifyOwnerEnabled(which === "on"); continue; }
   seen = "";
   fcOut = undefined;
   const before = calls;
@@ -135,7 +142,7 @@ for (const which of seq) {
     err = (e instanceof Error ? e.message : String(e)).slice(0, 300);
   }
   const ms = Date.now() - t0;
-  const rec: Out = { which, has: has(seen), role: roleOf(seen), calls: calls - before, ...(err !== undefined ? { err } : {}), seen: seen.slice(0, 1200), ms };
+  const rec: Out = { which, on: loadNotifyOwnerEnabled(), has: has(seen), role: roleOf(seen), calls: calls - before, ...(err !== undefined ? { err } : {}), seen: seen.slice(0, 1200), ms };
   if (fcOut !== undefined) rec.fc = fcOut;
   out.push(rec);
 }

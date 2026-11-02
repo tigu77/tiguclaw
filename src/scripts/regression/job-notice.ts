@@ -38,10 +38,11 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     assertIsolated();
     const [a, b] = await Promise.all([runChild("_job-notice-child.ts", "job-notice"), runChild("_job-notice-timeout-child.ts", "job-notice-timeout")]);
-    // 어댑터가 **실제 모델 요청**에 싣는가 — 세 어댑터 × (작업자 → 메인 → 작업자), 어댑터마다 **한 프로세스**에서 순서대로(자식 주석).
+    // 어댑터가 **실제 모델 요청**에 싣는가 — 세 어댑터 × (키 없음: 매니저·서브 → 켬: 매니저·메인·매니저·서브 → 끔: 매니저·서브), 어댑터마다 **한 프로세스**에서
+    //  순서대로·재시작 없이(자식 주석). 처음엔 설정 키가 없다 = 제품 기본(꺼짐 — 2026-11-02).
     const adapterRuns: Record<string, unknown> = {};
     for (const ad of ["claude", "codex", "openai"]) {
-      const r = await spawnWithin(90_000, `job-notice-${ad}`, ["--import", "tsx", path.join(HERE, "_job-notice-adapters-child.ts"), ad, "worker,main,worker"], {
+      const r = await spawnWithin(90_000, `job-notice-${ad}`, ["--import", "tsx", path.join(HERE, "_job-notice-adapters-child.ts"), ad, "worker,sub,on,worker,main,worker,sub,off,worker,sub"], {
         stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TIGUCLAW_REGRESSION_NO_LIVE_MODEL: "1" },
       });
       const line = r.out.trim().split("\n").filter((l) => l.startsWith("[")).pop();
@@ -151,24 +152,34 @@ export const check: RegressionCheck = {
     //  양성 대조(그 턴이 실제로 매니저/메인으로 조립됐나 — 메인 턴의 «없음» 이 관측 실패로 공허하게 통과하지 않게).
     const runsOf = (n: string): R[] => (Array.isArray(adapterRuns[n]) ? adapterRuns[n] : []) as R[];
     const adapters = ["claude", "codex", "openai"].map((n) => {
-      const [w, m, w2] = runsOf(n);
-      const ok = (t: R | undefined, role: string, has: boolean): boolean => t?.has === has && t?.role === role && t?.calls >= 1 && t?.err === undefined;
-      return [n, ok(w, "manager", true) && ok(m, "main", false) && ok(w2, "manager", true)] as const;
+      const [w0, s0, w, m, w2, s1, w3, s2] = runsOf(n);
+      const ok = (t: R | undefined, role: string, on: boolean, has: boolean): boolean =>
+        t?.on === on && t?.has === has && t?.role === role && t?.calls >= 1 && t?.err === undefined;
+      return [n,
+        ok(w0, "manager", false, false) && ok(s0, "sub", false, false) &&
+        ok(w, "manager", true, true) && ok(m, "main", true, false) && ok(w2, "manager", true, true) && ok(s1, "sub", true, true) &&
+        ok(w3, "manager", false, false) && ok(s2, "sub", false, false)] as const;
     });
     out.push(assert(
-      "⑥ 노출 — 메인·엔드포인트 턴엔 없다 · 실행 중인 매니저·서브 턴엔 있다(도구 하나, 설명 = 내보낸 정본) · 끝난 잡엔 없다 · 설명 600자 이내 · ★세 어댑터가 작업자 턴의 실제 모델 요청에 싣고 메인 턴엔 안 싣는다(한 프로세스에서 작업자→메인→작업자 — 모두 모델까지 간다 · 양성 대조: 매니저 턴=agents/spawn_agent · 메인 턴=workers) · steer_worker(메인·매니저 둘 다) 에 notice_id",
+      "⑥ 노출 — 메인·엔드포인트 턴엔 없다 · 실행 중인 매니저·서브 턴엔 있다(도구 하나, 설명 = 내보낸 정본) · 끝난 잡엔 없다 · 설명 600자 이내 · ★세 어댑터의 실제 모델 요청: ★★설정 키 없음(기본 꺼짐)이면 매니저·서브 턴에 없다 → 켜면 재시작 없이 매니저·서브에 싣고 메인엔 안 싣는다 → 다시 끄면 없다(한 프로세스 · 모두 모델까지 간다 · 양성 대조: 매니저=agents/spawn_agent · 메인=workers · 서브=둘 다 없음) · steer_worker(메인·매니저 둘 다) 에 notice_id",
       e.main && e.endpoint && e.manager && e.sub && e.ended && e.descIsExport && e.descLen > 0 && e.descLen <= 600 && e.mainSteerHasNoticeId && e.mgrSteerHasNoticeId && adapters.every(([, ok]) => ok),
       show({ e, adapters, adapterRuns: Object.fromEntries(["claude", "codex", "openai"].map((n) => [n, runsOf(n).map((t) => ({ which: t.which, has: t.has, role: t.role, calls: t.calls, err: t.err }))])) }),
     ));
     // find_capabilities — 그 매니저 턴에 claude 어댑터가 **실제로 만든** 인스턴스(활성 이름 그대로)를 질의 없음·질의 두 번 부른다.
     //  보류 때 카탈로그 항목을 뺐다 — 서버 도구 설명에서 요약을 다시 만드는 경로(`coreOnlyHits`)가 실제로 이 도구를 활성으로 내는지.
-    const fc = runsOf("claude").find((t) => t.which === "worker")?.fc as R | undefined;
+    const fc = runsOf("claude").find((t) => t.which === "worker" && t.on === true)?.fc as R | undefined;
+    const fcOff = runsOf("claude").find((t) => t.which === "worker" && t.on === false)?.fc as R | undefined;
     const activeLine = (x: unknown): string | undefined => String(x ?? "").split("\n").find((l) => l.startsWith("- **notify-owner**"));
     out.push(assert(
       "⑥ find_capabilities — 매니저 턴의 실제 인스턴스 · 질의 없음/«notify 소환자 알림 owner» 모두 «- **notify-owner**» 항목이 나오고 «이번 턴 비활성» 표시가 없다 · 오류 아님",
       fc !== undefined && fc.noneErr === false && fc.queryErr === false &&
         activeLine(fc.none) !== undefined && !activeLine(fc.none)!.includes("비활성") && activeLine(fc.query) !== undefined && !activeLine(fc.query)!.includes("비활성"),
       show(fc === undefined ? null : { noneErr: fc.noneErr, queryErr: fc.queryErr, noneLine: activeLine(fc.none), queryLine: activeLine(fc.query), queryHead: String(fc.query).slice(0, 300) }),
+    ));
+    out.push(assert(
+      "⑥ find_capabilities — ★설정 꺼짐(키 없음)의 매니저 턴 실제 인스턴스엔 «- **notify-owner**» 항목 자체가 없다(꺼진 기능을 광고하지 않는다) · 오류 아님",
+      fcOff !== undefined && fcOff.noneErr === false && fcOff.queryErr === false && activeLine(fcOff.none) === undefined && activeLine(fcOff.query) === undefined,
+      show(fcOff === undefined ? null : { noneLine: activeLine(fcOff.none), queryLine: activeLine(fcOff.query), queryHead: String(fcOff.query).slice(0, 300) }),
     ));
 
     // ⑧ 답
@@ -362,6 +373,55 @@ export const check: RegressionCheck = {
       /\[job-notice\] '잠금대기' \(worker:[^)]+\) n1 1\/3 · target=dashboard:regr-notice-s · /.test(a.out),
       (a.out.match(/\[job-notice\][^\n]*/) ?? [""])[0].slice(0, 160),
     ));
+
+    // ⑮ 설정으로 끄기(2026-11-02 — 기본 꺼짐 · 설계 docs/decisions/2026-11-02-notify-owner-setting.md)
+    const xoc = d.offCall as R, xom = d.offMidTurn as R, xoq = d.offQueued as R, xoj = d.offAfterJoin as R, xocp = d.offComplete as R;
+    const xoh = d.offHarvest as R, xohf = d.offHarvestFail as R;
+    out.push(
+      assert(
+        "⑮ⓐ ★꺼짐 — 매니저·서브 팩토리 없음 · 코어 호출은 «설정에서 꺼져 보내지 않았습니다» 만 즉시 돌려준다 · 기록·수신함·지시 채널·합성 턴 0 · 거절(disabled) 발행",
+        xoc?.loaded === false && xoc.factoryMgr === true && xoc.factorySub === true && String(xoc.r1).includes("설정에서 꺼져 있어 보내지 않았습니다") &&
+          String(xoc.r2).includes("설정에서 꺼져") && xoc.ms < 1_000 && xoc.recorded === 0 && xoc.inbox === 0 && xoc.steer === 0 && xoc.turns === 0 &&
+          show(xoc.events) === show(["rejected:disabled", "rejected:disabled"]),
+        show(xoc),
+      ),
+      assert(
+        "⑮ⓒ ★켜진 채 만든 도구를 끈 뒤 부르면 코어가 거절한다(재시작 없이) — 기록·수신함·턴 0",
+        xom?.built === true && String(xom.ret).includes("설정에서 꺼져") && xom.recorded === 0 && xom.inbox === 0 && xom.turns === 0 && show(xom.events) === show(["rejected:disabled"]),
+        show(xom),
+      ),
+      assert(
+        "⑮ⓓ ★켜짐 때 줄 선 세션 알림 턴은 끈 뒤 차례가 오면 **모델 없이 건너뛴다** · 수신함 비움 · 기록은 남는다(recorded · skipped/turn:disabled)",
+        xoq?.queued?.turns === 1 && xoq.queued.inbox === 1 && String(xoq.skip).includes("설정에서 꺼져") && xoq.inboxAfter === 0 && xoq.kept === 1 && xoq.state === "recorded" &&
+          show(xoq.events) === show(["sent", "skipped/turn:disabled"]),
+        show(xoq),
+      ),
+      assert(
+        "⑮ⓓ' 합류가 먼저 받은 알림은 끈 뒤 그 턴 차례에 기존 «이미 전달» 갈래로 건너뛰고 **taken/join·답 확정을 덮지 않는다** · 수신함 0",
+        d.joinRegistered?.offJoinFirst === true && xoj?.joined === true && String(xoj.skip).includes("이미 다른 자리") && xoj.inbox === 0 &&
+          xoj.before?.state === "taken" && xoj.before.route === "join" && xoj.before.answered === "number" &&
+          xoj.after?.state === "taken" && xoj.after.route === "join" && xoj.after.same === true && !show(xoj.events).includes("disabled"),
+        show(xoj),
+      ),
+      assert(
+        "⑮ⓔ 꺼짐에서도 작업 완료 보고(완료 재주입 턴)는 그대로 간다",
+        xocp?.got === true && xocp.status === "done",
+        show(xocp),
+      ),
+      assert(
+        "⑮ⓖ ★거두기 대기 — 켜짐 때 지시 채널에 들어간 알림이 끈 뒤 **거두기 턴을 열지 않는다**(결과 전 0회) · 자식 결과로 한 번 돌고 그 입력엔 알림 없음 · 매니저 정상 완료 · 재배달 0 · 기록(recorded) · 대조: 켜짐이면 알림으로 한 바퀴 더",
+        xoh?.off?.beforeResult === 0 && xoh.off.rounds === 1 && xoh.off.resultInLast === true && xoh.off.noticeInInput === false && xoh.off.status === "done" &&
+          xoh.off.noticeTurns === 0 && xoh.off.inbox === 0 && xoh.off.state === "recorded" && show(xoh.off.events).includes("skipped/steer:disabled") &&
+          xoh.on?.beforeResult === 1 && xoh.on.rounds === 2 && xoh.on.noticeInInput === true && xoh.on.resultInLast === true && xoh.on.status === "done" && !show(xoh.on.events).includes("disabled"),
+        show(xoh),
+      ),
+      assert(
+        "⑮ⓖ' 알림 + 사용자 지시 → 끔 → 지시만으로 거두기 턴(알림 없음) → 그 턴 실패 → 지시는 기존대로 «반영 못 한 지시» 로 소유 세션에 · ★정리한 알림은 복원·재배달 0",
+        xohf?.rounds === 1 && xohf.instrInInput === true && xohf.noticeInInput === false && xohf.lateUserCarried === true &&
+          xohf.noticeTurns === 0 && xohf.inbox === 0 && xohf.noticeAnywhere === false && xohf.state === "recorded",
+        show(xohf),
+      ),
+    );
     return out;
   },
 };

@@ -13,6 +13,8 @@ import { assertIsolated, loadPluginModule } from "./_framework.js";
 
 assertIsolated();
 process.env.TIGUCLAW_HOME = mkdtempSync(path.join(process.env.TIGUCLAW_HOME!, "job-notice-"));
+// ★작업자 알림은 기본 꺼짐이다(2026-11-02 `jobs.notifyOwner.enabled`) — 이 자식은 «켜짐» 동작을 잰다: 임시 홈 설정 파일로 **명시해** 켠다(제품 기본을 덮지 않는다).
+(await import("../../core/settings.js")).setNotifyOwnerEnabled(true);
 
 const { initStore } = await import("../../store/sessions.js");
 initStore();
@@ -521,6 +523,149 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
     }
   }
   out.progressDetail = fallback;
+}
+
+// ── ⑮ 설정으로 끄기(2026-11-02 — 설계 docs/decisions/2026-11-02-notify-owner-setting.md, 기본 꺼짐) ─────────────────────────────
+//  수명 규칙: 끄면 ①새 알림 0(G1 팩토리 · G2 코어 호출) ②알림 처리를 위해 따로 여는 모델 호출 0(G3 세션 알림 턴 · G4 거두기 대기 깨움) ③이미 도는 호출에
+//  얹히는 것은 막지 않음 ④기록 보존. 이 자식은 위에서 «켜짐» 으로 시작했다 — 여기서 설정 파일을 직접 바꾼다(재시작 없이 반영되는가).
+{
+  const { setNotifyOwnerEnabled, loadNotifyOwnerEnabled } = await import("../../core/settings.js");
+  const evs = (ids: string[]): string[] => notices.filter((n) => ids.includes(n.jobId)).map((n) => `${n.outcome}${n.route !== undefined ? `/${n.route}` : ""}${n.reason !== undefined ? `:${n.reason}` : ""}`);
+  // ⓐ 꺼짐 — 팩토리 없음(매니저·서브) · 코어 호출은 설명만 · 기록·수신함·지시 채널·합성 턴 0 · 거절 발행(disabled)
+  {
+    reset();
+    setNotifyOwnerEnabled(false);
+    const M = job("꺼짐세션작업", S);
+    const P = withChannel(job("꺼짐지휘", S));
+    const C = job("꺼짐서브", `worker:${P}`, "agent");
+    const r1 = await notify(M, "꺼진 세션 알림");
+    const r2 = await notify(C, "꺼진 매니저 알림");
+    out.offCall = {
+      loaded: loadNotifyOwnerEnabled(),
+      factoryMgr: createNotifyOwnerMcpServer({ threadKey: `worker:${M}` }) === undefined,
+      factorySub: createNotifyOwnerMcpServer({ threadKey: `agent:${C}` }) === undefined,
+      r1: r1.text, r2: r2.text.slice(0, 40), ms: Math.max(r1.ms, r2.ms),
+      recorded: (wj.getJob(M)?.notices?.length ?? 0) + (wj.getJob(C)?.notices?.length ?? 0),
+      inbox: jn.__noticeInboxSizeForTest(), steer: drain(P).length, turns: turns.length, events: evs([M, C]),
+    };
+  }
+  // ⓒ 켜진 채 서버를 만든 턴이 도는 중에 끔 — 이미 등록된 도구 호출은 코어가 거절(G2) · 기록 0
+  {
+    reset();
+    setNotifyOwnerEnabled(true);
+    const M = job("켜진채시작", S);
+    const srv = createNotifyOwnerMcpServer({ threadKey: `worker:${M}` });
+    setNotifyOwnerEnabled(false);
+    const ret = srv === undefined ? "(서버 없음)" : textOf(await toolsOf(srv).notify_owner!.handler({ message: "도는 중 끈 뒤 호출" }, {}));
+    out.offMidTurn = { built: srv !== undefined, ret: ret.slice(0, 40), recorded: wj.getJob(M)?.notices?.length ?? 0, inbox: jn.__noticeInboxSizeForTest(), turns: turns.length, events: evs([M]) };
+  }
+  // ⓓ 켜짐에서 세션 알림 → 합성 턴 줄 섬 → 끔 → 차례 = 모델 없이 건너뜀(G3) · 수신함 비움 · 기록 남음(recorded)
+  {
+    reset();
+    setNotifyOwnerEnabled(true);
+    const M = job("줄선알림", S);
+    await notify(M, "줄 선 뒤 꺼진 알림");
+    const queued = { turns: turns.length, inbox: jn.__noticeInboxSizeForTest() };
+    setNotifyOwnerEnabled(false);
+    const skip = turns[0]?.beforeTurn?.() ?? null;
+    const n = wj.getJob(M)?.notices?.[0];
+    out.offQueued = { queued, skip, inboxAfter: jn.__noticeInboxSizeForTest(), kept: wj.getJob(M)?.notices?.length ?? 0, state: n?.state, events: evs([M]) };
+  }
+  // ⓓ' 켜짐에서 세션 알림 → **합류가 먼저 꺼냄** → 답 확정 → 끔 → 그 합성 턴 차례 = 기존 «이미 전달» 갈래 · taken/join·answeredAt 그대로
+  {
+    reset();
+    setNotifyOwnerEnabled(true);
+    const M = withChannel(job("합류먼저", S));
+    const p = toolsOf(createSpawnAgentMcpServer(mainInput())).wait_for_worker!.handler({ job_ids: [M], timeout_seconds: 30 }, {});
+    joinRegistered.offJoinFirst = await until(() => jn.isNoticeJoining(S));
+    await notify(M, "합류가 먼저 받은 알림");
+    const joined = textOf(await p).startsWith("📣");
+    await toolsOf(createWorkerMcpServer(mainInput())).steer_worker!.handler({ job_id: M, message: "답", notice_id: "n1" }, {});
+    drain(M);
+    const before = { ...wj.getJob(M)!.notices![0]! };
+    setNotifyOwnerEnabled(false);
+    const skip = turns.find((t) => t.turnOrigin === "worker-notice")?.beforeTurn?.() ?? null;
+    const after = wj.getJob(M)?.notices?.[0];
+    out.offAfterJoin = {
+      joined, skip, inbox: jn.__noticeInboxSizeForTest(),
+      before: { state: before.state, route: before.route, answered: typeof before.answeredAt },
+      after: { state: after?.state, route: after?.route, answered: typeof after?.answeredAt, same: after?.answeredAt === before.answeredAt },
+      events: evs([M]),
+    };
+  }
+  // ⓔ 꺼짐에서 작업 완료 — 완료 재주입 턴은 그대로(알림 설정과 무관)
+  {
+    reset();
+    setNotifyOwnerEnabled(false);
+    const M = job("꺼짐완료", S);
+    void wj.onWorkerComplete(M, { result: "꺼진 동안 끝난 결과 본문" });
+    const got = await until(() => turns.some((t) => t.text.includes("꺼진 동안 끝난 결과 본문")));
+    out.offComplete = { got, origins: turns.map((t) => t.turnOrigin), status: wj.getJob(M)?.status };
+  }
+  // ⓖ 거두기 대기(실제 러너) — 본 턴 중 자식 알림이 지시 채널에 들어감 → (꺼짐이면) 끔 → 본 턴 끝·자식 살아 있음 → 기다림 → 자식 결과 → 끝
+  const harvestCase = async (keepOn: boolean): Promise<R> => {
+    reset();
+    setNotifyOwnerEnabled(true);
+    const P = job(keepOn ? "거두기켜짐" : "거두기꺼짐", S);
+    let C = "";
+    const inputs: string[] = [];
+    let calls = 0;
+    runWorkerJob(wj.getJob(P) as never, async (input: RegionASdkInput): Promise<RegionASdkOutput> => {
+      calls += 1;
+      if (calls === 1) {
+        C = job("조사", `worker:${P}`, "agent");
+        await notify(C, "본 턴 중 들어간 알림");
+        if (!keepOn) setNotifyOwnerEnabled(false);
+        return { text: "본 턴" } as RegionASdkOutput;
+      }
+      inputs.push(input.text);
+      return { text: `거두기 ${String(calls)}` } as RegionASdkOutput;
+    });
+    await until(() => C !== "");
+    await sleep(200); // 거두기 대기에 들어가 (켜짐이면) 알림으로 한 바퀴 돈다
+    const beforeResult = inputs.length;
+    await wj.onWorkerComplete(C, { result: "자식 결과 본문" });
+    await until(() => wj.getJob(P)?.status !== "running");
+    await sleep(30);
+    return {
+      beforeResult, rounds: inputs.length, status: wj.getJob(P)?.status,
+      noticeInInput: inputs.some((t) => t.includes("본 턴 중 들어간 알림")), resultInLast: (inputs.at(-1) ?? "").includes("자식 결과 본문"),
+      noticeTurns: turns.filter((t) => t.turnOrigin === "worker-notice").length, inbox: jn.__noticeInboxSizeForTest(),
+      state: wj.getJob(C)?.notices?.[0]?.state, events: evs([C]),
+    };
+  };
+  out.offHarvest = { off: await harvestCase(false), on: await harvestCase(true) };
+  // ⓖ' 알림 + 사용자 지시가 같이 채널에 → 끔 → 깨움 = 지시만으로 거두기 턴(알림 없음) → 그 턴 실패 → 지시는 기존대로 · 알림 복원·재배달 0
+  {
+    reset();
+    setNotifyOwnerEnabled(true);
+    const P = job("거두기실패", S);
+    let C = "";
+    const inputs: string[] = [];
+    let calls = 0;
+    runWorkerJob(wj.getJob(P) as never, async (input: RegionASdkInput): Promise<RegionASdkOutput> => {
+      calls += 1;
+      if (calls === 1) {
+        C = job("조사", `worker:${P}`, "agent");
+        await notify(C, "실패 경로 알림");
+        wj.steerJob(P, { text: "사용자 지시 본문", raw: "사용자 지시 원문", ts: Date.now() });
+        setNotifyOwnerEnabled(false);
+        return { text: "본 턴" } as RegionASdkOutput;
+      }
+      inputs.push(input.text);
+      throw new Error("거두기 턴 강제 실패");
+    });
+    await until(() => wj.getJob(P)?.status !== "running");
+    await sleep(80);
+    out.offHarvestFail = {
+      status: wj.getJob(P)?.status, rounds: inputs.length,
+      instrInInput: (inputs[0] ?? "").includes("사용자 지시 본문"), noticeInInput: inputs.some((t) => t.includes("실패 경로 알림")),
+      lateUserCarried: turns.some((t) => t.text.includes("사용자 지시 원문")) || sent.some((x) => x.includes("사용자 지시 원문")),
+      noticeTurns: turns.filter((t) => t.turnOrigin === "worker-notice").length, inbox: jn.__noticeInboxSizeForTest(),
+      noticeAnywhere: turns.some((t) => t.text.includes("실패 경로 알림")) || sent.some((x) => x.includes("실패 경로 알림")),
+      state: wj.getJob(C)?.notices?.[0]?.state, events: evs([C]),
+    };
+  }
 }
 
 for (const ch of channels.values()) ch.close();

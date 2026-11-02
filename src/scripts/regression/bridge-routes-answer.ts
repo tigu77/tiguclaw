@@ -54,6 +54,8 @@ interface Probe {
   display?: { platform: string; display: boolean; wayland: boolean; envFileOff: boolean };
   /** 무디스플레이 Linux 일 때만 — 같은 홈·같은 env 로 제품 함수를 직접 부른 결과. */
   openHome?: { error?: string; openerCalls: number };
+  /** 자식이 PATH 앞에 둔 가짜 열기 프로그램을 데몬이 부른 횟수(win32 는 가짜를 못 둬 undefined). */
+  fakeOpen?: { calls: number };
   /** `?jobId=` 단건 갈래가 살아 있나 — 1=목록으로 안 떨어짐, 0=떨어짐, -1=요청 실패(`err` = 사유). */
   taskOne?: { got: number; want: number; err?: string };
   alive?: boolean;
@@ -261,6 +263,20 @@ export const check: RegressionCheck = {
         d === undefined
           ? "★표시 조건 미측정"
           : `${headless ? "무디스플레이 Linux" : "해당 없음"} · display=${JSON.stringify(d)} · openHome=${JSON.stringify(got.openHome)} · 행=${openHomeRow === undefined ? "★없음" : `${String(openHomeRow.status)}${openHomeRow.body !== undefined ? ` body=${openHomeRow.body}` : ""}`}`,
+      ),
+    );
+
+    // ★검사가 사용자 화면에 창을 띄우지 않는다 (2026-11-02, 맥에서 전체 회귀마다 Finder 창이 쌓임).
+    //  화면이 있는 환경에서 `/open-home` 이 성공했으면 **가짜**가 불렸어야 한다 — 0이면 진짜 `open` 이 실행된 것이다.
+    const fake = got.fakeOpen;
+    const withDisplay = d !== undefined && d.platform !== "win32" && !headless;
+    out.push(
+      assert(
+        "검사가 진짜 OS 열기 프로그램을 띄우지 않는다 — 화면 있는 맥·리눅스면 /open-home 200 이 가짜 열기 프로그램을 불렀다",
+        !withDisplay || (openHomeRow?.status === 200 && fake !== undefined && fake.calls >= 1),
+        withDisplay
+          ? `행=${openHomeRow === undefined ? "★없음" : String(openHomeRow.status)} · 가짜 호출 ${fake === undefined ? "★미측정" : String(fake.calls)}`
+          : `해당 없음 · platform=${String(d?.platform)}${d?.platform === "win32" ? " (★Windows 는 explorer 를 못 가려 창이 열릴 수 있다)" : ""}`,
       ),
     );
 

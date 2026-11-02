@@ -4,7 +4,7 @@
  * ★부모(`bridge-routes-answer.ts`)와 갈라둔 이유는 기존 프로브들과 같다: 데몬 부팅은
  *  프로세스를 오염시키므로 자식에서만 한다.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, type execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -90,6 +90,19 @@ const main = async (): Promise<void> => {
     DASHBOARD_PORT: dp,
     HTTP_BRIDGE_TOKEN: token,
   };
+  // ★실제 OS 열기 프로그램을 띄우지 않는다 (2026-11-02 정태님 «맥에 왜 자꾸 폴더가 열려 있냐» — `POST /open-home` 이
+  //  진짜 `open -a Finder <임시 홈>` 을 불러 전체 회귀마다 Finder 창이 하나씩 쌓였다(43개 실측, 홈을 지운 뒤엔 부모 폴더로 남음)).
+  //  PATH 맨 앞에 같은 이름의 가짜를 둬 라우트 응답은 그대로 재고 부른 횟수만 센다. win32(explorer)는 셸 스크립트로 못 가려 그대로다.
+  const fakeBin = process.platform === "win32" ? undefined : mkdtempSync(path.join(tmpdir(), "br-routes-bin-"));
+  const openLog = fakeBin === undefined ? undefined : path.join(fakeBin, "calls.log");
+  if (fakeBin !== undefined && openLog !== undefined) {
+    for (const name of ["open", "xdg-open"]) {
+      const p = path.join(fakeBin, name);
+      writeFileSync(p, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${openLog}'\nexit 0\n`);
+      chmodSync(p, 0o755);
+    }
+    daemonEnv.PATH = `${fakeBin}${path.delimiter}${daemonEnv.PATH ?? ""}`;
+  }
   const child = spawn(process.execPath, ["--import", "tsx", path.join(REPO, "src/index.ts")], {
     cwd: REPO,
     env: daemonEnv,
@@ -226,9 +239,14 @@ const main = async (): Promise<void> => {
   const exit = alive ? undefined : early;
   const totalMs = sinceMs(t0);
   child.kill("SIGKILL");
+  const fakeOpen =
+    openLog === undefined
+      ? undefined
+      : { calls: existsSync(openLog) ? readFileSync(openLog, "utf8").split("\n").filter((l) => l !== "").length : 0 };
+  if (fakeBin !== undefined) rmSync(fakeBin, { recursive: true, force: true });
   if (process.env.PROBE_HOME === undefined) rmSync(home, { recursive: true, force: true });
   process.stdout.write(
-    `\n${JSON.stringify({ boot: boot.ok, why: scrubDiag(boot.why, [], 300), rows, alive, exit, totalMs, taskOne, display, openHome, tail: scrubDiag(scrubText(log, hide).slice(-300), [], 300) })}\n`,
+    `\n${JSON.stringify({ boot: boot.ok, why: scrubDiag(boot.why, [], 300), rows, alive, exit, totalMs, taskOne, display, openHome, fakeOpen, tail: scrubDiag(scrubText(log, hide).slice(-300), [], 300) })}\n`,
   );
 };
 

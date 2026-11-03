@@ -40,7 +40,7 @@ const SKIP_TYPES = new Set<string>([
 // 페이로드 비대 가드. 리치 도구 카드(diff ≤~7.5KB / output ≤~4.5KB, ADR 2026-07-09)를
 // 수용하되 그 위는 절단. ★절단은 반드시 *유효 JSON* 이어야 한다 — 원본 문자열 슬라이스는
 // JSON 중간을 잘라 깨진 JSON 을 만들고(`{…(truncated)`), events.payload 를 json_extract 로
-// 읽는 소비자(getRecentActivities·skill-usage)를 통째로 터뜨린다(2026-07-09 self-growth 사고).
+// 읽는 소비자(활동 조회·skill-usage)를 통째로 터뜨린다(2026-07-09 self-growth 사고).
 // 값은 리치 카드 최대(diff 60줄/6000자 → JSON+escape ~8KB)를 여유 있게 보존하도록 잡았었다.
 //
 // ★2026-08-08 상향(10,000 → 64,000) — 사용자 신고: 긴 답변이 대시보드에서 잘려 보였다.

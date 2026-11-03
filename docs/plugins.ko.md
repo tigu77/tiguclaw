@@ -129,7 +129,6 @@ registered data routes from plugin: hello (greeting)
 > 쓰는 법: 매니페스트에 `"kind": ["provider"]` 와 `"provider": { "id": "plugin.<이름>",
 > "entry": "./src/provider.ts" }` 를 적고, 그 entry 에서 셋 중 하나를 냅니다 —
 > `collectProvider()` 가 모듈을 돌려주거나, `provider`/`default` 로 `{ id, load }` 를 냅니다.
-> 실물은 번들 `self-growth` 가 `collectProvider()` 를 씁니다.
 
 어느 kind든 아래는 **있으면 불립니다**(덕 타이핑):
 
@@ -304,6 +303,63 @@ getDataRoutes() {
 
 ---
 
+## 6-1. 프로젝트 메뉴 — 모든 프로젝트의 📁 메뉴에 항목 더하기
+
+`commands/<이름>.md` 에 `scope: projects` 를 달면 그 커맨드가 **대화에 연결한 모든 프로젝트의 메뉴**(대시보드 📁 칩 · 텔레그램 `/project`)에
+공통 항목으로 뜨고, 누르면 그 프로젝트를 대상으로 돕니다. 같은 이름이 프로젝트 자기 커맨드나 사용자 홈 커맨드에 있으면 그쪽이 이깁니다.
+
+| 종류 | 머리 블록 | 누르면 |
+|---|---|---|
+| 프롬프트형 | `scope: projects` + 본문 | 본문이 비서에게 갑니다 — 앞에 `[프로젝트 이름 — 경로 · 🧩 플러그인 제공]` 줄이 붙습니다 |
+| 실행형 | `scope: projects` + `run: <셸 한 줄>` | 그 프로젝트 폴더에서 셸로 돕니다. **커맨드별 처음 한 번 승인**을 받고, 승인은 모든 연결 프로젝트·모든 인자에 걸립니다. run 줄이 바뀌면 다시 묻습니다(그 줄이 부르는 스크립트의 내용 변경은 다시 묻지 않습니다) |
+| 처리기 | `scope: projects` + `handler: <이름>` (본문 없음, `run` 과 같이 못 씀) | 플러그인 코드의 처리기가 돕니다 |
+
+**`confirm: true` 면 승인과 무관하게 매번 확인합니다** — 되돌리기 어려운 일(배포·삭제·외부로 보내기)에 씁니다(처리기도 같습니다).
+
+처리기는 인스턴스 메서드 `getCommandHandlers()` 로 냅니다:
+
+```js
+getCommandHandlers() {
+  return {
+    show_board: async ({ project, args }, host) => {
+      await host.postCard({ text: `${project.name} 보드`, widget: "board", data: { path: project.path } });
+      return "보드를 열었습니다";
+    },
+  };
+}
+```
+
+- `project` 는 **코어가 그 대화의 연결 기록에서 다시 찾은** 프로젝트입니다(사용자가 친 글자의 경로가 아닙니다).
+- 반환 글이 답입니다(도구 처리기와 같은 꼴). 화면이 필요하면 `host.postCard` 로 위젯 카드를 붙이세요 — 텔레그램은 `text` 를 받습니다
+  (`needs.ui: ["chat-widget"]` 필요).
+- 처리기 이름은 소문자·숫자·밑줄. 처리기는 **이 데몬에 로드된 그 폴더의 코드일 때만** 불립니다 — 플러그인이 꺼졌거나 로드에 실패했으면
+  «지금 처리하지 않는다» 고 답합니다.
+- 같은 프로젝트의 같은 커맨드는 겹쳐 돌지 않고, `/stop` 으로 멈춥니다(멈춘 뒤의 `postCard`·`say`·반환 글은 나가지 않습니다).
+
+---
+
+## 6-2. 훅 — 플러그인과 함께 오는 훅
+
+플러그인 폴더에 `hooks/hooks.json` 을 두면, 그 플러그인이 켜져 있는 동안 훅이 돕니다. 형식은 Claude Code 플러그인과 같습니다
+(`{ "hooks": { "<이벤트>": [ { "matcher": "...", "hooks": [ { "type": "command", "command": "...", "timeout": 30 } ] } ] } }`).
+훅 자체의 동작(입력 JSON·종료 코드 2 로 차단·stdout 이 맥락으로)은 [훅 문서](hooks.ko.md)와 같습니다.
+
+- **설치·켜기가 곧 신뢰입니다.** 따로 승인을 묻지 않습니다 — 매 턴, 사람이 없는 턴(예약·감시·작업자)에서도 돕니다.
+- **순서는 홈 → 프로젝트 → 플러그인입니다.** 사용자 훅이 먼저 막으면 플러그인 훅은 돌지 않습니다. 플러그인 훅의 종료 코드 2 도 차단입니다.
+- 플러그인 훅의 출력 앞에는 `[🧩 <이름> 훅]` 한 줄이 붙어, 사용자 글이나 비서 글로 읽히지 않습니다.
+- `command` 안의 `${CLAUDE_PLUGIN_ROOT}`(플러그인 폴더)·`${CLAUDE_PLUGIN_DATA}`(코드의 `dataDir` 과 같은 폴더)·`${CLAUDE_PROJECT_DIR}`
+  (그 호출의 작업 폴더)를 글자 그대로 바꾸고, 같은 값을 환경변수로도 줍니다. 따옴표는 직접 다세요. 작업 폴더는 플러그인 폴더가 아니라
+  그 호출의 작업 폴더입니다.
+  - ★`CLAUDE_PLUGIN_DATA` 는 만들어 두지 않고, 홈 플러그인은 대개 플러그인 폴더 자신입니다(Claude Code 의 별도 데이터 폴더와 다릅니다).
+- 파일은 **호출마다** 읽습니다 — 끄기·제거·내용 수정이 다음 호출부터 반영됩니다.
+- 돌지 않는 것: `type` 이 `command` 가 아닌 항목 · `args` 를 쓰는 exec 형식 · 티구클로가 내지 않는 이벤트(`SessionStart` 등) ·
+  잘못된 항목(`command` 없음·잘못된 `timeout`). 매니페스트 이름이 규칙(소문자·숫자·하이픈)에 맞지 않거나, 같은 이름의 앞선 폴더가 있으면
+  그 파일을 읽지 않습니다. 이유와 함께 인벤토리에 보입니다.
+- 지금 도는 플러그인 훅은 `/status` 의 «플러그인 훅» 줄, `/plugins`, 대시보드 인벤토리에서 봅니다.
+- ★코드가 없는 플러그인 폴더는 화면에서 끌 수 없습니다. 멈추려면 폴더를 지우거나 홈 `settings.json` 의 `modules.disabled` 에 이름을 넣으세요.
+
+---
+
 ## 7. `host` — 플러그인이 만질 수 있는 전부
 
 `getDataRoutes` 의 핸들러와 도구 구현이 받습니다.
@@ -445,7 +501,7 @@ handler: async (args, host) => `안녕, ${args.text}`,
   `start()` 에서 던지면 그 플러그인만 로드에 실패합니다(다른 플러그인은 무사합니다).
 - ★**앱과 함께 오는 플러그인의 이름은 못 씁니다.** 지금 예약된 이름은 `claude-subscription-auth`·`cli-channel`·
   `codex-subscription-auth`·`computer-use`·`dashboard`·`file-watch`·`http-bridge`·
-  `running-work`·`scheduler`·`self-growth`·`telegram-channel` 입니다. 폴더명이 아니라 **매니페스트의 `name`** 으로 봅니다(폴더는 아무렇게나
+  `running-work`·`scheduler`·`telegram-channel` 입니다. 폴더명이 아니라 **매니페스트의 `name`** 으로 봅니다(폴더는 아무렇게나
   둬도 됩니다). 그 이름으로 설치하면 *"같은 이름의 번들 플러그인이 있습니다"* 로 거부됩니다 —
   그 플러그인이 꺼져 있거나 로드에 실패했어도 마찬가지입니다. 이름은 예약된 것이지 그날
   잘 떴느냐에 달린 게 아닙니다.

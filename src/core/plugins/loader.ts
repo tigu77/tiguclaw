@@ -21,7 +21,6 @@ import { describeNeeds, readNeeds, type PluginNeeds } from "./host.js";
 import { readSettingsSpec, type PluginSettingSpec } from "./settings.js";
 import { readWidgetSpecs, type PluginWidgetSpec } from "./widgets.js";
 import { bundledDeclaredNames, isModuleActive } from "./inventory.js";
-import { isModuleDisabled } from "../settings.js";
 import { appRoot } from "../paths.js";
 
 // D1-c (2026-07-14, ADR built-artifact-production-runtime) — built(순수 node) 런타임에서
@@ -133,10 +132,10 @@ export const isValidPluginName = (name: string): boolean =>
 export const refusalToRun = (
   rootDir: string,
   name: string,
-): "invalid-name" | "user-disabled" | "default-off" | "bundled-name" | undefined => {
+): "invalid-name" | "user-disabled" | "bundled-name" | undefined => {
   if (!isValidPluginName(name)) return "invalid-name";
-  // 로그가 이유를 가른다 — 사용자가 끈 것과 «기본 꺼짐» 번들(아무도 안 켠 것)은 다르다.
-  if (!isModuleActive(name)) return isModuleDisabled(name) ? "user-disabled" : "default-off";
+  // 코어는 언제나 켜져 있으므로 «안 돈다» 는 곧 사용자가 끈 것이다(기본 꺼짐 번들 갈래는 자가성장과 함께 뺐다 — 2026-11-03).
+  if (!isModuleActive(name)) return "user-disabled";
   if (
     path.resolve(rootDir) !== path.resolve(appRoot(), "plugins") &&
     bundledDeclaredNames().has(name)

@@ -35,7 +35,7 @@
  * ★아직 안 넣은 후보(버블은 그리지만 복원 빌더가 없다 — 넣으려면 프런트에서
  *  `registerChatKindBuilder` 를 먼저 등록해야 한다):
  *   `scheduler.error` · `scheduler.recovered` · `llm.compacted` · `llm.turn_error` ·
- *   `llm.compaction_stuck` · `self_growth.failure.learned`.
+ *   `llm.compaction_stuck`.
  *  이들은 지금도 SSE 재생에만 의존한다(=탭 이동 시 사라진다). 사용자가 겪은 것은
  *  선택지였고, 나머지는 실측상 드물어(합계 40여 건) 같은 구조로 뒤따라가면 된다.
  */

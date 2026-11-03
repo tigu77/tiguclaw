@@ -4,7 +4,7 @@
       //   ② 풀 *안* 폴백(codex 실패 → 같은 풀의 claude) → **고지 0**. 정상 답변만 보인다.
       // 오늘 codex 빈 응답 3건이 전부 ②였고, 그래서 몇 주간 아무도 몰랐다.
       // 답변 본문은 오염시키지 않는다(성공한 답은 그대로) — 대신 실패 사실을 별도 줄로 남긴다.
-      // 개별 건은 여기(대시보드), 급증(3건+)은 self-growth 자가 점검이 텔레그램으로 민다.
+      // 개별 건은 여기(대시보드), 급증(3건+)은 코어 자가 진단(`health-sweep`)이 텔레그램으로 민다.
       const renderTurnFailure = (p, evTs) => {
         const tk = p.threadKey;
         if (isEndpointThread(tk)) return;   // 기계 API 호출 — 엔드포인트 뷰가 따로 보여준다.
@@ -461,23 +461,6 @@
             i18n("sys.sched.recovered", { what }),
             { ts: ev.ts, key: "scheduler.recovered" },
           );
-          return;
-        }
-        // 자동 지침 적재 통보(2026-07-26) — self-growth 가 반복 실패를 학습해 SELF_GROWTH.md
-        // 에 **행동 지침을 자동으로** 박는다(source:"auto", 캡·TTL 로 자동 만료). 구조는 안전
-        // 하지만 종전엔 **조용히** 들어가 사용자가 모르니 틀려도 교정할 수 없었다. 행동을 바꾸는
-        // 변경은 보이게 한다 — 사용자가 즉시 부정하거나 확정(user 승격)할 기회를 준다.
-        // ★directive 로 확정된 것만 알린다. reflection 강등(autoLanded=false)은 행동을 안 바꾸므로
-        //   알리지 않는다(노이즈 억제 — 통보가 잦으면 무시하게 돼 없느니만 못하다).
-        if (ev.type === "self_growth.failure.learned") {
-          const p = ev.payload || {};
-          if (p.autoLanded === true && p.target === "directive") {
-            renderLocalChat(
-              "info",
-              i18n("sys.growth.learned", { name: p.memoryName, count: p.count ?? "?" }),
-              { ts: ev.ts, key: "self-growth|" + (p.memoryName || "") },
-            );
-          }
           return;
         }
         // ★압축 고착 통지 (2026-07-30) — 발행은 했는데 **핸들러가 없어** 신호가 다시

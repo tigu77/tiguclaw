@@ -3,7 +3,7 @@
       // 판단은 코어(`core/session-projects.ts`)가 한다 — 여기는 그 결과를 **그리기만** 한다:
       //  ·연결 줄(#chat-projects) — 컨텍스트 태그 줄 바로 아래, 📁 칩 + [+ 프로젝트]
       //  ·[+ 프로젝트] → «이 대화에 프로젝트 연결» 목록
-      //  ·📁 칩 메뉴 — 그 프로젝트의 커맨드 · 프로젝트 상세(프로젝트 화면으로) · 연결 해제(확인)
+      //  ·📁 칩 메뉴 — 그 프로젝트의 커맨드(자기 것 → 공통) · 빌트인 동작(서버 목록: 상세·폴더 열기·연결 해제)
       //  ·`/` 자동완성의 프로젝트 구획(slash.js 가 window.sessionProjectSlashItems 로 받는다)
       // 커맨드 실행은 텔레그램과 **같은 슬래시 명령**을 보낸다(`/project run …`) — 실행 경로가 채널마다 갈리지 않게.
       // ★상세는 대화에 PROJECT.md 를 찍지 않고 프로젝트 화면을 연다(2026-10-09 정태님) — 화면이 있는 채널이라 대화를 어지럽힐
@@ -60,7 +60,8 @@
             chip.className = "ctx-chip ctx-linked" + (p.exists ? "" : " ctx-missing");
             chip.title = p.exists ? p.path : i18n("sproj.folderMissing", { path: p.path });
             chip.textContent = "📁 " + p.name + " ▾";
-            chip.addEventListener("click", () => openMenu("sessionProject", { label: p.name, targetId: p.path, project: p }, { anchor: chip }));
+            // `path` — 폴더 열기 처리기(`project.openFolder`, 프로젝트 화면과 같은 것)가 읽는 자리.
+            chip.addEventListener("click", () => openMenu("sessionProject", { label: p.name, targetId: p.path, project: p, path: p.path }, { anchor: chip }));
             return chip;
           });
 
@@ -111,14 +112,15 @@
         registerBuiltinHandler("sessionProject.link", (_ctx, args) => post("link", args.path));
 
         // 커맨드를 폴더대로 묶는다 — `aaa/bbb/ccc.md` 는 aaa › bbb › /ccc. 폴더가 없으면 지금처럼 평평하다.
-        const commandTree = (cmds, q) => {
+        //  `kind` 로 id 를 가른다 — 자기 것과 공통(2026-11-03)이 같은 폴더 이름을 써도 항목이 겹치지 않게.
+        const commandTree = (cmds, q, kind, group) => {
           const top = [];
           const dirs = new Map();
           const dirItem = (folder) => {
             if (!folder) return null;
             if (dirs.has(folder)) return dirs.get(folder);
             const cut = folder.lastIndexOf("/");
-            const it = { id: "dir:" + folder, group: "commands", icon: "📂", label: folder.slice(cut + 1), children: [] };
+            const it = { id: kind + "dir:" + folder, group, icon: "📂", label: folder.slice(cut + 1), children: [] };
             dirs.set(folder, it);
             const parent = dirItem(cut === -1 ? "" : folder.slice(0, cut));
             (parent ? parent.children : top).push(it);
@@ -126,10 +128,10 @@
           };
           for (const c of cmds) {
             const item = {
-              id: "cmd:" + c.name,
-              group: "commands",
-              icon: c.run ? "▶" : "💬", // ▶ 실행형(비서 없이 셸) · 💬 프롬프트형(비서에게)
-              label: "/" + c.name,
+              id: kind + "cmd:" + c.name,
+              group,
+              icon: c.run ? "▶" : "💬", // ▶ 비서 없이 돈다(실행형·플러그인 처리기) · 💬 프롬프트형(비서에게)
+              label: "/" + c.name + (c.pluginId ? " · 🧩" + c.pluginId : ""),
               detail: c.description || "", // 둘째 줄 — 줄바꿈해서 끝까지(context-menu 의 `detail`)
               action: { kind: "send_message", template: "/project run " + q + " " + c.name },
             };
@@ -139,24 +141,33 @@
           return top;
         };
 
+        // 빌트인 동작(상세·폴더 열기·연결 해제)은 **서버 목록**(코어 `PROJECT_MENU_ACTIONS`)을 순서대로 그린다(2026-11-03 §2.3) — 텔레그램과 같은 목록.
+        //  id 에 대시보드 전용 처리기가 있으면 그것(지금 동작 그대로), 없으면 서버가 준 슬래시(`value`)를 보낸다. `danger` 면 메뉴가 먼저 확인한다.
+        const ACTION_HANDLERS = { detail: "sessionProject.openDetail", folder: "project.openFolder", unlink: "sessionProject.unlink" };
+        const actionItem = (a, p) => ({
+          id: "act:" + a.id,
+          group: "info",
+          icon: a.icon,
+          label: i18n(a.labelKey),
+          ...(a.danger ? { danger: true, confirm: a.confirmKey ? i18n(a.confirmKey, { name: p.name }) : undefined } : {}),
+          action: ACTION_HANDLERS[a.id]
+            ? { kind: "builtin", handler: ACTION_HANDLERS[a.id], args: { path: p.path } }
+            : { kind: "send_message", template: String(a.value || "") },
+        });
+
         registerMenuItems("sessionProject", (ctx) => {
           const p = ctx.project;
           if (!p) return [];
           const q = quote(p.name);
           const cmds = Array.isArray(p.commands) ? p.commands : [];
+          const own = cmds.filter((c) => !c.common);
+          const shared = cmds.filter((c) => c.common);
           return [
             ...(p.exists ? [] : [{ id: "missing", header: true, label: i18n("sproj.folderMissing", { path: p.path }) }]),
-            ...commandTree(cmds, q),
+            ...commandTree(own, q, "", "commands"),
             ...(p.exists && cmds.length === 0 ? [{ id: "nocmd", group: "commands", header: true, label: i18n("sproj.noCommands") }] : []),
-            { id: "detail", group: "info", icon: "📄", label: i18n("sproj.openDetail"), action: { kind: "builtin", handler: "sessionProject.openDetail", args: { path: p.path } } },
-            {
-              id: "unlink",
-              danger: true,
-              icon: "⛓",
-              label: i18n("sproj.unlink"),
-              confirm: i18n("sproj.unlinkConfirm", { name: p.name }),
-              action: { kind: "builtin", handler: "sessionProject.unlink", args: { path: p.path } },
-            },
+            ...(shared.length > 0 ? [{ id: "common-head", group: "common", header: true, label: i18n("sproj.commonHeader") }, ...commandTree(shared, q, "c", "common")] : []),
+            ...(Array.isArray(p.actions) ? p.actions : []).map((a) => actionItem(a, p)),
           ];
         });
         registerBuiltinHandler("sessionProject.unlink", (_ctx, args) => post("unlink", args.path));

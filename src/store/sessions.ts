@@ -884,10 +884,9 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_chat_message_refs_ts ON chat_message_refs (ts);
   `);
 
-  // ─── 스킬 사용 텔레메트리 (self-growth Phase 1.5, 2026-06-24) ────────────────
+  // ─── 스킬 사용 텔레메트리 (2026-06-24) ────────────────
   // events(ring 10k prune)는 *장기* 스킬 카운트 부적합(오래된 호출 잘림) → 전용 누적
-  // 테이블. self-growth 가 generic skill.invoked 구독 시 멱등 upsert(count+1, last_used
-  // 갱신). 코어는 이 테이블을 모름(단방향 — 코어에 skill_usage 문자열 0). 기존
+  // 테이블. 코어 `invoke_skill` 이 성공 호출마다 멱등 upsert(count+1, last_used 갱신 — 2026-10-15~). 기존
   // CREATE TABLE IF NOT EXISTS 들과 동형 멱등(신규 테이블이라 IF NOT EXISTS 로 충분 —
   // ALTER 로직 0). 역할 분리: 시점 상관=events / 장기 누적 카운트=skill_usage.
   handle.exec(`
@@ -898,12 +897,10 @@ export const initStore = (): void => {
     );
   `);
 
-  // ─── 스킬 결과 축 (self-growth Phase 1.6, 2026-06-24) ──────────────────────────
-  // Phase 1.5 의 invoke_count 위에 *성공/실패* 누적을 더한다 — "이 스킬 자꾸 실패한다"를
-  // 계산 가능하게(Phase 2 스킬 개선 제안의 연료). skill_usage 는 1.5 에서 이미 배포됐으니
-  // 멱등 ALTER ADD COLUMN(schedules.trigger_type / worker_jobs.notify_* 패턴 동형) —
-  // PRAGMA table_info probe 후 부재 시만 추가. DEFAULT 0 으로 기존 row 회귀 0.
-  // 결과는 forward-fill(그 순간 안 잡으면 복원 불가)이라 지금 누적 시작.
+  // ─── 스킬 결과 축 (2026-06-24) ──────────────────────────
+  // invoke_count 위에 *성공/실패* 누적 열 — 옛 자가성장 플러그인(2026-11-03 제거)이 쓰던 것. 쓰는 쪽이 없어 값이 멈춘 채
+  // 남는다(열 삭제는 마이그레이션이라 하지 않는다). 멱등 ALTER ADD COLUMN(schedules.trigger_type /
+  // worker_jobs.notify_* 패턴 동형) — PRAGMA table_info probe 후 부재 시만 추가. DEFAULT 0 으로 기존 row 회귀 0.
   const skillUsageCols = handle
     .prepare(`PRAGMA table_info(skill_usage)`)
     .all() as ColumnInfoRow[];

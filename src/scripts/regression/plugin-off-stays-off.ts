@@ -77,7 +77,8 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "★★② 「제거」가 **비활성 기록을 남긴다** — 안 남기면 폴더가 그대로라 재시작에 되살아난다(확인 문구는 폴더가 남는다고만 말한다)",
-          /setModuleDisabled\(name, true\)/.test(rm),
+          // 제거는 커맨드 승인도 같은 쓰기에서 지운다(`{ forgetApprovals: true }`, 2026-11-03) — 비활성 기록이라는 뜻은 같다.
+          /setModuleDisabled\(name, true(?:, \{[^)]*\})?\)/.test(rm),
           rm === "" ? "★removePlugin 을 못 찾음" : `기록 ${/setModuleDisabled/.test(rm) ? "있음" : "★없음"}`,
         ),
       );

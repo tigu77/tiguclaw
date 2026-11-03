@@ -15,11 +15,12 @@ import { discoverAgents } from "../llm-runtime/capabilities/agent-registry.js";
 import { discoverEndpoints, type Endpoint } from "../entry/endpoint-registry.js";
 import {
   discoverCommands,
+  discoverCommonProjectCommands,
   BUILTIN_COMMANDS,
   type Command,
 } from "../entry/command-registry.js";
-import { isModuleDisabled, isModuleExplicitlyEnabled } from "../settings.js";
-import { listHooksForInventory } from "../entry/hook-runner.js";
+import { isModuleDisabled } from "../settings.js";
+import { listHooksForInventory, type HookInventoryItem } from "../entry/hook-runner.js";
 import { translate } from "../i18n.js";
 
 /**
@@ -404,19 +405,11 @@ export const isModuleActive = (name: string): boolean => moduleActivityJudge()(n
 export const moduleActivityJudge = (): ((name: string) => boolean) => {
   const blocks = bundledManifestBlocks();
   const flag = (name: string, f: string): boolean => blocks.some((m) => m["name"] === name && m[f] === true);
-  return (name) => flag(name, "core") || (!isModuleDisabled(name) && (!flag(name, "defaultOff") || isModuleExplicitlyEnabled(name)));
+  return (name) => flag(name, "core") || !isModuleDisabled(name);
 };
 
-/**
- * **기본은 꺼진 채로 오는 번들인가**(manifest `tiguclaw.defaultOff`, 2026-10-14 — 자가성장 은퇴).
- * ★설정에 아무 말이 없을 때만 이 선언을 따른다 — 사용자가 켜면(`enabled: true`) 켜지고, 끈 것은 그대로 꺼진다.
- *  «없으면 켜짐» 규칙(`readDisabledModules`)의 예외는 **선언으로만** 생긴다(이름 목록을 코드에 두지 않는다).
- * ★`core` 와 같이 **레포 `plugins/` 위치로만** 읽는다 — 설치된 플러그인의 자기 선언은 검증할 수 없다.
- */
-export const isDefaultOffModule = (name: string): boolean => bundledManifestFlag(name, "defaultOff");
-
 // 번들 비채널 플러그인 (appRoot/plugins/* 중 kind 에 "channel" 없는 것 — service·trigger·
-// observer·provider: dashboard·scheduler·file-watch·self-growth 등). 채널은 collectChannels 가
+// observer·provider: dashboard·scheduler·file-watch 등). 채널은 collectChannels 가
 // "채널"로 담으니 여기선 제외(중복 방지). "플러그인"(external_plugin) 카테고리로 노출 —
 // 이게 없어 홈 플러그인 0인 공개 설치에서 플러그인 섹션이 텅 비던 버그(2026-07-09).
 const collectBundledPlugins = (repoRoot: string): PluginEntry[] => {
@@ -751,9 +744,10 @@ const collectCommands = async (cwd: string): Promise<PluginEntry[]> => {
       metadata: { builtin: true },
     });
   }
-  // 유저/프로젝트/플러그인 슬래시 명령(.md).
-  const discovered = await discoverCommands(cwd);
-  for (const c of discovered) {
+  // 유저/프로젝트/플러그인 슬래시 명령(.md) — 전역 + 모든 프로젝트 공통(`scope: projects`, 2026-11-03). 공통을 안 더하면
+  //  전역 목록에서 빠진 공통 커맨드가 인벤토리에서도 사라진다.
+  const [discovered, common] = await Promise.all([discoverCommands(cwd), discoverCommonProjectCommands(cwd)]);
+  for (const c of [...discovered, ...common]) {
     out.push({
       category: "command" as const,
       layer: commandSourceToLayer(c.source),
@@ -764,6 +758,8 @@ const collectCommands = async (cwd: string): Promise<PluginEntry[]> => {
       metadata: {
         source: c.source,
         ...(c.pluginId !== undefined ? { pluginId: c.pluginId } : {}),
+        ...(c.scope !== undefined ? { scope: c.scope } : {}),
+        ...(c.handler !== undefined ? { handler: c.handler } : {}),
       },
     });
   }
@@ -781,8 +777,26 @@ const collectCommands = async (cwd: string): Promise<PluginEntry[]> => {
 //    agent 와 동형 — 현재 작업 폴더가 직접 들고 있음).
 //  - enabled: 항상 true(V1 — settings.json 훅엔 on/off 필드가 없다, disable 은 항목
 //    자체를 지우는 것). name = "<event>" 또는 "<event> (<matcher>)"(matcher!="*" 일 때만).
-const hookScopeToLayer = (scope: "home" | "project"): PluginLayer =>
+const hookScopeToLayer = (scope: "home" | "project" | "plugin"): PluginLayer =>
   scope === "project" ? "in_tree" : "discovered";
+
+/** 플러그인 훅 줄의 상태 낱말 — 출처 줄(`invalid` 사유·`shadowed`)과 항목 줄(`classifyHookItem` 값). */
+const pluginHookStatusLabel = (h: HookInventoryItem): string => {
+  if (h.status === "invalid") {
+    return translate(
+      h.reason === "bad-format"
+        ? "srv.hook.status.badFormat"
+        : h.reason === "bad-name"
+          ? "srv.hook.status.badName"
+          : "srv.hook.status.unreadable",
+    );
+  }
+  if (h.status === "shadowed") return translate("srv.hook.status.shadowed", { by: h.shadowedBy ?? "" });
+  if (h.status === "unsupported") return translate("srv.hook.status.unsupported");
+  if (h.status === "not-emitted") return translate("srv.hook.status.notEmitted");
+  if (h.status === "malformed") return translate("srv.hook.status.malformed");
+  return translate("srv.hook.status.runnable");
+};
 
 /** command 요약 — 인벤토리 리스트/디테일에 그대로 노출하기엔 긴 셸 명령이 흔해 자름. */
 const COMMAND_SUMMARY_CAP = 160;
@@ -793,22 +807,28 @@ const summarizeCommand = (command: string): string => {
     : oneLine;
 };
 
-const collectHooks = (cwd: string): PluginEntry[] => {
-  const items = listHooksForInventory(cwd);
-  return items.map((h) => ({
-    category: "hook" as const,
-    layer: hookScopeToLayer(h.scope),
-    name: h.matcher === "*" ? h.event : `${h.event} (${h.matcher})`,
-    description: summarizeCommand(h.command),
-    source: h.source,
-    enabled: true,
-    metadata: {
-      event: h.event,
-      matcher: h.matcher,
-      command: h.command,
-      scope: h.scope,
-    },
-  }));
+const collectHooks = async (cwd: string): Promise<PluginEntry[]> => {
+  const items = await listHooksForInventory(cwd);
+  return items.map((h) => {
+    const base = h.event === "" ? "hooks.json" : h.matcher === "*" ? h.event : `${h.event} (${h.matcher})`;
+    // ★플러그인 훅은 «어느 플러그인의 것인가·도는가» 가 이름에 보인다 — 켜짐 점은 실행 대상(`runnable`)일 때만(2026-11-03 §3.6).
+    const isPlugin = h.scope === "plugin";
+    return {
+      category: "hook" as const,
+      layer: hookScopeToLayer(h.scope),
+      name: isPlugin ? `${base} · 🧩 ${h.plugin ?? ""} · ${pluginHookStatusLabel(h)}` : base,
+      description: summarizeCommand(h.command),
+      source: h.source,
+      enabled: isPlugin ? h.status === "runnable" : true,
+      metadata: {
+        event: h.event,
+        matcher: h.matcher,
+        command: h.command,
+        scope: h.scope,
+        ...(isPlugin ? { plugin: h.plugin, status: h.status } : {}),
+      },
+    };
+  });
 };
 
 // ─── 통합 walker ─────────────────────────────────────────────────────────
@@ -872,7 +892,7 @@ export const collectInventory = async (opts?: {
     () => collectCommands(repoRoot),
     [] as PluginEntry[],
   );
-  const hook = safe(() => collectHooks(repoRoot), [] as PluginEntry[]);
+  const hook = await safeAsync(() => collectHooks(repoRoot), [] as PluginEntry[]);
 
   return {
     channel,
@@ -1079,6 +1099,14 @@ export const formatInventoryForUser = (inv: InventoryResult): string => {
 
   const ex = compactLine(translate("srv.plugins.externalPlugins"), inv.external_plugin);
   if (ex !== null) lines.push(ex);
+
+  // ★플러그인 훅 — 설치·켜기만으로 매 턴 도는 셸이라(승인 없음) 어디서 무엇이 도는지가 여기 보여야 한다(2026-11-03 §3.5·§3.6).
+  //  홈·프로젝트 훅은 사용자가 직접 쓴 것이라 종전처럼 이 목록에 넣지 않는다 — 플러그인 훅이 없으면 이 응답은 종전과 같다.
+  const ph = compactLine(
+    translate("srv.plugins.pluginHooks"),
+    inv.hook.filter((e) => (e.metadata as { scope?: string } | undefined)?.scope === "plugin"),
+  );
+  if (ph !== null) lines.push(ph);
 
   return capWithEllipsis(lines.join("\n"), USER_CAP_BYTES);
 };

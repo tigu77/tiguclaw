@@ -623,7 +623,7 @@ export const createSkillInvokeMcpServer = (
         // 텔레메트리 — 성공 호출(body !== undefined)만 generic skill.invoked 발행.
         // ctx 미지정 시 skip(회귀 0). never-throw — 관측 실패가 도구 응답·데몬을
         // 절대 못 깨게(turn_done 발행 best-effort 패턴 답습). 코어는 어느 스킬인지
-        // 모름(generic) — self-growth 가 데이터로만 소비(단방향).
+        // 모름(generic) — 홈 observer 플러그인이 구독할 수 있는 공개 이벤트(단방향).
         if (ctx !== undefined) {
           // ★횟수 기록은 코어가 한다 (2026-10-15 릴리스 적대 검토 F2). 종전엔 자가성장 플러그인이 이 이벤트를 받아
           //  적었는데, 그 플러그인을 기본 꺼짐으로 바꾸자 기록이 통째로 멈췄다 — 스킬 인덱스 사용빈도 순서와

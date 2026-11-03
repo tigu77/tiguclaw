@@ -1,6 +1,8 @@
 {
   "settings.botToken": "봇 토큰",
   "settings.allowedUserIds": "소유자 ID",
+  "settings.batchQuietMs": "이어 오는 메시지 기다림(ms · 0이면 끔)",
+  "settings.batchMaxMs": "이어 오는 메시지 최대 기다림(ms)",
   "suggest.allowedUserIds": "내 ID 찾기",
   "suggest.note.token-missing": "먼저 봇 토큰을 넣어 주세요.",
   "suggest.note.no-messages-yet": "아직 봇에게 온 메시지가 없습니다 — 텔레그램에서 봇에게 아무 말이나 보낸 뒤 다시 찾아 주세요.",

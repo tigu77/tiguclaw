@@ -7,9 +7,11 @@
  *  `/project link [이름]`            연결할 프로젝트 고르기 / 연결
  *  `/project open <이름>`            그 프로젝트 메뉴 — 커맨드 · PROJECT.md · 연결 해제
  *  `/project show <이름>`            PROJECT.md 앞부분
+ *  `/project folder <이름>`          데몬 기계에서 그 프로젝트 폴더를 연다(연결 기록의 등록 경로만)
  *  `/project unlink <이름> [confirm]` 해제 확인 / 해제
  *  `/project run [--yes] <이름> <커맨드> [인자]` → 아래 `dispatchCommandSlash` — 프롬프트형은 비서 턴, 실행형은 셸
  */
+import { randomUUID } from "node:crypto";
 import { listProjects } from "../../store/projects.js";
 import { translate } from "../i18n.js";
 import { getAssistantName } from "../identity.js";
@@ -21,16 +23,29 @@ import {
   linkedProjects,
   linkProject,
   projectMdHead,
+  projectMenu,
   quoteProject,
   unlinkProject,
   type LinkedProject,
+  type SessionExpand,
 } from "../session-projects.js";
-import { discoverProjectCommands, isEphemeralCommandText, splitFirstToken } from "./command-registry.js";
+import { NoDisplayError, openDirectory } from "../open-home-directory.js";
+import { isEphemeralCommandText, runsWithoutModel, splitFirstToken, type Command } from "./command-registry.js";
 import { presentAndClose, replyCommand } from "./reply-command.js";
 import type { SlashCtx } from "./slash-commands.js";
 
 /** 인자 전체를 프로젝트 이름으로 — 따옴표를 벗긴다(공백 든 이름). */
 const nameArg = (s: string): string => s.trim().replace(/^"([\s\S]*)"$/, "$1").trim();
+
+/** 메뉴 라벨 꼬리 — 공통이면 «공통», 플러그인이면 🧩<폴더 이름>. 자기 것은 없음. */
+const commandTail = (c: Command): string =>
+  c.source === "plugin" ? ` · 🧩${c.pluginId ?? c.pluginName ?? "?"}` : c.source === "user" ? ` · ${translate("srv.project.commonTag")}` : "";
+
+/** `/project folder` 가 부르는 열기 — 데몬 기계에서. 회귀가 진짜 Finder 를 띄우지 않게 바꿔 끼울 자리를 둔다. */
+let folderOpener: (dir: string) => Promise<void> = (dir) => openDirectory(dir);
+export const __setFolderOpenerForTest = (fn: ((dir: string) => Promise<void>) | undefined): void => {
+  folderOpener = fn ?? ((dir) => openDirectory(dir));
+};
 
 type Option = { label: string; value: string };
 
@@ -109,19 +124,36 @@ export const handleProject = async (ctx: SlashCtx): Promise<void> => {
       return;
     }
     const q = quoteProject(p.name);
-    const commands = p.exists ? await discoverProjectCommands(p.path) : [];
+    // 메뉴는 코어 한 곳(`projectMenu`)에서 나온다 — 자기 커맨드 → 공통(꼬리 표식) → 빌트인 동작(대시보드 📁 메뉴와 같은 목록).
+    const { commands, actions } = await projectMenu(p);
     await offer(
       `📁 ${p.name}`,
       [
         ...commands.map((c) => ({
-          label: `${c.run !== undefined ? "▶" : "💬"} /${c.name}${c.description !== "" ? ` — ${c.description}` : ""}`,
+          label: `${runsWithoutModel(c) ? "▶" : "💬"} /${c.name}${c.description !== "" ? ` — ${c.description}` : ""}${commandTail(c)}`,
           value: `/project run ${q} ${c.name}`,
         })),
-        { label: translate("srv.project.showMd"), value: `/project show ${q}` },
-        { label: translate("srv.project.unlinkButton"), value: `/project unlink ${q}` },
+        ...actions.map((a) => ({ label: `${a.icon} ${translate(a.labelKey)}`, value: a.slash(q) })),
       ],
       !p.exists ? translate("srv.project.folderMissing") : commands.length === 0 ? translate("srv.project.noCommands") : undefined,
     );
+    return;
+  }
+
+  if (sub === "folder") {
+    // ★연결 기록의 **등록 경로만** 연다 — 사용자 글자의 경로는 받지 않는다(이름으로 연결된 것 중에서 찾는다, 2026-11-03 §2.4).
+    const name = nameArg(rest);
+    const p = findLinkedProject(tk, name);
+    if (p === undefined || !p.exists) {
+      await say(p === undefined ? translate("srv.project.notLinked", { name }) : translate("srv.project.folderMissing"));
+      return;
+    }
+    try {
+      await folderOpener(p.path);
+      await say(translate("proj.folder.opened"));
+    } catch (e) {
+      await say(translate(e instanceof NoDisplayError ? "srv.project.folderNoDisplay" : "proj.folder.openFailed"));
+    }
     return;
   }
 
@@ -183,10 +215,26 @@ export const dispatchCommandSlash = async (ctx: SlashCtx, cmd: string): Promise<
     case "run-needs-project":
       await replyCommand(msg, translate("srv.project.runNeedsProject", { command: e.command }));
       return HANDLED;
+    case "needs-link":
+      await replyCommand(msg, translate("srv.project.commonNeedsLink", { command: e.command }));
+      return HANDLED;
+    case "approval-failed":
+      // 기록을 못 했으니 실행도 안 했다 — 설정 파일을 고치라고 답하고 여기서 끝(비서 턴으로 넘기지 않는다).
+      await replyCommand(msg, translate("srv.project.approvalSaveFailed", { command: e.command, error: e.error }));
+      return HANDLED;
+    case "plugin-unavailable":
+      await replyCommand(msg, translate("srv.project.pluginUnavailable", { plugin: e.plugin, command: e.command }));
+      return HANDLED;
+    case "handler":
+      await startHandler(msg, e);
+      return HANDLED;
     case "confirm":
       await offerOptions(
         msg,
-        translate("srv.project.runConfirm", { command: e.command, project: e.project.name, script: e.script }),
+        e.approval === true
+          ? translate("srv.project.pluginApprovalConfirm", { command: e.command, project: e.project.name, script: e.script, source: e.source ?? "" })
+          : translate("srv.project.runConfirm", { command: e.command, project: e.project.name, script: e.script }) +
+              (e.source === undefined ? "" : `\n${translate("srv.project.commandSource", { source: e.source })}`),
         [
           { label: translate("srv.project.runYes"), value: e.value },
           { label: translate("srv.project.cancel"), value: "/project" },
@@ -207,16 +255,67 @@ export const dispatchCommandSlash = async (ctx: SlashCtx, cmd: string): Promise<
  *  ·`/stop` 이 **그 대화의 것만** 멈춘다.
  *  ·같은 프로젝트의 같은 커맨드가 돌고 있으면 또 띄우지 않는다 — 두 번 누르면 배포가 병렬로 두 번 돌았다(적대 검토).
  */
-const RUNS = new Map<string, { threadKey: string; what: string }>();
+/**
+ * ★셸(`run:`)과 플러그인 처리기(`handler:`)가 **같은 표·같은 키**(`프로젝트 폴더\0커맨드`)를 쓴다(2026-11-03 §2.8) — 중복 금지·`/stop`·`/health` 가 한 곳.
+ *  `stop()` 은 종류별로: 셸은 `killShellById`(결과는 셸 종료가 알린다), 처리기는 신호를 끊고 «멈췄다» 를 알린다(늦은 결과는 버린다).
+ */
+const RUNS = new Map<string, { threadKey: string; what: string; stop: () => Promise<void> }>();
 
 /** 지금 돌고 있는 실행형 커맨드 — `/health` 가 보여 준다(배포 가드가 «함께 멈춘다» 고 경고한다). */
 export const listProjectRuns = (): string[] => [...RUNS.values()].map((r) => `${r.threadKey}:${r.what.split("\0")[1] ?? ""}`);
 
 /** 이 대화에서 돌고 있는 실행형 커맨드를 멈춘다 — `/stop` 이 부른다. 멈춘 개수. */
 export const stopProjectRuns = async (threadKey: string): Promise<number> => {
-  const ids = [...RUNS].filter(([, r]) => r.threadKey === threadKey).map(([id]) => id);
-  for (const id of ids) await killShellById(id);
-  return ids.length;
+  const runs = [...RUNS.values()].filter((r) => r.threadKey === threadKey);
+  for (const r of runs) await r.stop();
+  return runs.length;
+};
+
+const isRunning = (what: string): boolean => [...RUNS.values()].some((r) => r.what === what);
+
+/**
+ * 플러그인 처리기를 부른다 — 비서 턴 없이, **기다리지 않고**(대화 큐를 붙잡지 않는다 — `startRun` 과 같은 이유).
+ * 호스트 좌표는 비서 턴의 도구 호스트와 같다(이 메시지의 대화·채널·주소) — `postCard` 가 이 대화에 카드를 붙인다.
+ * 반환 글은 실행형 출력 꼬리와 같은 위생(`redactSecrets`)을 거친다. 던지면 오류 한 줄 — 데몬은 산다.
+ */
+const startHandler = async (msg: SlashCtx["msg"], e: Extract<SessionExpand, { kind: "handler" }>): Promise<void> => {
+  const what = `${e.project.path}\0${e.command}`;
+  if (isRunning(what)) {
+    await replyCommand(msg, translate("srv.project.runAlready", { command: e.command, project: e.project.name }));
+    return;
+  }
+  const ac = new AbortController();
+  const id = `handler:${randomUUID()}`;
+  RUNS.set(id, {
+    threadKey: msg.threadKey,
+    what,
+    stop: async () => {
+      if (ac.signal.aborted) return;
+      ac.abort(); // → 호스트의 출력 문(postCard·say)이 닫히고 `host.ask` 가 끊긴다. 처리기 코드 자체는 못 죽인다(격리 0).
+      RUNS.delete(id);
+      await replyCommand(msg, translate("srv.project.runStopped", { command: e.command, project: e.project.name }));
+    },
+  });
+  const turn = { threadKey: msg.threadKey, channel: msg.channel, target: msg.channelAddress ?? null };
+  void (async () => {
+    let text: string;
+    let failed = false;
+    try {
+      const r = await e.call({ project: { name: e.project.name, path: e.project.path }, args: e.args }, turn, ac.signal);
+      text = typeof r === "string" ? r : r.text;
+      failed = typeof r !== "string" && r.isError === true;
+    } catch (err) {
+      text = err instanceof Error ? err.message : String(err);
+      failed = true;
+    }
+    if (ac.signal.aborted) return; // 멈춘 뒤 끝난 결과는 버린다(«멈췄다» 는 이미 알렸다).
+    RUNS.delete(id);
+    const clean = redactSecrets(text).trim();
+    if (failed) await replyCommand(msg, translate("srv.project.actionFailed", { plugin: e.plugin, command: e.command, error: clean }));
+    else if (clean !== "") await replyCommand(msg, clean);
+  })().catch(() => {
+    /* 결과 전송 실패 — 데몬은 산다 */
+  });
 };
 
 /** 결과에 싣는 출력 꼬리 — 채널 한 메시지에 들어갈 만큼(전문은 대시보드 셸 카드에 있다). */
@@ -241,7 +340,7 @@ export const formatRunResult = (command: string, project: string, r: BgShellResu
  */
 const startRun = async (msg: SlashCtx["msg"], project: LinkedProject, command: string, script: string): Promise<void> => {
   const what = `${project.path}\0${command}`;
-  if ([...RUNS.values()].some((r) => r.what === what)) {
+  if (isRunning(what)) {
     await replyCommand(msg, translate("srv.project.runAlready", { command, project: project.name }));
     return;
   }
@@ -253,7 +352,8 @@ const startRun = async (msg: SlashCtx["msg"], project: LinkedProject, command: s
     return;
   }
   const t0 = Date.now();
-  RUNS.set(started.shellId, { threadKey: msg.threadKey, what });
+  const shellId = started.shellId;
+  RUNS.set(shellId, { threadKey: msg.threadKey, what, stop: () => killShellById(shellId).then(() => undefined) });
   await replyCommand(msg, translate("srv.project.runStarted", { command, project: project.name, script }));
   void started.done
     .then(async (r) => {

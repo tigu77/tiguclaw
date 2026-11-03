@@ -20,8 +20,12 @@
  * ★2026-08-02 의 «재발 시 갱신으로 인덱스에 남긴다» 는 증상 처방이었다(캡 있는 자리에
  *  계속 두면서 들어가게 만들었다). 이 검사는 **그 되돌림을 막는다** — 다시 인덱스로
  *  올리려면 이 단언들을 먼저 지워야 한다.
+ *
+ * ★2026-11-03 자가성장 플러그인 제거: 플러그인 소스를 훑던 단언(멱등 검사=peek · 박는 문=내리는 문 · 포인터 메모 없음 ·
+ *  빈 원인 미기록)은 대상과 함께 지웠다. 남는 것은 **코어의 문**이다 — access 를 올리는 문은 하나 · 세지 않고 보는 문 ·
+ *  `/status` 의 한 번 도달 · 쓰기 전 확인이 카운터를 안 올린다(동작).
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,12 +33,11 @@ import { readEntrySource } from "./_wiring.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const PLUGIN = path.join(REPO, "plugins/self-growth/src");
 
 export const check: RegressionCheck = {
   name: "growth-costs-nothing-per-turn",
   guards:
-    "자가성장이 자기 멱등 검사로 자기 access 를 올려 인덱스 상석을 차지하던 것 + 제안이 매 턴 실리는 캡 있는 자리를 16.5% 먹던 것",
+    "쓰기 전 «있었나» 확인이 자기 access 를 올려 인덱스 상석을 차지하던 것(자기부풀림) + 내려둔 것의 도달 경로(`/status`)가 사라지는 것",
   run: async (): Promise<Assertion[]> => {
     assertIsolated();
     const out: Assertion[] = [];
@@ -58,54 +61,6 @@ export const check: RegressionCheck = {
       ),
     );
 
-    const files = readdirSync(PLUGIN).filter((f) => f.endsWith(".ts"));
-    const offenders: string[] = [];
-    for (const f of files) {
-      const src = readFileSync(path.join(PLUGIN, f), "utf8").replace(/^\s*\/\/.*$/gm, "");
-      if (/\bgetMemory\(/.test(src)) offenders.push(f);
-    }
-    out.push(
-      assert(
-        "★★자가성장은 자기 산출물을 셀 때 access 를 올리지 않는다(멱등 검사=peek)",
-        offenders.length === 0,
-        offenders.length === 0
-          ? `${files.length}파일 전부 peekMemory`
-          : `★getMemory 를 쓰는 파일: ${offenders.join(", ")} — 자기 카운터를 자기가 올린다`,
-      ),
-    );
-
-    // ── ② 산출물은 매 턴 실리는 자리에 두지 않는다 ────────────────────────────
-    // ★**주석을 코드로 세지 않는다** — 첫 판이 그랬고, `archiveMemory` 를 주석 처리하는
-    //  변이가 **초록으로 통과했다**(이 레포가 이미 두 번 당한 부류:
-    //  [[feedback_gate_must_actually_run]]). 걷어내고 본다.
-    const analysis = readFileSync(path.join(PLUGIN, "analysis.ts"), "utf8")
-      .replace(/^\s*\/\/.*$/gm, "")
-      .replace(/\/\*[\s\S]*?\*\//g, "");
-    const door = analysis.slice(analysis.indexOf("export const upsertReflection"));
-    out.push(
-      assert(
-        "★박는 문이 곧 내리는 문이다(upsertReflection 이 archive 까지 한다)",
-        /archiveMemory\(input\.name\)/.test(door.slice(0, 1200)),
-        /archiveMemory\(input\.name\)/.test(door.slice(0, 1200))
-          ? "박자마자 인덱스에서 내림"
-          : "★인덱스에 남는다 — 캡 있는 자리를 먹는다",
-      ),
-    );
-    // 쓰기가 그 문 밖으로 새면 위 보장이 무의미하다 — 문을 하나로 유지한다.
-    const rawWrites: string[] = [];
-    for (const f of files) {
-      const src = readFileSync(path.join(PLUGIN, f), "utf8").replace(/^\s*\/\/.*$/gm, "");
-      const n = [...src.matchAll(/\baddMemory\(\{/g)].length;
-      if (n > 0 && f !== "analysis.ts") rawWrites.push(`${f}(${n})`);
-    }
-    out.push(
-      assert(
-        "★쓰기가 그 문 하나로 모인다(직접 addMemory 하면 인덱스로 새어 나간다)",
-        rawWrites.length === 0,
-        rawWrites.length === 0 ? "직접 쓰기 0" : `★문 밖 쓰기: ${rawWrites.join(", ")}`,
-      ),
-    );
-
     // ── ③ 도달은 «매 턴» 이 아니라 «한 번» 이다 ───────────────────────────────
     // 진입 경로 전체(진입점 + core/entry) — `/status` 본문이 옮겨갔다(구조 감사 ③).
     const index = readEntrySource();
@@ -124,29 +79,8 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ── ④ 가리키는 것이 이미 옆에 있으면 포인터를 두지 않는다 ─────────────────
-    out.push(
-      assert(
-        "SELF_GROWTH.md 포인터 메모가 없다(지침 본문이 이미 시스템 슬롯으로 실린다)",
-        !files.some((f) =>
-          /ensureDirectivePointer|POINTER_MEMO_NAME/.test(readFileSync(path.join(PLUGIN, f), "utf8")),
-        ),
-        `포인터 흔적 있는 파일=${files.filter((f) => /ensureDirectivePointer|POINTER_MEMO_NAME/.test(readFileSync(path.join(PLUGIN, f), "utf8"))).join(", ") || "없음"}`,
-      ),
-    );
-
-    // ── ⑤ 원인을 모르면 안 남긴다 ────────────────────────────────────────────
-    const failure = readFileSync(path.join(PLUGIN, "failure.ts"), "utf8");
-    out.push(
-      assert(
-        "★원인·처방이 둘 다 비면 실패 반성을 만들지 않는다(실측 12건 중 8건이 빈칸이었다)",
-        /const hasCause =[\s\S]{0,200}if \(!hasCause\) return null;/.test(failure),
-        /if \(!hasCause\) return null;/.test(failure) ? "빈칸 미기록" : "★빈칸도 기록한다",
-      ),
-    );
-
     // ── ★«쓰기 전 확인» 이 접근 카운터를 올리지 않는다 — **동작으로** (2026-09-06) ──
-    //  위 스캔은 `plugins/self-growth/src` **한 디렉터리만** 본다. 그래서 정작 코어의 문
+    //  (종전) 플러그인 스캔은 자가성장 플러그인 소스 **한 디렉터리만** 봤다. 그래서 정작 코어의 문
     //  (`memory-mcp.ts addMemoryWithGuard`)은 범위 밖이었고, 거기서 `peekMemory` 를
     //  `getMemory` 로 되돌려도 **2,928건이 초록**이었다(변이로 확인).
     //  ★손으로 고른 디렉터리가 판정 범위이면 그 밖은 안 보인다

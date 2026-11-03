@@ -76,6 +76,7 @@ const run = async (): Promise<Assertion[]> => {
   // ── ④ 배선 — 실행은 store 가, 시계는 **코어**가 (관측자≠행위자) ─────────
   //  ★2026-08-12: 시계를 self-growth 플러그인에서 코어로 옮겼다. 플러그인 로더는 로드
   //   실패를 조용히 skip 하므로, 성장 기능이 안 뜨면 백업까지 함께 멎던 구조였다.
+  //   (그 플러그인은 2026-11-03 에 뺐다 — «플러그인에 시계가 남지 않았다» 단언도 대상과 함께 지웠다.)
   {
     const { readFile } = await import("node:fs/promises");
     const bk = await readFile(new URL("../../store/backup.ts", import.meta.url), "utf8");
@@ -88,10 +89,6 @@ const run = async (): Promise<Assertion[]> => {
       "utf8",
     );
     const daemon = await readFile(new URL("../../index.ts", import.meta.url), "utf8");
-    const plugin = await readFile(
-      new URL("../../../plugins/self-growth/src/index.ts", import.meta.url),
-      "utf8",
-    );
     // ★주석을 빼고 본다 — 이 파일의 주석에 "cp 가 아니라 VACUUM INTO 인 이유" 가 적혀
     //  있어서, 실행부를 cp 로 바꿔도 정규식이 그 주석에 걸려 통과했다(변이가 잡아줬다).
     //  **검사 대상은 코드이지 그것을 설명하는 글이 아니다** — 이 레포에서 세 번째다.
@@ -134,11 +131,6 @@ const run = async (): Promise<Assertion[]> => {
       got: /startSelfMaintenance\(bus\)/.test(daemon)
         ? "데몬이 직접 시작"
         : "★데몬이 안 걸었다 — 아무도 백업을 부르지 않는다",
-    });
-    out.push({
-      name: "★성장 플러그인엔 백업 시계가 남아 있지 않다(두 곳에서 돌면 안 된다)",
-      ok: !/runBackupIfDue/.test(plugin) && !/runHealthSweep/.test(plugin),
-      got: `plugin 잔여: backup=${/runBackupIfDue/.test(plugin)} sweep=${/runHealthSweep/.test(plugin)}`,
     });
     out.push({
       name: "호출부는 알림 여부를 스스로 정하지 않는다(판정은 store)",

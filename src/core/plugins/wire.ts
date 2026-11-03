@@ -25,14 +25,14 @@ import {
   unregisterChannelOutbound,
   type ChannelOutbound,
 } from "../channel-outbound.js";
-import { buildToolServer, readToolSpecs } from "./tools.js";
+import { buildToolServer, readCommandHandlers, readToolSpecs } from "./tools.js";
 import { registerMcpServer, unregisterMcpServer } from "../mcp-registry.js";
 import {
   registerPluginDataRoutes,
   unregisterPluginDataRoutes,
   type PluginDataRoutes,
 } from "./data-routes.js";
-import { createPluginHost, type PluginHost } from "./host.js";
+import { createPluginHost, type PluginHost, type PluginTurn } from "./host.js";
 import type { EventBus } from "../eventbus.js";
 import { appRoot } from "../paths.js";
 import type { LoadedPlugin } from "./loader.js";
@@ -41,6 +41,8 @@ import type { LoadedPlugin } from "./loader.js";
 export interface WireResult {
   /** 실제로 꽂힌 capability (선언했고 훅도 있었던 것). */
   wired: string[];
+  /** 프로젝트 메뉴 처리기(`getCommandHandlers`, 2026-11-03 §2.8) — `trackPlugin` 이 `LIVE` 항목에 싣는다. 없으면 비었다. */
+  commandHandlers?: Map<string, PluginCommandHandlerCall>;
   /** 건너뛴 것 — 선언은 했는데 못 꽂았다. */
   skipped: Array<{ capability: string; reason: string }>;
   /**
@@ -64,6 +66,29 @@ export interface WirePluginDeps {
   /** shutdown 이 일괄 호출할 service stop 핸들. */
   serviceStops: Array<{ name: string; stop: () => Promise<void> }>;
 }
+
+/** 코어가 처리기를 부르는 꼴 — 메시지 좌표와 중지 신호를 주면 호스트를 만들어 처리기를 부른다. */
+export type PluginCommandHandlerCall = (
+  input: { readonly project: { readonly name: string; readonly path: string }; readonly args: string },
+  turn: PluginTurn,
+  signal: AbortSignal,
+) => Promise<string | { text: string; isError?: boolean }>;
+
+/**
+ * 멈춘 뒤엔 호스트로 **말하지 못하게** — `/stop` 뒤 처리기가 늦게 `postCard`·`say` 를 불러도 대화에 나가지 않는다(§2.8 R4 N2).
+ * 처리기 코드 자체는 못 죽인다(격리 0) — 막는 것은 코어가 준 출력 문이다. 반환값은 부른 쪽이 버린다.
+ */
+const stopsWith = (host: PluginHost, signal: AbortSignal): PluginHost =>
+  new Proxy(host, {
+    get(target, key, receiver) {
+      if (key === "postCard") return async (input: Parameters<PluginHost["postCard"]>[0]) => (signal.aborted ? false : target.postCard(input));
+      if (key === "say") {
+        return async (input: Parameters<PluginHost["say"]>[0]) =>
+          signal.aborted ? { ok: false, error: "stopped" } : target.say(input);
+      }
+      return Reflect.get(target, key, receiver) as unknown;
+    },
+  });
 
 /** 로더가 인스턴스화한 플러그인에서 덕 타이핑으로 읽는 면. */
 interface PluginInstance {
@@ -101,6 +126,8 @@ interface PluginInstance {
    *  홈 위젯을 내는 플러그인은 도구도 같이 내는 게 보통이라 별도 `kind` 를 만들지 않는다.
    */
   getDataRoutes?: () => PluginDataRoutes | undefined;
+  /** 프로젝트 메뉴 처리기 `{ 이름: (input, host) => 답 }` — 커맨드 파일 `handler:` 가 부른다(2026-11-03 §2.8). 내면 배선된다. */
+  getCommandHandlers?: () => unknown;
   outbound?: ChannelOutbound;
   status?: "up" | "disabled";
 }
@@ -274,6 +301,31 @@ export const wirePlugin = async (
       }
     }
 
+    // ─── 프로젝트 메뉴 처리기 (2026-11-03 공통 커맨드 §2.8) ──────────────────
+    // 도구와 같은 형: capability 무관, 내면 배선된다. 호스트는 **부를 때마다** 그 메시지의 좌표로 만든다(비서 턴의 도구 호스트와 같은 좌표).
+    if (typeof inst.getCommandHandlers === "function") {
+      try {
+        const ch = readCommandHandlers(inst.getCommandHandlers());
+        for (const problem of ch.problems) console.warn(`[plugin-loader] ${lp.manifest.name}: ${problem}`);
+        if (ch.handlers.size > 0) {
+          const needs = lp.manifest.needs ?? {};
+          const calls = new Map<string, PluginCommandHandlerCall>();
+          for (const [name, fn] of ch.handlers) {
+            calls.set(name, (input, turn, signal) =>
+              fn(input, stopsWith(createPluginHost(lp.manifest.name, needs, turn, lp.manifest.settings ?? [], signal), signal)),
+            );
+          }
+          result.commandHandlers = calls;
+          result.wired.push("command-handlers");
+          console.log(`registered ${String(calls.size)} command handler(s) from plugin: ${lp.manifest.name} (${[...calls.keys()].join(", ")}) (from ${relDir})`);
+        }
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        result.skipped.push({ capability: "command-handlers", reason });
+        console.error(`[plugin-loader] command handler registration ${lp.manifest.name} failed: ${reason}`);
+      }
+    }
+
     // ─── 데이터 라우트 등록 (2026-08-28, 위젯 플랫폼 §E.2) ──────────────────
     // MCP 와 같은 형: capability 무관, 내면 배선된다. 실패는 이 플러그인만 건너뛴다.
     if (typeof inst.getDataRoutes === "function") {
@@ -405,7 +457,8 @@ export const wirePlugin = async (
           capability === "service" &&
           (result.wired.includes("mcp") ||
             result.wired.includes("tools") ||
-            result.wired.includes("data-routes"));
+            result.wired.includes("data-routes") ||
+            result.wired.includes("command-handlers"));
         if (!alreadyProvides) skip(capability, missingHook(capability, hook));
         continue;
       }

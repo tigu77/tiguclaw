@@ -129,7 +129,6 @@ sandbox, "who wrote this" is the only thing a person can judge at install time.
 > How: put `"kind": ["provider"]` and `"provider": { "id": "plugin.<name>", "entry":
 > "./src/provider.ts" }` in the manifest, then export one of three from that entry —
 > `collectProvider()` returning the module, or `provider`/`default` as `{ id, load }`.
-> The bundled `self-growth` plugin uses `collectProvider()`.
 
 Whatever the kind, these are called **if present** (duck typing):
 
@@ -311,6 +310,64 @@ getDataRoutes() {
 
 ---
 
+## 6-1. Project menu — adding items to every project's 📁 menu
+
+Put `scope: projects` in `commands/<name>.md` and the command shows up as a shared item in the menu of **every project linked to a
+conversation** (dashboard 📁 chip · Telegram `/project`), running against that project. A project's own command or a user home command
+with the same name wins.
+
+| Kind | Front matter | When pressed |
+|---|---|---|
+| Prompt | `scope: projects` + body | The body goes to the assistant, prefixed with a `[Project name — path · provided by 🧩 plugin]` line |
+| Runnable | `scope: projects` + `run: <one shell line>` | Runs in that project's folder. **Each command asks for approval once**; the approval covers every linked project and any arguments. It asks again if the run line changes (changes inside a script that line calls are not tracked) |
+| Handler | `scope: projects` + `handler: <name>` (no body, not with `run`) | Your plugin code's handler runs |
+
+**`confirm: true` asks every time, approval or not** — use it for things that are hard to undo (deploy, delete, sending out). Handlers too.
+
+Handlers come from the instance method `getCommandHandlers()`:
+
+```js
+getCommandHandlers() {
+  return {
+    show_board: async ({ project, args }, host) => {
+      await host.postCard({ text: `${project.name} board`, widget: "board", data: { path: project.path } });
+      return "Opened the board";
+    },
+  };
+}
+```
+
+- `project` is the project **the core looked up again from that conversation's links** — never a path the user typed.
+- The returned text is the reply (same shape as a tool handler). For a screen, attach a widget card with `host.postCard` — Telegram gets
+  the `text` (needs `needs.ui: ["chat-widget"]`).
+- Handler names are lowercase letters, digits and underscores. A handler only runs **when that folder's code is loaded in this daemon** —
+  if the plugin is off or failed to load, the reply says it isn't handling the command right now.
+- The same command in the same project doesn't run twice at once, and `/stop` stops it (after that, `postCard`, `say` and the return text are not sent).
+
+---
+
+## 6-2. Hooks — hooks that come with a plugin
+
+Put `hooks/hooks.json` in a plugin folder and its hooks run while the plugin is enabled. The format is the same as Claude Code plugins
+(`{ "hooks": { "<event>": [ { "matcher": "...", "hooks": [ { "type": "command", "command": "...", "timeout": 30 } ] } ] } }`).
+How a hook behaves (input JSON, blocking with exit code 2, stdout as context) is the same as in the [hooks guide](hooks.en.md).
+
+- **Installing and enabling is the trust.** No separate approval is asked — they run every turn, including turns with no one present (schedules, watches, workers).
+- **Order is home → project → plugin.** If your own hook blocks first, plugin hooks don't run. Exit code 2 from a plugin hook blocks too.
+- Output from a plugin hook is prefixed with a `[🧩 <name> hook]` line, so it isn't read as your text or the assistant's.
+- `${CLAUDE_PLUGIN_ROOT}` (the plugin folder), `${CLAUDE_PLUGIN_DATA}` (the same folder as your code's `dataDir`) and `${CLAUDE_PROJECT_DIR}`
+  (that call's working folder) are replaced literally in `command`, and the same values are passed as environment variables. Quote them
+  yourself. The working folder is that call's working folder, not the plugin folder.
+  - ★`CLAUDE_PLUGIN_DATA` is not created for you, and for a home plugin it is usually the plugin folder itself (unlike Claude Code's separate data folder).
+- The file is read **on every call** — disabling, removing or editing takes effect from the next call.
+- What doesn't run: entries whose `type` isn't `command` · the exec form with `args` · events tiguclaw doesn't emit (`SessionStart` etc.) ·
+  invalid entries (no `command`, invalid `timeout`). If the manifest name doesn't fit the rule (lowercase letters, digits, hyphens), or an
+  earlier folder has the same name, the file isn't read. The inventory shows why.
+- See which plugin hooks are running in the Plugin hooks line of `/status`, in `/plugins`, and in the dashboard inventory.
+- ★A plugin folder without code can't be turned off from the screen. To stop it, delete the folder or add its name to `modules.disabled` in your home `settings.json`.
+
+---
+
 ## 7. `host` — everything a plugin can touch
 
 Handed to `getDataRoutes` handlers and tool implementations.
@@ -462,7 +519,7 @@ Bundling and npm also mean you **don't have to publish your source**.
   is logged. But throwing from `start()` fails that plugin's load (others are unaffected).
 - ★**You can't use the name of a plugin that ships with the app.** Currently reserved: `claude-subscription-auth`,
   `cli-channel`, `codex-subscription-auth`, `computer-use`, `dashboard`, `file-watch`,
-  `http-bridge`, `running-work`, `scheduler`, `self-growth`, `telegram-channel`. What counts is the **`name` in your manifest**, not the folder — name
+  `http-bridge`, `running-work`, `scheduler`, `telegram-channel`. What counts is the **`name` in your manifest**, not the folder — name
   the folder whatever you like. Installing under a reserved name is refused with *"a bundled
   plugin already has that name"*, and that holds even if the bundled one is switched off or
   failed to load. The name is reserved; it doesn't depend on whether it started up today.

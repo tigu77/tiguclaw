@@ -73,6 +73,8 @@ export const fakeChannel = (
   const channel = new mod.default();
   if (saved === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
   else process.env.TELEGRAM_BOT_TOKEN = saved;
+  // 연달아 온 메시지 묶기는 **끈 채로** 둔다 — 다른 검사들은 메시지마다 바로 닿는 것을 잰다. 묶기 검사가 이 뒤에 켠다.
+  process.env.TELEGRAM_BATCH_QUIET_MS = "0";
   const bot = (channel as unknown as { bot: BotLike }).bot;
   const calls: ApiCall[] = [];
   let msgId = 1000;

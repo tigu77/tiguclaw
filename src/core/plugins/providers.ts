@@ -525,7 +525,7 @@ const loadPluginModuleExports = async (): Promise<PluginModuleExport[]> => {
       }
 
       // ★built 런타임 대응: loader 와 동일한 entry 해석(.ts→.js 폴백 + tsx 등록).
-      // raw path.resolve 면 built 에서 `.ts` entry(예: self-growth provider)가 존재하지
+      // raw path.resolve 면 built 에서 `.ts` entry(소스 그대로 둔 provider)가 존재하지
       // 않아 import 실패→조용히 skip→모듈뷰 카드 누락. resolveEntry 재사용으로 대칭 복구.
       const modulePath = await resolveEntry(pluginDir, manifest.entry);
       if (!(await entryInsidePluginDir(pluginDir, modulePath))) {

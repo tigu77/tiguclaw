@@ -53,7 +53,7 @@ export const check: RegressionCheck = {
         `dashboard=${String(isSelfReferentialModule("dashboard"))}`,
       ),
     );
-    const others = ["scheduler", "file-watch", "running-work", "self-growth", "http-bridge"];
+    const others = ["scheduler", "file-watch", "running-work", "http-bridge"];
     const wrong = others.filter((n) => isSelfReferentialModule(n));
     out.push(
       assert(

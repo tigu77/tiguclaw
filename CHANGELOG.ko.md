@@ -8,6 +8,26 @@
 
 ## [Unreleased]
 
+## [0.82.0] - 2026-11-04
+
+### 추가
+- 프로젝트 메뉴(대시보드 📁 칩·텔레그램 `/project`)에 «폴더 열기»가 생겼습니다. 비서가 실행 중인 컴퓨터에서 그 프로젝트 폴더를 엽니다.
+- 홈이나 플러그인의 커맨드에 `scope: projects` 를 달면 대화에 연결한 모든 프로젝트의 메뉴에 공통 항목으로 뜨고, 누른 프로젝트를 대상으로 실행됩니다. 같은 이름의 프로젝트 커맨드나 홈 커맨드가 있으면 그쪽이 먼저입니다.
+- 플러그인이 제공하는 셸 실행형 커맨드는 커맨드마다 처음 한 번 승인을 받고, 실행할 명령 줄이 바뀌면 다시 묻습니다. `confirm: true` 를 단 커맨드는 승인과 관계없이 매번 확인합니다.
+- 플러그인이 `handler:` 로 프로젝트 메뉴 항목을 자기 코드로 처리할 수 있습니다. 같은 항목은 겹쳐 실행되지 않고 `/stop` 으로 멈출 수 있습니다.
+- 켜진 플러그인 폴더의 `hooks/hooks.json`(Claude Code 플러그인과 같은 형식)에 든 훅이 설치·켜기만으로 실행됩니다. 홈·프로젝트 훅 다음에 실행되므로 사용자 훅이 먼저 막으면 실행되지 않고, 출력에는 어느 플러그인의 훅인지 표시가 붙습니다.
+- `/status`·`/plugins`·대시보드 인벤토리에서 플러그인별 훅과 그 상태를 볼 수 있습니다. 플러그인을 끄거나 지우면 다음 호출부터 그 훅이 멈춥니다.
+
+### 변경
+- 텔레그램에서 연달아 보낸 메시지와 첨부를 잠시(기본 2.5초, 최대 6초) 모아 한 번에 답합니다. 그만큼 답이 늦게 시작되며, 슬래시 명령과 버튼 답은 기다리지 않습니다. 텔레그램 플러그인 설정에서 기다리는 시간을 바꾸거나 0으로 끌 수 있습니다.
+
+### 제거
+- 번들 자가성장(`self-growth`) 플러그인을 뺐습니다(0.71.0부터 기본으로 꺼져 있었습니다). 실패에서 지침을 자동으로 만들거나 스킬 개선을 제안하던 기능과 그 모듈 카드가 사라집니다. `confirm_feedback` 으로 남기는 확정 지침과 이미 쌓인 지침은 그대로 쓰입니다.
+- 비서 기본 지침과 매 턴 확정 지침 머리글에서 자가성장 관련 문구를 뺐습니다.
+
+### 수정
+- 홈·프로젝트 `settings.json` 의 훅 항목 하나가 비어 있거나(`null`) `timeout` 이 잘못되면 같은 이벤트의 뒤 훅까지 실행되지 않던 문제와, 아주 큰 `timeout` 의 훅이 시작하자마자 종료되던 문제를 수정했습니다. 이제 잘못된 항목만 건너뛰며, `command` 가 없는 항목도 실행하지 않습니다.
+
 ## [0.81.0] - 2026-11-02
 
 ### 추가
@@ -2798,7 +2818,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.82.0...HEAD
+[0.82.0]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...v0.82.0
 [0.81.0]: https://github.com/tigu77/tiguclaw/compare/v0.80.0...v0.81.0
 [0.80.0]: https://github.com/tigu77/tiguclaw/compare/v0.79.1...v0.80.0
 [0.79.1]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...v0.79.1

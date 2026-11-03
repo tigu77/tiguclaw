@@ -2947,8 +2947,8 @@ export const runOpenAiCodex = async (
                   : (JSON.parse(tc.partialJson) as Record<string, unknown>);
               // Phase 1 훅 (2026-07-24) — PreToolUse, callTool 직전. 계약:
               // _workspace/hooks_phase1_architect_contract.md §3.1. 훅 미설정(대부분)이면
-              // runPreToolUseHooks 가 runHooks 조기반환(matchers.length===0)으로 {block:false}
-              // 즉시 반환 — 현행 경로 바이트 동일(회귀 0). block=true 면 실제 도구를 실행하지
+              // runPreToolUseHooks 가 {block:false} 를 반환한다(켜진 플러그인 폴더
+              // 훑기 ~2.3ms 만 든다 — 2026-11-03 플러그인 훅). block=true 면 실제 도구를 실행하지
               // 않고 formatToolBlock 문자열을 그대로 function_call_output 으로 push(모델이
               // 거부를 인지) — bridge 조회·sideEffectExecuted·callTool·타임아웃/슬로우 타이머
               // 전부 스킵(계약 §3.1: 차단된 도구는 sideEffectExecuted set 하지 말 것 — claude
@@ -3158,7 +3158,7 @@ export const runOpenAiCodex = async (
     //  단락되는 건 TurnTimeoutError 하나뿐이고, UserCancelled/WorkerCancelled/WorkerTimeout
     //  은 `throw input.abortSignal.reason` 으로 이 catch 에 **도달한다**.
     //  삼킨 결과: ①`/stop` 후 가짜 에러 답장이 한 통 더 가고 취소된 턴이 **성공으로**
-    //  히스토리·self-growth 에 적재 ②**매니저 타임아웃이 "완료" 로 보고**(markFailed 를 건너뛰어
+    //  히스토리·턴 기록에 적재 ②**매니저 타임아웃이 "완료" 로 보고**(markFailed 를 건너뛰어
     //  onWorkerComplete 가 markDone) ③서브에이전트 취소가 부모에게 성공으로 보고.
     //  판정은 이름 목록이 아니라 **동일성**이다: 이 에러가 곧 abort 사유면 취소다.
     const abortReason: unknown = input.abortSignal?.reason;

@@ -20,9 +20,8 @@
  *  마음먹으면 `src/core/*` 를 그냥 import 한다. 그걸 막는 건 표면이 아니라 프로세스 경계이고,
  *  그건 아직 없다(설계 §H). 여기서 하는 일은 **그 경계를 나중에 그을 수 있게 해두는 것**이다.
  */
-import path from "node:path";
 import { readLocale } from "../i18n.js";
-import { getPaths } from "../paths.js";
+import { pluginDataDir } from "../paths.js";
 import { getEventBus } from "../eventbus.js";
 import { turnRateLimitSnapshot } from "../llm-runtime/rate-limit-view.js";
 import { deliverOutbound } from "../outbound.js";
@@ -554,7 +553,7 @@ export const createPluginHost = (
     }
     return ok;
   },
-  dataDir: path.join(getPaths().commonPlugins, plugin),
+  dataDir: pluginDataDir(plugin),
   log: (message) => console.log(`[plugin:${plugin}] ${message}`),
 
   // ★게이트가 **없다** — 이벤트를 읽는 건 사용자에게 대가가 없다(위 주석 참조).

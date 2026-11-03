@@ -40,8 +40,10 @@ import { z } from "zod";
 import { getPaths, projectScope } from "../../paths.js";
 import { findRegisteredProject } from "../../session-projects.js";
 import { getEventBus } from "../../eventbus.js";
+import { parseFrontmatter } from "./skill-registry.js";
 import {
   discoverCommands,
+  discoverCommonProjectCommands,
   findCommandFile,
   isWalkedCommandFolder,
   listCommandsIn,
@@ -203,8 +205,10 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
   const registerCommand = tool(
     "register_command",
     "커스텀 슬래시 명령을 만듭니다. 두 종류: ①프롬프트형(prompt) — '/name' 이 비서에게 그 글을 보낸다($ARGUMENTS 로 인자). " +
-      "②실행형(run, project 필수) — 비서 턴 없이 그 프로젝트 폴더에서 셸 한 줄을 돌리고 결과를 보낸다(배포·빌드·테스트). " +
-      "project 를 주면 그 프로젝트의 .tiguclaw/commands 에, 없으면 전역(<home>/commands)에 만든다. 재시작 불요. " +
+      "②실행형(run, project 또는 scope 'projects' 필요) — 비서 턴 없이 그 프로젝트 폴더에서 셸 한 줄을 돌리고 결과를 보낸다(배포·빌드·테스트). " +
+      "project 를 주면 그 프로젝트의 .tiguclaw/commands 에, 없으면 홈(<home>/commands)에 만든다. 재시작 불요. " +
+      "★scope 'projects' = **모든 프로젝트 공통**: 대화에 연결한 모든 프로젝트의 📁 메뉴에 뜨고 그 프로젝트를 대상으로 돈다(실행형은 그 폴더에서, 프롬프트형은 대상 줄이 붙는다) — " +
+      "전역 슬래시 목록·텔레그램 봇 메뉴엔 안 뜬다. scope 'global' = 전역으로 되돌린다. 기존 명령을 덮어쓸 때 scope 를 안 주면 그 범위를 그대로 둔다. " +
       "★묶음: group('배포/스테이징')을 주면 그 하위 폴더에 둔다 — 메뉴에 배포 › 스테이징 › /이름 으로 보인다(전역·프로젝트 둘 다). " +
       "이미 있는 명령에 group 만 주면(prompt·run 없이) 내용은 그대로 두고 그 묶음으로 **옮긴다**(group '' = 맨 위로). " +
       "부르는 이름은 묶음과 무관하게 /이름 이라 폴더가 달라도 이름은 겹칠 수 없다. 지금 묶음은 list_commands 로 본다. " +
@@ -243,6 +247,10 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         .string()
         .optional()
         .describe("묶음(하위 폴더) 경로 — 예 '배포' · '배포/스테이징'. '' 는 맨 위. 안 주면 새 명령은 맨 위, 기존 명령은 제자리."),
+      scope: z
+        .enum(["projects", "global"])
+        .optional()
+        .describe("홈 명령의 범위 — 'projects' = 모든 연결 프로젝트 공통(메뉴에 뜨고 그 프로젝트에서 돈다) · 'global' = 전역. project 와 같이 못 쓴다. 덮어쓸 때 안 주면 기존 범위 유지."),
     },
     async (args) => {
       try {
@@ -277,8 +285,8 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         // ★옮기기만 — 내용 없이 group 만 주면 기존 명령을 그 묶음으로 옮긴다(내용을 다시 쓰게 하면 비서가 본문을 옮겨 적다 바꾼다).
         if (prompt === "" && run === "" && group !== undefined) {
           // 옮기기만이다 — 설명·확인·덮어쓰기를 같이 주면 조용히 버리지 않고 알린다(릴리스 검토 F6).
-          if (args.description !== undefined || args.confirm !== undefined || args.overwrite !== undefined) {
-            return errText("옮기기(group 만)에는 description·confirm·overwrite 를 같이 쓸 수 없습니다 — 내용까지 바꾸려면 prompt 나 run 과 overwrite: true 를 주세요.");
+          if (args.description !== undefined || args.confirm !== undefined || args.overwrite !== undefined || args.scope !== undefined) {
+            return errText("옮기기(group 만)에는 description·confirm·overwrite·scope 를 같이 쓸 수 없습니다 — 내용까지 바꾸려면 prompt 나 run 과 overwrite: true 를 주세요.");
           }
           const from = await findCommandFile(whereEarly.dir, name);
           if (from === undefined) {
@@ -301,8 +309,10 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         if ((prompt === "") === (run === "")) {
           return errText("prompt(프롬프트형)와 run(실행형) 중 **하나만** 주세요(기존 명령을 묶음으로 옮기기만 하려면 group 만 주세요).");
         }
-        if (run !== "" && (args.project ?? "").trim() === "") {
-          return errText("실행형(run)은 project 가 필요합니다 — 그 프로젝트 폴더에서 돈다.");
+        const inProject = (args.project ?? "").trim() !== "";
+        // 범위는 홈 명령에만 뜻이 있다 — 프로젝트 폴더 것은 이미 그 프로젝트 것이다(2026-11-03 공통 커맨드 §2.7).
+        if (args.scope !== undefined && inProject) {
+          return errText("scope 는 홈 명령(전역·모든 프로젝트 공통)에만 씁니다 — project 와 같이 쓸 수 없습니다(프로젝트 폴더의 명령은 이미 그 프로젝트 것입니다).");
         }
         if (/[\r\n]/.test(run)) {
           return errText("run 은 한 줄입니다 — 여러 단계는 npm 스크립트나 스크립트 파일로 묶고 run 이 그걸 부르게 하세요.");
@@ -321,6 +331,23 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
             `슬래시 명령 '${name}' 가 이미 존재합니다(${existing}). 덮어쓰려면 overwrite: true 를 지정하거나, 먼저 delete_command 로 삭제하세요.`,
           );
         }
+        // 실효 범위 — 인자가 있으면 그것, 생략한 덮어쓰기면 **기존 파일의 범위 그대로**(공통을 고치다 조용히 전역이 돼 봇 메뉴에 뜨지 않게).
+        //  ★머리 블록은 매번 새로 조립하므로 «global» 은 필드를 **쓰지 않는** 것이다(파일 값은 'projects' 하나뿐 — §2.1).
+        let shared = false;
+        if (!inProject) {
+          if (args.scope !== undefined) shared = args.scope === "projects";
+          else if (existing !== undefined) {
+            const prev = (parseFrontmatter(await fs.readFile(existing, "utf8").catch(() => ""))?.scope ?? "").trim();
+            if (prev !== "" && prev !== "projects") {
+              return errText(`기존 '/${name}' 의 scope 값 '${prev}' 은(는) 쓸 수 없는 값입니다 — scope 를 'projects' 또는 'global' 로 정해서 다시 덮어쓰세요.`);
+            }
+            shared = prev === "projects";
+          }
+        }
+        // 실행형은 «어느 폴더에서 돌지» 가 있어야 한다 — 그 프로젝트(project) 또는 연결한 프로젝트마다(scope 'projects').
+        if (run !== "" && !inProject && !shared) {
+          return errText("실행형(run)은 project 또는 scope: 'projects'(모든 프로젝트 공통)가 필요합니다 — 연결한 프로젝트 폴더에서 돈다.");
+        }
 
         // 4) frontmatter(description optional) + 본문=prompt 조립. parseFrontmatter 가
         //    읽을 단순 key:value. frontmatter 없어도 유효하나, description 있으면 기록.
@@ -329,6 +356,7 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         //  (fmValue 는 큰따옴표를 작은따옴표로 바꿔 셸 명령의 뜻을 바꾼다).
         const fm = [
           ...(desc !== "" ? [`description: ${fmValue(desc)}`] : []),
+          ...(shared ? ["scope: projects"] : []),
           ...(run !== "" ? [`run: '${run}'`] : []),
           ...(run !== "" && args.confirm === true ? ["confirm: true"] : []),
         ];
@@ -384,13 +412,15 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
         });
 
         return okText(
-          `슬래시 명령 '/${name}' 를 등록했습니다(${where.label}${run !== "" ? " · 실행형" : ""}).\n` +
+          `슬래시 명령 '/${name}' 를 등록했습니다(${where.label}${shared ? " · 모든 프로젝트 공통" : ""}${run !== "" ? " · 실행형" : ""}).\n` +
             `- 파일: ${filePath}\n` +
             (desc !== "" ? `- 설명: ${desc}\n` : "") +
             (run !== "" ? `- 실행: ${run}${args.confirm === true ? " (실행 전 확인)" : ""}\n` : "") +
-            (args.project !== undefined && args.project.trim() !== ""
+            (inProject
               ? `이 프로젝트를 대화에 연결하면 📁 메뉴와 '/' 목록에 뜹니다(텔레그램은 /project).`
-              : `동작은 즉시 적용됩니다('/${name}' 호출 가능). 텔레그램 명령 메뉴는 곧 반영됩니다.`),
+              : shared
+                ? `대화에 연결한 모든 프로젝트의 📁 메뉴에 뜹니다(텔레그램은 /project). 같은 이름이 프로젝트 자기 명령에 있으면 그쪽이 이깁니다.`
+                : `동작은 즉시 적용됩니다('/${name}' 호출 가능). 텔레그램 명령 메뉴는 곧 반영됩니다.`),
         );
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
@@ -413,15 +443,22 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
           return okText(`## ${where.label} 슬래시 명령\n\n${formatGrouped(own)}`);
         }
         const globals = await listCommandsIn(getPaths().commonCommands);
-        const commands = await discoverCommands();
+        const [commands, common] = await Promise.all([discoverCommands(), discoverCommonProjectCommands()]);
         const index = formatCommandIndex(commands);
-        if (index === "") {
+        if (index === "" && common.length === 0) {
           return okText("등록된 커스텀 슬래시 명령이 없습니다.");
         }
         const grouped = globals.some((c) => c.folder !== undefined && c.folder !== "")
           ? `\n\n## 전역 명령 묶음\n\n${formatGrouped(globals)}`
           : "";
-        return okText(`## 커스텀 슬래시 명령\n\n${index}${grouped}`);
+        // 모든 프로젝트 공통(scope: projects) — 전역 목록과 섞지 않는다(연결 없이는 못 돈다). 플러그인 것은 출처를 붙인다.
+        const shared =
+          common.length === 0
+            ? ""
+            : `\n\n## 모든 프로젝트 공통(연결한 프로젝트의 📁 메뉴)\n\n${common
+                .map((c) => `- /${c.name}${c.description ? ` — ${c.description}` : ""}${c.source === "plugin" ? ` (🧩 ${c.pluginId ?? "?"})` : ""}`)
+                .join("\n")}`;
+        return okText(`## 커스텀 슬래시 명령\n\n${index === "" ? "(전역 명령 없음)" : index}${grouped}${shared}`);
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
       }

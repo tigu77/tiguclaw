@@ -174,7 +174,7 @@ export const formatMemoryIndex = (
 /**
  * **확정된 지침이 실제 행동으로 돌아오게 한다** (2026-08-02).
  *
- * ★왜 필요했나: self-growth 는 관측→제안→(저위험)자동 확정까지 만들어 놓고, 확정분을
+ * ★왜 필요했나: 옛 self-growth 는 관측→제안→(저위험)자동 확정까지 만들어 놓고, 확정분을
  *  `<home>/SELF_GROWTH.md` 에 적재했다. 그런데 **코어가 그 파일을 프롬프트에 싣지 않았다** —
  *  포인터 메모리가 "작업 착수 전 Read 하라" 고 말할 뿐이었고, 그 포인터조차 메모리 인덱스
  *  캡(8KB / 실제 18.7KB) 안에서 밀려날 수 있었다. 즉 **지침을 읽으라는 지침이 배달 위험에
@@ -223,7 +223,7 @@ export const formatSelfGrowthDirectives = (): string => {
     picked.push(d);
     bytes += n;
   }
-  const out: string[] = ["## 확정 지침 (self-growth)"];
+  const out: string[] = ["## 확정 지침"];
   for (const d of picked.sort((a, b) => userFirst(a, b) || b.createdAt - a.createdAt)) out.push(lineOf(d));
   if (picked.length < directives.length) {
     out.push(`… ${directives.length - picked.length}건 더 (상한 — 전문은 SELF_GROWTH.md)`);
@@ -731,8 +731,8 @@ export const inlineSuggestionSlotText = (
   if (!enabled) return "";
   // 서브에이전트·매니저의 결과는 사용자 채팅창이 아니라 **부른 쪽**으로 간다.
   if ((roleSource.subagentDepth ?? 0) > 0 || (roleSource.workerDepth ?? 0) > 0) return "";
-  // ★분류·요약 등 내부 호출엔 안 싣는다 (적대 검토 P5). `self-growth:contradiction`·
-  //  실패 분류·`webfetch:extract` 가 depth 없이 internal 만 달고 오는데, nano 급 모델에게
+  // ★분류·요약 등 내부 호출엔 안 싣는다 (적대 검토 P5). `webfetch:extract`·매니저 진행 요약이
+  //  depth 없이 internal 만 달고 오는데, 싼 등급 모델에게
   //  "사용자가 다음에 보낼 메시지" 지시가 섞일 이유가 없다.
   if (roleSource.internal === true) return "";
   // ★**표시 게이트와 같은 판정을 쓴다** (적대 검토 P1). 종전엔 규칙은 depth 로,
@@ -777,7 +777,7 @@ const buildContextSlotsInner = (
 
   // ★AGENT.md 3인방을 시스템 채널의 **꼬리**에 둔다 (2026-07-30 검토 지적):
   //  안정 조각 중 가장 자주 바뀌는 게 AGENT.md 다 — 비서 자신이 정체성·습관을 수시로
-  //  Edit 하고 self-growth 도 여기 쓴다. 앞에 두면 한 줄 수정이 뒤따르는 28KB(스킬·
+  //  Edit 한다. 앞에 두면 한 줄 수정이 뒤따르는 28KB(스킬·
   //  에이전트 인덱스·프로파일)의 캐시까지 통째로 무효화한다. 꼬리에 두면 무효화가
   //  자기 자신으로 국한된다. "프리픽스는 앞에서만 매칭한다"를 블록 *안*에도 적용한 것.
   // ★메모리 인덱스도 **꼬리**다 (2026-09-02). 종전엔 user 채널이라 **매 콜 정가**로

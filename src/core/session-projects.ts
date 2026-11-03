@@ -5,15 +5,26 @@
  * 대시보드·텔레그램(`/project`)·브리지·비서 도구는 결과를 그리거나 부르기만 한다(가장자리는 판단하지 않는다).
  *
  * ★연결은 **등록된 프로젝트만**(= `PROJECT.md` 가 있는 등록 폴더) — «연결해서 쓸 정도면 프로젝트» (정태님). 일반 폴더는 먼저 등록.
- * ★연결된 프로젝트의 커맨드는 그 프로젝트의 `.tiguclaw/commands` 에서만 찾는다(`discoverProjectCommands`).
+ * ★연결된 프로젝트의 커맨드 = 그 프로젝트의 `.tiguclaw/commands` + 모든 프로젝트 공통(`scope: projects`, 2026-11-03 —
+ *  docs/decisions/2026-11-03-project-common-commands-design.md). 자기 것이 같은 이름의 공통을 가린다.
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { listProjects, type ProjectRow } from "../store/projects.js";
 import { deleteSessionProject, insertSessionProject, listSessionProjectPaths } from "../store/session-projects.js";
-import { discoverProjectCommands, expandCommandFile, resolveCommand, splitFirstToken, type Command } from "./entry/command-registry.js";
+import {
+  discoverCommandsForProject,
+  discoverCommonProjectCommands,
+  expandCommandFile,
+  resolveCommand,
+  splitFirstToken,
+  type Command,
+} from "./entry/command-registry.js";
 import { getEventBus } from "./eventbus.js";
+import { translate } from "./i18n.js";
+import type { PluginCommandHandlerCall } from "./plugins/wire.js";
+import { readPluginCommandApproval, recordPluginCommandApproval } from "./settings.js";
 import { isDerivedThread } from "./threadkey.js";
 
 /** 연결이 바뀌었다 — 어디서 바꿨든(비서 도구·`/project`·대시보드) 그 세션을 보는 화면이 다시 읽는다. */
@@ -103,16 +114,69 @@ export const unlinkProject = (threadKey: string, ref: string): { ok: true; proje
   return { ok: true, project: p };
 };
 
-/** 연결된 프로젝트마다 그 프로젝트의 커맨드. 폴더가 없으면 빈 목록. */
+/**
+ * 연결된 프로젝트마다 그 프로젝트의 커맨드 — 자기 것 + 모든 프로젝트 공통(2026-11-03 §2.2). 폴더가 없으면 빈 목록.
+ * 공통 목록은 한 번만 걷는다(프로젝트마다 다시 걷지 않는다).
+ */
 export const sessionProjectCommands = async (
   threadKey: string,
-): Promise<{ project: LinkedProject; commands: Command[] }[]> =>
-  Promise.all(
-    linkedProjects(threadKey).map(async (project) => ({
+): Promise<{ project: LinkedProject; commands: Command[] }[]> => {
+  const linked = linkedProjects(threadKey);
+  const common = linked.some((p) => p.exists) ? await discoverCommonProjectCommands() : [];
+  return Promise.all(
+    linked.map(async (project) => ({
       project,
-      commands: project.exists ? await discoverProjectCommands(project.path) : [],
+      commands: project.exists ? await discoverCommandsForProject(project.path, common) : [],
     })),
   );
+};
+
+/** 프로젝트 메뉴의 빌트인 동작 하나 — 커맨드가 아니라 데몬 기능이다(`BUILTIN_COMMANDS` 와 같은 지위). */
+export interface ProjectMenuAction {
+  readonly id: string;
+  readonly icon: string;
+  /** 서버·대시보드가 같은 카탈로그(`locales/*.json`)에서 각자 번역한다. */
+  readonly labelKey: string;
+  /** 이 동작을 부르는 슬래시 — 텔레그램 선택지 값, 대시보드 전용 처리기가 없을 때 보내는 글. */
+  readonly slash: (quotedName: string) => string;
+  /** 폴더가 없으면 메뉴에서 뺀다. */
+  readonly needsFolder?: boolean;
+  /**
+   * 표시(빨강·맨 끝) + 대시보드 사전 확인. ★확인의 **최종 책임은 슬래시 처리기**다(§2.3 확인 계약): `danger` 의 `slash()` 는
+   *  **확인 전 꼴**이어야 하고, 처리기는 그 꼴을 받으면 묻기만 한다. 두 단계 처리기 없이 이 표에 `danger` 를 넣지 마라.
+   */
+  readonly danger?: boolean;
+  /** 사전 확인창 문구 키(`{name}` = 프로젝트 이름). 없으면 일반 문구. */
+  readonly confirmKey?: string;
+}
+
+/**
+ * ★프로젝트 메뉴 빌트인 동작의 **유일한 정의 자리**(2026-11-03 §2.3) — 텔레그램 `/project open` 과 대시보드 📁 메뉴가 이 표를 그린다.
+ *  종전엔 두 채널이 «PROJECT.md 보기»·«연결 해제» 를 각자 손으로 적었다. 새 동작은 여기 한 줄 + 그 슬래시 처리기.
+ */
+export const PROJECT_MENU_ACTIONS: readonly ProjectMenuAction[] = [
+  { id: "detail", icon: "📄", labelKey: "sproj.openDetail", slash: (q) => `/project show ${q}` },
+  { id: "folder", icon: "📂", labelKey: "proj.folder.open", slash: (q) => `/project folder ${q}`, needsFolder: true },
+  { id: "unlink", icon: "⛓", labelKey: "sproj.unlink", slash: (q) => `/project unlink ${q}`, danger: true, confirmKey: "sproj.unlinkConfirm" },
+];
+
+/** 이 대화에 연결된 프로젝트마다 메뉴 — 대시보드(브리지 GET)가 쓴다. 공통 목록은 한 번만 걷는다. */
+export const sessionProjectMenus = async (
+  threadKey: string,
+): Promise<{ project: LinkedProject; commands: Command[]; actions: ProjectMenuAction[] }[]> => {
+  const linked = linkedProjects(threadKey);
+  const common = linked.some((p) => p.exists) ? await discoverCommonProjectCommands() : [];
+  return Promise.all(linked.map(async (project) => ({ project, ...(await projectMenu(project, common)) })));
+};
+
+/** 한 프로젝트의 메뉴 — 커맨드(자기 것 → 공통) + 빌트인 동작. 두 채널은 이 결과를 그리기만 한다. */
+export const projectMenu = async (
+  project: LinkedProject,
+  common?: Command[],
+): Promise<{ commands: Command[]; actions: ProjectMenuAction[] }> => ({
+  commands: project.exists ? await discoverCommandsForProject(project.path, common) : [],
+  actions: PROJECT_MENU_ACTIONS.filter((a) => a.needsFolder !== true || project.exists),
+});
 
 export type SessionCommandMatch =
   | { kind: "none" }
@@ -138,10 +202,21 @@ export type SessionExpand =
   | { kind: "missing"; project: string; command: string }
   /** 실행형 — 비서 턴 없이 `script` 를 `project.path` 에서 돌린다. */
   | { kind: "run"; project: LinkedProject; command: string; script: string }
-  /** 실행형인데 `confirm: true` — 돌리기 전에 묻는다. `value` 를 다시 보내면 실행한다. */
-  | { kind: "confirm"; project: LinkedProject; command: string; script: string; value: string }
+  /**
+   * 돌리기 전에 묻는다 — `confirm: true` 또는 플러그인 실행형의 처음 승인. `value` 를 다시 보내면 실행한다.
+   * `source` = 출처 표시(공통·플러그인일 때) · `approval` = 승인하면 다음부터 묻지 않는 확인(문구가 다르다).
+   */
+  | { kind: "confirm"; project: LinkedProject; command: string; script: string; value: string; source?: string; approval?: true }
   /** 전역 커맨드에 `run:` — 어느 폴더에서 돌지 정할 근거가 없어 돌리지 않는다(연결한 프로젝트의 커맨드에서만). */
   | { kind: "run-needs-project"; command: string }
+  /** 모든 프로젝트 공통 커맨드인데 이 대화에 연결된 프로젝트가 없다. */
+  | { kind: "needs-link"; command: string }
+  /** 승인을 기록하지 못했다(깨진 설정·쓰기 실패) — 실행하지 않았다. */
+  | { kind: "approval-failed"; project: LinkedProject; command: string; error: string }
+  /** 플러그인 처리기를 부른다(비서 턴 없이) — `call` 은 이 데몬에 로드된 그 폴더 코드의 처리기. */
+  | { kind: "handler"; project: LinkedProject; command: string; args: string; plugin: string; call: PluginCommandHandlerCall }
+  /** 처리기 선언은 있는데 그 폴더의 코드가 지금 로드돼 있지 않다(로드 실패·다른 폴더·꺼짐). */
+  | { kind: "plugin-unavailable"; project: LinkedProject; command: string; plugin: string }
   | { kind: "none" };
 
 /**
@@ -152,29 +227,92 @@ export type SessionExpand =
 export const RUN_CONFIRMED = "--yes";
 export const scriptPrint = (script: string): string => createHash("sha256").update(script).digest("hex").slice(0, 12);
 
-/** 프로젝트 커맨드 하나를 펼친다 — 실행형이면 실행·확인, 아니면 비서에게 보낼 글. */
+/**
+ * **실행 지문** — 확인창에 보여 준 그 실행(«이 실행을 봤다»). ★승인 지문의 입력을 **전부** 포함한다(2026-11-03 §2.5, R2 B1):
+ *  치환 후 줄만 해시하면 공통은 모든 프로젝트에서 같은 줄이라 A 확인값이 B 에서 맞고, 치환 전 run 만 바뀐 경우 옛 확인값이 맞아
+ *  **보지 않은 run 줄이 영속 승인**된다. 처리기는 `before` = `handler:<이름>`, `after` = 인자.
+ */
+const runPrint = (project: LinkedProject, command: Command, before: string, after: string): string =>
+  scriptPrint([project.path, command.filePath, command.pluginName ?? "", command.name, before, after].join("\0"));
+
+/** **승인 지문** — «이 플러그인의 이 커맨드 파일의 이 run 줄을 믿는다»(인자는 승인 대상이 아니다 — 그때 사람이 친 것). */
+const approvalPrint = (command: Command & { run: string }): string =>
+  scriptPrint([command.pluginName ?? "", command.name, command.filePath, command.run].join("\0"));
+
+/** 확인창에 싣는 출처 — 프로젝트 자기 것은 없음, 공통은 «공통», 플러그인은 그 이름과 파일. */
+const sourceLabel = (command: Command): string | undefined =>
+  command.source === "plugin"
+    ? `🧩 ${command.pluginId ?? command.pluginName ?? "?"} — ${command.filePath}`
+    : command.source === "user" ? translate("srv.project.commonTag") : undefined;
+
+/**
+ * 공통 프롬프트형 앞에 붙는 **대상 줄** — 공통 본문은 정의상 어느 프로젝트인지 모른다(§2.5). 작성자가 치환을 잊어도 대상이 빠지지 않게.
+ * 플러그인이 쓴 글이면 출처를 같이 싣는다(사용자가 쓴 글이 아니다 — §5).
+ */
+const targetLine = (project: LinkedProject, command: Command): string =>
+  command.source === "plugin"
+    ? translate("srv.project.commandTargetPlugin", { name: project.name, path: project.path, plugin: command.pluginId ?? command.pluginName ?? "?" })
+    : translate("srv.project.commandTarget", { name: project.name, path: project.path });
+
+/** 프로젝트 커맨드 하나를 펼친다 — 실행형이면 실행·확인, 처리기면 그 처리기, 아니면 비서에게 보낼 글. */
 const expandProjectCommand = async (
   project: LinkedProject,
   command: Command,
   args: string,
   confirmedPrint?: string,
 ): Promise<SessionExpand | undefined> => {
-  if (command.run === undefined) {
-    const text = await expandCommandFile(command, args);
-    return text === undefined ? undefined : { kind: "text", text };
-  }
-  const script = command.run.replaceAll("$ARGUMENTS", args.trim()).trim();
-  if (command.confirm && confirmedPrint !== scriptPrint(script)) {
-    const rest = args.trim() === "" ? "" : ` ${args.trim()}`;
+  const rest = args.trim() === "" ? "" : ` ${args.trim()}`;
+  const confirmOf = (script: string, print: string, approval: boolean): SessionExpand => {
+    const source = sourceLabel(command);
     return {
       kind: "confirm",
       project,
       command: command.name,
       script,
-      value: `/project run ${RUN_CONFIRMED}=${scriptPrint(script)} ${quoteProject(project.name)} ${command.name}${rest}`,
+      value: `/project run ${RUN_CONFIRMED}=${print} ${quoteProject(project.name)} ${command.name}${rest}`,
+      ...(source !== undefined ? { source } : {}),
+      ...(approval ? { approval: true as const } : {}),
     };
+  };
+  if (command.handler !== undefined) {
+    // ★처리기는 **로드된 그 폴더의 코드**만 부른다(§2.8 흐름 4) — 판정은 manager 한 곳. 동적 import 는 순환 회피(플러그인 관리자가 코어 전반을 끈다).
+    const { pluginCommandHandler } = await import("./plugins/manager.js");
+    const plugin = command.pluginId ?? command.pluginName ?? "?";
+    const call = pluginCommandHandler(command);
+    if (call === undefined) return { kind: "plugin-unavailable", project, command: command.name, plugin };
+    const print = runPrint(project, command, `handler:${command.handler}`, args.trim());
+    // 처리기에는 승인 기록이 없다 — 설치·켜기가 그 코드에 대한 신뢰다(§2.8 «보안 계약»). `confirm: true` 면 코어가 매번 묻는다.
+    if (command.confirm && confirmedPrint !== print) return confirmOf(`🧩 ${plugin} · ${command.handler}${rest}`, print, false);
+    return { kind: "handler", project, command: command.name, args: args.trim(), plugin, call };
   }
-  return { kind: "run", project, command: command.name, script };
+  if (command.run === undefined) {
+    const text = await expandCommandFile(command, args);
+    if (text === undefined) return undefined;
+    // 프로젝트 자기 프롬프트형은 지금 그대로(보존 계약 ②) — 대상 줄은 공통에만.
+    return { kind: "text", text: command.source === "project" ? text : `${targetLine(project, command)}\n${text}` };
+  }
+  const script = command.run.replaceAll("$ARGUMENTS", args.trim()).trim();
+  const print = runPrint(project, command, command.run, script);
+  const confirmed = confirmedPrint === print;
+  const run: SessionExpand = { kind: "run", project, command: command.name, script };
+  // ★`confirm` 이 **먼저**다(§8-1b 정태님 확정) — 참이면 승인 기록을 읽지도 쓰지도 않고 매번 묻는다(«다음부터 묻지 않습니다» 가 거짓이 되므로).
+  if (command.confirm) return confirmed ? run : confirmOf(script, print, false);
+  if (command.source !== "plugin") return run;
+  // ── 플러그인 공통 실행형 — 커맨드별 처음 한 번 승인, run 줄이 바뀌면 다시(§8-1). 코드 신뢰를 거치지 않은 파일이 셸을 도는 길을 막는다.
+  if (command.pluginName === undefined) return confirmed ? run : confirmOf(script, print, false); // 기록 키가 없다 — 공용 키·무확인 금지
+  const approval = approvalPrint({ ...command, run: command.run });
+  if (readPluginCommandApproval(command.pluginName, command.name) === approval) return run;
+  if (!confirmed) return confirmOf(script, print, true);
+  // ★**기록 먼저, 실행은 뒤** — 기록이 던지면 실행하지 않는다(플러그인 끄기·제거와 같은 규율).
+  let recorded: "recorded" | "disabled";
+  try {
+    recorded = recordPluginCommandApproval(command.pluginName, command.name, approval);
+  } catch (e) {
+    return { kind: "approval-failed", project, command: command.name, error: e instanceof Error ? e.message : String(e) };
+  }
+  // 발견과 기록 사이에 끄기·제거가 끼었다 — 지운 승인을 되살리지 않고 돌리지도 않는다.
+  if (recorded === "disabled") return { kind: "missing", project: project.name, command: command.name };
+  return run;
 };
 
 /**
@@ -198,7 +336,8 @@ export const expandSessionCommand = async (threadKey: string, name: string, args
     const proj = splitFirstToken(rest);
     const cmd = splitFirstToken(proj.rest);
     const project = findLinkedProject(threadKey, proj.first);
-    const command = project?.exists === true ? (await discoverProjectCommands(project.path)).find((c) => c.name === cmd.first) : undefined;
+    // ★프로젝트는 **이 대화의 연결 기록에서 다시 찾은 것**이다(슬래시 글자의 경로가 아니다 — 연결된 것 중에서만 찾는다). 처리기·셸이 받는 경로가 이것이다.
+    const command = project?.exists === true ? (await discoverCommandsForProject(project.path)).find((c) => c.name === cmd.first) : undefined;
     const out = project !== undefined && command !== undefined ? await expandProjectCommand(project, command, cmd.rest, confirmedPrint) : undefined;
     return out ?? { kind: "missing", project: proj.first, command: cmd.first };
   }
@@ -224,6 +363,10 @@ export const expandSessionCommand = async (threadKey: string, name: string, args
     };
   }
   if (global?.run !== undefined) return { kind: "run-needs-project", command: name };
+  // 공통 커맨드인데 연결이 없다 — 어느 프로젝트에서 돌지 근거가 없으니 연결하라고 답한다(조용히 비서에게 넘기지 않는다).
+  if (m.kind === "none" && linkedProjects(threadKey).length === 0 && (await discoverCommonProjectCommands()).some((c) => c.name === name)) {
+    return { kind: "needs-link", command: name };
+  }
   return { kind: "none" };
 };
 

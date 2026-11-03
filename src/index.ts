@@ -1851,7 +1851,7 @@ const shutdown = async (signal: string): Promise<void> => {
   //  ★채널 stop() **전에** 해야 한다(아래에서 채널이 닫히면 발송 경로가 사라진다).
   //  발송 실패는 삼킨다 — 통지 실패가 종료를 막으면 안 된다(force-exit 백스톱 1500ms).
   // ★슬래시 명령(`/compact`)은 모델 턴이 아니다 (2026-09-29 전체 검토) — 진행 중 목록엔 있어야 하지만(`/stop`·
-  //  `/health`) 여기서 «생성 중이던 응답이 사라졌다» 는 기록(`llm.turn_error` — 자가성장이 실패 턴으로 읽는다)과
+  //  `/health`) 여기서 «생성 중이던 응답이 사라졌다» 는 기록(`llm.turn_error` — 건강 점검이 실패 턴으로 센다)과
   //  통지를 받으면 거짓이다. 로그만 남긴다.
   for (const [k, v] of inflightTurns) {
     if (v.command === true) console.log(`daemon: 진행 중이던 명령 중단 — ${k}(모델 턴 아님, 중단 기록·통지 없음)`);

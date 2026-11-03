@@ -256,13 +256,12 @@ export interface RegionASdkInput {
    */
   replay?: ReplayGuard;
   /**
-   * 신규(additive, 2026-06-22) — *내부 분류성* 1회 호출 플래그. 데이터 평면(self-growth
-   * 등)이 "작은 yes/no/uncertain 분류"를 현재 활성 어댑터로 돌릴 때 세팅한다.
+   * 신규(additive, 2026-06-22) — *내부 단발* 호출 플래그. 코어의 내부 호출(웹 본문 추출·매니저 진행
+   * 요약 등)이 작은 일을 현재 활성 어댑터로 돌릴 때 세팅한다.
    *
    * true 일 때 facade(runPool)가:
-   *  1. llm.turn_done / llm.turn_error 를 **발행하지 않음** (관측·학습 입력에서
-   *     제외). 이게 *메타-재귀 킬스위치* — self-growth 가 이 경로를 쓰면, 자기 분류 호출이
-   *     다시 turn 이벤트로 self-growth 입력에 되돌아오는 루프를 구조적으로 차단한다.
+   *  1. llm.turn_done / llm.turn_error 를 **발행하지 않음** (관측 입력에서 제외 — 내부 호출이
+   *     사용자 턴처럼 집계되거나, 그 이벤트를 구독하는 쪽이 다시 내부 호출을 부르는 루프를 막는다).
    *  2. persistOutput 을 **건너뜀** (transcripts/sessions 미오염 — 분류는 대화가 아니다).
    *
    * 어댑터는 이 필드를 읽지 않는다(LLM-agnostic — facade 단일 지점에서만 분기). 모델 선택·
@@ -766,8 +765,8 @@ export interface RegionAToolCallDeltaPayload {
  *   { type: "skill.invoked", ts: Date.now(), payload: SkillInvokedPayload }
  *
  * generic 이벤트(turn_done·llm.activity 동형) — 코어는 *어느 스킬인지* 의미를 모름.
- * self-growth(데이터 평면)가 유일 구독자로 skill_usage 에 누적·P2 거버넌스 상관에 소비.
- * 코어는 skill_usage·self-growth 를 모른다(단방향). `ts` 는 EventBus 봉투에 있다
+ * 횟수 누적(skill_usage)은 코어 `invoke_skill` 이 직접 한다 — 이 이벤트는 홈 observer 플러그인이 구독할 수 있는
+ * 공개 표면이다(코어 안 구독자 0). `ts` 는 EventBus 봉투에 있다
  * (payload 중복 금지 — turn_done 답습).
  */
 export interface SkillInvokedPayload {
@@ -782,7 +781,7 @@ export interface SkillInvokedPayload {
 }
 
 /**
- * llm.turn_done / llm.turn_error — LLM-agnostic per-turn 종료 신호 (self-growth 입력).
+ * llm.turn_done / llm.turn_error — LLM-agnostic per-turn 종료 신호 (건강 점검·대시보드·observer 플러그인 입력).
  *
  * 진실 소스: `_workspace/selfgrowth_events_region_contract.md`.
  *
@@ -798,12 +797,12 @@ export interface SkillInvokedPayload {
  *
  * ⚠ 관측 발행 전용 — 코어에 "claude 가 빠르니 claude 로 라우팅" 같은 어댑터별 라우팅
  * 분기를 만드는 입력으로 *코어 안에서* 쓰지 말 것(feedback_every_feature_llm_agnostic).
- * 학습·정책은 self-growth 플러그인(데이터 평면)에서.
+ * 학습·정책이 필요하면 observer 플러그인(데이터 평면)에서.
  *
- * 메타-재귀 안전: self-growth 는 LLM 턴을 직접 돌리지 않으므로 이 이벤트 구독이
- * 또 turn_done/error 를 낳지 않는다(피드백 루프 0). 서브에이전트(subagentDepth)·
+ * 메타-재귀 안전: 구독자가 LLM 턴을 다시 돌리려면 internal 호출을 써야 이 이벤트를 또 낳지 않는다
+ * (피드백 루프 0). 서브에이전트(subagentDepth)·
  * 매니저(workerDepth)가 runRegionA 를 재귀 호출하는 경로는 *원래 사용자 턴의 하위 작업*
- * 으로 각자 1 이벤트를 내는 것이 정상이며(중복 아님), depth 필드로 self-growth 가 구분.
+ * 으로 각자 1 이벤트를 내는 것이 정상이며(중복 아님), depth 필드로 소비자가 구분.
  */
 /** 공급자가 보고한 개별 요청 사용량. 존재만으로 실패·재시도 전체의 계측 완전성을 보장하지 않는다. */
 export interface RequestUsageEntry {
@@ -890,7 +889,7 @@ export interface RegionATurnDonePayload {
    */
   spend?: TurnSpend;
   /**
-   * 하위 작업 컨텍스트 — self-growth 가 채널 턴 vs 매니저 vs 서브에이전트를 구분.
+   * 하위 작업 컨텍스트 — 소비자(건강 점검 등)가 채널 턴 vs 매니저 vs 서브에이전트를 구분.
    *  - subagentDepth: spawn_agent child 면 ≥1, 메인 턴이면 0/생략.
    *  - workerDepth: 백그라운드 매니저 작업이면 ≥1, 메인 턴이면 0/생략.
    * (depth>0 턴이 자체 turn_done 을 내는 건 정상 — 중복 아님. contract 참조.)
@@ -942,8 +941,8 @@ export interface RegionATurnErrorPayload {
    */
   errorName?: string;
   /**
-   * 사람이 읽는 짧은 에러 요약 (errorDetail 결과를 cap). self-growth 가 "이 작업에서
-   * 자꾸 X 에러" 를 군집화하는 학습 입력. PII/대형 본문 방지 위해 길이 cap.
+   * 사람이 읽는 짧은 에러 요약 (errorDetail 결과를 cap). 건강 점검·대시보드가 보여 주는 실패 사유.
+   * PII/대형 본문 방지 위해 길이 cap.
    */
   message: string;
   /** turn_done 과 동형 하위 작업 컨텍스트. */

@@ -190,7 +190,38 @@ export interface Command {
    * ★이름은 파일 이름 그대로다(Claude Code 와 같다) — 부르는 법은 폴더와 무관하게 `/ccc`.
    */
   folder?: string;
+  /**
+   * frontmatter `scope: projects` — **모든 연결 프로젝트 공통** 커맨드(2026-11-03, docs/decisions/2026-11-03-project-common-commands-design.md §2.1).
+   * user·plugin 출처에서만 읽는다(프로젝트 폴더 것은 이미 그 프로젝트 것). 없으면 전역. 그 밖의 값은 커맨드째 건너뛴다(오타가 전역으로 새지 않게).
+   */
+  scope?: "projects";
+  /** frontmatter `handler:` — 플러그인 처리기 이름(§2.8). plugin 출처 + `scope: projects` 에서만 유효, `run` 과 함께 못 쓴다. */
+  handler?: string;
+  /** source === "plugin" 시 **매니페스트 이름**(끄기·켜기·승인 기록의 키). `pluginId` 는 폴더 이름이라 다를 수 있다. */
+  pluginName?: string;
+  /** source === "plugin" 시 그 플러그인 폴더(절대 경로) — 처리기를 찾을 때 로드된 코드의 폴더와 대조한다(§2.8 흐름 4). */
+  pluginDir?: string;
 }
+
+/** 출처 다섯(사용자·데몬 cwd 프로젝트 둘·번들 플러그인·홈 플러그인)을 **걷기만** — 중복 제거 전. 범위 분할은 이 뒤 한 곳에서(§2.2). */
+const walkAll = async (cwd: string, opts: { includeCwdProject: boolean }): Promise<Command[]> => {
+  const userRoot = getPaths().commonCommands;
+  const projectRoot = projectScope(cwd).commands; // .tiguclaw/commands (우선)
+  const projectLegacyRoot = projectScopeLegacy(cwd).commands; // <cwd>/commands (deprecated 폴백)
+  // 플러그인 2루트 (2026-05-27): 번들(appRoot, 앱 배포 코드) + 유저 설치(<home>/plugins).
+  const bundledPluginsRoot = path.join(appRoot(), "plugins");
+  const homePluginsRoot = getPaths().commonPlugins;
+  const [userCmds, projectCmds, projectLegacyCmds, bundledPluginCmds, homePluginCmds] = await Promise.all([
+    walkCommandsDir(userRoot, "user"),
+    opts.includeCwdProject ? walkCommandsDir(projectRoot, "project") : Promise.resolve([]),
+    // 옛 평면 폴더 — 코드 레포의 문서 폴더일 수 있어 안 내려간다
+    opts.includeCwdProject ? walkCommandsDir(projectLegacyRoot, "project", { nested: false }) : Promise.resolve([]),
+    walkPluginsCommands(bundledPluginsRoot),
+    walkPluginsCommands(homePluginsRoot),
+  ]);
+  // .tiguclaw/ 우선 — 같은 이름은 신규가 이기게 legacy 앞에.
+  return [...userCmds, ...projectCmds, ...projectLegacyCmds, ...bundledPluginCmds, ...homePluginCmds];
+};
 
 /**
  * 세 source walk → 모든 슬래시 커맨드 회수 (V9.3 — tiguclaw 컨벤션 + cwd 인자화).
@@ -207,32 +238,32 @@ export interface Command {
 export const discoverCommands = async (
   cwd: string = process.cwd(),
 ): Promise<Command[]> => {
-  const userRoot = getPaths().commonCommands;
-  const projectRoot = projectScope(cwd).commands; // .tiguclaw/commands (우선)
-  const projectLegacyRoot = projectScopeLegacy(cwd).commands; // <cwd>/commands (deprecated 폴백)
-  // 플러그인 2루트 (2026-05-27): 번들(appRoot, 앱 배포 코드) + 유저 설치(<home>/plugins).
-  const bundledPluginsRoot = path.join(appRoot(), "plugins");
-  const homePluginsRoot = getPaths().commonPlugins;
-
-  const [userCmds, projectCmds, projectLegacyCmds, bundledPluginCmds, homePluginCmds] =
-    await Promise.all([
-      walkCommandsDir(userRoot, "user"),
-      walkCommandsDir(projectRoot, "project"),
-      walkCommandsDir(projectLegacyRoot, "project", { nested: false }), // 옛 평면 폴더 — 코드 레포의 문서 폴더일 수 있어 안 내려간다
-      walkPluginsCommands(bundledPluginsRoot),
-      walkPluginsCommands(homePluginsRoot),
-    ]);
-
-  const _d = dedupeWithShadows([
-    ...userCmds,
-    ...projectCmds, // .tiguclaw/ 우선 — 같은 이름은 신규가 이기게 legacy 앞에.
-    ...projectLegacyCmds,
-    ...bundledPluginCmds,
-    ...homePluginCmds,
-  ]);
+  // ★**걷기 → 범위 분할 → 범위별 중복 제거** 순서다(2026-11-03 설계 §2.2, R1). 다섯 목록을 먼저 중복 제거하면 이름당 하나만 남은 뒤에
+  //  범위를 가르게 되어, 다른 범위의 같은 이름(플러그인 전역 `deploy` + 사용자 공통 `deploy`)이 분할 전에 사라진다.
+  //  «전역인가 공통인가» 판단은 이 `scope === undefined` 한 곳뿐이다 — 소비처마다 다시 거르지 않는다.
+  const _d = dedupeWithShadows((await walkAll(cwd, { includeCwdProject: true })).filter((c) => c.scope === undefined));
   warnShadowed("command", _d.shadowed);
   return _d.kept;
 };
+
+/**
+ * **모든 연결 프로젝트 공통** 커맨드(`scope: projects`, 사용자·플러그인 출처) — 이름당 하나, 순위는 기존 그대로 사용자 > 플러그인(§2.2).
+ * ★가려진 것은 알리지 않는다 — 사용자가 같은 이름을 두는 것은 의도된 덮기다(`dedupeWithShadows` 는 플러그인→빌트인만 모은다).
+ */
+export const discoverCommonProjectCommands = async (cwd: string = process.cwd()): Promise<Command[]> =>
+  dedupeWithShadows((await walkAll(cwd, { includeCwdProject: false })).filter((c) => c.scope === "projects")).kept;
+
+/**
+ * 한 프로젝트 메뉴·실행에 보이는 커맨드 — **그 프로젝트 자기 것(3) > 사용자 공통(2) > 플러그인 공통(1)**(§2.2). 자기 것 먼저, 그다음 공통.
+ * @param common 여러 프로젝트를 한 번에 그릴 때 공통 목록을 한 번만 걷도록 넘겨받는다(결과는 같다).
+ */
+export const discoverCommandsForProject = async (projectPath: string, common?: Command[]): Promise<Command[]> => {
+  const [own, shared] = await Promise.all([discoverProjectCommands(projectPath), common ?? discoverCommonProjectCommands()]);
+  return dedupeWithShadows([...own, ...shared]).kept;
+};
+
+/** 비서 없이 도는 커맨드인가(실행형 `run:` · 플러그인 처리기 `handler:`) — 텔레그램 ▶ 라벨과 브리지 `run` 플래그가 같이 쓴다(§2.8 흐름 2). */
+export const runsWithoutModel = (c: Pick<Command, "run" | "handler">): boolean => c.run !== undefined || c.handler !== undefined;
 
 /**
  * 한 프로젝트 폴더의 커맨드만 — 세션에 연결한 프로젝트용(2026-10-08, docs/decisions/2026-10-08-session-project-links.md).
@@ -249,7 +280,7 @@ export const discoverProjectCommands = async (projectPath: string): Promise<Comm
 const walkCommandsDir = async (
   root: string,
   source: "user" | "project" | "plugin",
-  opts: { nested?: boolean } = {},
+  opts: { nested?: boolean; keepInvalid?: boolean } = {},
 ): Promise<Command[]> => {
   let rootReal: string;
   try {
@@ -281,7 +312,7 @@ const walkCommandsDir = async (
 
   const loaded = await Promise.all(
     files.map(async (f) => {
-      const c = await loadSingleCommand(f.filePath, source);
+      const c = await loadSingleCommand(f.filePath, source, opts.keepInvalid === true);
       return c === null || f.folder === "" ? c : { ...c, folder: f.folder };
     }),
   );
@@ -299,8 +330,11 @@ const walkCommandsDir = async (
  *  (갈리면 «만들었습니다» 라고 답하고 목록·메뉴엔 안 보였다 — 2026-10-11 릴리스 검토 F4). */
 export const isWalkedCommandFolder = (name: string): boolean => !name.startsWith(".") && name !== "node_modules";
 
-/** 한 폴더(전역 `<home>/commands` 또는 프로젝트 `.tiguclaw/commands`)의 커맨드 — 묶음 경로(`folder`)와 함께. 관리 도구의 목록이 쓴다. */
-export const listCommandsIn = async (dir: string): Promise<Command[]> => walkCommandsDir(dir, "user");
+/**
+ * 한 폴더(전역 `<home>/commands` 또는 프로젝트 `.tiguclaw/commands`)의 커맨드 — 묶음 경로(`folder`)와 함께. 관리 도구의 목록이 쓴다.
+ * ★관리 도구는 **파일**을 다루므로 범위 값이 틀린 파일(발견에선 건너뛴다)도 보여야 한다 — 안 보이면 같은 이름을 덮어쓰거나 못 지운다.
+ */
+export const listCommandsIn = async (dir: string): Promise<Command[]> => walkCommandsDir(dir, "user", { keepInvalid: true });
 
 /** 묶음(하위 폴더) 깊이 상한 — 관리 도구가 만들 때도 탐색과 같은 상한을 지킨다(더 깊이 두면 목록에서 안 보인다). */
 export const maxCommandFolderDepth = (): number => MAX_COMMAND_FOLDER_DEPTH;
@@ -310,7 +344,7 @@ export const maxCommandFolderDepth = (): number => MAX_COMMAND_FOLDER_DEPTH;
  * ★만들기·지우기 도구가 `<dir>/<name>.md` 만 보면 하위 폴더의 커맨드를 못 지우고, 같은 이름을 맨 위에 또 만든다.
  */
 export const findCommandFile = async (dir: string, name: string): Promise<string | undefined> =>
-  (await walkCommandsDir(dir, "user")).find((c) => c.name === name)?.filePath;
+  (await walkCommandsDir(dir, "user", { keepInvalid: true })).find((c) => c.name === name)?.filePath;
 
 /** 하위 폴더 깊이 상한 — 묶음은 두세 단이면 충분하고, 끝없이 내려가면 엉뚱한 폴더(복사해 둔 레포 등)까지 훑는다. */
 const MAX_COMMAND_FOLDER_DEPTH = 3;
@@ -329,10 +363,11 @@ const walkPluginsCommands = async (pluginsRoot: string): Promise<Command[]> => {
   const pluginDirs = await activePluginDirs(pluginsRoot);
 
   const perPlugin = await Promise.all(
-    pluginDirs.map(async ({ id, dir }) => {
+    pluginDirs.map(async ({ id, dir, name }) => {
       const cmdsDir = path.join(dir, "commands");
       const cmds = await walkCommandsDir(cmdsDir, "plugin");
-      return cmds.map((c) => ({ ...c, pluginId: id }));
+      // ★`pluginName` 은 켜짐 판정과 **같은 값**(매니페스트 이름)이다 — 승인 기록·처리기 찾기의 키(§2.5·§2.8). `pluginId`(폴더 이름)는 표시용.
+      return cmds.map((c) => ({ ...c, pluginId: id, pluginName: name, pluginDir: path.resolve(dir) }));
     }),
   );
 
@@ -347,6 +382,7 @@ const walkPluginsCommands = async (pluginsRoot: string): Promise<Command[]> => {
 const loadSingleCommand = async (
   filePath: string,
   source: "user" | "project" | "plugin",
+  keepInvalid = false,
 ): Promise<Command | null> => {
   let raw: string;
   try {
@@ -362,6 +398,31 @@ const loadSingleCommand = async (
   const frontmatter = parseFrontmatter(raw);
   const description = (frontmatter?.description ?? "").trim();
   const run = (frontmatter?.run ?? "").trim();
+  const scopeRaw = (frontmatter?.scope ?? "").trim();
+  const handlerRaw = (frontmatter?.handler ?? "").trim();
+  // 범위는 사용자·플러그인 출처만 — 프로젝트 폴더 것은 이미 그 프로젝트 것이라 표식이 뜻이 없다(§2.1).
+  const scoped = source !== "project" && scopeRaw !== "";
+  const scope = scoped && scopeRaw === "projects" ? ("projects" as const) : undefined;
+  // ★틀린 조합은 **커맨드째 건너뛴다**(경고 1회) — 조용히 다르게 읽히면 범위 오타가 전역 봇 메뉴에 뜨고(§2.1),
+  //  처리기 선언이 비서에게 가는 빈 프롬프트가 된다(§2.8 흐름 1).
+  const invalid =
+    scoped && scope === undefined
+      ? `scope 값 '${scopeRaw}' 은 쓸 수 없습니다(모든 프로젝트 공통이면 'projects', 전역이면 필드를 지우세요)`
+      : handlerRaw === ""
+        ? undefined
+        : source !== "plugin"
+          ? "handler: 는 플러그인 커맨드에만 쓸 수 있습니다"
+          : run !== ""
+            ? "handler: 와 run: 은 같이 쓸 수 없습니다"
+            : scope === undefined
+              ? "handler: 커맨드는 scope: projects 가 필요합니다"
+              : !/^[a-z][a-z0-9_]*$/.test(handlerRaw)
+                ? `handler 이름 '${handlerRaw}' 은 소문자·숫자·밑줄이어야 합니다`
+                : undefined;
+  if (invalid !== undefined && !keepInvalid) {
+    warnInvalidCommandOnce(filePath, invalid);
+    return null;
+  }
 
   return {
     name,
@@ -370,7 +431,18 @@ const loadSingleCommand = async (
     source,
     ...(run !== "" ? { run } : {}),
     confirm: parseBool(frontmatter?.confirm, false),
+    ...(scope !== undefined ? { scope } : {}),
+    ...(invalid === undefined && handlerRaw !== "" ? { handler: handlerRaw } : {}),
   };
+};
+
+const reportedInvalidCommands = new Set<string>();
+/** 건너뛴 커맨드 파일 — 한 번만 알린다(목록은 턴·화면마다 다시 읽힌다). */
+const warnInvalidCommandOnce = (filePath: string, why: string): void => {
+  const key = `${filePath}\n${why}`;
+  if (reportedInvalidCommands.has(key)) return;
+  reportedInvalidCommands.add(key);
+  console.warn(`[commands] 커맨드 파일을 건너뜁니다 — ${why}: ${filePath}`);
 };
 
 /**

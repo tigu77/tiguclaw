@@ -43,11 +43,23 @@
  *    모두 격리, block(exit 2) 만 명시 차단.
  *  - dep 추가 0 (node builtin child_process/fs/os/path).
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createShellOutputDecoder } from "../shell-output-decoder.js";
 import { existsSync } from "node:fs";
 import { loadSettingsLayersWithSource } from "../settings.js";
 import { isTrustedProjectDir } from "../project-trust.js";
+import { translate } from "../i18n.js";
+import {
+  EMITTED_HOOK_EVENTS,
+  HOOK_BACKSTOP_GRACE_MS,
+  classifyHookItem,
+  hookTimeoutMs,
+  pluginHookSources,
+  substitutePluginVars,
+  type HookItemStatus,
+  type PluginHookInvalidReason,
+  type PluginHookSource,
+} from "../plugins/plugin-hooks.js";
 
 interface HookCommand {
   type: string;
@@ -93,6 +105,11 @@ export interface HookActivity {
   cwd?: string;
   channel?: string;
   threadKey?: string;
+  /**
+   * **차단한 훅이 플러그인 훅일 때만** 그 매니페스트 이름(2026-11-03 플러그인 훅 §3.4). 이벤트는 여전히 `runHooks` 한 번에 한 건이라,
+   * 막지 않은 이벤트(홈+여러 플러그인을 함께 돈 결과)에는 단일 이름의 뜻이 없어 싣지 않는다.
+   */
+  plugin?: string;
 }
 
 // 모듈레벨 observer sink — self-update 의 `setSelfUpdateRestart` 와 동형 패턴(index.ts
@@ -115,6 +132,7 @@ const emitHookActivity = (
   blockReason: string | undefined,
   startedAt: number,
   payload: Record<string, unknown>,
+  plugin?: string,
 ): void => {
   if (hookObserver === null) return;
   try {
@@ -129,6 +147,7 @@ const emitHookActivity = (
       channel: typeof payload.channel === "string" ? payload.channel : undefined,
       threadKey:
         typeof payload.threadKey === "string" ? payload.threadKey : undefined,
+      ...(plugin !== undefined ? { plugin } : {}),
     });
   } catch (err) {
     console.error("[hook] observer 콜백 예외(격리):", err);
@@ -183,14 +202,8 @@ const loadSettingsHooks = (
  * (런타임 `runHooks` 자체는 임의 event 문자열을 받지만, settings.json 관례상 알려진
  * 이벤트만 사용자가 채운다).
  */
-const INVENTORY_HOOK_EVENTS = [
-  "UserPromptSubmit",
-  "Stop",
-  "StopFailure",
-  "PreToolUse",
-  "PostToolUse",
-  "SubagentStop",
-] as const;
+// ★목록 자체는 `plugin-hooks.ts` 한 곳(플러그인 훅의 «안 남» 판정이 같은 목록을 본다 — 2026-11-03).
+const INVENTORY_HOOK_EVENTS = EMITTED_HOOK_EVENTS;
 
 /** 인벤토리 한 항목 — 이벤트/matcher/command 요약 + 어느 settings.json 스코프에서 왔는지. */
 export interface HookInventoryItem {
@@ -198,11 +211,56 @@ export interface HookInventoryItem {
   /** 미지정/빈 문자열이면 "*"(전체 매칭) — `matchesTool` 시맨틱과 동일. */
   matcher: string;
   command: string;
-  /** "home" = `<home>/settings.json`. "project" = `.tiguclaw/settings.json`(+레거시 flat). */
-  scope: "home" | "project";
-  /** settings.json 절대 경로. */
+  /**
+   * "home" = `<home>/settings.json`. "project" = `.tiguclaw/settings.json`(+레거시 flat).
+   * "plugin" = 켜진 플러그인의 `hooks/hooks.json`(2026-11-03).
+   */
+  scope: "home" | "project" | "plugin";
+  /** settings.json(플러그인이면 hooks.json) 절대 경로. */
   source: string;
+  /** scope "plugin" 만 — 매니페스트 이름. */
+  plugin?: string;
+  /**
+   * scope "plugin" 만. 출처 한 줄(`event` 가 "")이면 `invalid`·`shadowed`, 항목 줄이면 `classifyHookItem` 값 그대로.
+   * 실행 수 = `runnable` 줄 수 = `/status` 의 N(같은 판정을 센다).
+   */
+  status?: HookItemStatus | "invalid" | "shadowed";
+  /** `invalid` 의 사유. */
+  reason?: PluginHookInvalidReason;
+  /** `shadowed` 일 때 그 이름을 먼저 차지한 폴더. */
+  shadowedBy?: string;
 }
+
+/** 플러그인 훅 출처를 인벤토리 줄로 — 깨졌거나 가려진 파일은 플러그인당 한 줄, 읽힌 파일은 항목마다 한 줄(안 나는 이벤트도 보인다). */
+const pluginInventoryRows = (sources: PluginHookSource[]): HookInventoryItem[] => {
+  const out: HookInventoryItem[] = [];
+  for (const s of sources) {
+    const base = { scope: "plugin" as const, source: s.file, plugin: s.plugin };
+    if (s.status !== "loaded") {
+      out.push({
+        ...base,
+        event: "",
+        matcher: "*",
+        command: "",
+        status: s.status,
+        ...(s.reason !== undefined ? { reason: s.reason } : {}),
+        ...(s.shadowedBy !== undefined ? { shadowedBy: s.shadowedBy } : {}),
+      });
+      continue;
+    }
+    for (const e of s.entries) {
+      const cmd = (e.item as { command?: unknown } | null | undefined)?.command;
+      out.push({
+        ...base,
+        event: e.event,
+        matcher: e.matcher !== undefined && e.matcher.trim() !== "" ? e.matcher.trim() : "*",
+        command: typeof cmd === "string" ? cmd : "",
+        status: e.status,
+      });
+    }
+  }
+  return out;
+};
 
 /**
  * settings.json(홈+프로젝트) 에 등록된 모든 훅을 인벤토리 아이템으로 열거(2026-07-24).
@@ -211,10 +269,13 @@ export interface HookInventoryItem {
  * 이벤트×레이어 조합을 그대로 펼친다. 파싱 자체는 `loadSettingsLayersWithSource`
  * (settings.ts) 단일 소스 재사용 — 여기서 JSON 읽기/파싱을 다시 구현하지 않는다(중복
  * 파서 금지, PROJECT.md §3). never-throw(한 hook 엔트리 실패는 skip, 나머지는 계속).
+ *
+ * ★2026-11-03 — **비동기**로 바꾸고 켜진 플러그인의 훅을 뒤에 붙인다(플러그인 발견이 비동기다 — 동기 사본을 따로 두면
+ *  발견 판정이 두 자리가 된다). 홈·프로젝트 줄은 종전 그대로(아는 이벤트만·command 형식만·`status` 없음).
  */
-export const listHooksForInventory = (
+export const listHooksForInventory = async (
   cwd: string = process.cwd(),
-): HookInventoryItem[] => {
+): Promise<HookInventoryItem[]> => {
   const out: HookInventoryItem[] = [];
   for (const layer of loadSettingsLayersWithSource(cwd)) {
     for (const event of INVENTORY_HOOK_EVENTS) {
@@ -252,13 +313,15 @@ export const listHooksForInventory = (
       }
     }
   }
+  try {
+    out.push(...pluginInventoryRows(await pluginHookSources()));
+  } catch (err) {
+    console.error("[hook] 플러그인 훅 목록을 만들지 못했습니다(격리):", err);
+  }
   return out;
 };
 
-/** spawn 셸 실행 — stdin JSON 주입, stdout/stderr 캡처, timeout. */
-/** 훅 하드 백스톱 여유(ms) — spawn timeout 이 sh 만 죽이고 stdio 가 안 닫히는 경우 대비. */
-const HOOK_BACKSTOP_GRACE_MS = 5_000;
-
+/** spawn 셸 실행 — stdin JSON 주입, stdout/stderr 캡처, timeout. 백스톱 여유는 `plugin-hooks.ts`(timeout 판정과 한 곳). */
 const runShellHook = (
   command: string,
   stdinData: string,
@@ -269,25 +332,39 @@ const runShellHook = (
    * 폴더가 사라졌으면 데몬 cwd 로 물러난다(없는 cwd 는 spawn 자체가 실패해 훅이 통째로 안 돈다).
    */
   cwd: string,
+  /** 플러그인 훅만 — 데몬 환경에 `CLAUDE_PLUGIN_*` 를 덧붙인 것. 홈·프로젝트 훅은 넘기지 않는다(종전처럼 상속). */
+  env?: NodeJS.ProcessEnv,
 ): Promise<{ stdout: string; stderr: string; code: number }> =>
   new Promise((resolve) => {
     const at = existsSync(cwd) ? { cwd } : {};
-    const child =
-      process.platform === "win32"
-        ? spawn(process.env.ComSpec || "cmd", ["/d", "/s", "/c", `"${command}"`], {
-            windowsVerbatimArguments: true,
-            // ★창 숨김 (2026-09-24) — 데몬은 창 없이 돌아 자식이 콘솔을 새로 받는다. 훅마다 cmd 창이
-            //  번쩍였다. 훅은 사용자 설정 명령이라 셸 선택은 `detectShell` 로 합치지 않는다(override 가
-            //  훅까지 바꾸면 cmd 문법으로 쓴 기존 훅이 깨진다) — 창 숨김만 맞춘다.
-            windowsHide: true,
-            timeout: timeoutMs,
-            ...at,
-          })
-        : spawn("sh", ["-c", command], {
-            timeout: timeoutMs,
-            ...at,
-            // maxBuffer 는 spawn 에 없음 — stdout 누적 직접 cap.
-          });
+    const withEnv = env !== undefined ? { env } : {};
+    let child: ChildProcessWithoutNullStreams;
+    // ★spawn 은 인자를 **동기로** 검사해 던진다(명령 안 NUL → ERR_INVALID_ARG_VALUE 등, 2026-11-03 실측). 이 실행자 안의 throw 는
+    //  곧 reject 라 `runHooks` 가 거절되고 뒤 훅이 안 돌았다. 아래 `error` 이벤트(비동기 spawn 실패)와 **같은 처리**(code -1)로 받는다 —
+    //  같은 관용구의 빠진 반쪽이다. 리스너·백스톱은 자식이 생긴 뒤에만 단다.
+    try {
+      child =
+        process.platform === "win32"
+          ? spawn(process.env.ComSpec || "cmd", ["/d", "/s", "/c", `"${command}"`], {
+              windowsVerbatimArguments: true,
+              // ★창 숨김 (2026-09-24) — 데몬은 창 없이 돌아 자식이 콘솔을 새로 받는다. 훅마다 cmd 창이
+              //  번쩍였다. 훅은 사용자 설정 명령이라 셸 선택은 `detectShell` 로 합치지 않는다(override 가
+              //  훅까지 바꾸면 cmd 문법으로 쓴 기존 훅이 깨진다) — 창 숨김만 맞춘다.
+              windowsHide: true,
+              timeout: timeoutMs,
+              ...at,
+              ...withEnv,
+            })
+          : spawn("sh", ["-c", command], {
+              timeout: timeoutMs,
+              ...at,
+              ...withEnv,
+              // maxBuffer 는 spawn 에 없음 — stdout 누적 직접 cap.
+            });
+    } catch {
+      resolve({ stdout: "", stderr: "", code: -1 });
+      return;
+    }
     let stdout = "";
     let stderr = "";
     const CAP = 1024 * 1024; // 1MB
@@ -387,13 +464,20 @@ const matchesTool = (
  *  - exit 0 + stdout → additionalContext 누적 (이벤트별 호출자가 활용 방식 결정).
  *  - exit 2 → block (Claude Code 표준 — block 의미는 이벤트별 호출자가 해석).
  *  - 그 외 exit → 에러 격리 (무시 + 로그). 데몬 생존 우선 (원칙 3).
- *  - hook 0개면 즉시 반환 (오버헤드 0).
+ *  - hook 0개면 즉시 반환 — 단 켜진 플러그인 폴더 훑기는 매 호출 한 번 든다(2026-11-03 실측 ~2.3ms, 설계 §3.3이 받아들인 비용).
  *  - `toolName` (옵션) — PreToolUse/PostToolUse 호출자가 넘기면 각 matcher 엔트리의
  *    `matcher` 정규식을 이 값에 매칭해, 매칭되는 엔트리의 hooks 만 실행한다(Claude
  *    Code parity — QA 결함 "matcher" 수정). 미전달(UserPromptSubmit/Stop) 시 전부 매칭
  *    (기존 동작 불변).
  *
  * payload 는 stdin JSON 에 그대로 직렬화 (`hook_event_name` 은 event 로 자동).
+ *
+ * ★2026-11-03 플러그인 훅(설계 `2026-11-03-plugin-hooks-design.md`):
+ *  - 순서 = 홈 → 프로젝트(믿는 폴더) → **켜진 플러그인**(번들 → 홈 뿌리, 폴더 이름순, 파일 순서). 사용자 훅이 먼저 판정하고,
+ *    그 `exit 2` 는 플러그인 훅이 돌기도 전에 막는다(종전 «처음 exit 2 에서 멈춤» 그대로).
+ *  - 플러그인 훅의 stdout 앞에는 출처 줄 «[🧩 이름 훅]» — 이 글은 사용자 글 앞·답 뒤에 붙으므로, 표시가 없으면 사용자·비서의 글로 읽힌다.
+ *  - 세 층 모두 `classifyHookItem` 의 `malformed`(null 항목·command 없음·실행할 수 없는 timeout)를 건너뛴다 — 종전엔 throw·
+ *    reject 로 뒤 훅까지 막거나 `sh -c undefined` 를 돌렸다. 정상 항목만 있는 설정의 결과는 바뀌지 않는다.
  */
 export const runHooks = async (
   event: string,
@@ -404,7 +488,34 @@ export const runHooks = async (
   const matchers = loadSettingsHooks(event, cwd).filter((m) =>
     matchesTool(m.matcher, toolName),
   );
-  if (matchers.length === 0) {
+  /** 한 번 돌릴 명령. `plugin` 이 있으면 플러그인 훅(출처 줄·환경변수). */
+  const queue: Array<{ command: string; timeoutMs: number; plugin?: PluginHookSource; vars?: Record<string, string> }> = [];
+  for (const m of matchers) {
+    for (const h of m.hooks) {
+      if (classifyHookItem(event, h) === "malformed") continue;
+      if (h.type !== "command") continue;
+      // 홈·프로젝트 층은 `args` 를 종전처럼 무시하고 `command` 만 돌린다(설계 §3.1 «의도된 일시 차이»).
+      queue.push({ command: h.command, timeoutMs: hookTimeoutMs(h) as number });
+    }
+  }
+  let sources: PluginHookSource[] = [];
+  try {
+    sources = await pluginHookSources();
+  } catch (err) {
+    // 발견 자체의 실패는 플러그인 층만 비운다 — 홈·프로젝트 훅은 그대로 돈다(외부 파일 경계의 격리).
+    console.error("[hook] 플러그인 훅을 읽지 못했습니다(이번 호출은 플러그인 훅 없이):", err);
+  }
+  for (const s of sources) {
+    if (s.status !== "loaded") continue;
+    // 경로 변수 셋 — 명령 치환과 환경변수가 **같은 값**을 쓴다(설계 §3.2, 한 자리).
+    const vars = { CLAUDE_PLUGIN_ROOT: s.root ?? s.dir, CLAUDE_PLUGIN_DATA: s.data ?? "", CLAUDE_PROJECT_DIR: cwd };
+    for (const e of s.entries) {
+      if (e.event !== event || e.status !== "runnable" || !matchesTool(e.matcher, toolName)) continue;
+      const h = e.item as HookCommand;
+      queue.push({ command: substitutePluginVars(h.command, vars), timeoutMs: hookTimeoutMs(h) as number, plugin: s, vars });
+    }
+  }
+  if (matchers.length === 0 && queue.length === 0) {
     return { additionalContext: "", block: false };
   }
 
@@ -412,33 +523,37 @@ export const runHooks = async (
   const stdinJson = JSON.stringify({ hook_event_name: event, ...payload });
 
   let additionalContext = "";
-  for (const m of matchers) {
-    for (const h of m.hooks) {
-      if (h.type !== "command") continue;
-      const timeoutMs = (h.timeout ?? 60) * 1000;
-      const { stdout, stderr, code } = await runShellHook(
-        h.command,
-        stdinJson,
-        timeoutMs,
-        cwd,
-      );
-      if (code === 2) {
-        const blockReason = stderr.trim() || `${event} 훅이 차단했습니다.`;
-        emitHookActivity(event, toolName, true, blockReason, startedAt, payload);
-        return {
-          additionalContext: "",
-          block: true,
-          blockReason,
-        };
-      }
-      if (code === 0 && stdout.trim()) {
+  for (const q of queue) {
+    const env = q.vars !== undefined ? { ...process.env, ...q.vars } : undefined;
+    const { stdout, stderr, code } = await runShellHook(
+      q.command,
+      stdinJson,
+      q.timeoutMs,
+      cwd,
+      env,
+    );
+    if (code === 2) {
+      const blockReason = stderr.trim() || `${event} 훅이 차단했습니다.`;
+      emitHookActivity(event, toolName, true, blockReason, startedAt, payload, q.plugin?.plugin);
+      return {
+        additionalContext: "",
+        block: true,
+        blockReason,
+      };
+    }
+    if (code === 0 && stdout.trim()) {
+      if (q.plugin === undefined) {
         additionalContext += stdout;
+      } else {
+        // 출처 줄은 늘 제 줄에서 시작한다 — 앞 훅 출력이 줄바꿈 없이 끝났어도 그 글에 붙지 않게.
+        const gap = additionalContext === "" || additionalContext.endsWith("\n") ? "" : "\n";
+        additionalContext += `${gap}${translate("srv.hook.pluginOutput", { plugin: q.plugin.plugin })}\n${stdout}`;
       }
-      if (code !== 0 && code !== 2) {
-        console.error(
-          `[hook] ${event} 명령 비정상 종료 (code ${code}): ${h.command}`,
-        );
-      }
+    }
+    if (code !== 0 && code !== 2) {
+      console.error(
+        `[hook] ${event} 명령 비정상 종료 (code ${code}): ${q.command}${q.plugin !== undefined ? ` [플러그인 ${q.plugin.plugin}]` : ""}`,
+      );
     }
   }
 

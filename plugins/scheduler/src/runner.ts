@@ -97,7 +97,7 @@ export const isInFlight = (id: number): boolean => inFlight.has(id);
  *  - `unref()` — 대기 중인 타이머가 데몬 종료를 붙잡지 않는다(재시작하면 그냥 유실 = 허용).
  *
  * 결과는 성공·실패 모두 이벤트로 알린다. 성공 시 `last_status` 가 ok 로 정정되므로
- * self-growth 자가 진단 스윕이 이 건을 **다시 보고하지 않는다**(중복 통보 0 — 스윕은 아직
+ * 코어 자가 진단 스윕(`health-sweep`)이 이 건을 **다시 보고하지 않는다**(중복 통보 0 — 스윕은 아직
  * 복구되지 않은 것만 텔레그램으로 밀어 올린다).
  */
 const scheduleDispatchRetry = (

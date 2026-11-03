@@ -260,7 +260,7 @@ const addMemoryTool = tool(
     body: z.string().max(4096),
   },
   async (args) => {
-    // self-growth 발동 경로: addMemoryWithGuard 가 before 유무로 add/update
+    // 공개 이벤트: addMemoryWithGuard 가 before 유무로 add/update
     // action 을 판별해 `memory.write` 이벤트를 발행한다 (raw addMemory 는 발행 0).
     const { memory, updated } = await addMemoryWithGuard({
       type: args.type as MemoryType,
@@ -295,7 +295,7 @@ const updateMemoryTool = tool(
     if (args.patch.type !== undefined) patch.type = args.patch.type as MemoryType;
     const m = updateMemory(args.name, patch);
     if (m === undefined) return okJson({ ok: false, error: "not_found" });
-    // self-growth drift 발동 경로: update 시 `memory.write`(action:"update") 발행.
+    // 공개 이벤트: update 시 `memory.write`(action:"update") 발행(observer 플러그인 구독 표면).
     // updateMemory 는 partial patch 시그니처라 addMemoryWithGuard(full add input)와
     // 맞지 않아, 동일 payload shape (name/memoryType/action) 로 직접 발행한다.
     getEventBus().publish({
@@ -407,8 +407,7 @@ const listMemoriesTool = tool(
  * ★그리고 되돌릴 수 있다(`unarchive`). 파괴적 행위는 승인이 필요하지만, 되돌릴 수 있는
  *  행위는 그 문턱이 낮아진다([[project_self_observation_sweep]] — 기준은 확신이 아니라
  *  «되돌릴 수 있는가»).
- * ★self-growth 는 이미 같은 판단을 했다(회귀 `growth-loop-closes` 가 «물리 삭제 아님» 을
- *  못 박는다). 사람이 쓴 메모리에도 같은 규범을 준다.
+ * ★옛 자가성장 플러그인도 같은 판단(물리 삭제 아님)으로 자기 산출물을 내렸다. 사람이 쓴 메모리에도 같은 규범을 준다.
  */
 const archiveMemoryTool = tool(
   "archive_memory",

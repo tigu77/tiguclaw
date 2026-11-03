@@ -1652,7 +1652,7 @@ const runPool = async (
   for (const spec of effectivePool) {
     specIndex += 1;
     attemptChain.push(`${spec.adapter}:${spec.model}`);
-    // self-growth 입력 — 한 어댑터 run() 호출(=한 턴) wall-clock 측정. 발행은 아래
+    // 턴 종료 신호 — 한 어댑터 run() 호출(=한 턴) wall-clock 측정. 발행은 아래
     // 성공/실패 경로에서 정확히 1회 (turn_done XOR turn_error). 발행 자체는 best-effort
     // (publishTurnDone/Error 내부 try/catch) — 턴/데몬 안 죽임(임무 §4).
     const startedAt = Date.now();
@@ -1675,9 +1675,8 @@ const runPool = async (
       // turn_done — 성공 종료 1회 (parity: 세 어댑터 동일 지점). persist 전에 발행해
       // persist 예외와 무관하게 효율 지표가 남게(persist 는 자체 try/catch 라 throw 0이나
       // 안전 우선).
-      // internal(분류성 1회 호출) — turn 이벤트 미발행 + persist skip. self-growth 등
-      // 데이터 평면이 자기 분류 호출을 다시 turn 이벤트로 되돌리는 메타-재귀 차단(킬스위치)
-      // + 분류는 대화가 아니므로 transcripts/sessions 미오염. 모델 선택/폴백은 동일 경로라
+      // internal(분류·요약 같은 내부 단발 호출) — turn 이벤트 미발행 + persist skip. 내부 호출이
+      // 사용자 턴처럼 집계·관측되지 않게 + 대화가 아니므로 transcripts/sessions 미오염. 모델 선택/폴백은 동일 경로라
       // 어댑터 락인 0.
       if (input.internal !== true) {
         publishTurnDone(spec, input, output, Date.now() - startedAt);
@@ -1694,7 +1693,7 @@ const runPool = async (
       clearCooldownOnSuccess(spec);
       return output;
     } catch (e) {
-      // 사용자 /stop 취소 = 실패 아님 → turn_error 미발행(self-growth 실패 학습 오염 방지) +
+      // 사용자 /stop 취소 = 실패 아님 → turn_error 미발행(실패 집계·건강 점검 오염 방지) +
       // 폴백 단락(같은 abortSignal 이라 다음 모델도 즉시 죽음 = 무의미). abort reason 의 name 으로
       // 판별 — 판정은 `stoppedByUser`(core/steering.ts) 한 곳. 핸들러가
       // turnAc.signal.reason 으로 조용히 종료(사용자엔 /stop 이 이미 안내).
@@ -1705,7 +1704,7 @@ const runPool = async (
       // native Task 취소(cancelJob → 부모 턴 effectiveAc abort → 어댑터가 이 에러로 승격)가
       // 여기 온다. 후자는 input.abortSignal(부모 turn 신호)이 아닌 effectiveAc 가 abort 된
       // 것이라 위 UserCancelledError 분기가 안 잡는다 → 던져진 에러의 name 으로 duck-typing.
-      // turn_error 미발행(취소는 self-growth 실패 학습 대상 아님) + 폴백 단락(같은 abort 라
+      // turn_error 미발행(취소는 실패 집계 대상 아님) + 폴백 단락(같은 abort 라
       // 다음 모델도 즉시 죽음 = 무의미, 또 Task 취소는 폴백=재실행이라 "stop 이 실제 stop" 위반).
       // worker 경로는 onWorkerComplete 가 이미 status="cancelled" 를 보존한다.
       if (e instanceof Error && e.name === "WorkerCancelledError") {
@@ -1743,9 +1742,9 @@ const runPool = async (
       //  ([[feedback_hand_maintained_lists]]). 후처리(쿨다운·turn_error)는 지나고 단락한다.
       const externallyAborted = input.abortSignal?.aborted === true;
       // turn_error — 실패·타임아웃 종료 1회 (성공 경로의 turn_done 과 상호배타).
-      // 폴백 단락(TurnTimeoutError) 전에 발행 — 타임아웃도 self-growth 의 학습 대상.
-      // internal(분류성 호출)은 미발행 — 메타-재귀 차단(킬스위치). 분류 실패는 호출자가
-      // sentinel("uncertain")로 받아 강등하지, self-growth 의 실패 학습 입력이 되면 안 된다.
+      // 폴백 단락(TurnTimeoutError) 전에 발행 — 타임아웃도 실패 집계 대상.
+      // internal(내부 단발 호출)은 미발행 — 내부 호출 실패는 호출자가 대신할 값으로 받지,
+      // 사용자 턴 실패로 집계되면 안 된다.
       // ★쿨다운 등록을 **발행보다 먼저** 한다 (2026-08-01, 사용자 지적).
       //  종전엔 발행이 먼저라, 알림을 만드는 시점에 우리도 해제 시각을 **아직 몰랐다** —
       //  그래서 사용자에게 "언제 풀리는지" 를 못 알려줬다(429 원문은 200자 컷에 `resets_at`

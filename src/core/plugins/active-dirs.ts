@@ -10,17 +10,23 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-const manifestName = async (dir: string, fallback: string): Promise<string> => {
+/** 매니페스트(`package.json` 의 `tiguclaw.name`)가 선언한 이름 — 없거나 비었거나 읽을 수 없으면 `undefined`. 이 판정은 여기 한 곳이다. */
+export const declaredPluginName = async (dir: string): Promise<string | undefined> => {
   try {
     const pkg = JSON.parse(await fs.readFile(path.join(dir, "package.json"), "utf8")) as { tiguclaw?: { name?: unknown } };
-    return typeof pkg.tiguclaw?.name === "string" && pkg.tiguclaw.name !== "" ? pkg.tiguclaw.name : fallback;
+    return typeof pkg.tiguclaw?.name === "string" && pkg.tiguclaw.name !== "" ? pkg.tiguclaw.name : undefined;
   } catch {
-    return fallback;
+    return undefined;
   }
 };
 
-/** 부재 디렉터리는 빈 배열. 정렬은 폴더 이름순(종전과 같음). */
-export const activePluginDirs = async (pluginsRoot: string): Promise<Array<{ id: string; dir: string }>> => {
+const manifestName = async (dir: string, fallback: string): Promise<string> => (await declaredPluginName(dir)) ?? fallback;
+
+/**
+ * 부재 디렉터리는 빈 배열. 정렬은 폴더 이름순(종전과 같음).
+ * `name` = 켜짐 판정에 쓴 매니페스트 이름(없으면 폴더 이름) — 커맨드의 승인 기록·처리기 찾기 키(2026-11-03 공통 커맨드 §2.5).
+ */
+export const activePluginDirs = async (pluginsRoot: string): Promise<Array<{ id: string; dir: string; name: string }>> => {
   let entries: Array<{ name: string; isDirectory: () => boolean }>;
   try {
     entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
@@ -33,6 +39,6 @@ export const activePluginDirs = async (pluginsRoot: string): Promise<Array<{ id:
   const dirs = entries
     .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
     .map((e) => ({ id: e.name, dir: path.join(pluginsRoot, e.name) }));
-  const active = await Promise.all(dirs.map(async (d) => isModuleActive(await manifestName(d.dir, d.id))));
-  return dirs.filter((_, i) => active[i]).sort((a, b) => a.id.localeCompare(b.id));
+  const named = await Promise.all(dirs.map(async (d) => ({ ...d, name: await manifestName(d.dir, d.id) })));
+  return named.filter((d) => isModuleActive(d.name)).sort((a, b) => a.id.localeCompare(b.id));
 };

@@ -143,7 +143,7 @@ const publishWorkerLifecycle = (
         // task(무슨 작업이었나) + result(결과)도 실어 카드가 도구 스텝 없어도 내용을
         // 보여주게 한다. 길이 컷(이벤트/버퍼 바운드 — 전체 result 는 채널 재주입이 보유).
         ...(extra?.error !== undefined ? { error: extra.error.slice(0, 300) } : {}),
-        // 실패 원인의 타입 이름 — 소비자(self-growth)가 문장 대신 이걸로 가른다.
+        // 실패 원인의 타입 이름 — 소비자(observer 플러그인 등)가 문장 대신 이걸로 가른다(공개 페이로드).
         ...(extra?.errorName !== undefined ? { errorName: extra.errorName } : {}),
         // ★**잘렸으면 잘렸다고 말한다** (2026-09-04). 종전엔 조용히 잘라 보냈고, 화면은
         //  그 값을 «전문» 이라 부르며 펼침 영역에 그대로 뿌렸다 — 사용자가 보는 것이

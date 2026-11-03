@@ -1,6 +1,8 @@
 {
   "settings.botToken": "Bot token",
   "settings.allowedUserIds": "Owner ID",
+  "settings.batchQuietMs": "Wait for follow-up messages (ms · 0 = off)",
+  "settings.batchMaxMs": "Longest wait for follow-ups (ms)",
   "suggest.allowedUserIds": "Find my ID",
   "suggest.note.token-missing": "Enter the bot token first.",
   "suggest.note.no-messages-yet": "No messages to the bot yet — send it anything on Telegram, then try again.",

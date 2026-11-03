@@ -208,9 +208,9 @@ export const updateMemory = (
  *
  * ★자동 생성분을 가르는 이유: 그건 `feedback` 타입이지만 **성질이 다르다** — 기계가 쓰고
  *  기계가 읽으며, 사람이 쓴 규범과 같은 몫을 두고 경쟁하면 늘 이긴다(빈도로는). 소유자도
- *  다르다(self-growth 루프가 스스로 만료시킨다).
+ *  다르다(옛 self-growth 루프가 만들고 스스로 만료시켰다 — 2026-11-03 플러그인 제거 뒤에도 그 행이 DB 에 남는다).
  * ★이름으로 가르는 게 손목록 아닌가? 아니다 — 이건 **생성 주체**의 표식이고 그 접두사는
- *  self-growth 가 코드로 붙인다([[feedback_hand_maintained_lists]] 의 «판정 기준으로
+ *  self-growth 가 코드로 붙였다([[feedback_hand_maintained_lists]] 의 «판정 기준으로
  *  바꿀 수 있나» 에 대한 답: 이게 그 판정 기준이다).
  */
 const KNOWN_BUCKETS = new Set(["user", "feedback", "project", "reference"]);
@@ -508,27 +508,6 @@ export const archiveMemory = (name: string): Memory | undefined => {
   return getMemoryRaw(db, name);
 };
 
-/**
- * **접근 카운터를 0으로** — 아카이브된 자가성장 산출물의 «미열람» 신호 복구용 (2026-09-05).
- *
- * ★왜 필요한가: `/status` 의 «미열람» 은 `access_count = 0` 으로 센다. 그런데 자가성장이
- *  자기 산출물을 `getMemory` 로 읽던 버그(같은 날 고침) 때문에 옛 산출물의 카운터가 이미
- *  부풀어 있다 — 실측: 성장 산출물 46건 중 **45건이 «읽음»으로 잡혀** `/status` 가
- *  «미열람 1» 이라고 말한다. 사람이 읽은 적이 없는데 도달 신호가 죽은 것이다.
- * ★아카이브된 것만 대상이다 — 인덱스 정렬(`access_count DESC`)에 안 쓰이므로 부작용이 없다.
- *  살아 있는 메모리의 카운터는 사람의 실제 사용 기록이라 **건드리지 않는다.**
- */
-export const resetArchivedMemoryAccess = (name: string): boolean => {
-  const db = requireDb("resetArchivedMemoryAccess");
-  const info = db
-    .prepare(
-      `UPDATE memories SET access_count = 0, last_accessed = NULL
-       WHERE name = ? AND archived_at IS NOT NULL`,
-    )
-    .run(name);
-  return info.changes > 0;
-};
-
 export const unarchiveMemory = (name: string): Memory | undefined => {
   const db = requireDb("unarchiveMemory");
   const info = db
@@ -536,27 +515,6 @@ export const unarchiveMemory = (name: string): Memory | undefined => {
     .run(name);
   if (info.changes === 0) return undefined;
   return getMemoryRaw(db, name);
-};
-
-/**
- * 아카이브 후보 이름 목록 — 이름 프리픽스 + **access_count = 0**(한 번도 surfaced 안 됨)
- * + updated_at ≤ cutoff + 미아카이브. access_count 는 Memory 타입에 없어(read 시맨틱 분리)
- * SQL 에서 직접 필터 → 진짜 콜드만 정확히 잡는다. self-growth 콜드-obs 아카이브 정책이 씀.
- * 이름만 반환(archiveMemory 가 이름으로 처리). 프리픽스는 LIKE 특수문자 없는 것만 넘긴다.
- */
-export const listColdMemoriesForArchive = (
-  namePrefix: string,
-  cutoffMs: number,
-): string[] => {
-  const db = requireDb("listColdMemoriesForArchive");
-  const rows = db
-    .prepare(
-      `SELECT name FROM memories
-       WHERE name LIKE ? AND access_count = 0
-         AND updated_at <= ? AND archived_at IS NULL`,
-    )
-    .all(`${namePrefix}%`, cutoffMs) as Array<{ name: string }>;
-  return rows.map((r) => r.name);
 };
 
 // getMemory 는 access_count 를 증분하는 "read" 시맨틱(계약 §3.8) — archiveMemory/
@@ -610,7 +568,7 @@ export const countMemories = (): number => {
 
 /**
  * name 이 주어진 SQL LIKE 패턴에 매칭하는 메모리 건수 — *제네릭* 유틸(패턴은 호출자가
- * 결정). maintenance.ts(runMaintenanceScan) 가 '%growth%' 로 self-growth 자동메모리
+ * 결정). maintenance.ts(runMaintenanceScan) 가 '%growth%' 로 옛 self-growth 자동메모리
  * 콜드 누적을 관측(P1 detect 전용, 읽기전용)하는 데 쓴다. 이 store 함수 자체는 어떤
  * 플러그인 이름도 모른다(§0 단방향 — 패턴 문자열은 core 정책 registry 가 데이터로 주입).
  */

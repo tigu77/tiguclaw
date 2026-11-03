@@ -213,7 +213,7 @@ export const getLastWorkerActivity = (
   threadKey: string,
 ): { label: string; ts: number; kind: string | null } | null => {
   // ★json_valid 가드(2026-07-09): 깨진 JSON 행이 json_extract 를 터뜨리지 못하게 inner 에서
-  // 유효 행만 걸러 투영(getRecentActivities 동형).
+  // 유효 행만 걸러 투영.
   const row = getDb()
     .prepare(
       `SELECT ts, label, kind FROM (
@@ -267,67 +267,4 @@ export const getLastToolSlow = (
     .get(threadKey) as { ts: number; tool: string | null; ms: number | null } | undefined;
   if (row === undefined || row.tool === null) return null;
   return { tool: row.tool, ms: typeof row.ms === "number" ? row.ms : 0, ts: row.ts };
-};
-
-/**
- * persisted `llm.activity` 활동 묶음 조회 — self-growth 스킬화 제안(Phase 1)의
- * 세그먼트화 입력. `getLastWorkerActivity` 동형 SELECT(type='llm.activity' +
- * json_extract)지만 *복수* 행을 `(threadKey, ts, label, kind)` 로 끌어온다.
- *
- * 정렬은 `(threadKey, ts)` 오름차순 — 호출자(세그먼트화)가 thread 별 시간순
- * 윈도로 끊기 쉽게. `sinceTs` 로 스캔 윈도를 제한(배치마다 전체 10k 재집계 회피),
- * `limit` 으로 cap. label/kind 가 없는 행(코어 누락·구버전)은 자연 제외(WHERE).
- *
- * 주의: threadKey 필터(worker:/internal 제외)는 SQL 이 아니라 *호출자* 가 한다 —
- * 제외 규칙(메타재귀 §6)을 store SQL 에 하드코딩하지 않고 순수 함수에 둬 테스트·
- * 진화 용이하게(원칙 5).
- */
-export const getRecentActivities = (opts?: {
-  sinceTs?: number;
-  limit?: number;
-}): { threadKey: string; ts: number; label: string; kind: string }[] => {
-  // ★json_valid 가드(2026-07-09): 깨진 JSON payload 행이 하나라도 스캔 범위에 있으면 SQLite
-  // json_extract 가 전체 쿼리를 "malformed JSON" 으로 터뜨린다. inner 에서 json_valid 로
-  // 걸러 유효 행만 json_extract 로 투영 → 한 나쁜 행이 스캔을 죽이지 못하게(견고성).
-  const innerWhere: string[] = [`type = 'llm.activity'`, `json_valid(payload)`];
-  const params: unknown[] = [];
-  if (opts?.sinceTs !== undefined) {
-    innerWhere.push(`ts >= ?`);
-    params.push(opts.sinceTs);
-  }
-  const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 5000;
-  const rows = getDb()
-    .prepare(
-      `SELECT threadKey, ts, label, kind FROM (
-         SELECT
-           json_extract(payload, '$.threadKey') AS threadKey,
-           ts,
-           json_extract(payload, '$.label') AS label,
-           json_extract(payload, '$.kind')  AS kind
-         FROM events
-         WHERE ${innerWhere.join(" AND ")}
-       )
-       WHERE threadKey IS NOT NULL AND label IS NOT NULL
-       ORDER BY threadKey ASC, ts ASC
-       LIMIT ?`,
-    )
-    .all(...params, limit) as {
-    threadKey: string | null;
-    ts: number;
-    label: string | null;
-    kind: string | null;
-  }[];
-  return rows
-    .filter(
-      (r): r is { threadKey: string; ts: number; label: string; kind: string } =>
-        typeof r.threadKey === "string" &&
-        typeof r.label === "string" &&
-        typeof r.kind === "string",
-    )
-    .map((r) => ({
-      threadKey: r.threadKey,
-      ts: r.ts,
-      label: r.label,
-      kind: r.kind,
-    }));
 };

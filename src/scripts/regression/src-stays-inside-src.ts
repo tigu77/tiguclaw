@@ -1,7 +1,7 @@
 /**
  * 회귀: **`src/` 는 `src/` 밖을 리터럴로 짚지 않는다** (2026-09-01).
  *
- * 사고: 회귀 둘이 `plugins/self-growth/src/*` 를 리터럴로 불러 `npm run build` 가
+ * 사고: 회귀 둘이 (당시) 자가성장 플러그인 소스(`plugins/` 아래)를 리터럴로 불러 `npm run build` 가
  * `TS6059` 로 죽었다(DEV·배포 트리 양쪽 rc=2). `build` 는 `tsconfig.json`(rootDir=`src`,
  * include=`src`)을 쓰는데 그 프로그램에 rootDir 밖 파일이 끌려 들어온 것이다.
  *

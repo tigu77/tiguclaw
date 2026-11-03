@@ -124,7 +124,7 @@ export const handleProjectDetail = async (ctx: RouteCtx): Promise<void> => {
     //  전역은 인벤토리, 그 폴더에서만 도는 것은 여기. 판정은 `listHooksForInventory`
     //  한 곳이고 여기선 scope 로 거른다(스킬·에이전트가 `source==="project"` 로 거르는
     //  것과 같은 꼴 — 새 규칙 0).
-    const hooks = listHooksForInventory(projectPath)
+    const hooks = (await listHooksForInventory(projectPath))
       .filter((h) => h.scope === "project")
       .map((h) => ({ event: h.event, matcher: h.matcher, command: h.command }));
     // 프로젝트 전용 MCP — <path>/.mcp.json (프로젝트 스코프). 대시보드 상세에 노출.

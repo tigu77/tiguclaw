@@ -124,6 +124,37 @@ export const readToolSpecs = (
 };
 
 /**
+ * 프로젝트 메뉴 처리기 — 커맨드 파일의 `handler: <이름>` 이 부른다(2026-11-03 공통 커맨드 §2.8).
+ * `input.project` 는 **코어가 이 대화의 연결 기록에서 다시 찾은** 프로젝트다(슬래시 글자의 경로가 아니다). 반환형은 도구 처리기와 같다.
+ */
+export type PluginCommandHandler = (
+  input: { readonly project: { readonly name: string; readonly path: string }; readonly args: string },
+  host: PluginHost,
+) => Promise<string | { text: string; isError?: boolean }>;
+
+/**
+ * `getCommandHandlers()` 가 쓸 만한가 — 도구와 **같은 이름 규칙**(`^[a-z][a-z0-9_]*$`), 나쁜 칸은 그 처리기만 떨어진다(`readToolSpecs` 형).
+ */
+export const readCommandHandlers = (raw: unknown): { handlers: Map<string, PluginCommandHandler>; problems: string[] } => {
+  const handlers = new Map<string, PluginCommandHandler>();
+  const problems: string[] = [];
+  if (raw === undefined || raw === null) return { handlers, problems };
+  if (typeof raw !== "object" || Array.isArray(raw)) return { handlers, problems: ["getCommandHandlers() 는 { 이름: 함수 } 객체를 돌려줘야 합니다"] };
+  for (const [name, fn] of Object.entries(raw as Record<string, unknown>)) {
+    if (!/^[a-z][a-z0-9_]*$/.test(name)) {
+      problems.push(`getCommandHandlers() 의 이름 '${name}' 은 소문자·숫자·밑줄이어야 합니다`);
+      continue;
+    }
+    if (typeof fn !== "function") {
+      problems.push(`getCommandHandlers().${name} 가 함수가 아닙니다`);
+      continue;
+    }
+    handlers.set(name, fn as PluginCommandHandler);
+  }
+  return { handlers, problems };
+};
+
+/**
  * 도구 하나를 돌리고 **MCP 응답 모양**으로 바꾼다 — 따로 세운 이유는 검사 때문이다.
  *
  * ★이게 `buildToolServer` 안의 익명 함수로 있으면, 예외 격리를 검사하려고 MCP 프로토콜을

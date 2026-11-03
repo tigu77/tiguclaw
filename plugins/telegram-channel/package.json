@@ -32,6 +32,22 @@
         "suggest": "owner-candidates",
         "editable": true,
         "live": true
+      },
+      {
+        "key": "batchQuietMs",
+        "type": "number",
+        "env": "TELEGRAM_BATCH_QUIET_MS",
+        "labelKey": "settings.batchQuietMs",
+        "editable": true,
+        "live": true
+      },
+      {
+        "key": "batchMaxMs",
+        "type": "number",
+        "env": "TELEGRAM_BATCH_MAX_MS",
+        "labelKey": "settings.batchMaxMs",
+        "editable": true,
+        "live": true
       }
     ]
   }

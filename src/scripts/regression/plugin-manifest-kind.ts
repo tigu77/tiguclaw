@@ -6,7 +6,7 @@
  *  ① **한 필드에 사전이 둘이었다.** 로더는 `channel·observer·trigger·service` 넷을 알고,
  *     `core/plugins/providers.ts` 만 `provider` 를 안다(모듈 카드용). 그래서
  *     `kind:["provider"]` 만 적은 플러그인은 **카드는 뜨는데 로더엔 안 뜨는** 반쪽 상태가
- *     됐다 — 실제로 `self-growth` 가 `["observer","provider"]` 인데, 그중 `provider` 는
+ *     됐다 — 실제로 (2026-11-03 에 뺀) `self-growth` 가 `["observer","provider"]` 였는데, 그중 `provider` 는
  *     로더 눈엔 **없는 값**이었다(observer 덕에 우연히 로드됐을 뿐이다).
  *  ② **모르는 값에 로그가 0이었다.** 오타 `kind:["chanel"]` 은 플러그인을 통째로
  *     사라지게 하고도 아무 흔적을 안 남기고, `["observer","chanel"]` 은 절반만 무시된 채

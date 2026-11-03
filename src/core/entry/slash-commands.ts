@@ -31,6 +31,7 @@ import { randomUUID } from "node:crypto";
 import { clearChannelSessionBinding, getChannelSessionBinding, setChannelSessionBinding, setSessionArchived } from "../../store/channel-session.js";
 import { DEFAULT_SESSION_ID } from "../threadkey.js";
 import { collectInventory, formatInventoryForUser } from "../plugins/inventory.js";
+import { pluginHookSources, runnablePluginHookCounts } from "../plugins/plugin-hooks.js";
 import { contextPressureLabel, lookupContextWindow } from "../llm-runtime/context-windows.js";
 import { deleteSchedule, getSchedule, isTimer, listSchedules, updateSchedule } from "../../store/schedules.js";
 import { SESSION_STORAGE_CHANNEL, getSession, getThreadName, listThreads, sessionDisplayName, setThreadName } from "../../store/sessions.js";
@@ -887,6 +888,19 @@ export const handleStatus = async (ctx: SlashCtx): Promise<void> => {
         }),
       );
       lines.push(translate("srv.status.schedules", { n: sched.length, enabled }));
+
+      // ★플러그인 훅 — 승인 없이 설치·켜기만으로 매 턴·사람 없는 턴에서도 돈다(2026-11-03 §3.5). «지금 내 턴마다 무엇이 도는가» 를
+      //  한 화면에서 답하는 자리. 실행 후보(`runnable`)가 있는 플러그인만, 없으면 줄 자체를 생략한다. 판정은 실행과 같은 함수다.
+      try {
+        const counts = runnablePluginHookCounts(await pluginHookSources());
+        if (counts.length > 0) {
+          lines.push(
+            translate("srv.status.pluginHooks", { list: counts.map((c) => `${c.plugin}(${c.n})`).join(", ") }),
+          );
+        }
+      } catch {
+        /* 이 줄만 생략 — 상태 조회 전체를 무르지 않는다 */
+      }
 
       // ★백업은 **밀지 않고 여기서 보여준다** (2026-08-11 사용자 결정) — 매일 성공
       //  알림은 배경 소음이 되고 그러면 진짜 신호가 묻힌다. 알림은 놓치면 끝이지만

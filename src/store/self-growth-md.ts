@@ -1,22 +1,23 @@
 /**
- * self-growth V4 — SELF_GROWTH.md 확정 지침 층 (파일 관리 헬퍼).
+ * SELF_GROWTH.md 확정 지침 층 (파일 관리 헬퍼).
  *
  * 위치: `<TIGUCLAW_HOME>/SELF_GROWTH.md` (getPaths().selfGrowthMd) — AGENT.md·SYSTEM.md
  *  와 동급 홈 markdown. 매 턴 프롬프트에 실린다(`formatSelfGrowthDirectives`, 08-02~).
- *  쓰는 쪽은 둘 — self-growth 플러그인의 자율 교훈(auto)과 코어 도구 `confirm_feedback` 의
- *  사용자 확정분(user, `capabilities/directives-mcp.ts`, 2026-10-13).
+ *  쓰는 쪽은 코어 도구 `confirm_feedback` 의 사용자 확정분(user, `capabilities/directives-mcp.ts`, 2026-10-13) 하나다.
+ *  ★`source: auto` 블록은 옛 자가성장 플러그인(2026-11-03 제거)이 남긴 데이터다 — 새로 쓰는 쪽은 없지만 기존 파일에 남아
+ *   있으니 읽고·보존하고·`set` 때 만료(TTL·상한)를 계속 적용한다. 이름(`SELF_GROWTH.md`·`selfGrowthMd`)은 데이터의 주소라 그대로 둔다.
  *
  * 설계 (임무 §1):
  *  - **원자적 쓰기**: temp 파일(`SELF_GROWTH.md.tmp-<pid>-<n>`) write → 같은 dir 로 rename.
  *    부분 쓰기·crash 중 손상 방지 (POSIX rename atomicity). 항상 *전체 파일*을 재직렬화해
  *    rename 으로 교체 (append 아님 — append 는 부분쓰기 위험 + 키 덮어쓰기 불가).
- *  - **단일 writer 직렬화**: 모든 변경(upsert/cleanup/prune)을 in-process promise chain
- *    (`writeLock`) 으로 직렬화. maintenance interval ↔ event handler 동시 쓰기로 last-write
- *    -wins 충돌·tmp 경합이 안 나게 한다. 같은 프로세스 단일 writer 가정(데몬 1 인스턴스).
+ *  - **단일 writer 직렬화**: 모든 변경(upsert/delete)을 in-process promise chain
+ *    (`writeLock`) 으로 직렬화. 동시 쓰기로 last-write-wins 충돌·tmp 경합이 안 나게 한다.
+ *    같은 프로세스 단일 writer 가정(데몬 1 인스턴스).
  *  - **교정 가능 구조**: 각 지침에 안정 키(상황 slug). 같은 키 재확정 시 그 블록을 *덮어씀*
  *    (append 아님). 사람이 읽는 markdown + 비서 1 Read 통독.
- *  - **하드캡·TTL**: top-N(DIRECTIVE_HARD_CAP) 초과 시 가장 오래된/덜 쓰인 지침 제거.
- *    TTL(DIRECTIVE_TTL_DAYS) 지난 미사용 지침 정리(V2.1 cleanup 패턴 답습).
+ *  - **하드캡·TTL**: 쓸 때(`upsertDirective`) top-N(DIRECTIVE_HARD_CAP) 초과분과 TTL(DIRECTIVE_TTL_DAYS) 지난
+ *    auto 지침을 함께 정리한다. user 는 둘 다에서 보호된다.
  *
  * 견고성: 모든 공개 함수 try/catch boundary — 파일 I/O 실패해도 throw 0(데몬 생존).
  *  파싱 실패 시 빈 목록으로 수렴(손상 파일이 후속 쓰기를 막지 않음 — 다음 쓰기가 정상 재생성).
@@ -36,37 +37,14 @@ export const DIRECTIVE_TTL_DAYS = 120;
 /** 파일 헤더 — 비서가 1 Read 로 맥락을 잡게. */
 const FILE_HEADER = `# SELF_GROWTH.md — 확정 지침 층
 
-이 파일은 사용자 반응에서 배운 규칙과, self-growth 가 자율(저위험)로 확정한
-*작업 지침*을 모은 운영 메모리입니다.
+이 파일은 사용자 반응에서 배운 규칙을 모은 운영 메모리입니다.
 
 - 확정 지침은 매 턴 프롬프트에 실립니다(사용자 확정분 먼저, 상한 있음). 쓰기는 \`confirm_feedback\` 도구로만.
 - 각 지침은 안정 키(상황 slug)로 식별되며 같은 상황 재확정 시 덮어쓰기됩니다(중복 누적 없음).
-- 자율 확정은 *저위험* 한정. 사용자 승격분은 \`source: user\` 로 표시됩니다.
+- 사용자 확정분은 \`source: user\` 로 표시됩니다. 예전 자동 지침(\`source: auto\`)이 남아 있으면 그대로 실리고, \`confirm_feedback\` 의 list·retire 로 보고 내릴 수 있습니다.
 
-<!-- 이 아래는 self-growth 가 자동 관리합니다. 직접 편집 가능하나 키/구분자 형식을 유지하세요. -->
+<!-- 이 아래 블록은 confirm_feedback 이 씁니다. 직접 편집 가능하나 키/구분자 형식을 유지하세요. -->
 `;
-
-/**
- * 파일이 없으면 헤더만으로 seed 생성 — 포인터 메모(`growth_directive_pointer`)가 매 턴
- * "작업 시작 시 SELF_GROWTH.md 를 Read 하라"고 안내하는데, 확정 지침이 아직 하나도 안
- * 쓰인 인스턴스(fresh install)엔 파일이 없어 비서가 "SELF_GROWTH.md 못 찾음" 하던 버그
- * 수정 — 포인터가 dangling 하지 않게 한다. 이미 있으면 no-op. never-throw(데몬 생존).
- * `wx` flag 로 access↔write 사이 경합도 안전(그 사이 생겼으면 write 실패→흡수).
- */
-export const ensureSelfGrowthFile = async (): Promise<void> => {
-  try {
-    const file = getPaths().selfGrowthMd;
-    try {
-      await fs.access(file);
-      return; // 이미 존재 → no-op
-    } catch {
-      /* 없음 → seed 생성 */
-    }
-    await fs.writeFile(file, FILE_HEADER, { flag: "wx" }).catch(() => {});
-  } catch {
-    /* best-effort — 생성 실패해도 throw 0 */
-  }
-};
 
 // 각 지침 블록 구분자 (machine-parse 가능 + 사람이 읽기 좋은 HTML 주석 마커).
 // 본문에 이 둘이 들어가면 파일 전체가 읽히지 않는다 — 쓰는 쪽(`confirm_feedback`)이 같은 값으로 거절한다.
@@ -82,7 +60,7 @@ export interface Directive {
   key: string;
   /** 사람·비서가 읽는 명령형 한 줄(+선택 다줄) 지침 본문. */
   text: string;
-  /** auto = self-growth 자율(저위험), user = 사용자 승격/직접 교정. */
+  /** user = 사용자 확정(`confirm_feedback`), auto = 옛 자가성장 플러그인이 남긴 자동 지침(새로 쓰는 쪽 없음 — 읽고 보존). */
   source: DirectiveSource;
   /** 그룹/우선순위 표시용(선택). 예: "failure", "preference". */
   group?: string;
@@ -195,8 +173,8 @@ export const parseFile = (body: string): Directive[] => {
 
 // ─── 단일 writer 직렬화 ──────────────────────────────────────────────────────
 
-// 모든 mutate 작업을 직렬화하는 promise chain. maintenance interval ↔ event handler
-// 가 동시에 들어와도 한 번에 하나씩만 read-modify-write 한다(경합·last-write-wins 방지).
+// 모든 mutate 작업을 직렬화하는 promise chain. 쓰기가 동시에 들어와도(한 응답의 병렬 도구 호출 등)
+// 한 번에 하나씩만 read-modify-write 한다(경합·last-write-wins 방지).
 let writeLock: Promise<unknown> = Promise.resolve();
 let tmpCounter = 0;
 
@@ -372,27 +350,6 @@ export const upsertDirective = (
     }
   });
 
-/**
- * 재발 갱신 — **본문·출처는 건드리지 않고** 만료 시계(updatedAt)만 다시 건다. 잠금 안에서 최신 항목을 찾는다.
- * ★읽어 둔 본문을 `upsertDirective` 로 되쓰던 것을 대신한다 — 그 사이 사용자가 고친 본문이 옛 것으로 돌아갔다(아스트라 검토).
- * ★없으면 **만들지 않는다**(null) — 그 사이 지워진 지침을 되살리지 않는다. never-throw.
- */
-export const touchDirective = (key: string): Promise<Directive | null> =>
-  serialize(async () => {
-    try {
-      const directives = await readDirectivesRaw(true);
-      const d = directives.find((x) => x.key === key);
-      if (d === undefined) return null;
-      d.updatedAt = Date.now();
-      await atomicWrite(directives);
-      return { ...d };
-    } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      console.error(`self-growth-md: touchDirective failed: ${reason}`);
-      return null;
-    }
-  });
-
 /** 전체 목록 (읽기 실패면 빈 배열). never-throw. */
 export const listDirectives = (): Promise<Directive[]> =>
   serialize(async () => {
@@ -427,27 +384,5 @@ export const deleteDirective = (key: string): Promise<boolean> =>
       const reason = e instanceof Error ? e.message : String(e);
       console.error(`self-growth-md: deleteDirective failed: ${reason}`);
       return false;
-    }
-  });
-
-/**
- * 명시 정리 — cap·TTL 만 재적용(upsert 없이). maintenance interval 이 호출.
- * @returns 제거된 지침 수 (실패 시 0).
- */
-export const cleanupDirectives = (opts?: {
-  cap?: number;
-  ttlDays?: number;
-}): Promise<number> =>
-  serialize(async () => {
-    try {
-      const directives = await readDirectivesRaw(true);
-      const { kept, removed } = applyCapAndTtl(directives, opts);
-      if (removed.length === 0) return 0;
-      await atomicWrite(kept);
-      return removed.length;
-    } catch (e) {
-      const reason = e instanceof Error ? e.message : String(e);
-      console.error(`self-growth-md: cleanupDirectives failed: ${reason}`);
-      return 0;
     }
   });

@@ -21,6 +21,7 @@
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { readSettingsRootForWrite, writeSettingsRootAtomic } from "./settings-file.js";
+import { getEventBus } from "./eventbus.js";
 import { getPaths, projectScope, projectScopeLegacy } from "./paths.js";
 
 /**
@@ -1479,20 +1480,6 @@ const readDisabledModules = (cwd: string = process.cwd()): Set<string> => {
   return disabled;
 };
 
-/**
- * 모듈(plugin) 이름 → 사용자가 **켰다고 적었는지**(어느 층이든 `modules.<name>.enabled: true`).
- * ★기본 꺼짐 번들(`defaultOff`)을 사용자가 켠 것인지 가르는 데만 쓴다 — 끄기(false)는 위 AND 규칙이 이긴다.
- */
-export const isModuleExplicitlyEnabled = (name: string, cwd: string = process.cwd()): boolean => {
-  for (const layer of loadSettingsLayers(cwd)) {
-    const m = layer.modules;
-    if (m === undefined || m === null || typeof m !== "object") continue;
-    const v = (m as Record<string, unknown>)[name];
-    if (v !== null && typeof v === "object" && !Array.isArray(v) && (v as { enabled?: unknown }).enabled === true) return true;
-  }
-  return false;
-};
-
 /** 모듈(plugin) 이름 → 사용자가 껐는지(disabled). "off" 만 참 — 목록 부재/미기재는 false(inactive 아님, 이 함수 관할 밖). */
 export const isModuleDisabled = (
   name: string,
@@ -1509,7 +1496,7 @@ export const isModuleDisabled = (
  *  - MVP(ADR §5.6): 재시작해야 loadPlugins 스킵이 적용된다(핫토글 아님) — 호출자가
  *    안내(`requiresRestart:true`).
  */
-export const setModuleDisabled = (name: string, disabled: boolean): void => {
+export const setModuleDisabled = (name: string, disabled: boolean, opts: { forgetApprovals?: boolean } = {}): void => {
   const file = getPaths().settings;
   // ★깨져 있으면 **던진다** — 종전엔 `{}` 로 시작해 그 위에 덮었고, 그러면 이 파일의
   //  다른 설정(모델 프로파일·테마·gateway)이 함께 사라졌다([[settings-file]], 08-29).
@@ -1536,10 +1523,55 @@ export const setModuleDisabled = (name: string, disabled: boolean): void => {
       ? (prev as Record<string, unknown>)
       : {};
   entry.enabled = !disabled;
+  // 제거는 그 플러그인 커맨드의 승인도 같이 잊는다 — **같은 한 번의 쓰기**에(2026-11-03 공통 커맨드 §2.5 «제거»). 끄기는 보존한다.
+  if (opts.forgetApprovals === true) delete entry.approvedCommands;
   modules[name] = entry;
   root.modules = modules;
   writeSettingsRootAtomic(file, root);
+  // ★플러그인을 켜고 끄면 그 커맨드가 메뉴에 생기거나 사라진다 — **발행 자리는 여기 한 곳**(§2.5). 이 함수를 부르는 문이 다섯
+  //  (제거·끄기·켜기·설치·모듈 화면)이라 문마다 달면 다음 문에서 샌다. 쓰기가 던지면 여기 오지 않는다(발행 0).
+  getEventBus().publish({ type: "commands.changed", ts: Date.now(), payload: { reason: "module", name } });
 };
+
+/**
+ * 플러그인 공통 실행형 커맨드의 **승인 기록** — 홈 `settings.json` `modules.<매니페스트 이름>.approvedCommands.<커맨드>` = 승인 지문
+ * (2026-11-03 공통 커맨드 §2.5). ★**홈 파일만** 읽는다 — 데몬 cwd 레포의 설정이 플러그인 셸 실행을 미리 승인하지 못하게(층 병합 금지).
+ * 호출마다 파일에서 읽는다(캐시 없음 — 키를 지우면 다음 호출부터 다시 묻는다). 깨진 파일이면 없는 것으로 읽는다(늘 묻는 쪽 — 안전 방향).
+ */
+export const readPluginCommandApproval = (pluginName: string, command: string): string | undefined => {
+  let root: Record<string, unknown>;
+  try {
+    root = readSettingsRootForWrite(getPaths().settings);
+  } catch {
+    return undefined;
+  }
+  const entry = asRecord(asRecord(root.modules)?.[pluginName]);
+  const v = asRecord(entry?.approvedCommands)?.[command];
+  return typeof v === "string" ? v : undefined;
+};
+
+/**
+ * 승인을 기록한다 — 동기 read-modify-write(다른 홈 설정 쓰기와 같은 규약: 읽기를 쓰기 직전에, 사이에 `await` 없음 → 프로세스 안 직렬화).
+ * ★**쓰는 순간 읽은 파일**에서 그 플러그인이 꺼져 있으면(`enabled:false`·옛 `disabled` 목록) 기록하지 않고 `"disabled"` —
+ *  발견(비동기)과 기록 사이에 제거·끄기가 끼어도 지운 승인이 되살아나지 않게(§2.5 «제거»). 깨진 파일·쓰기 실패는 **던진다**(호출자가 실행하지 않는다).
+ */
+export const recordPluginCommandApproval = (pluginName: string, command: string, print: string): "recorded" | "disabled" => {
+  const file = getPaths().settings;
+  const root = readSettingsRootForWrite(file);
+  const modules = asRecord(root.modules) ?? {};
+  const legacy = modules.disabled;
+  if (Array.isArray(legacy) && legacy.includes(pluginName)) return "disabled";
+  const entry = asRecord(modules[pluginName]) ?? {};
+  if (entry.enabled === false) return "disabled";
+  entry.approvedCommands = { ...(asRecord(entry.approvedCommands) ?? {}), [command]: print };
+  modules[pluginName] = entry;
+  root.modules = modules;
+  writeSettingsRootAtomic(file, root);
+  return "recorded";
+};
+
+const asRecord = (v: unknown): Record<string, unknown> | undefined =>
+  v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
 
 /**
  * 부팅 진단 — 프로파일의 댕글링 fallback·순환·빈 풀을 사람이 읽을 경고 문자열로 수집.

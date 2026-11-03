@@ -26,6 +26,7 @@ import { outboundSessionLabel } from "../../src/core/outbound.js";
 import { claimPromptAnswer, promptReplySession } from "../../src/core/prompt-answer-claims.js";
 import { deliverDocument, sendDocumentTo } from "./send-document.js";
 import { ownerCandidateRoutes, recordBlockedSender } from "./owner-candidates.js";
+import { createInboundBatcher } from "./inbound-batch.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -934,6 +935,25 @@ export default class TelegramChannel implements Channel {
       await next();
     });
 
+    // ── 연달아 온 메시지를 한 턴으로 (2026-11-03, `inbound-batch.ts`) ─────────────────
+    // 핸들러 셋(텍스트·첨부·버튼)이 전부 이 묶음기를 거쳐 발사한다 — 순서는 대화별 줄 하나가 지킨다.
+    // 발사는 비차단이다(폴러는 턴을 기다리지 않는다 — a05c368 11h outage 의 구조적 원인). thread별 순서는
+    // serializedHandler(enqueueThreadTurn)가 보장한다. handler 에러는 흡수 — 폴러 루프(unhandled rejection)를 죽이지 않게.
+    const batcher = createInboundBatcher((m) =>
+      handler(m).catch((e) => {
+        console.error(`telegram handler error — ${describeTelegramError(e)}`);
+      }),
+    );
+    this.batcher = batcher;
+    // 텔레그램 "입력 중…" 표시. 한 번 보내면 5 초 유지 → 4 초 간격 갱신. 턴이 끝나면 묶음기가 끈다(누수 0).
+    const startTyping = (ctx: Context): (() => void) => {
+      void ctx.replyWithChatAction("typing").catch(() => {});
+      const heartbeat = setInterval(() => {
+        void ctx.replyWithChatAction("typing").catch(() => {});
+      }, 4000);
+      return () => clearInterval(heartbeat);
+    };
+
     bot.on("message:text", async (ctx) => {
       const text = ctx.message.text.trim();
       if (text.length === 0) return;
@@ -1030,31 +1050,10 @@ export default class TelegramChannel implements Channel {
         // callback_query 핸들러가 *다음 인바운드*로 흘려보낸다(같은 chat=같은 thread·인격).
         presentOptions: buildPresentOptions(ctx, routedSession, routedSession, sessionId),
       };
-      // 텔레그램 "입력 중…" 표시. 한 번 보내면 5 초 유지 → 4 초 간격 갱신.
-      // 응답 지연 동안 사용자가 비서가 살아있다는 신호를 받는다.
-      void ctx.replyWithChatAction("typing").catch(() => {});
-      const heartbeat = setInterval(() => {
-        void ctx.replyWithChatAction("typing").catch(() => {});
-      }, 4000);
-      // ── 비차단 발사 (CLI cli.ts:36 동형) ──────────────────────────────────
-      // 폴러는 턴을 *기다리지 않는다*. `await handler(msg)` 로 직렬화하면 한 턴이
-      // 안 끝날 때 grammy 순차 폴러가 동결 → 채널 전체(모든 대화) 무응답 (a05c368
-      // 11h outage 의 구조적 원인). 발사만 하고 즉시 다음 update 로 넘어가면, 긴/hung
-      // 턴은 그 thread(대화)만 막고 채널·다른 thread 는 정상. thread별 순서는
-      // serializedHandler(enqueueThreadTurn)가 보장하므로 같은 대화 내 순서·typing 정상.
-      //
-      // typing heartbeat 는 `await ... finally` 가 아니라 **턴 Promise 에 재배선** —
-      // 폴러가 p 를 await 안 해도 typing 은 턴 진행 동안 살아있고 settle 시 정확히 멈춘다
-      // (누수 0). handler 에러는 .catch 로 흡수 — 폴러 루프(unhandled rejection)를
-      // 죽이지 않게(cli.ts 동형). 버려진 promise·LLM 연결이 hung thread 에 묶이는 건
-      // 허용(사용자 원칙: turn-abandon ≫ daemon-freeze), heartbeat clear 만 보장.
-      void handler(msg)
-        .catch((e) => {
-          console.error(`telegram handler error — ${describeTelegramError(e)}`);
-        })
-        .finally(() => {
-          clearInterval(heartbeat);
-        });
+      const part = { msg: Promise.resolve(msg), replyTo: repliedMsgId, stopTyping: startTyping(ctx) };
+      // 명령(슬래시)은 기다리지 않는다(`/stop` 이 2.5초 늦으면 안 된다) — 쌓인 묶음을 먼저 보내 순서는 지킨다.
+      if (text.startsWith("/")) batcher.now(chatId, part);
+      else batcher.add(chatId, `${chatId}\u0000${sessionId}`, part);
     });
 
     // 첨부 핸들러 (사진/문서/음성/오디오/영상). message:text 와 병렬·독립.
@@ -1090,92 +1089,72 @@ export default class TelegramChannel implements Channel {
             );
           };
 
-        // typing heartbeat — 다운로드+영역 A 처리 동안 살아있음 신호.
-        void ctx.replyWithChatAction("typing").catch(() => {});
-        const heartbeat = setInterval(() => {
-          void ctx.replyWithChatAction("typing").catch(() => {});
-        }, 4000);
+        // 채널/세션 분리(ADR 2026-07-15) — message:text 핸들러와 동형(parity). chatId=배달
+        // 좌표, sessionId=기본 세션. threadKey=sessionId + session 으로 route 정규화.
+        // ★다운로드 **전에** 정한다 — 묶음 자리(대화+세션)를 도착 순간 잡아야, 다운로드가 창보다 길어도 앞 글과 한 턴이 된다.
+        const chatId = String(ctx.chat.id);
+        const boundSession = resolveSessionId("telegram", chatId);
+        const { repliedSession, sessionId, routedSession } = resolveReplyRouting(
+          chatId,
+          ctx.message.reply_to_message?.message_id,
+          boundSession,
+          "attachment",
+        );
+        const message = ctx.message;
 
-        // 다운로드(acquireAttachment)는 await 유지 — 첨부 데이터가 handler 입력에 필요해
-        // 발사 전 완료돼야 한다. 다운로드는 보통 짧음. (다운로드 자체 비차단화는 별건 — 본
-        // P0 핵심은 "턴 발사 비차단".) 다운로드 I/O 실패는 acquireAttachment 가 acquired.note
-        // 로 흡수하므로 여기 throw 면 아래 catch 가 잡고 finally 가 heartbeat clear.
-        try {
-          const caption = ctx.message.caption?.trim() ?? "";
-          const acquired = await acquireAttachment(ctx, token, "telegram", receivedAtSeconds);
+        // 다운로드(acquireAttachment)는 첨부 데이터가 handler 입력에 필요해 발사 전 완료돼야 한다. 다운로드 I/O 실패는
+        // acquireAttachment 가 note 로 흡수하고, 그 밖의 throw 는 여기서 null(보낼 것 없음)로 — 폴러를 죽이지 않는다.
+        const built = (async (): Promise<IncomingMessage | null> => {
+          try {
+            const caption = message.caption?.trim() ?? "";
+            const acquired = await acquireAttachment(ctx, token, "telegram", receivedAtSeconds);
 
-          // text 조립: caption(있으면) + 다운로드 실패/초과 안내 노트(있으면).
-          const parts: string[] = [];
-          if (caption.length > 0) parts.push(caption);
-          if (acquired.note !== undefined) parts.push(acquired.note);
-          const text = parts.join("\n\n");
+            // text 조립: caption(있으면) + 다운로드 실패/초과 안내 노트(있으면).
+            const parts: string[] = [];
+            if (caption.length > 0) parts.push(caption);
+            if (acquired.note !== undefined) parts.push(acquired.note);
+            const text = parts.join("\n\n");
 
-          const attachments =
-            acquired.attachment !== undefined ? [acquired.attachment] : undefined;
+            const attachments =
+              acquired.attachment !== undefined ? [acquired.attachment] : undefined;
 
-          // text·attachments 둘 다 비면 drop (message:text 의 빈 텍스트 가드 정합 확장).
-          // ★ handler 발사 *전* early-return 이라 아래 비차단 .finally(clearInterval) 이
-          // 안 걸린다 — 여기서 명시 clear 안 하면 heartbeat 누수(QA P0 지적). text 핸들러엔
-          // 없던 분기(첨부 전용)라 별도 가드 필요.
-          if (text.length === 0 && attachments === undefined) {
-            clearInterval(heartbeat);
-            return;
-          }
+            // text·attachments 둘 다 비면 drop (message:text 의 빈 텍스트 가드 정합 확장). «입력 중» 은 묶음기가 끈다.
+            if (text.length === 0 && attachments === undefined) return null;
 
-          // 채널/세션 분리(ADR 2026-07-15) — message:text 핸들러와 동형(parity). chatId=배달
-          // 좌표, sessionId=기본 세션. threadKey=sessionId + session 으로 route 정규화.
-          const chatId = String(ctx.chat.id);
-          const boundSession = resolveSessionId("telegram", chatId);
-          const { repliedSession, sessionId, routedSession } = resolveReplyRouting(
-            chatId,
-            ctx.message.reply_to_message?.message_id,
-            boundSession,
-            "attachment",
-          );
-          const msg: IncomingMessage = {
-            channel: "telegram",
-            channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
-            threadKey: sessionId,
-            channelAddress: chatId,
-            session: {
+            return {
+              channel: "telegram",
+              channelUserId: ctx.from === undefined ? "unknown" : String(ctx.from.id),
+              threadKey: sessionId,
               channelAddress: chatId,
-              // 발원 세션을 찾았으면 **명시 지정** — route 가 그 세션으로 정규화한다.
-              ...(repliedSession !== null ? { explicitSessionId: repliedSession } : {}),
-            },
-            text,
-            attachments,
-            channelMessageRef: { address: chatId, messageIds: [ctx.message.message_id] },
-            receivedAt: receivedAtSeconds * 1000,
-            reply: buildReply(sessionId, chatId, routedSession),
-            // 아웃바운드 첨부 — message:text 핸들러와 동일 (parity). 토큰 노출 0.
-            sendAttachment: (filePath, opts) =>
-              sendDocumentTo(ctx.api, ctx.chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
-            // 축1 선택지 제시 — message:text 핸들러와 동일(parity). inline keyboard 1회 렌더.
-            presentOptions: buildPresentOptions(ctx, routedSession, routedSession, sessionId),
-          };
-          // ── 비차단 발사 (text 핸들러·cli.ts 동형) ─────────────────────────
-          // 폴러는 턴을 *기다리지 않는다*. await handler 로 직렬화하면 사진+긴 캡션 한 턴이
-          // settle 까지 grammy 순차 폴러를 동결 → 채널 전체 무응답(11h outage 재발 경로,
-          // blast radius=채널 전체). 발사만 하고 즉시 반환하면 hung 턴은 그 thread 큐에만
-          // 격리되고 채널·다른 thread 는 정상. thread별 순서는 serializedHandler
-          // (enqueueThreadTurn)가 보장. heartbeat 는 턴 Promise.finally 에 재배선 — 폴러가
-          // await 안 해도 typing 은 턴 진행 동안 살아있고 settle 시 정확히 clear(누수 0).
-          // handler 에러는 .catch 로 흡수 — 폴러 루프(unhandled rejection) 안 죽게.
-          void handler(msg)
-            .catch((e) => {
-              console.error(`telegram attachment handler error — ${describeTelegramError(e)}`);
-            })
-            .finally(() => {
-              clearInterval(heartbeat);
-            });
-        } catch (e) {
-          // 발사 *전* 동기/다운로드(acquireAttachment) 경로 throw 만 여기 도달. 비차단 발사
-          // 이후엔 turn 에러가 위 .catch 로 흡수되므로 이 catch 로 오지 않는다. 발사 전
-          // throw 면 heartbeat 가 아직 도는 상태라 여기서 명시 clear 필요(위 early-return
-          // 가드와 동일 이유 — finally 제거로 인한 누수 차단).
-          console.error(`telegram attachment acquire error — ${describeTelegramError(e)}`);
-          clearInterval(heartbeat);
-        }
+              session: {
+                channelAddress: chatId,
+                // 발원 세션을 찾았으면 **명시 지정** — route 가 그 세션으로 정규화한다.
+                ...(repliedSession !== null ? { explicitSessionId: repliedSession } : {}),
+              },
+              text,
+              attachments,
+              channelMessageRef: { address: chatId, messageIds: [message.message_id] },
+              receivedAt: receivedAtSeconds * 1000,
+              reply: buildReply(sessionId, chatId, routedSession),
+              // 아웃바운드 첨부 — message:text 핸들러와 동일 (parity). 토큰 노출 0.
+              sendAttachment: (filePath, opts) =>
+                sendDocumentTo(ctx.api, ctx.chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
+              // 축1 선택지 제시 — message:text 핸들러와 동일(parity). inline keyboard 1회 렌더.
+              presentOptions: buildPresentOptions(ctx, routedSession, routedSession, sessionId),
+            };
+          } catch (e) {
+            console.error(`telegram attachment acquire error — ${describeTelegramError(e)}`);
+            return null;
+          }
+        })();
+        // typing — 다운로드+영역 A 처리 동안 살아있음 신호. 도착 순간 묶음에 선다(내용은 다운로드 뒤 채워진다).
+        batcher.add(chatId, `${chatId}\u0000${sessionId}`, {
+          msg: built,
+          replyTo: message.reply_to_message?.message_id,
+          stopTyping: startTyping(ctx),
+        });
+        // 다운로드가 끝날 때까지 폴러를 붙잡는다 — 종전과 같은 배압(턴은 기다리지 않는다).
+        await built;
       },
     );
 
@@ -1247,19 +1226,8 @@ export default class TelegramChannel implements Channel {
           sendDocumentTo(ctx.api, chat.id, filePath, { ...opts, recordSession: sessionId, labelSession: routedSession }),
         presentOptions: buildPresentOptions(ctx, callbackSession ?? null, routedSession, sessionId),
       };
-      // typing heartbeat — 선택 후 후속 턴 동안 살아있음 신호. message:text 동형.
-      void ctx.replyWithChatAction("typing").catch(() => {});
-      const heartbeat = setInterval(() => {
-        void ctx.replyWithChatAction("typing").catch(() => {});
-      }, 4000);
-      // 비차단 발사 — 폴러를 막지 않는다(message:text 동형). thread별 순서는 serializedHandler.
-      void handler(msg)
-        .catch((e) => {
-          console.error(`telegram callback handler error — ${describeTelegramError(e)}`);
-        })
-        .finally(() => {
-          clearInterval(heartbeat);
-        });
+      // 버튼 답은 기다리지 않는다 — 쌓인 묶음을 먼저 보내 순서는 지킨다. typing 은 후속 턴 동안 살아있음 신호.
+      batcher.now(chatId, { msg: Promise.resolve(msg), replyTo: undefined, stopTyping: startTyping(ctx) });
     });
 
     bot.catch((err) => {
@@ -1378,6 +1346,8 @@ export default class TelegramChannel implements Channel {
 
   /** stop() 이 시작됐나 — 폴링 종료를 «사망» 으로 보고하지 않게 한다. */
   private stopping = false;
+  /** 연달아 온 메시지 묶음기 — start() 에서 만든다(handler 가 필요). */
+  private batcher: ReturnType<typeof createInboundBatcher> | null = null;
 
   /** 설정 화면 «내 ID 찾기»(`settings[].suggest`) — 폴링 중 소유자 게이트가 막은 보낸 사람(폴링 전이면 «먼저 재시작», getUpdates 는 안 부른다). */
   getDataRoutes() {
@@ -1390,6 +1360,11 @@ export default class TelegramChannel implements Channel {
     if (this.unsubscribeCommandsChanged !== null) {
       this.unsubscribeCommandsChanged();
       this.unsubscribeCommandsChanged = null;
+    }
+    // ★쌓인 묶음을 버리지 않는다 — 핸들러에 넘긴다(종료 중이면 코어가 «다시 보내 달라» 고 답한다). 발송 경로가 있을 때(bot.stop 전) 한다.
+    if (this.batcher !== null) {
+      await this.batcher.flushAll(1000);
+      this.batcher = null;
     }
     if (this.bot !== null) {
       await this.bot.stop();

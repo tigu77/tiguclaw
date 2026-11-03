@@ -24,7 +24,7 @@ import {
   type LoadedPlugin,
   type PluginMeta,
 } from "./loader.js";
-import { wirePlugin, type WirePluginDeps, type WireResult } from "./wire.js";
+import { wirePlugin, type PluginCommandHandlerCall, type WirePluginDeps, type WireResult } from "./wire.js";
 import { describeNeeds, needsFacts, type NeedFact } from "./host.js";
 import { bundledDeclaredNames, isCoreModule, isSelfReferentialModule } from "./inventory.js";
 import { settingsForClient } from "./settings.js";
@@ -56,9 +56,25 @@ export interface LivePlugin {
   readonly widgets: readonly PluginWidgetSpec[];
   readonly wired: readonly string[];
   readonly dispose: () => Promise<void>;
+  /** 프로젝트 메뉴 처리기(`getCommandHandlers`) — 호스트를 받아 부르는 꼴로 감싼 것. 끄기·제거의 `LIVE.delete` 로 함께 빠진다(§2.8). */
+  readonly commandHandlers: ReadonlyMap<string, PluginCommandHandlerCall>;
 }
 
 const LIVE = new Map<string, LivePlugin>();
+
+/**
+ * 플러그인 커맨드(`handler:`)의 처리기 — **그 폴더의 코드가 이 데몬에 로드돼 있을 때만**(2026-11-03 공통 커맨드 §2.8 흐름 4).
+ * ★이름만으로 찾지 않는다: 자산 발견은 번들 이름 예약·로드 성공을 안 보므로, 번들 `x` 와 같은 매니페스트 이름의 홈 폴더 커맨드도
+ *  발견된다. 이름만 대면 **코드가 로드된 적 없는 폴더의 선언이 번들의 처리기를 부른다** — 그래서 폴더를 대조한다.
+ */
+export const pluginCommandHandler = (
+  command: { pluginName?: string; pluginDir?: string; handler?: string },
+): PluginCommandHandlerCall | undefined => {
+  if (command.pluginName === undefined || command.pluginDir === undefined || command.handler === undefined) return undefined;
+  const live = LIVE.get(command.pluginName);
+  if (live === undefined || path.resolve(live.dir) !== path.resolve(command.pluginDir)) return undefined;
+  return live.commandHandlers.get(command.handler);
+};
 
 /**
  * 배선 재료 — 부팅이 한 번 준다.
@@ -124,6 +140,7 @@ export const trackPlugin = (
     widgets: lp.manifest.widgets ?? [],
     wired: wired.wired,
     dispose: wired.dispose,
+    commandHandlers: wired.commandHandlers ?? new Map(),
   });
 };
 
@@ -327,7 +344,8 @@ const removePluginNow = async (
   //  아무 일도 안 일어난다). 종전엔 여기 기록이 **아예 없어서** 「제거」가 재시작까지만
   //  유효했다: 폴더는 남고(확인 문구도 그렇게 말한다) 로더가 다시 스캔해 **되살아났다.**
   //  사용자는 껐다고 믿는데 업데이트·크래시 복구 한 번에 그 플러그인이 다시 돈다.
-  setModuleDisabled(name, true);
+  //  ★커맨드 승인(`approvedCommands`)도 **같은 쓰기**에서 지운다 — 다시 설치하면 처음 승인을 받는다(2026-11-03 공통 커맨드 §2.5).
+  setModuleDisabled(name, true, { forgetApprovals: true });
   await live.dispose();
   LIVE.delete(name);
   console.log(`[plugin-manager] 제거: ${name} (배선 해제 + 비활성 기록 — 폴더는 남는다)`);

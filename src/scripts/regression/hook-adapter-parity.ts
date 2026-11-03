@@ -111,7 +111,15 @@ export const check: RegressionCheck = {
     const usedEvents = new Set(
       [...runnerSrc.matchAll(/runHooks\(\s*"([A-Za-z]+)"/g)].map((m) => m[1] ?? ""),
     );
-    const invBlock = /INVENTORY_HOOK_EVENTS = \[([\s\S]*?)\]/.exec(runnerSrc)?.[1] ?? "";
+    // ★목록 정의는 `plugin-hooks.ts` 의 `EMITTED_HOOK_EVENTS` 한 곳이다(2026-11-03 — 플러그인 훅의 «안 남» 판정과 공유).
+    //  인벤토리는 그 값을 그대로 쓴다(`INVENTORY_HOOK_EVENTS = EMITTED_HOOK_EVENTS`) — 둘 다 확인한다.
+    const pluginHooksSrc = await readFile(
+      path.join(REPO, "src/core/plugins/plugin-hooks.ts"),
+      "utf8",
+    );
+    const invBlock = /\bINVENTORY_HOOK_EVENTS = EMITTED_HOOK_EVENTS;/.test(runnerSrc)
+      ? (/EMITTED_HOOK_EVENTS = \[([\s\S]*?)\]/.exec(pluginHooksSrc)?.[1] ?? "")
+      : "";
     const listed = new Set(
       [...invBlock.matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1] ?? ""),
     );

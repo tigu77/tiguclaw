@@ -29,9 +29,10 @@ export const check: RegressionCheck = {
     ], { env: { ...process.env, TIGUCLAW_HOME: childHome } }).finally(() => rmSync(childHome, { recursive: true, force: true }));
     const line = r.out.split("\n").find((x) => x.startsWith("CHEAP_TIER "));
     const got = line ? (JSON.parse(line.slice("CHEAP_TIER ".length)) as Record<string, string[]>) : {};
-    // 실패 회고도 **같은 판단**을 지난다 — 사본이 남아 이쪽만 qwen 으로 가던 것(싱크 레드팀 P3).
+    // 내부 단발 호출도 **같은 판단**을 지난다 — 사본이 남아 한쪽만 qwen 으로 가던 것(싱크 레드팀 P3, 당시 실패 회고).
+    //  실패 회고(`classify-failure.ts`)는 자가성장 플러그인과 함께 뺐다(2026-11-03) — 남은 소비자 웹 본문 추출을 본다.
     const { readFileSync } = await import("node:fs");
-    const cf = readFileSync(new URL("../../core/llm-runtime/classify-failure.ts", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, "");
+    const cf = readFileSync(new URL("../../core/llm-runtime/webfetch-extract.ts", import.meta.url), "utf8").replace(/^\s*\/\/.*$/gm, "");
     const cfUses = /specs: cheapInternalTierSpecs\(\)/.test(cf);
     const cfCopy = /resolveTier\("nano"\)/.test(cf);
     const has = (k: string, m: string) => Array.isArray(got[k]) && got[k]!.some((x) => x.includes(m));
@@ -43,7 +44,7 @@ export const check: RegressionCheck = {
       assert("② 프로파일이 없으면 기본 풀(메인 턴과 같음) — 옛 env(nano)는 안 쓴다(옮기는 건 부팅의 몫, 2026-09-29)",
         !has("noProfiles", "qwen") && has("noProfiles", "opus") && JSON.stringify(got.noProfiles) === JSON.stringify(got.noProfilesDefault),
         JSON.stringify({ cheap: got.noProfiles, main: got.noProfilesDefault })),
-      assert("★실패 회고(classify-failure)도 같은 판단 함수를 쓴다(사본 없음)", cfUses && !cfCopy, `공용 사용=${cfUses} · 사본=${cfCopy}`),
+      assert("★웹 본문 추출(webfetch-extract)도 같은 판단 함수를 쓴다(사본 없음)", cfUses && !cfCopy, `공용 사용=${cfUses} · 사본=${cfCopy}`),
       assert("★④ 프로파일 설치본은 `low`·`nano` 모두 옛 MODEL_TIER_* 를 안 쓴다(게이트웨이·서브에이전트가 지나는 resolveTier) · 내부 싼 호출도",
         !has("lowShadowed", "qwen") && !has("nanoShadowed", "qwen") && !has("cheapShadowed", "qwen"), JSON.stringify({ low: got.lowShadowed, nano: got.nanoShadowed, cheap: got.cheapShadowed })),
       assert("⑤ 프로파일이 없어도 옛 env(`low`)는 안 쓴다", !has("lowLegacy", "qwen-legacy-low"), JSON.stringify(got.lowLegacy)),

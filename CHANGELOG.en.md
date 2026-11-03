@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.82.0] - 2026-11-04
+
+### Added
+- The project menu (dashboard 📁 chip · Telegram `/project`) now has Open folder, which opens that project's folder on the computer the assistant runs on.
+- A command in your home or a plugin with `scope: projects` appears as a shared item in the menu of every project linked to a conversation, and runs against the project you pressed it in. A project or home command with the same name takes precedence.
+- Shell commands provided by a plugin ask for approval once per command, and ask again if the command line changes. Commands marked `confirm: true` ask every time, regardless of approval.
+- A plugin can handle a project menu item in its own code with `handler:`. The same item does not run twice at once, and `/stop` stops it.
+- Hooks in `hooks/hooks.json` (the same format as Claude Code plugins) in an enabled plugin's folder now run once the plugin is installed and enabled. They run after your home and project hooks, so they do not run if your own hook blocks first, and their output is labeled with the plugin it came from.
+- `/status`, `/plugins`, and the dashboard inventory show each plugin's hooks and their status. Disabling or removing a plugin stops its hooks from the next call.
+
+### Changed
+- On Telegram, messages and attachments sent in quick succession are now collected for a moment (2.5 seconds by default, up to 6 seconds) and answered together. Replies start that much later; slash commands and button answers don't wait. You can change the wait or set it to 0 to turn it off in the Telegram plugin settings.
+
+### Removed
+- The bundled self-growth (`self-growth`) plugin has been removed (it had been off by default since 0.71.0). Automatically creating guidelines from failures, suggesting skill improvements, and its module cards are gone. Confirmed guidelines saved with `confirm_feedback`, and the guidelines you already have, keep working.
+- Mentions of self-growth were removed from the assistant's base guidelines and from the header of the confirmed guidelines included in every turn.
+
+### Fixed
+- A `null` hook entry or an invalid `timeout` in your home or project `settings.json` could stop the later hooks for the same event from running, and a hook with a very large `timeout` was terminated as soon as it started. Now only the invalid entry is skipped, and entries without a `command` are not run.
+
 ## [0.81.0] - 2026-11-02
 
 ### Added
@@ -1248,7 +1268,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.82.0...HEAD
+[0.82.0]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...v0.82.0
 [0.81.0]: https://github.com/tigu77/tiguclaw/compare/v0.80.0...v0.81.0
 [0.80.0]: https://github.com/tigu77/tiguclaw/compare/v0.79.1...v0.80.0
 [0.79.1]: https://github.com/tigu77/tiguclaw/compare/v0.79.0...v0.79.1

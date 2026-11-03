@@ -15,7 +15,7 @@
  *
  * 등급: **동작** — 분류 함수와 생성처를 실제로 돌린다(데몬·네트워크·실모델 0).
  */
-import { assert, assertIsolated, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const run = async (): Promise<Assertion[]> => {
   assertIsolated();
@@ -28,9 +28,6 @@ const run = async (): Promise<Assertion[]> => {
   const rt = await import("../../core/llm-runtime/index.js");
   const { isAuthRejected } = await import("../../core/llm-runtime/rate-limit.js");
   const { describeTurnErrors } = await import("../../core/health-sweep.js");
-  const { deriveWorkerErrorKind } = await loadPluginModule<{
-    deriveWorkerErrorKind: (error: string, errorName?: string) => string;
-  }>("../../../plugins/self-growth/src/failure.ts");
 
   // ── 표본 — 새 원문은 **생성처가 만든 것**, 옛 원문은 2026-10-05 이전 판 그대로 ──────────────
   const fresh = {
@@ -149,7 +146,7 @@ const run = async (): Promise<Assertion[]> => {
     registerChannelOutbound(CH, { deliver: async (_t, text) => void raws.push(text), defaultOutboundTarget: async () => "regr-target" });
     wj.registerWorkerHandler(async () => {}); // 실패는 raw 직행 — 핸들러는 «등록돼 있다» 만 필요하다.
     const job2 = wj.registerJob({ label: "회귀-이름통지", task: "t", threadKey: `${CH}:1`, channel: CH, channelUserId: "regr" });
-    // ★이벤트 배선 — self-growth 는 `worker.failed` 이벤트의 errorName 으로 묶는다. 상수로 박아도 초록이던 이음매(적대 검토 G4-b).
+    // ★이벤트 배선 — `worker.failed` 이벤트의 errorName 은 공개 페이로드다(구독자가 문장 대신 이름으로 묶는다). 상수로 박아도 초록이던 이음매(적대 검토 G4-b).
     const { getEventBus } = await import("../../core/eventbus.js");
     const failedNames: unknown[] = [];
     const unsub = getEventBus().subscribe((e) => { if (e.type === "worker.failed") failedNames.push((e.payload as { errorName?: unknown }).errorName); });
@@ -171,7 +168,7 @@ const run = async (): Promise<Assertion[]> => {
     );
     out.push(
       assert(
-        "★worker.failed 이벤트가 던져진 오류의 **실제** 이름을 싣는다(self-growth 가 그걸로 묶는다)",
+        "★worker.failed 이벤트가 던져진 오류의 **실제** 이름을 싣는다(구독자가 그걸로 묶는다)",
         failedNames.join(",") === "WorkerTimeoutError,TypeError",
         failedNames,
       ),
@@ -201,34 +198,6 @@ const run = async (): Promise<Assertion[]> => {
         timedOut(got.freshTurnNoKind) && timedOut(got.freshWallNoKind) && timedOut(got.freshIdleNoKind) &&
           timedOut(got.oldTurn) && timedOut(got.oldWall) && timedOut(got.kindOnly) && !timedOut(got.plain) &&
           !timedOut(got.poolEmpty) && !timedOut(got.rejected),
-        got,
-      ),
-    );
-  }
-
-  // ── ① ② self-growth 의 매니저 실패 종류(`deriveWorkerErrorKind` — 이벤트의 옛 기록도 읽는다) ─
-  {
-    const got = {
-      freshWall: deriveWorkerErrorKind(fresh.wall.message),
-      freshTool: deriveWorkerErrorKind(fresh.tool.message),
-      freshIdle: deriveWorkerErrorKind(fresh.idle.message),
-      freshTurn: deriveWorkerErrorKind(fresh.turn.message),
-      oldWall: deriveWorkerErrorKind(old.wall),
-      oldTool: deriveWorkerErrorKind(old.tool),
-      oldTurn: deriveWorkerErrorKind(old.turn),
-      named: deriveWorkerErrorKind("unrelated text", "WorkerTimeoutError"),
-      plain: deriveWorkerErrorKind("boom"),
-      // ★운영 모양 — failureOutcome 은 모든 Error 에 이름을 싣는다(일반 오류도 "Error"). 이름이 있어도 매핑에 없으면 timeout 이 아니다(G4).
-      plainNamed: deriveWorkerErrorKind("boom", "Error"),
-      otherNamed: deriveWorkerErrorKind("pool empty", "ProviderUnavailableError"),
-    };
-    out.push(
-      assert(
-        "★self-growth 가 새 영어·옛 한국어·이름 셋 다 timeout 으로 묶는다(무관한 실패는 error)",
-        got.freshWall === "timeout" && got.freshTool === "timeout" && got.freshIdle === "timeout" &&
-          got.freshTurn === "timeout" && got.oldWall === "timeout" && got.oldTool === "timeout" &&
-          got.oldTurn === "timeout" && got.named === "timeout" && got.plain === "error" &&
-          got.plainNamed === "error" && got.otherNamed === "error",
         got,
       ),
     );
@@ -345,6 +314,6 @@ const run = async (): Promise<Assertion[]> => {
 export const check: RegressionCheck = {
   name: "failure-classifiers-bilingual",
   guards:
-    "사용자에게 보이는 예외 원문을 영어로 바꾸면 한국어 정규식만 보던 분류기(매니저 실패 통지·로그·자가 점검·self-growth·풀 간 폴백)가 조용히 «기타» 로 무너지던 것 + 영어만 알아보게 하면 DB 의 옛 한국어 기록을 못 읽게 되는 것",
+    "사용자에게 보이는 예외 원문을 영어로 바꾸면 한국어 정규식만 보던 분류기(매니저 실패 통지·로그·자가 점검·풀 간 폴백)가 조용히 «기타» 로 무너지던 것 + 영어만 알아보게 하면 DB 의 옛 한국어 기록을 못 읽게 되는 것",
   run,
 };

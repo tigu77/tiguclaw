@@ -68,11 +68,10 @@ export interface TiguclawPaths {
    */
   systemMd: string;
   /**
-   * <home>/SELF_GROWTH.md — self-growth V4 확정 지침 층 (2026-06-22).
+   * <home>/SELF_GROWTH.md — 확정 지침 층 (2026-06-22).
    * AGENT.md(사용자 인격)·SYSTEM.md(앱 헌법) 와 *동급 홈 위치* 의 제3 markdown.
-   * 코어는 이 파일을 모름 — self-growth 플러그인이 데이터로만 쓰고 읽는다(단방향).
-   * 비서는 `growth_directive_pointer` 메모를 통해 작업 시작 시 이 파일을 Read 한다.
-   * 코어 sysprompt/SYSTEM.md/AGENT.md 무수정(원칙 20) — 파일 쓰기는 *이것만*.
+   * 쓰는 길은 코어 `confirm_feedback`, 싣는 쪽은 `formatSelfGrowthDirectives`(매 턴). 이름은 데이터의 주소라
+   * 자가성장 플러그인을 뺀 뒤(2026-11-03)에도 그대로 둔다.
    */
   selfGrowthMd: string;
   /** <home>/skills — 공통 스킬 (모든 프로젝트 공유). */
@@ -205,6 +204,12 @@ export const getPaths = (): TiguclawPaths => {
   });
   return cached;
 };
+
+/**
+ * 플러그인 데이터 폴더 — 호스트가 플러그인 코드에 주는 `dataDir` 과 플러그인 훅의 `${CLAUDE_PLUGIN_DATA}` 가 **같은 값**을 쓰는
+ * 한 곳(2026-11-03 플러그인 훅 설계 §3.2). 만들지는 않는다.
+ */
+export const pluginDataDir = (name: string): string => path.join(getPaths().commonPlugins, name);
 
 /**
  * 프로젝트 전용 하네스 경로 (cwd = 프로젝트 폴더).

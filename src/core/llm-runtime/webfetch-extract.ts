@@ -14,8 +14,7 @@
  * ★새 어댑터·새 HTTP 클라이언트 0 — `classify.ts` 와 **같은 이음매**(runRegionA 재사용)를
  *  쓴다. 그래서 어느 어댑터로 돌든 동작이 같고, 폴백·풀 선택은 이미 있는 코드가 한다.
  *  - `toolPolicy: none` — 추출에 도구는 불필요(미지원 모델도 graceful).
- *  - `internal: true` — turn_done/persist 미발행. 이 호출이 다시 self-growth 입력이 되어
- *    루프를 만드는 걸 구조적으로 막는다.
+ *  - `internal: true` — turn_done/persist 미발행. 내부 추출이 사용자 턴처럼 집계·저장되지 않는다.
  *  - `leanMemory` — 웹 본문 추출에 대화 메모리가 낄 이유가 없다.
  *
  * ★**실패는 조용하면 안 된다.** 이 결함의 본질이 "조용한 무시" 였으므로, 추출이 안 되면

@@ -8,13 +8,30 @@ export const openHomeDirectory = async (
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
   run: typeof execFile = execFile,
-): Promise<void> => {
-  const home = getPaths().home;
-  if (!(await stat(home)).isDirectory()) throw new Error("Home is not a directory");
-  if (platform !== "darwin" && platform !== "win32" && !env.DISPLAY && !env.WAYLAND_DISPLAY) {
-    throw new Error("No desktop display available");
+): Promise<void> => openDirectory(getPaths().home, platform, env, run);
+
+/** Raised before any opener runs when the host has no desktop to show a window on. */
+export class NoDisplayError extends Error {
+  constructor() {
+    super("No desktop display available");
   }
-  const args = platform === "darwin" ? ["-a", "Finder", home] : [home];
+}
+
+/**
+ * Opens a server-chosen directory in the OS file browser on the daemon machine (2026-11-03: also the project menu's folder action).
+ * Callers pass only paths they resolved themselves (fixed home, a linked project's registered path) — never text from a message.
+ */
+export const openDirectory = async (
+  dir: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  run: typeof execFile = execFile,
+): Promise<void> => {
+  if (!(await stat(dir)).isDirectory()) throw new Error("Not a directory");
+  if (platform !== "darwin" && platform !== "win32" && !env.DISPLAY && !env.WAYLAND_DISPLAY) {
+    throw new NoDisplayError();
+  }
+  const args = platform === "darwin" ? ["-a", "Finder", dir] : [dir];
   await new Promise<void>((resolve, reject) => {
     const child = run(systemOpener(platform), args, { timeout: 5000, windowsHide: true }, (err) => {
       // Explorer may exit nonzero after forwarding to an existing instance. Only claim process start on Windows.

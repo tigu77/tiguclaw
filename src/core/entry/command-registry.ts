@@ -289,7 +289,8 @@ const walkCommandsDir = async (
     return [];
   }
 
-  // ★하위 폴더는 **묶음**이다(이름공간 아님) — 그래서 같은 이름이 두 폴더에 있으면 하나만 쓴다: 얕은 쪽, 같은 깊이면 경로순.
+  // ★하위 폴더는 **묶음**이다(이름공간 아님) — 같은 범위의 동명은 하나만 쓴다: 얕은 쪽, 같은 깊이면 경로순.
+  // 전역·프로젝트 공통은 독립 이름 공간 — 호출부의 범위 분할 전에 다른 범위의 동명을 버리지 않는다.
   //  조용히 버리지 않고 로그에 남긴다. 링크(심볼릭)는 파일이든 폴더든 따라가지 않는다(Dirent 가 isFile·isDirectory 둘 다 false).
   const files: Array<{ filePath: string; folder: string; depth: number }> = [];
   const walk = async (dir: string, rel: string, depth: number): Promise<void> => {
@@ -319,8 +320,9 @@ const walkCommandsDir = async (
   const seen = new Map<string, Command>();
   for (const c of loaded) {
     if (c === null) continue;
-    const first = seen.get(c.name);
-    if (first === undefined) seen.set(c.name, c);
+    const key = `${c.scope ?? "global"}:${c.name}`;
+    const first = seen.get(key);
+    if (first === undefined) seen.set(key, c);
     else warnDuplicateCommandOnce(c.name, first.filePath, c.filePath);
   }
   return [...seen.values()];

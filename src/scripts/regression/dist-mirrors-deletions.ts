@@ -34,7 +34,7 @@ const seed = (root: string, rel: string, names: string[]): void => {
 export const check: RegressionCheck = {
   name: "dist-mirrors-deletions",
   guards:
-    "소스에서 지운 스킬·에이전트가 dist 에 남아 배포본에서만 계속 로드되던 것 (등급: 동작)",
+    "소스에서 지운 TS 모듈·스킬·에이전트가 dist 에 남아 배포본에서만 계속 로드되던 것 (등급: 동작)",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
 
@@ -54,7 +54,27 @@ export const check: RegressionCheck = {
 
     seed(tmp, "skills", ["alive", "doomed"]);
     seed(tmp, "agents", ["alive-agent", "doomed-agent"]);
-    for (const lane of ["plugins", "packages"]) mkdirSync(path.join(tmp, lane, "keeper"), { recursive: true });
+    for (const lane of ["plugins", "packages"]) {
+      mkdirSync(path.join(tmp, lane, "keeper"), { recursive: true });
+      writeFileSync(path.join(tmp, lane, "keeper", "index.ts"), "export {};\n");
+      writeFileSync(path.join(dist, lane, "keeper", "deleted.js"), "// removed TS emit");
+    }
+    mkdirSync(path.join(tmp, "src/core/self-growth"), { recursive: true });
+    mkdirSync(path.join(dist, "src/core"), { recursive: true });
+    writeFileSync(path.join(tmp, "src/core/kept.ts"), "export {};\n");
+    writeFileSync(path.join(tmp, "src/core/static.js"), "// static source");
+    writeFileSync(path.join(dist, "src/core/kept.js"), "// live TS emit");
+    writeFileSync(path.join(dist, "src/core/static.js"), "// static source");
+    // 옛 tsc 가 실제 emit 한 모듈 → 소스만 삭제 → 이번 copy 단계.
+    const oldSource = path.join(tmp, "src/core/self-growth/classify-failure.ts");
+    writeFileSync(oldSource, "export const obsolete = true;\n");
+    execFileSync(process.execPath, [path.join(REPO, "node_modules/typescript/bin/tsc"),
+      "--target", "es2022", "--module", "nodenext", "--skipLibCheck", "--sourceMap",
+      "--rootDir", tmp, "--outDir", dist, oldSource], { cwd: tmp, stdio: "pipe" });
+    out.push(assert("옛 tsc가 삭제 전 모듈 JS·map을 실제 emit 했다",
+      existsSync(path.join(dist, "src/core/self-growth/classify-failure.js")) &&
+      existsSync(path.join(dist, "src/core/self-growth/classify-failure.js.map")), "pre-removal emit"));
+    rmSync(oldSource);
     writeFileSync(path.join(tmp, "SYSTEM.md"), "헌법");
 
     // ★스크립트를 **임시 레포 안으로 복사해서** 돌린다 — `repoRoot` 를 자기 파일 위치에서
@@ -136,6 +156,12 @@ export const check: RegressionCheck = {
             existsSync(path.join(dist, lane, "orphan")) ? "★남아 있다" : "사라짐",
           ),
         );
+      }
+      for (const rel of ["src/core/self-growth/classify-failure.js", "src/core/self-growth/classify-failure.js.map", "plugins/keeper/deleted.js", "packages/keeper/deleted.js"]) {
+        out.push(assert(`삭제 소스의 옛 emit 제거 — ${rel}`, !existsSync(path.join(dist, rel)), rel));
+      }
+      for (const rel of ["src/core/kept.js", "src/core/static.js"]) {
+        out.push(assert(`살아 있는 TS·정적 JS 보존 — ${rel}`, existsSync(path.join(dist, rel)), rel));
       }
       // ★`plugins`·`packages` 는 통째 prune 하면 tsc 산출물이 날아간다 — 다른 처방(orphan)이다.
       //  ★**두 레인을 다 심는다** (2026-09-04 적대 검토 G-4). 종전엔 `plugins` 만 심어서,

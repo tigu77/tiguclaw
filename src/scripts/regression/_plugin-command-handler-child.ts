@@ -52,13 +52,15 @@ export default class P {
         log.calls.push({ h: "h", input, turn: host.turn ?? null });
         const posted = await host.postCard({ text: "CARD-TEXT", widget: "px/board", data: { path: input.project.path } });
         log.posted = posted;
+        log.said = await host.say({ channel: host.turn.channel, target: host.turn.target, text: "SAY-TEXT" });
         return "HANDLER-OK " + input.project.name + " " + input.args;
       },
       slowh: async (input, host) => {
         log.calls.push({ h: "slowh", input });
         await new Promise((r) => log.gates.push(r));
-        log.lateAborted = host.turn !== undefined;
-        log.latePosted = await host.postCard({ text: "LATE-CARD", widget: "px/board", data: {} });
+        const said = await host.say({ channel: host.turn.channel, target: host.turn.target, text: "LATE-SAY" });
+        const posted = await host.postCard({ text: "LATE-CARD", widget: "px/board", data: {} });
+        (log.lateOutputs ??= []).push({ project: input.project.name, said, posted });
         return "LATE-RESULT";
       },
       boom: async () => { throw new Error("BOOM-ERR"); },
@@ -70,7 +72,7 @@ export default class P {
 };
 `;
 const PX = path.join(plugins, "px");
-write(path.join(PX, "package.json"), pkg("px", { needs: { ui: ["chat-widget"] } }));
+write(path.join(PX, "package.json"), pkg("px", { needs: { ui: ["chat-widget"], outbound: true } }));
 write(path.join(PX, "index.mjs"), HANDLERS);
 const pcmd = (dir: string, name: string, fm: string): void => write(path.join(dir, "commands", `${name}.md`), `---\n${fm}\n---\n`);
 pcmd(PX, "a", "description: 보드 열기\nscope: projects\nhandler: h");
@@ -132,7 +134,14 @@ const until = async (cond: () => boolean, ms: number): Promise<boolean> => {
   }
   return cond();
 };
-type Log = { calls: Array<{ h: string; input: { project: { name: string; path: string }; args: string }; turn?: unknown }>; gates: Array<() => void>; posted?: boolean; latePosted?: boolean };
+type SayResult = { ok: boolean; error?: string };
+type Log = {
+  calls: Array<{ h: string; input: { project: { name: string; path: string }; args: string }; turn?: unknown }>;
+  gates: Array<() => void>;
+  posted?: boolean;
+  said?: SayResult;
+  lateOutputs?: Array<{ project: string; said: SayResult; posted: boolean }>;
+};
 const log = (): Log => ((globalThis as { __pch?: Log }).__pch ??= { calls: [], gates: [] });
 const calls = (h: string) => log().calls.filter((x) => x.h === h).length;
 const warns: string[] = [];
@@ -176,6 +185,11 @@ try {
     "⑧ 화면: needs.ui 있는 플러그인의 postCard → 그 대화로 위젯 첨부 1(데이터에 프로젝트) · 답 글은 그대로",
     log().posted === true && card !== undefined && card.attachments.length === 1 && JSON.stringify(card.attachments[0]).includes(A.replaceAll("\\", "\\\\")),
     { posted: log().posted, card },
+  );
+  c.check(
+    "⑧ 중단 전 needs.outbound 플러그인의 say → ok:true · 가짜 채널 배달 1회(항상 차단하는 가드도 잡는다)",
+    log().said?.ok === true && outs.filter((o) => o.text === "SAY-TEXT").length === 1,
+    { said: log().said, outs: outs.map((o) => o.text) },
   );
   const n0 = calls("h");
   replies.length = 0;
@@ -276,13 +290,15 @@ try {
   const listed = pc.listProjectRuns().filter((r) => r.endsWith(":slow")).length;
   const stopped = await pc.stopProjectRuns(tk);
   const stopReplies = replies.filter((r) => r.startsWith("⏹")).length;
-  for (const g of log().gates.splice(0)) g(); // 처리기가 멈춘 뒤 끝난다 — 카드와 반환을 시도한다
-  await new Promise((r) => setTimeout(r, 200));
+  for (const g of log().gates.splice(0)) g(); // 처리기가 멈춘 뒤 끝난다 — say·카드·반환을 실제로 시도한다
+  const lateFinished = await until(() => log().lateOutputs?.length === 2, 5000);
+  const lateOutputs = log().lateOutputs ?? [];
   c.check(
-    "★⑧·R4 N2 중복(같은 A·slow 두 번째=이미 실행 중) · B 는 동시에 · /stop → «멈췄다» 각 1회 · 그 뒤 처리기의 postCard(false)·카드·대체 텍스트·반환 글 전송 0",
-    dup === 1 && bothRunning && listed === 2 && stopped === 2 && stopReplies === 2 && log().latePosted === false &&
-      !outs.some((o) => o.text === "LATE-CARD") && !replies.some((r) => r.includes("LATE-RESULT")) && pc.listProjectRuns().length === 0,
-    { dup, listed, stopped, stopReplies, latePosted: log().latePosted, outs: outs.map((o) => o.text), replies },
+    "★⑧·R4 N2 중복(같은 A·slow 두 번째=이미 실행 중) · B 는 동시에 · /stop → «멈췄다» 각 1회 · 그 뒤 두 처리기의 say(stopped)·postCard(false) · 카드·say·반환 글 전송 0",
+    dup === 1 && bothRunning && listed === 2 && stopped === 2 && stopReplies === 2 && lateFinished &&
+      lateOutputs.map((o) => o.project).sort().join() === "ha,hb" && lateOutputs.every((o) => o.said.ok === false && o.said.error === "stopped" && o.posted === false) &&
+      !outs.some((o) => o.text === "LATE-CARD" || o.text === "LATE-SAY") && !replies.some((r) => r.includes("LATE-RESULT")) && pc.listProjectRuns().length === 0,
+    { dup, listed, stopped, stopReplies, lateFinished, lateOutputs, outs: outs.map((o) => o.text), replies },
   );
   replies.length = 0;
   await dispatch("/project run ha boom", tk);

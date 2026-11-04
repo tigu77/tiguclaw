@@ -442,7 +442,7 @@ export const createCommandToolsMcpServer = (): McpSdkServerConfigWithInstance =>
           if (own.length === 0) return okText(`${where.label} 에 커스텀 슬래시 명령이 없습니다.`);
           return okText(`## ${where.label} 슬래시 명령\n\n${formatGrouped(own)}`);
         }
-        const globals = await listCommandsIn(getPaths().commonCommands);
+        const globals = (await listCommandsIn(getPaths().commonCommands)).filter((c) => c.scope !== "projects");
         const [commands, common] = await Promise.all([discoverCommands(), discoverCommonProjectCommands()]);
         const index = formatCommandIndex(commands);
         if (index === "" && common.length === 0) {

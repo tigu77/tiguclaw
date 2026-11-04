@@ -1,6 +1,6 @@
 // 자식: 프로젝트 공통 커맨드 — 발견 분할·공존·직접 호출·메뉴·위험 액션·폴더 열기·지문·도구·인벤토리 (2026-11-03 설계 §7 ①~⑧·R1 ①②③⑥).
 // 자기 임시 홈(러너 홈 아래)에서 돈다 — 홈 플러그인·cwd·PATH 를 바꾸므로 러너 프로세스와 섞지 않는다.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { assertIsolated, loadPluginModule } from "./_framework.js";
@@ -64,6 +64,23 @@ ucmd("d4", "---\nscope: projects\n---\nBODY-USER-COMMON-D4");
 pcmd("d4", "---\nscope: projects\n---\nBODY-PLUGIN-COMMON-D4");
 own(A, "d5", "BODY-OWN-D5");
 ucmd("d5", "---\nscope: projects\n---\nBODY-USER-COMMON-D5");
+// 같은 루트 안에서도 전역·공통 동명은 공존한다 — 홈·플러그인 × 루트의 범위 양방향.
+const sameRootCases: Array<{ name: string; source: "user" | "plugin"; global: string; common: string }> = [];
+for (const [label, root, source] of [["home", userDir, "user"], ["plugin", path.join(plugDir, "commands"), "plugin"]] as const) {
+  for (const commonAtRoot of [false, true]) {
+    const name = `dual-${label}-${commonAtRoot ? "common" : "global"}-first`;
+    const shallow = path.join(root, `${name}.md`);
+    const nested = path.join(root, "shared", `${name}.md`);
+    const commonBody = "---\nscope: projects\n---\nDUAL-COMMON";
+    const globalBody = "DUAL-GLOBAL";
+    write(shallow, commonAtRoot ? commonBody : globalBody);
+    write(nested, commonAtRoot ? globalBody : commonBody);
+    // 범위를 나눠도 같은 범위의 중복은 기존대로 얕은 쪽 하나만 남긴다.
+    write(path.join(root, "shadow", `${name}.md`), commonAtRoot ? commonBody : globalBody);
+    write(path.join(root, "shared", "shadow", `${name}.md`), commonAtRoot ? globalBody : commonBody);
+    sameRootCases.push({ name, source, global: realpathSync(commonAtRoot ? nested : shallow), common: realpathSync(commonAtRoot ? shallow : nested) });
+  }
+}
 // 실행형
 const node = `"${process.execPath}"`;
 write(path.join(W, "where.js"), "console.log('WHERE', process.cwd());");
@@ -110,6 +127,17 @@ try {
   const all1 = await reg.getAllCommands();
   const common1 = await reg.discoverCommonProjectCommands();
   const forA = await reg.discoverCommandsForProject(A);
+  for (const sample of sameRootCases) {
+    const global = global1.filter((x) => x.name === sample.name);
+    const common = common1.filter((x) => x.name === sample.name);
+    c.check(
+      `★①② 같은 ${sample.source} 루트 동명 공존(${sample.name}): 전역·공통 각각 1개 · 범위 안 중복은 얕은 파일 우선`,
+      global.length === 1 && global[0]!.filePath === sample.global && global[0]!.source === sample.source && global[0]!.scope === undefined &&
+        common.length === 1 && common[0]!.filePath === sample.common && common[0]!.source === sample.source && common[0]!.scope === "projects" &&
+        forA.find((x) => x.name === sample.name)?.filePath === sample.common,
+      { sample, global, common },
+    );
+  }
   await reg.discoverCommands(); // 두 번째 걷기 — 경고는 한 번
   c.check(
     "① scope: projects 파일은 전역(discoverCommands·getAllCommands)에 없고 공통·프로젝트 목록에 있다",
@@ -390,8 +418,16 @@ try {
   const commonHead = listText.indexOf("모든 프로젝트 공통");
   c.check(
     "⑦ list_commands(무인자): 전역 목록 뒤 «모든 프로젝트 공통» 구획(공통 이름은 그 뒤에만, 플러그인은 출처)",
-    commonHead > 0 && listText.indexOf("/common1") > commonHead && listText.includes("/pprompt") && listText.slice(commonHead).includes("🧩 pcc-plug"),
+    commonHead > 0 && listText.includes("## 전역 명령 묶음") && listText.indexOf("/common1") > commonHead &&
+      listText.includes("/pprompt") && listText.slice(commonHead).includes("🧩 pcc-plug"),
     listText.slice(0, 1500),
+  );
+  const managed = await reg.listCommandsIn(userDir);
+  c.check(
+    "⑦ 관리 원본 listCommandsIn 은 전역·공통 모두 보존(전역 출력에서만 분리) · 같은 홈의 범위별 동명도 둘 다 관리 가능",
+    managed.some((x) => x.name === "common1" && x.scope === "projects") &&
+      sameRootCases.filter((x) => x.source === "user").every((sample) => managed.filter((x) => x.name === sample.name).length === 2),
+    managed.map((x) => ({ name: x.name, scope: x.scope })),
   );
   const inv = await collectInventory();
   const invCommon = inv.command.find((e) => e.name === "common1");

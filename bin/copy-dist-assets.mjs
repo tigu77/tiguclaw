@@ -177,6 +177,34 @@ const pruneOrphanDirs = async (rel) => {
   }
 };
 
+/** 삭제된 TypeScript 모듈의 옛 emit 도 치운다. 살아 있는 TS·정적 JS 자산은 보존한다. */
+const pruneOrphanEmits = async (rel) => {
+  const source = path.join(repoRoot, rel);
+  try { await fs.access(source); } catch { return; }
+  const walk = async (dir) => {
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); }
+    catch (err) { if (err.code === "ENOENT") return; throw err; }
+    for (const entry of entries) {
+      const target = path.join(dir, entry.name);
+      if (entry.isDirectory()) { await walk(target); continue; }
+      if (!entry.isFile()) continue;
+      const match = /^(.*)\.(js|mjs|cjs)(?:\.map)?$/.exec(entry.name);
+      if (!match) continue;
+      const base = path.join(source, path.relative(path.join(dist, rel), dir), match[1]);
+      const ext = match[2];
+      const ts = ext === "mjs" ? ".mts" : ext === "cjs" ? ".cts" : ".ts";
+      // 정적 JS/소스맵은 복사 자산이다. 소스가 있는 산출물은 절대로 건드리지 않는다.
+      const candidates = [base + ts, ...(ts === ".ts" ? [base + ".tsx"] : []), base + "." + ext, base + "." + ext + ".map"];
+      const live = await Promise.all(candidates.map((p) => fs.access(p).then(() => true, () => false)));
+      if (live.some(Boolean)) continue;
+      await fs.rm(target);
+      log(`prune-emit: ${path.relative(dist, target)}`);
+    }
+  };
+  await walk(path.join(dist, rel));
+};
+
 /** 끝까지 왔을 때만 — HEAD 를 적는다. 못 읽으면 적지 않는다(남은 기록은 이미 지웠다). */
 const writeBuildCommit = async () => {
   const r = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8", windowsHide: true });
@@ -254,6 +282,9 @@ const main = async () => {
   //  `dist/packages/` 에 옛 트리가 남는다. 로더가 훑지 않아 «계속 돈다» 는 아니지만,
   //  `dist` 는 배포·설치가 통째로 실어 나르는 트리다.
   await pruneOrphanDirs("packages");
+
+  // tsc 는 덮어쓰기만 한다 — 삭제된 코어·플러그인·패키지의 파일 단위 emit 은 남는다.
+  for (const rel of ["src", "plugins", "packages"]) await pruneOrphanEmits(rel);
 
   await writeBuildCommit();
   log("done.");

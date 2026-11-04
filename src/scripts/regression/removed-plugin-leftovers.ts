@@ -40,6 +40,7 @@ type Obs = {
   homeLoaded: string[];
   trace: boolean;
   bundledLines: Lines;
+  loaderImportLines: Lines;
   homeLines: Lines;
   scanLines: Lines;
   assets: { skills: string[]; agents: string[]; commands: string[]; endpoints: string[] };
@@ -193,6 +194,11 @@ export const check: RegressionCheck = {
           out.push(assert(`${tag} 칸 자식이 끝까지 돌았다`, false, obs.crashed));
           continue;
         }
+        out.push(assert(
+          `${tag} 로더 최초 import 의 새 warn/error 0`,
+          obs.loaderImportLines.warn.length === 0 && obs.loaderImportLines.error.length === 0,
+          obs.loaderImportLines,
+        ));
         const runs = f === "code" && s !== "off";
         const seen = f !== "marker" && s !== "off";
         // 새 경고가 날 수 있는 면 = 홈 뿌리 로드 + 자산 훑기. 번들 뿌리의 다른 줄(브리지 임시 토큰 안내·Node 폐기 경고 등)은

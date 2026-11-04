@@ -21,7 +21,8 @@ export const readBatchWindow = (): { quietMs: number; maxMs: number } => {
   const num = (raw: string | undefined, dflt: number): number => {
     if (raw === undefined || raw.trim() === "") return dflt;
     const n = Number(raw);
-    return Number.isFinite(n) && n >= 0 ? n : dflt;
+    // Node 타이머는 32비트 signed 상한 밖을 1ms로 바꾼다 — 긴 창이 즉시 발사되지 않게 기본값으로.
+    return Number.isFinite(n) && n >= 0 && n <= 2_147_483_647 ? n : dflt;
   };
   return {
     quietMs: num(process.env.TELEGRAM_BATCH_QUIET_MS, DEFAULT_QUIET_MS),
@@ -126,6 +127,10 @@ export const createInboundBatcher = (fire: (msg: IncomingMessage) => Promise<voi
         flushChat(chatId); // 창을 막 끈 경우의 잔여분 — 순서대로.
         dispatch(chatId, [part]);
         return;
+      }
+      // 같은 대화에서 세션이 갈리면 이전 묶음을 먼저 닫는다. A1→B1→A2를 A1+A2로 모으면 B1이 먼저 발사된다.
+      for (const [prevKey, prev] of [...pending]) {
+        if (prev.chatId === chatId && prevKey !== key) flushKey(prevKey);
       }
       let p = pending.get(key);
       // 서로 다른 메시지에 단 답글은 한 턴에 섞지 않는다 — 인용이 하나만 실리므로 하나를 잃는다.

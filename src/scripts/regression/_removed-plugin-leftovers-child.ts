@@ -53,8 +53,11 @@ const main = async (): Promise<void> => {
       .split(APP).join("<APP>")
       .replace(/\(node:\d+\)/g, "(node:<PID>)")
       .replace(/(ephemeral token: )[0-9a-f]+/g, "$1<TOKEN>");
-  const { createEventBus } = await import("../../core/eventbus.js");
-  const { loadPlugins } = await import("../../core/plugins/loader.js");
+  // 최초 import 도 관측한다 — 모듈 본문의 console.error 는 loadPlugins() 전에 난다.
+  const [{ createEventBus, loadPlugins }, loaderImportLines] = await capture(async () => ({
+    ...await import("../../core/eventbus.js"),
+    ...await import("../../core/plugins/loader.js"),
+  }), norm);
   const bus = createEventBus();
   const pluginErrors: string[] = [];
   bus.subscribe((e) => {
@@ -65,28 +68,31 @@ const main = async (): Promise<void> => {
   const [bundled, bundledLines] = await capture(() => (seedOnly ? none() : loadPlugins(path.join(APP, "plugins"), bus)), norm);
   const [home, homeLines] = await capture(() => (seedOnly ? none() : loadPlugins(path.join(HOME, "plugins"), bus)), norm);
 
-  const { discoverSkills } = await import("../../core/llm-runtime/capabilities/skill-registry.js");
-  const { discoverAgents } = await import("../../core/llm-runtime/capabilities/agent-registry.js");
-  const { discoverCommands } = await import("../../core/entry/command-registry.js");
-  const { discoverEndpoints } = await import("../../core/entry/endpoint-registry.js");
   const roots = [HOME, HOME_REAL].map((h) => path.join(h, "plugins", "self-growth") + path.sep);
   const fromHomeGrowth = (items: ReadonlyArray<{ name: string; filePath?: string }>): string[] =>
     items
       .filter((i) => typeof i.filePath === "string" && roots.some((r) => path.resolve(i.filePath!).startsWith(r)))
       .map((i) => i.name)
       .sort();
-  const [assets, scanLines] = await capture(async () => seedOnly ? { skills: [], agents: [], commands: [], endpoints: [] } : ({
-    skills: fromHomeGrowth(await discoverSkills(HOME)),
-    agents: fromHomeGrowth(await discoverAgents(HOME)),
-    commands: fromHomeGrowth(await discoverCommands(HOME)),
-    endpoints: fromHomeGrowth(await discoverEndpoints(HOME)),
-  }), norm);
+  const [assets, scanLines] = await capture(async () => {
+  const { discoverSkills } = await import("../../core/llm-runtime/capabilities/skill-registry.js");
+  const { discoverAgents } = await import("../../core/llm-runtime/capabilities/agent-registry.js");
+  const { discoverCommands } = await import("../../core/entry/command-registry.js");
+  const { discoverEndpoints } = await import("../../core/entry/endpoint-registry.js");
+    return seedOnly ? { skills: [], agents: [], commands: [], endpoints: [] } : {
+      skills: fromHomeGrowth(await discoverSkills(HOME)),
+      agents: fromHomeGrowth(await discoverAgents(HOME)),
+      commands: fromHomeGrowth(await discoverCommands(HOME)),
+      endpoints: fromHomeGrowth(await discoverEndpoints(HOME)),
+    };
+  }, norm);
 
   const obs: Record<string, unknown> = {
     bundledLoaded: bundled.map((p) => p.manifest.name).sort(),
     homeLoaded: home.map((p) => p.manifest.name).sort(),
     // 홈 코드 플러그인 entry 가 생성 시 남기는 흔적(네트워크·외부 쓰기 0).
     trace: await exists(path.join(HOME, "home-plugin-ran.txt")),
+    loaderImportLines,
     bundledLines,
     homeLines,
     scanLines,

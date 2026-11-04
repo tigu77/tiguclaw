@@ -84,8 +84,9 @@ const run = async (): Promise<Assertion[]> => {
   //  ★2026-10-14: 라우터는 세션 프로파일을 `resolveTier` 로 푼다(빌트인 등급도 풀려고) — 그 안의 프로파일 갈래가
   //   `poolToSpecs(profileChain[0]…)` 다. 그래서 «라우터가 resolveTier 를 부른다» + «resolveTier 가 poolToSpecs 로 푼다» 둘을 본다.
   const router = await readFile(new URL("../../core/router.ts", import.meta.url), "utf8");
+  const selection = await readFile(new URL("../../core/session-model-selection.ts", import.meta.url), "utf8");
   const runtime = await readFile(new URL("../../core/llm-runtime/index.ts", import.meta.url), "utf8");
-  const usesHelper = /resolveSessionProfilePool\(\s*profileName/.test(router) && /poolToSpecs\(\s*profileChain\[0\]/.test(runtime);
+  const usesHelper = /resolveSessionModelSelection\(/.test(router) && /resolveSessionProfilePool\(\s*profileName/.test(selection) && /poolToSpecs\(\s*profileChain\[0\]/.test(runtime);
   const revived = /chain\[0\]\.join\(/.test(router);
   out.push(
     assert(

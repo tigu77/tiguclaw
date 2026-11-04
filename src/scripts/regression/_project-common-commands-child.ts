@@ -85,11 +85,11 @@ for (const [label, root, source] of [["home", userDir, "user"], ["plugin", path.
 const node = `"${process.execPath}"`;
 write(path.join(W, "where.js"), "console.log('WHERE', process.cwd());");
 write(path.join(W, "slow.js"), "setTimeout(() => console.log('SLOW-DONE'), 20000);");
-ucmd("crun", `---\nscope: projects\nrun: '${node} ${path.join(W, "where.js")}'\n---\n`);
+ucmd("crun", `---\nscope: projects\nrun: '${node} "${path.join(W, "where.js")}"'\n---\n`);
 ucmd("grun", "---\nrun: echo SHOULD-NOT\n---\n");
-ucmd("slow", `---\nscope: projects\nrun: '${node} ${path.join(W, "slow.js")}'\n---\n`);
-pcmd("ff", `---\nscope: projects\nconfirm: true\nrun: '${node} ${path.join(W, "where.js")}'\n---\n`);
-ucmd("guard", `---\nscope: projects\nconfirm: true\nrun: '${node} ${path.join(W, "where.js")}'\n---\n`);
+ucmd("slow", `---\nscope: projects\nrun: '${node} "${path.join(W, "slow.js")}"'\n---\n`);
+pcmd("ff", `---\nscope: projects\nconfirm: true\nrun: '${node} "${path.join(W, "where.js")}"'\n---\n`);
+ucmd("guard", `---\nscope: projects\nconfirm: true\nrun: '${node} "${path.join(W, "where.js")}"'\n---\n`);
 
 const replies: string[] = [];
 const offers: { q: string; options: { label: string; value: string }[] }[] = [];
@@ -353,7 +353,7 @@ try {
   await dispatch("/project run pa ff", tk);
   const vF = offers[0]?.options.find((o) => o.value.includes("--yes="))?.value ?? "";
   const ffSourcePlugin = (offers[0]?.q ?? "").includes("pcc-plug");
-  ucmd("ff", `---\nscope: projects\nconfirm: true\nrun: '${node} ${path.join(W, "where.js")}'\n---\n`);
+  ucmd("ff", `---\nscope: projects\nconfirm: true\nrun: '${node} "${path.join(W, "where.js")}"'\n---\n`);
   offers.length = 0;
   replies.length = 0;
   await dispatch(vF, tk);

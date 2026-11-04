@@ -11,14 +11,13 @@ import type { IncomingMessage } from "../channels/types.js";
 import type { SteeringChannel } from "./steering.js";
 import {
   clearSessionModelOverride,
-  getSessionModelOverride,
-  getSessionModelProfile,
   setSessionChannelMeta,
   SESSION_STORAGE_CHANNEL,
 } from "../store/sessions.js";
 import { resolveSessionId } from "./threadkey.js";
 import { runClaude } from "./claude.js";
-import { parseModelSpecList, resolveModelChain, resolveSessionProfilePool } from "./llm-runtime/index.js";
+import { resolveModelChain } from "./llm-runtime/index.js";
+import { resolveSessionModelSelection } from "./session-model-selection.js";
 
 export interface RouteOutput {
   text: string;
@@ -132,37 +131,14 @@ export const route = async (
   // canonical 저장(`/model` 핸들러) 덕에 parseModelSpecList 는 항상 성공이나, DB 에
   // 구버전 무효 문자열이 남아있을 가능성 대비 빈 풀 가드 유지(env 폴백).
   // 세션-정체성 키 = (sessionChannel, sessionId) — override 조회도 canonical 키로.
-  const overrideRaw = getSessionModelOverride(sessionChannel, sessionId);
-  // 엔드포인트가 선언한 프로파일 → 폴백 체인. **해석은 llm-runtime 의 단일 정본에 위임**
-  //  (여기서 프로파일 규칙을 다시 구현하면 같은 판정이 두 곳이 된다). 미지정/미인식이면
-  //  빈 배열 → 기본 풀(현행). router 는 값을 만들지 않고 **운반**만 하는 규약을 지킨다.
+  const selection = resolveSessionModelSelection(sessionChannel, sessionId);
+  const overrideRaw = selection.raw;
+  const overridePool = selection.pool;
+  const appliedProfile = selection.appliedProfile;
   const endpointChain =
     opts?.modelProfile !== undefined && opts.modelProfile !== ""
-      ? resolveModelChain(opts.modelProfile, process.cwd()) // 프로파일 조회 기준 = 데몬 cwd(아래 세션 프로파일과 동일).
+      ? resolveModelChain(opts.modelProfile, process.cwd())
       : [];
-  let overridePool =
-    overrideRaw !== null ? parseModelSpecList(overrideRaw) : [];
-  // ── 세션 모델 *프로파일* override (대시보드 드롭다운, 2026-07-19, ADR
-  //    _workspace/model-dropdown_architect_contract.md §2). raw `/model` override 가
-  //    **없을 때만**(precedence: raw override > 세션 프로파일 > 전역 default) 진입 →
-  //    위 raw 경로는 바이트 불변(회귀 0). 저장값은 프로파일 *이름*(constraint 3);
-  //    해석은 코어(resolveProfileChain, constraint 1). 미지/댕글링 이름 → 빈 chain →
-  //    specs 미주입 → resolveModelSpecs 가 전역 default 프로파일로 자연 폴백(constraint 2).
-  //    chain[0](자기 pool)만 사용 = 메인 턴 resolveModelSpecs 와 동일 semantic.
-  let appliedProfile: string | null = null; // route 로그·관측용(QA anchor).
-  if (overridePool.length === 0) {
-    const profileName = getSessionModelProfile(sessionChannel, sessionId);
-    if (profileName !== null) {
-      // ★지금 고를 수 있는 프로파일일 때만 푼다(`resolveSessionProfilePool` — 화면 목록과 같은 판정, 2026-10-14).
-      //  사용자 프로파일이면 그 자기 풀, 빌트인 상태면 등급 풀. 고를 수 없는 이름은 빈 풀 → 기본으로.
-      //  (풀 원소 → spec 변환은 `resolveTier` 안의 `poolToSpecs` 한 곳 — 08-25 `[object Object]` 사고의 자리.)
-      const pool = resolveSessionProfilePool(profileName, process.cwd());
-      if (pool.length > 0) {
-        overridePool = pool;
-        appliedProfile = profileName;
-      }
-    }
-  }
 
   const out = await runClaude(
     {

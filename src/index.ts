@@ -118,7 +118,6 @@ import {
   specLabel,
   errorDetail,
   resolveModelSpecs,
-  describeBasePool,
   poolDiversityWarning,
   restoreCooldowns,
 } from "./core/llm-runtime/index.js";
@@ -130,6 +129,7 @@ import {
   loadModelProfiles,
 } from "./core/settings.js";
 import { renderModelProfiles } from "./core/entry/models-command.js";
+import { handleModelMenu } from "./core/entry/model-command.js";
 import { renderProviders } from "./core/entry/providers-command.js";
 import {
   hasSupervisorRespawn,
@@ -950,29 +950,7 @@ const handler: MessageHandler = async (msg) => {
   // 결정노트 2026-05-27-region-unification §gap "메인 모델 동적 전환"의 사용자-driven 갈래.
   if (trimmed === "/model" || trimmed.startsWith("/model ")) {
     const args = trimmed === "/model" ? "" : trimmed.slice("/model ".length).trim();
-    if (args === "") {
-      const current = getSessionModelOverride(sidChannel, msg.threadKey);
-      // ★기본 풀과 **그 출처**를 말한다 (2026-09-29) — 종전엔 «env REGION_A_MODELS 풀» 이라는 이름으로 실제로는
-      //  프로파일 풀을 보여줬고, env 가 비면 «anthropic 디폴트» 라고 틀리게 말했다. 판정은 런타임과 같은 함수다.
-      const base = describeBasePool();
-      const poolSource = base.source === "profile"
-        ? translate("srv.model.source.profile", { profile: base.profile ?? "" })
-        : base.profileUnresolved !== undefined
-          ? translate("srv.model.source.builtinUnresolved", { profile: base.profileUnresolved })
-          : translate("srv.model.source.builtin");
-      const basePool = base.specs
-        .map((s) => `${s.provider ?? s.adapter}:${s.model === "" ? translate("srv.model.adapterDefault") : s.model}`)
-        .join(" → ") || translate("srv.model.poolNone");
-      const lines = [
-        current !== null ? translate("srv.model.override", { spec: current }) : translate("srv.model.overrideNone"),
-        ...(current !== null ? [unresolvedOverrideNote(current)].filter((l) => l !== "") : []),
-        translate("srv.model.defaultPool", { source: poolSource, pool: basePool }),
-        "",
-        translate("srv.model.help"),
-      ];
-      await replyCommand(msg,lines.join("\n"));
-      return;
-    }
+    if (await handleModelMenu(msg, args)) return;
     if (args === "reset") {
       const had = clearSessionModelOverride(sidChannel, msg.threadKey);
       await replyCommand(msg,

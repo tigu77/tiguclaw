@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.82.0] - 2026-11-04
 
 ### Added
+- `/model` now shows the model configuration that applies to the current conversation and lets you choose from the same profiles as the dashboard without a model call. Choosing a profile clears a direct model override and applies to the next regular message. `/model reset` clears only the direct override; Use default also clears the conversation profile selection.
 - The project menu (dashboard 📁 chip · Telegram `/project`) now has Open folder, which opens that project's folder on the computer the assistant runs on.
 - A command in your home or a plugin with `scope: projects` appears as a shared item in the menu of every project linked to a conversation, and runs against the project you pressed it in. A project or home command with the same name takes precedence.
 - Shell commands provided by a plugin ask for approval once per command, and ask again if the command line changes. Commands marked `confirm: true` ask every time, regardless of approval.

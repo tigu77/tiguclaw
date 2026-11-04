@@ -2171,6 +2171,20 @@ export const clearSessionModelProfile = (
   return result.changes > 0;
 };
 
+/** 프로파일 선택은 raw보다 우선해야 하므로 두 상태를 한 트랜잭션으로 교체한다. */
+export const selectSessionModelProfile = (
+  channel: ChannelName,
+  threadKey: string,
+  profile: string | null,
+): void => {
+  const handle = requireDb("selectSessionModelProfile");
+  handle.transaction(() => {
+    if (profile === null) clearSessionModelProfile(channel, threadKey);
+    else setSessionModelProfile(channel, threadKey, profile);
+    clearSessionModelOverride(channel, threadKey);
+  })();
+};
+
 // ─── Context boundary watermark helpers (/reset·/clear P0, 2026-07-10) ────────
 // 리셋 시 index.ts 가 setContextBoundary(channel, threadKey, Date.now()) 호출 →
 // 이후 loadThreadHistory·loadThreadHistoryWithIds 가 boundary 이후 transcript 만 반환.

@@ -143,13 +143,14 @@ export const check: RegressionCheck = {
 
       const route = await readSource("../../../plugins/http-bridge/routes-settings.ts");
       const router = await readSource("../../core/router.ts");
-      const selCalls = (route.match(/isSelectableProfile\(/g) ?? []).length;
+      const selection = await readSource("../../core/session-model-selection.ts");
+      const selCalls = ((route + selection).match(/isSelectableProfile\(/g) ?? []).length;
       out.push(
         assert(
           "배선: 기본·세션 지정 라우트 둘 다 `isSelectableProfile`, 화면 기본은 `effectiveDefaultProfileName`, 라우터 세션 프로파일은 `resolveSessionProfilePool`",
-          selCalls >= 2 && route.includes("effectiveDefaultProfileName()") && !route.includes("loadModelProfiles()") &&
-            router.includes("resolveSessionProfilePool(profileName"),
-          `isSelectableProfile 호출 ${selCalls} · 라우터 resolveTier=${String(router.includes("resolveSessionProfilePool(profileName"))}`,
+          selCalls >= 2 && selection.includes("effectiveDefaultProfileName()") && !route.includes("loadModelProfiles()") &&
+            (router.includes("resolveSessionModelSelection(") && selection.includes("resolveSessionProfilePool(profileName")),
+          `isSelectableProfile 호출 ${selCalls} · 라우터 resolveTier=${String((router.includes("resolveSessionModelSelection(") && selection.includes("resolveSessionProfilePool(profileName")))}`,
         ),
       );
     } finally {

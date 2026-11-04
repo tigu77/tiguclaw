@@ -12,7 +12,7 @@
  */
 import { setDashboardTitle, setLocale, setTheme } from "../../src/core/settings.js";
 import { listOutboundChannels } from "../../src/core/channel-outbound.js";
-import { effectiveDefaultProfileName, isSelectableProfile, resolveModelProfiles, setResolvedProfileColor } from "../../src/core/llm-runtime/builtin-profiles.js";
+import { isSelectableProfile, resolveModelProfiles, setResolvedProfileColor } from "../../src/core/llm-runtime/builtin-profiles.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { readSuggestionSettings } from "../../src/core/next-message-suggestion.js";
 import { collectInventory, isCoreModule, isSelfReferentialModule } from "../../src/core/plugins/inventory.js";
@@ -20,7 +20,8 @@ import { collectModules } from "../../src/core/plugins/providers.js";
 import { setDefaultProfile, readEgressChannels, setEgressChannels, setModuleDisabled, setSuggestionEnabled, setMemoryIndexCapBytes, isMemoryIndexCapValue, readMemoryIndexCapBytes, MEMORY_INDEX_CAP_MIN, MEMORY_INDEX_CAP_MAX, loadLimitResumeEnabled, setLimitResumeEnabled, loadNotifyOwnerEnabled, setNotifyOwnerEnabled } from "../../src/core/settings.js";
 import { MEMORY_INDEX_CAP_BYTES } from "../../src/core/prompt-assembly.js";
 import { resolveSessionId } from "../../src/core/threadkey.js";
-import { SESSION_STORAGE_CHANNEL, clearSessionModelProfile, setSessionModelProfile } from "../../src/store/sessions.js";
+import { SESSION_STORAGE_CHANNEL } from "../../src/store/sessions.js";
+import { applySessionModelProfile, listSessionModelProfiles, UnknownSessionModelProfile } from "../../src/core/session-model-selection.js";
 import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
 import { translate } from "../../src/core/i18n.js";
@@ -341,39 +342,18 @@ export const handleSetSessionProfile = async (ctx: RouteCtx): Promise<void> => {
         : "";
   // /messages 와 동일 정규화 — sessionId = resolveSessionId(ctx.channelName, threadKey, threadKey).
   const sessionId = resolveSessionId(ctx.channelName, rawThreadKey, rawThreadKey);
-  // "" / "default" / 현재 전역 default 이름 → 세션 override 제거(전역 default 상속).
-  const isInherit =
-    rawProfile === "" ||
-    rawProfile === "default" ||
-    rawProfile === effectiveDefaultProfileName();
-  if (isInherit) {
-    try {
-      clearSessionModelProfile(SESSION_STORAGE_CHANNEL, sessionId);
-      writeJson(res, 200, { ok: true, threadKey: rawThreadKey, profile: null });
-    } catch (e) {
-      const m = e instanceof Error ? e.message : String(e);
-      writeJson(res, 500, { error: m });
-    }
-    return;
-  }
-  // 실존 프로파일 검증(댕글링 차단 = constraint 2 방어심).
-  if (!isSelectableProfile(rawProfile)) {
-    writeJson(res, 400, {
-      error: translate("srv.settings.noProfile", { name: rawProfile }),
-      available: Object.keys(resolveModelProfiles().profiles),
-    });
-    return;
-  }
   try {
-    setSessionModelProfile(SESSION_STORAGE_CHANNEL, sessionId, rawProfile);
-    writeJson(res, 200, {
-      ok: true,
-      threadKey: rawThreadKey,
-      profile: rawProfile,
-    });
+    const profile = applySessionModelProfile(SESSION_STORAGE_CHANNEL, sessionId, rawProfile);
+    writeJson(res, 200, { ok: true, threadKey: rawThreadKey, profile });
   } catch (e) {
-    const m = e instanceof Error ? e.message : String(e);
-    writeJson(res, 500, { error: m });
+    if (e instanceof UnknownSessionModelProfile) {
+      writeJson(res, 400, {
+        error: translate("srv.settings.noProfile", { name: rawProfile }),
+        available: listSessionModelProfiles().profiles.map((p) => p.name),
+      });
+    } else {
+      writeJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
+    }
   }
   return;
 };
@@ -451,24 +431,7 @@ export const handleGetModelProfiles = async (ctx: RouteCtx): Promise<void> => {
     //  비어 있어서 설치가 덜 된 것처럼 보였다. 같은 폴백을 2026-08-13 에 `/models`
     //  에는 넣었는데 여기와 프롬프트 인벤토리는 빠졌다 — 그래서 폴백을 소비처마다
     //  적지 않고 `resolveModelProfiles` 한 곳으로 모았다.
-    const { profiles: map, builtin } = resolveModelProfiles();
-    const defaultName = effectiveDefaultProfileName();
-    const names = Object.keys(map);
-    const rest = names.filter((n) => n !== defaultName);
-    const ordered = names.includes(defaultName)
-      ? [defaultName, ...rest]
-      : rest;
-    const profiles = ordered.map((name) => {
-      const p = map[name]!;
-      return {
-        name,
-        isDefault: name === defaultName,
-        ...(p.description !== undefined ? { description: p.description } : {}),
-        pool: p.pool,
-        ...(p.fallback !== undefined ? { fallback: p.fallback } : {}),
-        ...(p.color !== undefined ? { color: p.color } : {}),
-      };
-    });
+    const { profiles, builtin } = listSessionModelProfiles();
     writeJson(res, 200, {
       profiles,
       count: profiles.length,

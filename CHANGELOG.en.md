@@ -8,11 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.82.0] - 2026-11-04
+## [0.82.0] - 2026-11-06
 
 ### Added
 - Each timer now shows its execution session using the same rules as job cards, in both Current session and All sessions scope. Click a known name to open that conversation; an unknown name is shown as its session key. The existing top-level filter still selects the list.
-- Shell/process cards now collapse and expand from the entire heading, like job cards, with a click, Enter, or Space. The separate collapse button is removed. The task name, status, elapsed time, and Stop action (or its unavailable notice) remain in the heading; commands and output stay in the body. Stop actions and text selection do not toggle the card.
+- Shell/process cards now start collapsed and expand and collapse from the entire heading, like job cards, with a click, Enter, or Space. The separate collapse button is removed. The task name, status, elapsed time, and Stop action (or its unavailable notice) remain in the heading; commands and output stay in the body. Stop actions and text selection do not toggle the card.
 - The timer group in the background panel can now be collapsed and expanded from its heading with a click, Enter, or Space. The heading keeps showing the count for the current scope, and the browser remembers the collapsed state. It starts expanded; timer execution, notifications, and Stop are unchanged.
 - File read (Read) cards now have the same path actions as write and edit cards. Clicking the path copies it as shown, ↗ opens the file in the default app on the computer the assistant runs on, and ⤢ shows the file as it is on disk now (what was read at the time stays in the card output).
 - `/model` now shows the model configuration that applies to the current conversation and lets you choose from the same profiles as the dashboard without a model call. Choosing a profile clears a direct model override and applies to the next regular message. `/model reset` clears only the direct override; Use default also clears the conversation profile selection.
@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - On Telegram, messages and attachments sent in quick succession are now collected for a moment (2.5 seconds by default, up to 6 seconds) and answered together. Replies start that much later; slash commands and button answers don't wait. You can change the wait or set it to 0 to turn it off in the Telegram plugin settings.
 - When results come back from a manager or subagent, the assistant now also receives the rule that the work is not complete if a required condition it assigned failed or was not confirmed.
+- When no model is configured, the default Codex model is now chosen by the same rule as official Codex (the priority and visibility in the model list) instead of the first model in the list. If that information is missing or the last successful fetch was more than 7 days ago, the built-in default is used. Models you choose explicitly and usable profiles, including per-conversation `/model` choices, are kept; the new rule applies only when the choice falls back to the default.
 
 ### Removed
 - The bundled self-growth (`self-growth`) plugin has been removed (it had been off by default since 0.71.0). Automatically creating guidelines from failures, suggesting skill improvements, and its module cards are gone. Confirmed guidelines saved with `confirm_feedback`, and the guidelines you already have, keep working.

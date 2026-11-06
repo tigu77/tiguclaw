@@ -304,8 +304,12 @@
       </div>
       <!-- 한 번 타이머(2026-10-20) — 이 대화가 건 것만(스코프 토글을 따른다). 없으면 숨는다. bg-timers.js 소관. -->
       <div class="bg-timers" id="bg-timers" hidden>
-        <div class="bg-timers-head" data-i18n="bg.timers.head">⏱ 타이머</div>
-        <div class="bg-timers-list" id="bg-timers-list"></div>
+        <div class="bg-group-head bg-timers-head" id="bg-timers-head" role="button" tabindex="0" aria-expanded="true" aria-controls="bg-timers-list">
+          <span class="bg-group-chevron" aria-hidden="true">▾</span>
+          <span class="bg-group-label" data-i18n="bg.timers.head">⏱ 타이머</span>
+          <span class="bg-group-label" id="bg-timers-count"></span>
+        </div>
+        <div class="bg-group-body bg-timers-list" id="bg-timers-list"></div>
       </div>
       <div id="bg-scroll" class="bg-scroll" tabindex="0">
         <!-- 작업 그룹(매니저·에이전트 혼재) — 접이식 카테고리 헤더 + 본문(상태필터 + 리스트).

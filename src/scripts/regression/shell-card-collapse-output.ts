@@ -14,11 +14,12 @@ const make = async () => {
   read = () => ({at:b.clock.now(), ...b.R(`(() => { const o = shellOutputEls.get("s"), e = shellRegistry.get("s");
     return {connected: !!o && document.body.contains(o), visible: !!o && !o.closest(".shell-card-body").hidden && e.cardOpen && e.expanded}; })()`) });
   await b.clock.advance(20);
-  const add = (patch = "") => b.R(`upsertShellEntry("s", {command:"printf hello",cwd:"/tmp",threadKey:"dashboard:default",ownerTk:"dashboard:default",status:"running",${patch}}, {visible:true}); renderShellsView()`);
+  // 카드는 기본 접힘(2026-11-05) — 출력 세대 검사는 펼친 카드에서 시작한다(open=false 면 기본값 그대로).
+  const add = (patch = "", open = true) => b.R(`upsertShellEntry("s", {command:"printf hello",cwd:"/tmp",threadKey:"dashboard:default",ownerTk:"dashboard:default",status:"running",${open ? "cardOpen:true," : ""}${patch}}, {visible:true}); renderShellsView()`);
   const snapshot = () => b.R(`(() => { const e=shellRegistry.get("s"), c=document.querySelector('.shell-card[data-shell-id="s"]'), o=shellOutputEls.get("s");
     return { cardOpen:e.cardOpen, expanded:e.expanded, tail:e.lastLine, output:o && o.textContent,
-      hidden:c && c.querySelector(".shell-card-body").hidden, aria:c && c.querySelector(".shell-card-collapse").getAttribute("aria-expanded"),
-      focused:!!c && document.activeElement===c.querySelector(".shell-card-collapse"), timers:shellPollTimers.size,
+      hidden:c && c.querySelector(".shell-card-body").hidden, aria:c && c.querySelector(".shell-card-head").getAttribute("aria-expanded"),
+      focused:!!c && document.activeElement===c.querySelector(".shell-card-head"), timers:shellPollTimers.size,
       timer:shellPollTimers.get("s")?.timer, label:c?.querySelector(".shell-card-label")?.textContent }; })()`);
   return { ...b, add, pending, snapshot };
 };
@@ -37,14 +38,17 @@ export const check: RegressionCheck = {
       out.push(assert("★★background-drawer 로드 전 shell seed→rAF도 ReferenceError 없이 보이는 카드 부착", dash.run(`!!document.querySelector('.shell-card[data-shell-id="early"]')`)));
     }
     {
-      const t = await make(); t.add();
+      const t = await make(); t.add("", false);
       let s = t.snapshot();
-      out.push(assert("★★새 카드 cardOpen=true/expanded=false 별개, 최초 GET 0", s.cardOpen === true && s.expanded === false && !s.hidden && t.pending.length === 0, s));
-      t.R(`scheduleShellsRender(); document.querySelector(".shell-card-collapse").click()`);
+      out.push(assert("★★새 카드 기본 접힘 cardOpen=false/expanded=false 별개, 본문 hidden/aria=false, 최초 GET 0", s.cardOpen === false && s.expanded === false && s.hidden && s.aria === "false" && t.pending.length === 0, s));
+      t.R(`document.querySelector(".shell-card-head").click()`);
       s = t.snapshot();
-      out.push(assert("★★전체접기: 본문 hidden/aria=false, 명령 fallback과 재생성 버튼 focus", !s.cardOpen && !s.expanded && s.hidden && s.aria === "false" && s.label === "printf hello" && s.focused && t.pending.length === 0, s));
+      out.push(assert("★★머리줄로 펼침: 본문 보임/aria=true, 출력 의도는 그대로 false·GET 0", s.cardOpen && !s.expanded && !s.hidden && s.aria === "true" && t.pending.length === 0, s));
+      t.R(`scheduleShellsRender(); document.querySelector(".shell-card-head").click()`);
+      s = t.snapshot();
+      out.push(assert("★★전체접기: 본문 hidden/aria=false, 명령 fallback과 재생성 머리줄 focus", !s.cardOpen && !s.expanded && s.hidden && s.aria === "false" && s.label === "printf hello" && s.focused && t.pending.length === 0, s));
       await t.clock.advance(20);
-      out.push(assert("★★접기 뒤 이미 예약된 rAF 재렌더에도 새 접기 버튼 포커스 보존", t.snapshot().focused && t.snapshot().hidden, t.snapshot()));
+      out.push(assert("★★접기 뒤 이미 예약된 rAF 재렌더에도 새 머리줄 포커스 보존", t.snapshot().focused && t.snapshot().hidden, t.snapshot()));
       t.R(`upsertShellEntry("s", {lastLine:"remember",description:"작업"}); renderShellsView(); setShellsFilter("done"); setShellsFilter("running"); setBgSessionScope("all"); setBgSessionScope("session");`);
       s = t.snapshot();
       out.push(assert("★재렌더/SSE식 갱신·필터·범위 변경에도 접힘과 lastLine 보존", !s.cardOpen && !s.expanded && s.tail === "remember" && s.hidden, s));
@@ -80,6 +84,8 @@ export const check: RegressionCheck = {
     {
       const t = await make(); t.add('owner:"sdk",killable:false,expanded:true');
       out.push(assert("★★SDK는 GET/timer/출력토글/Kill 0, 소유자 안내 유지", t.pending.length === 0 && t.snapshot().timers === 0 && t.R(`!document.querySelector(".shell-card-toggle") && !document.querySelector(".shell-card-kill") && !!document.querySelector(".shell-card-owner") && !!document.querySelector(".shell-card-kill-disabled")`)));
+      t.R(`document.querySelector(".shell-card-head").click()`);
+      out.push(assert("★★접힌 SDK도 중지불가 안내·소유자·상태·경과는 헤더에 유지", t.snapshot().hidden && t.snapshot().aria === "false" && t.R(`(() => { const h=document.querySelector(".shell-card-head"); return !!h.querySelector(".shell-card-kill-disabled") && !!h.querySelector(".shell-card-owner") && !!h.querySelector(".agent-card-status") && !!h.querySelector(".agent-card-elapsed") && !h.querySelector(".shell-card-kill"); })()`)));
     }
     // A 발행→가시성 이탈→새 DOM/B→B 성공→늦은 A. A의 catch도 새 세대 timer를 멈추면 안 됨.
     const transitions = [

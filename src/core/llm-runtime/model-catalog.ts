@@ -12,7 +12,8 @@
  * ★두 백엔드 모두 실물 목록을 준다(2026-08-13 실측):
  *   - anthropic: `GET /v1/models` — **구독 OAuth 토큰으로도 200**
  *     (`Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20`). `created_at` 최신순.
- *   - codex:     `GET <codex>/models?client_version=…` — `models[].slug` 최신순.
+ *   - codex:     `GET <codex>/models?client_version=…` — `models[]`(`slug`·`priority`·`visibility` …).
+ *     ★배열 순서를 추천·최신으로 읽지 않는다 — 기본 선정은 공식 규칙(`codexRecommendedModel`, 2026-11-05).
  *
  * ★비용은 안 움직인다: 자동 최신은 **패밀리 안에서만** 고른다(opus→opus, sonnet→sonnet).
  *  등급이 곧 비용이고 그 선택은 티어 표가 고정하므로, 조용히 비싼 등급으로 올라가지 않는다.
@@ -85,6 +86,19 @@ export interface ModelCatalog {
    *  2026-10-17). 부재 = 모름 = 도구를 접지 않는다(지금처럼 전부 펼침).
    */
   toolSearch?: Record<string, boolean>;
+  /**
+   * `provider:model` → 공식 Codex 정렬 키 `priority`(작을수록 앞, i32) · `visibility`(`list`|`hide`|`none`).
+   * 2026-11-05 — codex 기본 모델을 공식 Codex 와 같은 규칙으로 고르려고 담는다(`codexRecommendedModel`).
+   * 부재 = 모름 = 고르기를 주장하지 않는다(옛 캐시 무회귀).
+   */
+  priority?: Record<string, number>;
+  visibility?: Record<string, string>;
+  /**
+   * provider → **마지막으로 조회에 성공한 시각**(ms). 2026-11-05.
+   * ★`fetchedAt` 은 조회가 전부 실패해도 갱신되고(직전 값을 옮겨 담으므로), 디스크엔 목록이 바뀔 때만 써진다 —
+   *  그래서 «얼마나 오래된 값인가» 를 말하지 못한다. codex 추천의 신선도는 이 값으로 잰다(다른 provider 의 판정은 종전 그대로).
+   */
+  succeededAt?: Record<string, number>;
 }
 
 /**
@@ -144,6 +158,11 @@ const ensureLoaded = (): void => {
       ...(o.toolSearch !== null && typeof o.toolSearch === "object"
         ? { toolSearch: o.toolSearch }
         : {}),
+      // codex 추천 재료도 되살린다 — 안 그러면 재시작 직후 첫 갱신 전 턴은 정적 표로, 갱신 뒤엔 추천으로 모델이 한 번 바뀐다.
+      //  값 검증은 고르는 자리(`codexRecommendedModel`) 한 곳이 한다.
+      ...(o.priority !== null && typeof o.priority === "object" ? { priority: o.priority } : {}),
+      ...(o.visibility !== null && typeof o.visibility === "object" ? { visibility: o.visibility } : {}),
+      ...(o.succeededAt !== null && typeof o.succeededAt === "object" ? { succeededAt: o.succeededAt } : {}),
     };
   } catch {
     // 캐시는 편의다 — 못 읽으면 정적 표로 간다(throw 0).
@@ -173,15 +192,56 @@ export const catalogNote = (): string | null => {
   return `백엔드 조회값(${ageH}시간 전) — ${parts.join(" · ")}${stale}`;
 };
 
+/** 공식 Codex `ModelVisibility` 의 값 전부(openai/codex `protocol/src/openai_models.rs` — 이 밖의 값이면 공식은 응답 디코드를 거절한다). */
+const CODEX_VISIBILITY = new Set(["list", "hide", "none"]);
+/** 공식 `priority: i32` 와 같은 범위 — 범위 밖이면 공식은 응답 디코드를 거절한다. */
+const isI32 = (v: unknown): v is number =>
+  typeof v === "number" && Number.isInteger(v) && v >= -2_147_483_648 && v <= 2_147_483_647;
+/** 한 모델의 순위 재료가 공식 계약에 맞나 — 조회 때 담을지와 고를 때 믿을지를 **같은 판정**으로 한다. */
+const validRank = (priority: unknown, visibility: unknown): boolean =>
+  isI32(priority) && typeof visibility === "string" && CODEX_VISIBILITY.has(visibility);
+
+/**
+ * **codex 기본 모델 = 공식 Codex 가 고르는 것** (2026-11-05, 정태님 승인).
+ *
+ * 공식(openai/codex `388aee4b`)의 규칙 그대로: `priority` 오름차순 **안정** 정렬(동률은 응답 순서) →
+ * `visibility == "list"` 인 첫 모델. 인증 필터(`supported_in_api`)는 ChatGPT 인증이면 걸리지 않고,
+ * 우리 codex provider 는 ChatGPT OAuth 뿐이라 거르지 않는다.
+ * ★**목록 순서를 추천·최신으로 읽지 않는다** — 공식 번들 카탈로그조차 배열 첫 원소와 priority 최소가 다르다.
+ * ★고르지 않는 경우(호출자는 정적 표로 간다 — 정적 표가 공식의 «번들 카탈로그» 자리다):
+ *  - 한 모델이라도 재료가 없거나 공식 범위 밖 — 공식은 그런 응답을 통째로 거절하고 캐시·번들로 폴백한다.
+ *  - 목록이 비었거나 노출(`list`) 모델이 없다 — 공식은 그때 원격을 번들 카탈로그에 덧대어 번들의 노출 모델을 고른다
+ *    (`apply_remote_models`). 우리는 번들을 싣지 않으므로 숨김 모델을 고르지 않고 정적 표로 간다.
+ *  - 마지막 성공 조회가 없거나 7일보다 오래됐다.
+ */
+const codexRecommendedModel = (): string | undefined => {
+  ensureLoaded();
+  const c = cache;
+  const at = c?.succeededAt?.["codex"];
+  if (c === null || typeof at !== "number" || Date.now() - at > MAX_AGE_MS) return undefined;
+  const list = c.models["codex"] ?? [];
+  if (list.length === 0) return undefined;
+  const rows: Array<{ slug: string; priority: number; visibility: string }> = [];
+  for (const slug of list) {
+    const priority = c.priority?.[`codex:${slug}`];
+    const visibility = c.visibility?.[`codex:${slug}`];
+    if (!validRank(priority, visibility)) return undefined;
+    rows.push({ slug, priority: priority as number, visibility: visibility as string });
+  }
+  rows.sort((a, b) => a.priority - b.priority); // Array.prototype.sort 는 안정 정렬(ES2019) — 동률은 응답 순서.
+  return rows.find((r) => r.visibility === "list")?.slug;
+};
+
 /**
  * 카탈로그에서 provider 의 빌트인 모델 하나. 없으면 undefined(호출자가 정적 표로 강등).
  *
  * ★anthropic 은 **패밀리 접두 + 최신순**으로 고른다 — 목록 첫 항목을 그냥 쓰면 다른 패밀리
  *  (예: fable)가 끼어든다. 손으로 관리하는 건 `opus` 라는 **패밀리 이름**뿐이고, 그건 버전과 달리 안 늙는다.
  *  그래서 비용 등급이 조용히 오르지 않는다(opus→다음 opus).
- * ★codex 는 최신순 목록의 첫 원소다(`sol`·`terra`·`luna` 는 등급이 아니라 형제다).
+ * ★codex 는 공식 Codex 의 추천 규칙(`codexRecommendedModel`)이다 — 2026-11-05 전엔 목록 첫 원소였다.
  */
 export const catalogDefaultModel = (provider: string): string | undefined => {
+  if (provider === "codex") return codexRecommendedModel();
   const c = fresh();
   const raw = c?.models[provider];
   if (raw === undefined || raw.length === 0) return undefined;
@@ -245,9 +305,14 @@ const codexModelsAt = async (
   reasoning: Record<string, string>;
   reasoningFloor: Record<string, string>;
   toolSearch: Record<string, boolean>;
+  priority: Record<string, number>;
+  visibility: Record<string, string>;
+  answered?: boolean;
 }> => {
   const auth = getAuthProvider("codex");
-  if (auth === undefined) return { slugs: [], reasoning: {}, reasoningFloor: {}, toolSearch: {} };
+  if (auth === undefined) {
+    return { slugs: [], reasoning: {}, reasoningFloor: {}, toolSearch: {}, priority: {}, visibility: {} };
+  }
   const token = await auth.getAccessToken();
   const headers: Record<string, string> = {
     authorization: `Bearer ${token}`,
@@ -272,6 +337,8 @@ const codexModelsAt = async (
       default_reasoning_level?: unknown;
       supported_reasoning_levels?: unknown;
       supports_search_tool?: unknown;
+      priority?: unknown;
+      visibility?: unknown;
     }>;
   };
   const rows = Array.isArray(json.models) ? json.models : [];
@@ -279,9 +346,16 @@ const codexModelsAt = async (
   const reasoning: Record<string, string> = {};
   const reasoningFloor: Record<string, string> = {};
   const toolSearch: Record<string, boolean> = {};
+  const priority: Record<string, number> = {};
+  const visibility: Record<string, string> = {};
   for (const r of rows) {
     if (typeof r.slug !== "string" || r.slug === "") continue;
     slugs.push(r.slug);
+    // 공식 기본 선정 재료 — 공식 계약에 맞을 때만 담는다(없거나 어긋나면 «모름» → 그 목록으론 고르지 않는다).
+    if (validRank(r.priority, r.visibility)) {
+      priority[`codex:${r.slug}`] = r.priority as number;
+      visibility[`codex:${r.slug}`] = r.visibility as string;
+    }
     // 도구 검색 지원 — 불리언으로 말했을 때만 담는다(모양이 다르면 모름).
     if (typeof r.supports_search_tool === "boolean") toolSearch[r.slug] = r.supports_search_tool;
     // ★**최저 수용 강도** — 첫 원소를 쓴다(목록은 오름차순으로 온다).
@@ -299,7 +373,7 @@ const codexModelsAt = async (
       reasoning[`codex:${r.slug}`] = r.default_reasoning_level;
     }
   }
-  return { slugs, reasoning, reasoningFloor, toolSearch };
+  return { slugs, reasoning, reasoningFloor, toolSearch, priority, visibility, answered: true };
   // ★여기서 거르지 않는다 — 캐시는 백엔드가 말한 그대로 둔다(레코드 보존).
   //  후보에서 빼는 판단은 `catalogDefaultModel`(선택) 몫이다.
 };
@@ -453,6 +527,14 @@ interface DiscoverResult {
   tools?: Record<string, boolean>;
   /** 모델별 도구 검색(`tool_search`) 지원 — 벤더가 선언했을 때만. 부재 = 모름. */
   toolSearch?: Record<string, boolean>;
+  /** 모델별 공식 `priority`·`visibility`(`provider:model` 키) — codex 만 준다. 부재 = 모름. */
+  priority?: Record<string, number>;
+  visibility?: Record<string, string>;
+  /**
+   * 백엔드가 **성공 응답으로** 답했다 — 빈 목록이어도 «없다» 가 답이다(codex 만, 2026-11-05). 없으면 빈 목록은 종전처럼
+   *  «모름» 으로 건너뛴다(다른 provider 정책 불변). 안 그러면 빈 성공 응답 뒤에도 철회된 옛 추천이 7일간 살아남는다.
+   */
+  answered?: boolean;
   /**
    * ★**이 목록의 순서에 의미가 없다**(2026-08-31). 표준 `/models` 는 정렬을 약속하지 않고
    *  종류도 섞여 나온다(정품 openai 는 임베딩·TTS·이미지까지 한 배열이다). 그런데
@@ -482,7 +564,7 @@ interface DiscoverResult {
  *  이 경로 커버리지가 0이었고, 삭제 로직을 통째로 되돌려도 초록이었다). 판정만 순수
  *  함수로 꺼내 실행으로 지킨다.
  */
-export const mergeReasoning = <V extends string | boolean>(
+export const mergeReasoning = <V extends string | boolean | number>(
   target: Record<string, V>,
   provider: string,
   incoming: Record<string, V>,
@@ -513,6 +595,9 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
   const nextContext: Record<string, number> = { ...(cache?.context ?? {}) };
   const nextTools: Record<string, boolean> = { ...(cache?.tools ?? {}) };
   const nextToolSearch: Record<string, boolean> = { ...(cache?.toolSearch ?? {}) };
+  const nextPriority: Record<string, number> = { ...(cache?.priority ?? {}) };
+  const nextVisibility: Record<string, string> = { ...(cache?.visibility ?? {}) };
+  const nextSucceeded: Record<string, number> = { ...(cache?.succeededAt ?? {}) };
   let changed = false;
   // ★조회 대상을 **손으로 적지 않는다** (2026-08-31). 종전엔 배열에 둘을 적어뒀고, 그래서
   //  새 provider 를 붙여도 목록이 영원히 비어 있었다([[feedback_hand_maintained_lists]]).
@@ -532,11 +617,11 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
     try {
       const res = await fn();
       const list = res.slugs;
-      if (list.length === 0) continue;
+      if (list.length === 0 && res.answered !== true) continue;
       const before = (next[provider] ?? []).join(",");
       if (before !== list.join(",")) {
         console.log(
-          `[model-catalog] ${provider}: ${list.length}개 — 최신 ${list[0]}` +
+          `[model-catalog] ${provider}: ${list.length}개 — 최신 ${list[0] ?? "-"}` +
             (before === "" ? " (첫 조회)" : ` (이전 최신 ${before.split(",")[0]})`),
         );
         changed = true;
@@ -560,6 +645,12 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
       if (res.reasoningFloor !== undefined) {
         if (mergeReasoning(nextFloor, provider, res.reasoningFloor)) changed = true;
       }
+      // 공식 기본 선정 재료도 **같은 교체 규칙** — 성공한 조회에서 사라진 값은 «모름» 으로 돌아가야 옛 추천이 살아남지 않는다.
+      if (res.priority !== undefined && mergeReasoning(nextPriority, provider, res.priority)) changed = true;
+      if (res.visibility !== undefined && mergeReasoning(nextVisibility, provider, res.visibility)) changed = true;
+      // ★성공 시각은 매번 디스크까지 쓴다 — 목록이 그대로여도 «방금 확인했다» 가 남아야 재시작 직후 첫 턴이 같은 선택을 한다.
+      nextSucceeded[provider] = Date.now();
+      changed = true;
     } catch (e) {
       console.warn(
         `[model-catalog] ${provider} 조회 실패 — ${e instanceof Error ? e.message : String(e)} ` +
@@ -577,6 +668,9 @@ export const refreshModelCatalog = async (): Promise<ModelCatalog | null> => {
     ...(Object.keys(nextContext).length > 0 ? { context: nextContext } : {}),
     ...(Object.keys(nextTools).length > 0 ? { tools: nextTools } : {}),
     ...(Object.keys(nextToolSearch).length > 0 ? { toolSearch: nextToolSearch } : {}),
+    ...(Object.keys(nextPriority).length > 0 ? { priority: nextPriority } : {}),
+    ...(Object.keys(nextVisibility).length > 0 ? { visibility: nextVisibility } : {}),
+    ...(Object.keys(nextSucceeded).length > 0 ? { succeededAt: nextSucceeded } : {}),
   };
   if (changed || !existsSync(CATALOG_FILE())) {
     try {

@@ -10,12 +10,13 @@
  *
  * 등급: **동작** — 진짜 데몬(`_stop-starting-child.ts`)·진짜 훅 셸. ⓓ 자리만 배선 대조.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readSourceSync } from "./_wiring.js";
-import { assert, assertIsolated, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
+import { spawnFixtureWithin, removeFixtureHome } from "./_guard-fixture-process.js";
 
 const CHILD = path.join(path.dirname(fileURLToPath(import.meta.url)), "_stop-starting-child.ts");
 type Probe = { booted?: boolean; why?: string; held?: Record<string, boolean>; steps?: Record<string, string>; tail?: string };
@@ -31,14 +32,16 @@ export const check: RegressionCheck = {
     assertIsolated();
     const home = mkdtempSync(path.join(tmpdir(), "stop-starting-"));
     let got: Probe = {};
+    let cleanup: string | null = null;
     try {
-      const r = await spawnWithin(90_000, "stop-starting-probe", ["--import", "tsx", CHILD], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PROBE_HOME: home } });
+      const r = await spawnFixtureWithin(90_000, ["--import", "tsx", CHILD], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PROBE_HOME: home } });
       const line = r.out.trim().split("\n").filter((l) => l.startsWith("{")).pop();
       try { got = line === undefined ? { why: r.err.slice(-300) } : (JSON.parse(line) as Probe); } catch { got = { why: "bad-json" }; }
+      if (r.timedOut || r.code !== 0) got = { why: `status=${r.code} timedOut=${r.timedOut} ${r.err.slice(-300)}` };
     } finally {
-      rmSync(home, { recursive: true, force: true });
+      cleanup = await removeFixtureHome(home);
     }
-    const out: Assertion[] = [assert("프로브 데몬이 떴다(안 뜨면 아래 판정은 무의미)", got.booted === true, got.why ?? got.tail ?? "")];
+    const out: Assertion[] = [assert("픽스처 홈 정리(제품 판정과 분리)", cleanup === null, cleanup ?? "removed"), assert("프로브 데몬이 떴다(안 뜨면 아래 판정은 무의미)", got.booted === true, got.why ?? got.tail ?? "")];
     if (got.booted !== true) return out;
     const s = got.steps ?? {};
     const h = got.held ?? {};

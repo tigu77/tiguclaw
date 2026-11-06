@@ -11,13 +11,14 @@
  * 격리: 임시 홈·빈 포트·합성 토큰. 라이브 데몬·실제 브리지에 닿지 않는다.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { stopFixtureProcess, removeFixtureHome } from "./_guard-fixture-process.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const tsxCli = (): string =>
@@ -71,6 +72,7 @@ export const check: RegressionCheck = {
     const home = mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-dashproxy-"));
     const child = spawn(process.execPath, [tsxCli(), path.join(REPO, "packages/dashboard/index.ts")], {
       cwd: home,
+      detached: process.platform !== "win32",
       env: {
         ...process.env,
         TIGUCLAW_HOME: home,
@@ -120,10 +122,12 @@ export const check: RegressionCheck = {
         { 열림: events.opened, 닫힘: events.closed },
       ));
     } finally {
-      child.kill("SIGTERM");
-      await new Promise<void>((r) => bridge.close(() => r()));
+      const stopped = await stopFixtureProcess(child);
+      const bridgeClosed = new Promise<void>((r) => bridge.close(() => r()));
       bridge.closeAllConnections?.();
-      rmSync(home, { recursive: true, force: true });
+      await bridgeClosed;
+      const cleanup = await removeFixtureHome(home);
+      out.push(assert("픽스처 트리를 종료한 뒤 홈을 정리한다(제품 판정을 정리 예외로 덮지 않는다)", stopped && cleanup === null, { stopped, cleanup }));
     }
     return out;
   },

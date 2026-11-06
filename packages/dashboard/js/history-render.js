@@ -320,11 +320,14 @@
         // diff 있는 스텝은 diff 헤더가 경로+N/-M 을 보여주므로 verbose detail 생략(접힘 간결).
         // 스킬 스텝은 detail(=name=…)이 라벨과 중복 → 생략.
         const hasDiff = a.diff && Array.isArray(a.diff.lines);
-        if (a.detail && !hasDiff && !skill) {
+        // Read 는 경로 동작(복사·↗·⤢)이 detail 자리에 — 라이브(buildActivityLine)와 같은 판단·같은 함수(2026-11-05).
+        const fileRef = !hasDiff && !skill && typeof buildFileRefActions === "function" ? buildFileRefActions(a.file) : null;
+        if (a.detail && !hasDiff && !skill && !fileRef) {
           const d = document.createElement("span");
           d.className = "hist-tool-detail"; d.textContent = a.detail;
           line.appendChild(d);
         }
+        if (fileRef) line.appendChild(fileRef);
         // ★모델·시퀀스 메타 + 배경 스폰 칩 — 라이브(buildActivityLine)와 **같은 판정**으로
         //  붙인다 (2026-08-20 사용자 신고 "누구를 소환했다 정보와 배지가 없어졌다").
         //  종전엔 이 빌더에 둘 다 없어서, 턴이 끝나 이력으로 다시 그려지는 순간 사라졌다 —

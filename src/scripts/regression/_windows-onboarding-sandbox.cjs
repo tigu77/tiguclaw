@@ -42,6 +42,13 @@ require('node:tls').connect = deniedNetwork('tls.connect');
 const cp = require('node:child_process');
 const spawnSync = cp.spawnSync;
 cp.spawnSync = (cmd, args, opts) => {
+  // doctor's Windows excluded-port probe gets the result of a refused spawn and never runs: no OS query from the fixture.
+  //  Throwing here (v4 Windows log) ended doctor before its summary, so the disabled case could not be judged.
+  if (cmd === 'netsh') {
+    event('spawn', { command: 'netsh', args: [], allowed: false, synthetic: 'refused' });
+    const error = Object.assign(new Error('spawnSync netsh EACCES (onboarding sandbox)'), { errno: -13, code: 'EACCES', syscall: 'spawnSync netsh', path: 'netsh', spawnargs: (args || []).map(String) });
+    return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: null, signal: null, error };
+  }
   // Product native-module probes may use the same Node executable; npm may only be our fake.
   const fakeNpm = path.join(root, 'bin', process.platform === 'win32' ? 'npm.cmd' : 'npm');
   const allow = cmd === process.execPath || ((cmd === 'npm' || cmd === 'npm.cmd') &&
@@ -51,8 +58,10 @@ cp.spawnSync = (cmd, args, opts) => {
   return spawnSync(cmd, args, opts);
 };
 const spawn = cp.spawn;
+// esbuild packages put POSIX binaries in bin/, but Windows esbuild.exe at package root.
+const compiler = path.join(path.dirname(require.resolve('esbuild/package.json')), '..', '@esbuild', process.platform + '-' + process.arch, process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild');
 cp.spawn = (cmd, args, opts) => {
-  const allowed = typeof cmd === 'string' && path.isAbsolute(cmd) && /[\\/]node_modules[\\/]@esbuild[\\/][^\\/]+[\\/]bin[\\/]esbuild$/.test(cmd);
+  const allowed = typeof cmd === 'string' && path.isAbsolute(cmd) && path.resolve(cmd) === path.resolve(compiler);
   event('spawn', { command: String(cmd), allowed, kind: 'compiler' });
   if (!allowed) throw new Error('Sandbox denied asynchronous subprocess');
   return spawn(cmd, args, opts);

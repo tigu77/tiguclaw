@@ -151,11 +151,11 @@ const run = async (): Promise<Assertion[]> => {
       //  상태형(하루 1회)이면 끌 수 없는 매일 알림이 되고 백업 통지와 시계를 공유해 서로를 묻는다(적대 검토).
       const T = 1_000_000;
       const st: Record<string, { size: number; mtimeMs: number }> = {
-        "/a/PROJECT.md": { size: PROJECT_DOC_WARN_BYTES + 1, mtimeMs: T + 1 },
-        "/b/PROJECT.md": { size: PROJECT_DOC_WARN_BYTES, mtimeMs: T + 1 },
-        "/c/PROJECT.md": { size: 99_999, mtimeMs: T + 1 },
-        "/e/PROJECT.md": { size: 99_999, mtimeMs: T + 1 },
-        "/f/PROJECT.md": { size: 99_999, mtimeMs: T },
+        [path.join("/a", "PROJECT.md")]: { size: PROJECT_DOC_WARN_BYTES + 1, mtimeMs: T + 1 },
+        [path.join("/b", "PROJECT.md")]: { size: PROJECT_DOC_WARN_BYTES, mtimeMs: T + 1 },
+        [path.join("/c", "PROJECT.md")]: { size: 99_999, mtimeMs: T + 1 },
+        [path.join("/e", "PROJECT.md")]: { size: 99_999, mtimeMs: T + 1 },
+        [path.join("/f", "PROJECT.md")]: { size: 99_999, mtimeMs: T },
       };
       const big = oversizedProjectDocs(
         [
@@ -335,7 +335,7 @@ const run = async (): Promise<Assertion[]> => {
   {
     const { getPaths } = await import("../../core/paths.js");
     const { runBackupIfDue, backupInfo, isCompleteSqliteFile } = await import("../../store/backup.js");
-    const fsm = await import("node:fs");
+    const fsm = (await import("node:fs")).default;
     const home = getPaths().home;
     // 격리 확인 — 러너가 임시 홈을 강제한다. 실제 홈이면 아무것도 만들지 않는다.
     const isolated = home.startsWith(tmpdir()) || /regression/i.test(home);
@@ -384,26 +384,40 @@ const run = async (): Promise<Assertion[]> => {
         ok: existsSync(zero) && existsSync(trunc),
         got: `zero=${existsSync(zero)} trunc=${existsSync(trunc)}`,
       });
-      // 3) 실패 → 잔여물 없음 → 다음 호출이 재시도. 폴더를 쓰기 금지로 만들어 VACUUM 을 실제로 실패시킨다.
+      // 3) 실패 → 잔여물 없음 → 다음 호출이 재시도. 완성본 공개를 실패시켜 실제 .partial 정리와 다음 호출 재시도를 본다.
       rmSync(path.join(bdir, retry.ran && "file" in retry ? retry.file : "none"), { force: true });
       fsm.writeFileSync(path.join(bdir, ".tiguclaw-crashed.partial"), fsm.readFileSync(good).subarray(0, 4096));
-      fsm.chmodSync(bdir, 0o500);
+      // POSIX chmod는 Windows ACL의 쓰기를 막지 않는다. 실제 완성본 공개(rename)만 실패시킨다.
+      const realRename = fsm.renameSync;
+      let injected = 0;
+      let collision: string | undefined;
+      fsm.renameSync = (from, to) => {
+        if (path.dirname(String(from)) === bdir && String(from).endsWith(".partial") && String(to).endsWith(".db")) {
+          // Real OS failure, not a fabricated exception: cannot rename a file over a directory.
+          collision = String(to);
+          fsm.mkdirSync(collision);
+          injected++;
+        }
+        return realRename(from, to);
+      };
       let failed: unknown;
       try {
         failed = runBackupIfDue(T0 + 1000);
       } finally {
-        fsm.chmodSync(bdir, 0o755);
+        fsm.renameSync = realRename;
+        if (collision !== undefined) fsm.rmSync(collision, { recursive: true, force: true });
       }
       const afterFail = backupInfo();
+      const afterFailResidue = fsm.readdirSync(bdir).filter((n) => n.endsWith(".partial"));
       const again = runBackupIfDue(T0 + 2000);
       out.push({
         name: "★실패하면 오류로 알리고 최근 백업 시각은 앞 정상본 그대로 — 다음 호출이 재시도해 성공한다(끊긴 임시 파일도 정리)",
         ok:
-          typeof failed === "object" && failed !== null && "error" in failed &&
-          afterFail.latestAt !== null && afterFail.latestAt < T0 - 86_400_000 &&
+          injected === 1 && typeof failed === "object" && failed !== null && "error" in failed &&
+          afterFailResidue.length === 0 && afterFail.latestAt !== null && afterFail.latestAt < T0 - 86_400_000 &&
           again.ran === true && "file" in again &&
           readdirSync(bdir).every((f) => !f.endsWith(".partial")),
-        got: `실패=${JSON.stringify(failed)} · 실패후=${JSON.stringify(afterFail)} · 재시도=${JSON.stringify(again)} · 폴더=${readdirSync(bdir).join(",")}`,
+        got: `주입=${injected} · 실패즉시잔재=${afterFailResidue.join(",")} · 실패=${JSON.stringify(failed)} · 실패후=${JSON.stringify(afterFail)} · 재시도=${JSON.stringify(again)} · 폴더=${readdirSync(bdir).join(",")}`,
       });
       rmSync(bdir, { recursive: true, force: true });
     }

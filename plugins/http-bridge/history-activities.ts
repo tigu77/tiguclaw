@@ -19,6 +19,7 @@ interface HistoryActivity {
   label: string;
   detail: string;
   diff?: unknown; // 리치 diff(ActivityDiff) — 있으면 그대로 통과(대시보드가 렌더). 2026-07-09.
+  file?: unknown; // 읽은 파일 참조(ActivityFileRef, Read) — 시작 스텝에서 그대로 통과(대시보드가 경로 동작을 붙인다). 2026-11-05.
   output?: unknown; // 리치 출력(ActivityOutput) — phase:"end" 에서 시작 스텝으로 병합. 2026-07-09.
   plan?: string; // ExitPlanMode 전체 계획(마크다운) — 있으면 통과(대시보드 전체 렌더). 2026-07-19.
   /**
@@ -93,6 +94,7 @@ export const historyActivities = (
         phase?: unknown;
         kind?: unknown;
         diff?: unknown;
+        file?: unknown;
         output?: unknown;
         text?: unknown;
         audience?: unknown;
@@ -165,6 +167,7 @@ export const historyActivities = (
         detail: typeof p.detail === "string" ? p.detail : "",
         kind: "tool",
         ...(p.diff !== undefined && p.diff !== null ? { diff: p.diff } : {}),
+        ...(p.file !== undefined && p.file !== null ? { file: p.file } : {}),
         ...(typeof p.plan === "string" ? { plan: p.plan } : {}),
       };
       run?.open.set(seq, step);

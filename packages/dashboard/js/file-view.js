@@ -129,6 +129,9 @@
         closeFileView();
         const gen = ++fvGen;
         const target = fileViewPathOf(diff);
+        // ★조각(`lines`)이 없으면 Read 카드의 보기다(2026-11-05) — 강조할 조각이 없고, 지금 파일은 «읽은 당시의 기록이 아니다» 를 말한다.
+        //  카드의 출력을 가리키지 않는다(출력이 없는 Read 도 있고, 있어도 프리뷰다 — 아스트라 11-05 R1).
+        const isFragment = !!(diff && Array.isArray(diff.lines));
         const root = document.createElement("div");
         root.className = "fv-back";
         root.setAttribute("role", "dialog");
@@ -156,19 +159,20 @@
         // 위 = 기존 조각 카드 그대로(같은 함수 — 카드와 갈리지 않게). 본문은 펼친 채로.
         const frag = document.createElement("div");
         frag.className = "fv-frag";
-        if (diff && typeof buildDiffBlock === "function") frag.appendChild(buildDiffBlock(diff, { inFileView: true }));
+        if (isFragment && typeof buildDiffBlock === "function") frag.appendChild(buildDiffBlock(diff, { inFileView: true }));
         const note = document.createElement("div");
         note.className = "fv-note";
         const file = document.createElement("div");
         file.className = "fv-file";
-        box.append(head, frag, note, file);
+        // 조각이 없으면(Read) 빈 조각 칸(테두리)을 만들지 않는다.
+        box.append(head, ...(isFragment ? [frag] : []), note, file);
         root.appendChild(box);
         document.body.appendChild(root);
         fvRoot = root;
         document.addEventListener("keydown", fvOnKey, true);
         // 지금 파일을 못 보여 줄 때 — 이유를 말하고 빈 파일 칸은 접는다(조각은 위에 그대로 있다).
         const unavailable = (reason) => {
-          note.textContent = i18n("fv.unavailable", { reason });
+          note.textContent = i18n(isFragment ? "fv.unavailable" : "fv.unavailableRead", { reason });
           file.hidden = true;
         };
         if (target === null) {
@@ -182,6 +186,11 @@
             if (gen !== fvGen) return; // 닫았거나 다른 카드를 열었다
             if (!ok || !d || typeof d.content !== "string") {
               unavailable((d && d.error) || i18n("fv.failed"));
+              return;
+            }
+            if (!isFragment) {
+              note.textContent = i18n("fv.currentRead");
+              renderFileBody(file, d.content, null, target, null);
               return;
             }
             const where = locateEdit(d.content, diff);

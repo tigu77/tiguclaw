@@ -8,6 +8,9 @@
  * 등급: **동작 + 실행**(가짜 자식은 `node -e`, 네트워크 0 · 관문 자식은 macOS 에서 netstat/lsof 각 1회 무해 조회).
  */
 import path from "node:path";
+import cp from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { stopFixtureProcess } from "./_guard-fixture-process.js";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { assert, spawnWithin, within, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -85,27 +88,45 @@ const runBounded = async (
   script: string,
   onLine: (l: string) => void,
   limits: LineRunLimits,
-): Promise<{ st: LineRunStatus | "hung"; pid: number }> => {
-  let pid = 0;
-  const r = await within(
-    8_000,
-    "러너",
-    runCountingLines(node, ["-e", script], (l) => {
-      if (pid === 0 && /^\d+$/.test(l)) pid = Number(l);
-      else onLine(l);
-    }, limits),
-  );
-  if (!("value" in r)) {
-    if (pid > 0) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        /* 이미 없으면 됐다 */
-      }
-    }
-    return { st: "hung", pid };
+): Promise<{ st: LineRunStatus | "hung"; pid: number; readyMs: number; runMs: number; productDead: boolean }> => {
+  // Readiness is not the runner's timeout budget. A cold Windows Node may not print in 250ms.
+  // Pre-start only our synthetic child, then hand that same real process to the real runner.
+  const beforeReady = Date.now();
+  const child = cp.spawn(node, ["-e", "process.send('ready'); process.once('message', () => { process.disconnect(); " + script + " });"], {
+    stdio: ["ignore", "pipe", "ignore", "ipc"], detached: process.platform !== "win32",
+    env: { PATH: "/usr/sbin:/usr/bin:/sbin:/bin", LC_ALL: "C" }, windowsHide: true,
+  });
+  const pid = child.pid ?? 0;
+  let readyMs = 0, runMs = 0;
+  try {
+    const ready = await within(8_000, "합성 자식 ready IPC", new Promise<boolean>((resolve) => {
+      child.once("message", (message) => resolve(message === "ready"));
+      child.once("error", () => resolve(false));
+      child.once("exit", () => resolve(false));
+    }));
+    readyMs = Date.now() - beforeReady;
+    if (!("value" in ready) || !ready.value) return { st: "hung", pid, readyMs, runMs, productDead: false };
+    const original = cp.spawn;
+    let run: Promise<LineRunStatus>;
+    cp.spawn = ((command: string, args: string[]) => {
+      if (command !== node || args[0] !== "-e" || args[1] !== script) throw new Error("Unexpected bounded fixture spawn");
+      return child;
+    }) as typeof cp.spawn;
+    syncBuiltinESMExports();
+    const start = Date.now();
+    try {
+      run = runCountingLines(node, ["-e", script], (line) => {
+        if (line !== String(pid)) onLine(line);
+      }, limits);
+    } finally { cp.spawn = original; syncBuiltinESMExports(); }
+    // All product listeners and the original 250/300ms timer are installed before the event starts.
+    child.send("go");
+    const r = await within(8_000, "러너", run);
+    runMs = Date.now() - start;
+    return { st: "value" in r ? r.value : "hung", pid, readyMs, runMs, productDead: pid > 0 && pidDead(pid) };
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) await stopFixtureProcess(child);
   }
-  return { st: r.value, pid };
 };
 const HANG = "console.log(process.pid); setInterval(() => {}, 1000)";
 const pidDead = (pid: number): boolean => {
@@ -310,20 +331,19 @@ export const check: RegressionCheck = {
 
     // ── 실제 러너 경계 ────────────────────────────────────────────────────
     {
-      const t0 = Date.now();
-      const { st, pid } = await runBounded(HANG, () => {}, { timeoutMs: 300, maxBytes: 1 << 20 });
+      const { st, pid, readyMs, runMs, productDead } = await runBounded(HANG, () => {}, { timeoutMs: 300, maxBytes: 1 << 20 });
       out.push(
         assert(
           "★끝나지 않는 자식 → 시한에 죽고 «timeout» · 돌아온 때 이미 죽어 있다",
-          st !== "hung" && st.kind === "timeout" && Date.now() - t0 < 4000 && pid > 0 && pidDead(pid),
-          { st, ms: Date.now() - t0, pid, dead: pid > 0 && pidDead(pid) },
+          st !== "hung" && st.kind === "timeout" && runMs < 4000 && productDead && pid > 0 && pidDead(pid),
+          { st, readyMs, runMs, productDead, pid, dead: pid > 0 && pidDead(pid) },
         ),
       );
     }
     {
       const lines: string[] = [];
       let longest = 0;
-      const { st, pid } = await runBounded(
+      const { st, pid, productDead } = await runBounded(
         "console.log(process.pid); const s = 'x'.repeat(65535) + '\\n'; setInterval(() => process.stdout.write(s), 1)",
         (l) => {
           lines.push(l.slice(0, 16));
@@ -334,7 +354,7 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "★출력 상한을 넘으면 죽이고 «overflow» · 돌아온 때 이미 죽어 있다 · 받은 것은 줄 조각뿐",
-          st !== "hung" && st.kind === "overflow" && pid > 0 && pidDead(pid) && longest <= 65535 && lines.length <= 5,
+          st !== "hung" && st.kind === "overflow" && productDead && pid > 0 && pidDead(pid) && longest <= 65535 && lines.length <= 5,
           { st, pid, lines: lines.length, longest },
         ),
       );
@@ -363,12 +383,12 @@ export const check: RegressionCheck = {
     }
     {
       // ★두 명령의 실행 구간이 겹치지 않는다 — 실제 러너 + 실제 수집 순서.
-      const spans: Array<{ start: number; end: number; pid: number; deadAtEnd: boolean }> = [];
+      const spans: Array<{ start: number; end: number; pid: number; readyMs: number; runMs: number; deadAtEnd: boolean }> = [];
       const h = harness({
         run: async (_cmd, _args, onLine, limits) => {
           const start = Date.now();
-          const { st, pid } = await runBounded(HANG, onLine, { ...limits, timeoutMs: 250 });
-          spans.push({ start, end: Date.now(), pid, deadAtEnd: pid > 0 && pidDead(pid) });
+          const { st, pid, readyMs, runMs, productDead } = await runBounded(HANG, onLine, { ...limits, timeoutMs: 250 });
+          spans.push({ start, end: Date.now(), pid, readyMs, runMs, deadAtEnd: productDead && pid > 0 && pidDead(pid) });
           return st === "hung" ? { kind: "exit", code: -1 } : st;
         },
       });

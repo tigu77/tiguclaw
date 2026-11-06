@@ -873,6 +873,108 @@
         return known.length === 0 ? 0 : String(Math.max.apply(null, known)).length;
       };
 
+      /**
+       * 경로 동작 한 벌 — 경로 글자(클릭 = **그 글자 그대로** 복사) · ↗ OS 기본 앱으로 열기 · ⤢ 지금 파일 보기.
+       *  Write/Edit 카드(`buildDiffBlock`)와 Read 스텝(`buildFileRefActions`, 2026-11-05)이 **같은 함수**를 쓴다 — 복사 글자·안내·열기 요청이 갈리지 않게.
+       *  `opts.path`·`opts.startLine` = 표시 = 복사 글자(`경로[:줄]`) · `opts.openPath` = ↗ 가 보낼 경로 · `opts.view` = ⤢ 가 `openFileView` 에 넘길 대상(없으면 ⤢ 를 안 단다).
+       */
+      const appendPathActions = (head, opts) => {
+        const ps = document.createElement("span");
+        ps.className = "act-diff-path";
+        // 경로 옆에 시작 줄 — 에디터에서 `파일:줄` 로 바로 찾아가는 관습 그대로. 표시한 글자가 곧 복사하는 글자다.
+        const pathText = opts.path + (typeof opts.startLine === "number" ? ":" + opts.startLine : "");
+        ps.textContent = pathText;
+        // ★클릭 = `경로:줄` 복사 (2026-08-02). 에디터로 *직접 열기*는 안 한다 —
+        //  브라우저는 file:// 를 못 열고, 데몬이 OS `open` 을 대신 실행하는 방식은
+        //  대시보드에 로그인이 없어(포트에 닿는 것이 곧 권한) 임의 실행 통로가 되며,
+        //  폰에서 누르면 **데몬 기계에서** 창이 떠 누른 사람은 못 본다.
+        //  복사는 폰 포함 모든 환경에서 동작하고 위험이 0이다.
+        ps.title = i18n("stream.path.copyHint");
+        ps.classList.add("act-diff-path-copy");
+        ps.addEventListener("click", (e) => {
+          e.stopPropagation(); // 부모 스텝 토글을 뺏지 않는다(헤더는 원래 토글 대상).
+          if (!navigator.clipboard) return;
+          navigator.clipboard.writeText(pathText).then(
+            () => {
+              try {
+                if (typeof showToast === "function") showToast(i18n("stream.path.copied"), "ok");
+              } catch { /* noop */ }
+            },
+            () => { /* 권한 거부 등 — 조용히 무시(복사는 보조 기능) */ },
+          );
+        });
+        head.appendChild(ps);
+        // ★편집기로 열기 — 서버가 OS 기본앱으로 연다(`/api/open-path`). 안전은 서버가
+        //  진다: 등록 프로젝트 **루트 하위**만 + realpath 로 심링크 탈출 차단 +
+        //  **실행권한 파일 거부**(macOS `open` 은 .app·스크립트를 실행한다). 프록시엔
+        //  same-origin(CSRF) 가드가 걸려 있어 외부 페이지가 이 부작용을 못 쏜다.
+        const ob = document.createElement("button");
+        ob.type = "button";
+        ob.className = "act-diff-open";
+        ob.textContent = "↗";
+        // 제약(프로젝트 하위·실행권한 등)은 **여기 안 적는다** — 실패하면 서버가 준
+        //  사유를 토스트로 그대로 보여준다. 누르기 전엔 어차피 할 수 있는 게 없고,
+        //  제약을 적기 시작하면 전부 적어야 해서 툴팁이 아니게 된다.
+        ob.title = i18n("stream.path.openApp");
+        ob.addEventListener("click", (e) => {
+          e.stopPropagation();
+          fetch("/api/open-path", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: opts.openPath }),
+          })
+            .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+            .then(({ ok, d }) => {
+              if (ok) return;
+              // 실패 사유를 그대로 보여준다 — "안 열렸다" 만으론 왜인지 모른다.
+              try {
+                if (typeof showToast === "function") {
+                  showToast((d && d.error) || i18n("stream.open.failed"), "warn");
+                }
+              } catch { /* noop */ }
+            })
+            .catch(() => {
+              try {
+                if (typeof showToast === "function") showToast(i18n("stream.open.reqFailed"), "bad");
+              } catch { /* noop */ }
+            });
+        });
+        head.appendChild(ob);
+        // ⤢ «지금 파일에서 보기»(2026-10-21, file-view.js) — 지금 디스크의 파일.
+        if (opts.view) {
+          const fv = document.createElement("button");
+          fv.type = "button";
+          fv.className = "act-diff-open act-diff-fileview";
+          fv.textContent = "⤢";
+          fv.title = i18n("fv.open");
+          fv.setAttribute("aria-label", i18n("fv.open"));
+          fv.addEventListener("click", (e) => {
+            e.stopPropagation(); // 부모 스텝 토글을 뺏지 않는다
+            if (typeof window.openFileView === "function") window.openFileView(opts.view);
+          });
+          head.appendChild(fv);
+        }
+      };
+
+      /**
+       * Read 스텝의 경로 동작(2026-11-05, `docs/decisions/2026-11-05-read-card-path-actions.md`) — 관측의 `file`(그 턴의 cwd 로 푼 절대 경로가
+       *  있을 때만 실린다)로 Write/Edit 와 같은 한 벌을 단다. 없거나 모양이 틀리면 null(화면은 detail 한 줄 그대로).
+       */
+      const buildFileRefActions = (file) => {
+        if (!file || typeof file.path !== "string" || file.path === "" || typeof file.absPath !== "string" || file.absPath === "") return null;
+        const wrap = document.createElement("span");
+        wrap.className = "act-file-ref";
+        appendPathActions(wrap, {
+          path: file.path,
+          startLine: file.startLine,
+          // ★절대 경로만 보낸다 — 상대 경로는 서버가 **데몬 프로세스 cwd** 로 풀어 다른 파일을 열 수 있다.
+          openPath: file.absPath,
+          // 조각(`lines`) 없는 보기 — ⤢ 는 지금 디스크의 파일만 보여 주고 «읽은 당시 기록이 아님» 을 말한다(file-view.js).
+          view: { path: file.path, absPath: file.absPath },
+        });
+        return wrap;
+      };
+
       const buildDiffBlock = (diff, opts) => {
         const inFileView = !!(opts && opts.inFileView);
         const wrap = document.createElement("div");
@@ -883,83 +985,14 @@
         caret.className = "act-diff-caret"; caret.textContent = "▸";
         head.appendChild(caret);
         if (diff.path) {
-          const ps = document.createElement("span");
-          ps.className = "act-diff-path";
-          // 경로 옆에 시작 줄 — 에디터에서 `파일:줄` 로 바로 찾아가는 관습 그대로.
-          const pathText =
-            diff.path + (typeof diff.startLine === "number" ? ":" + diff.startLine : "");
-          ps.textContent = pathText;
-          // ★클릭 = `경로:줄` 복사 (2026-08-02). 에디터로 *직접 열기*는 안 한다 —
-          //  브라우저는 file:// 를 못 열고, 데몬이 OS `open` 을 대신 실행하는 방식은
-          //  대시보드에 로그인이 없어(포트에 닿는 것이 곧 권한) 임의 실행 통로가 되며,
-          //  폰에서 누르면 **데몬 기계에서** 창이 떠 누른 사람은 못 본다.
-          //  복사는 폰 포함 모든 환경에서 동작하고 위험이 0이다.
-          ps.title = i18n("stream.path.copyHint");
-          ps.classList.add("act-diff-path-copy");
-          ps.addEventListener("click", (e) => {
-            e.stopPropagation(); // 부모 스텝 토글을 뺏지 않는다(헤더는 원래 토글 대상).
-            if (!navigator.clipboard) return;
-            navigator.clipboard.writeText(pathText).then(
-              () => {
-                try {
-                  if (typeof showToast === "function") showToast(i18n("stream.path.copied"), "ok");
-                } catch { /* noop */ }
-              },
-              () => { /* 권한 거부 등 — 조용히 무시(복사는 보조 기능) */ },
-            );
+          appendPathActions(head, {
+            path: diff.path,
+            startLine: diff.startLine,
+            // ★관측이 그 턴의 cwd 로 푼 절대 경로를 먼저 — 상대 경로 카드는 데몬 cwd 로 풀려 못 열렸다(2026-10-21).
+            openPath: diff.absPath || diff.path,
+            // 위에 이 조각 그대로, 아래에 지금 디스크의 파일. 창 안의 조각엔 다시 달지 않는다.
+            view: inFileView ? null : diff,
           });
-          head.appendChild(ps);
-          // ★편집기로 열기 — 서버가 OS 기본앱으로 연다(`/api/open-path`). 안전은 서버가
-          //  진다: 등록 프로젝트 **루트 하위**만 + realpath 로 심링크 탈출 차단 +
-          //  **실행권한 파일 거부**(macOS `open` 은 .app·스크립트를 실행한다). 프록시엔
-          //  same-origin(CSRF) 가드가 걸려 있어 외부 페이지가 이 부작용을 못 쏜다.
-          const ob = document.createElement("button");
-          ob.type = "button";
-          ob.className = "act-diff-open";
-          ob.textContent = "↗";
-          // 제약(프로젝트 하위·실행권한 등)은 **여기 안 적는다** — 실패하면 서버가 준
-          //  사유를 토스트로 그대로 보여준다. 누르기 전엔 어차피 할 수 있는 게 없고,
-          //  제약을 적기 시작하면 전부 적어야 해서 툴팁이 아니게 된다.
-          ob.title = i18n("stream.path.openApp");
-          ob.addEventListener("click", (e) => {
-            e.stopPropagation();
-            fetch("/api/open-path", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              // ★관측이 그 턴의 cwd 로 푼 절대 경로를 먼저 — 상대 경로 카드는 데몬 cwd 로 풀려 못 열렸다(2026-10-21).
-              body: JSON.stringify({ path: diff.absPath || diff.path }),
-            })
-              .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
-              .then(({ ok, d }) => {
-                if (ok) return;
-                // 실패 사유를 그대로 보여준다 — "안 열렸다" 만으론 왜인지 모른다.
-                try {
-                  if (typeof showToast === "function") {
-                    showToast((d && d.error) || i18n("stream.open.failed"), "warn");
-                  }
-                } catch { /* noop */ }
-              })
-              .catch(() => {
-                try {
-                  if (typeof showToast === "function") showToast(i18n("stream.open.reqFailed"), "bad");
-                } catch { /* noop */ }
-              });
-          });
-          head.appendChild(ob);
-          // ⤢ «지금 파일에서 보기»(2026-10-21, file-view.js) — 위에 이 조각 그대로, 아래에 지금 디스크의 파일. 창 안의 조각엔 다시 달지 않는다.
-          if (!inFileView) {
-            const fv = document.createElement("button");
-            fv.type = "button";
-            fv.className = "act-diff-open act-diff-fileview";
-            fv.textContent = "⤢";
-            fv.title = i18n("fv.open");
-            fv.setAttribute("aria-label", i18n("fv.open"));
-            fv.addEventListener("click", (e) => {
-              e.stopPropagation(); // 부모 스텝 토글을 뺏지 않는다
-              if (typeof window.openFileView === "function") window.openFileView(diff);
-            });
-            head.appendChild(fv);
-          }
         }
         const stat = document.createElement("span");
         stat.className = "act-diff-stat";
@@ -1172,7 +1205,9 @@
         // 헤더가 경로+N/-M 을 이미 보여주므로 verbose 한 old_string=… 은 접힘 한 줄에서 생략(간결).
         // 스킬 스텝은 detail(=name=…)이 라벨과 중복이라 생략.
         const hasDiff = p.diff && Array.isArray(p.diff.lines);
-        const detail = p.detail && !hasDiff && !skill
+        // Read 는 경로 동작(복사·↗·⤢)이 detail 자리에 선다 — diff 헤더가 경로를 보여 detail 을 숨기는 것과 같은 판단(2026-11-05).
+        const fileRef = !hasDiff && !skill ? buildFileRefActions(p.file) : null;
+        const detail = p.detail && !hasDiff && !skill && !fileRef
           ? Object.assign(document.createElement("span"), {
               className: "act-detail", textContent: p.detail,
             })
@@ -1182,6 +1217,7 @@
         meta.textContent = (p.model ? p.model + " · " : "") + "#" + (p.seq ?? "");
         line.appendChild(icon); line.appendChild(label);
         if (detail) line.appendChild(detail);
+        if (fileRef) line.appendChild(fileRef);
         line.appendChild(meta);
         // 인라인 스폰 스텝 ↔ 백그라운드 잡 링크(2026-07-13) — 서브에이전트/매니저를 띄운 스텝이면
         // "🤖 백그라운드 ↗" 칩을 붙인다. 라벨 매칭은 어댑터-불문(원칙 #2): claude native Task

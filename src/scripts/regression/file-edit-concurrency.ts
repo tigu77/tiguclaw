@@ -1,9 +1,17 @@
 /** 병렬 도구 응답에서 같은 파일의 성공한 Edit가 서로 덮이는 회귀. */
-import { mkdtemp, writeFile, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { assert, assertIsolated, within, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, loadPluginModule, skip, within, type Assertion, type RegressionCheck } from "./_framework.js";
+import type { TestLinks } from "./file-link-refusal-continues.js";
+
+/** 파일 symlink 가 있어야만 성립하는 단언 — 그 생성이 거부되는 환경(무권한 Windows)에선 이것만 미실행으로 남는다. */
+const FILE_SYMLINK_ALIAS = "기존 파일 심링크도 같은 수정 대상으로 직렬화";
+/** 파일 symlink 없이도 도는 추가 단언 — 위 단언을 대신하지 않는다(파일 symlink 형태 자체는 못 본다). */
+const DIR_ALIAS = "디렉터리 경로 별칭도 같은 수정 대상으로 직렬화";
+export const FILE_LINK_ASSERTIONS: readonly string[] = [FILE_SYMLINK_ALIAS];
+export const LINK_FREE_COVERAGE: readonly string[] = [DIR_ALIAS];
 
 export const check: RegressionCheck = {
   name: "file-edit-concurrency",
@@ -26,14 +34,36 @@ export const check: RegressionCheck = {
         path: i % 2 ? "data.txt" : file, old_string: `before-${i};`, new_string: `after-${i};`,
       })));
       out.push(assert("모두 성공한 같은 파일 독립 수정이 전부 남는다(서버 두 개·상대/절대 경로)", await readFile(file, "utf8") === expected, { content: await readFile(file, "utf8"), replies }));
+      const links = await loadPluginModule<TestLinks>("./_test-links.mjs");
       await writeFile(file, "alpha beta");
       const alias = path.join(dir, "alias.txt");
-      await symlink(file, alias);
+      const linked = links.linkFile(file, alias);
+      if (linked === true) {
+        await Promise.all([
+          a.callTool("Edit", { path: file, old_string: "alpha", new_string: "ALPHA" }),
+          b.callTool("Edit", { path: alias, old_string: "beta", new_string: "BETA" }),
+        ]);
+        out.push(assert(FILE_SYMLINK_ALIAS, await readFile(file, "utf8") === "ALPHA BETA", await readFile(file, "utf8")));
+      } else {
+        out.push(skip(FILE_SYMLINK_ALIAS, `${links.FILE_LINK_NOT_RUN} · ${linked}`));
+        // 뒤 단언은 두 수정이 끝난 내용에서 이어 간다 — 미실행이어도 같은 상태로 맞춘다.
+        await writeFile(file, "ALPHA BETA");
+      }
+      // 같은 파일을 디렉터리 별칭(win32 junction · 그 외 dir symlink) 아래로 가리킨다 — 두 경로의 realpath 가 같다는 전제를 함께 확인한다.
+      const realSub = path.join(dir, "sub");
+      const aliasSub = path.join(dir, "sub-alias");
+      await mkdir(realSub);
+      links.linkDir(realSub, aliasSub);
+      const viaReal = path.join(realSub, "shared.txt");
+      const viaAlias = path.join(aliasSub, "shared.txt");
+      await writeFile(viaReal, "gamma delta");
+      const sameFile = viaReal !== viaAlias && await fs.realpath(viaReal) === await fs.realpath(viaAlias);
       await Promise.all([
-        a.callTool("Edit", { path: file, old_string: "alpha", new_string: "ALPHA" }),
-        b.callTool("Edit", { path: alias, old_string: "beta", new_string: "BETA" }),
+        a.callTool("Edit", { path: viaReal, old_string: "gamma", new_string: "GAMMA" }),
+        b.callTool("Edit", { path: viaAlias, old_string: "delta", new_string: "DELTA" }),
       ]);
-      out.push(assert("기존 파일 심링크도 같은 수정 대상으로 직렬화", await readFile(file, "utf8") === "ALPHA BETA", await readFile(file, "utf8")));
+      const viaContent = await readFile(viaReal, "utf8");
+      out.push(assert(DIR_ALIAS, sameFile && viaContent === "GAMMA DELTA", { sameFile, content: viaContent }));
       await a.callTool("Edit", { path: file, old_string: "absent", new_string: "bad" });
       await b.callTool("Edit", { path: file, old_string: "ALPHA", new_string: "ok" });
       out.push(assert("매칭 실패 뒤 다음 수정 가능", await readFile(file, "utf8") === "ok BETA", await readFile(file, "utf8")));

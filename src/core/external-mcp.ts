@@ -32,7 +32,7 @@ import type { MCPServer } from "@openai/agents-core";
 import { SECRET_KEY_NAME_RE, redactSecrets } from "./outbound-sanitize.js";
 import { getPaths } from "./paths.js";
 import { createHash } from "node:crypto";
-import { forgetMcpOAuth, hasUnverifiedForcedToken, hasUserAuthorization, mcpAccessToken, noteMcpAuthorized, noteMcpUnauthorized } from "./mcp-oauth.js";
+import { forgetMcpOAuth, hasUnverifiedForcedToken, hasUserAuthorization, mcpAccessToken, mcpOAuthGeneration, mcpOAuthNameGeneration, noteMcpAuthorized, noteMcpUnauthorized } from "./mcp-oauth.js";
 
 /** stdio 서버 config (claude McpStdioServerConfig 동형). */
 export interface StdioMcpConfig {
@@ -343,13 +343,26 @@ export const findRemoteMcpServer = async (
 };
 
 /**
+ * Claude 인증 통지용 설정 조회 — 조회를 시작하기 **전**의 이름 세대를 잡아, 읽는 사이 서버 제거가 끝났으면(옛 설정을 읽었어도) null.
+ *  돌려주는 세대는 그 조회 전과 같은 값이다. ★읽은 뒤에 세대를 잡으면, 옛 설정을 읽은 통지가 삭제 뒤 세대로 판정해 지운 서버에
+ *  «로그인 필요» 기록을 새로 만들었다(2026-11-06 결정 §남는 것 — 합성 사건 순서로 재현).
+ */
+const findRemoteForAuthNote = async (name: string, cwd?: string) => {
+  const proj = isProjectMcpCwd(cwd) ? cwd : undefined;
+  const before = new Map([proj, undefined].map((p) => [resolveWriteFile(p), mcpOAuthNameGeneration(resolveWriteFile(p), name)] as const));
+  const t = (proj !== undefined ? await findRemoteMcpServer(name, proj) : null) ?? (await findRemoteMcpServer(name));
+  if (t === null || mcpOAuthNameGeneration(t.file, name) !== before.get(t.file)) return null;
+  return { ...t, gen: mcpOAuthGeneration({ file: t.file, name, url: t.url }) };
+};
+
+/**
  * 어댑터가 «이 원격 서버가 인증을 요구했다» 를 알릴 때 — Claude 는 SDK 가 직접 연결해 401 이 브리지 경로를 안 지난다(SDK 의 `needs-auth` 상태로 온다).
  * 판정은 여기 한 곳: 그 이름이 실제로 있는 파일(프로젝트가 덮으면 프로젝트)의 원격 서버이고 **사용자가 인증 헤더를 직접 주지 않았으면** «인증 필요».
  */
 export const noteRemoteAuthRequired = async (name: string, cwd?: string, sentHeaders?: Record<string, string>): Promise<void> => {
-  const t = (isProjectMcpCwd(cwd) ? await findRemoteMcpServer(name, cwd) : null) ?? (await findRemoteMcpServer(name));
+  const t = await findRemoteForAuthNote(name, cwd);
   if (t === null || t.userAuthorization) return;
-  await noteMcpUnauthorized({ file: t.file, name, url: t.url }, bearerOf(sentHeaders));
+  await noteMcpUnauthorized({ file: t.file, name, url: t.url }, bearerOf(sentHeaders), t.gen);
 };
 
 /** Claude 경로 — SDK init 에서 이 원격 서버가 붙었다(`connected`). 401 판정의 «새 토큰으로 성공한 적 있나» 재료(`noteMcpAuthorized`). */
@@ -373,10 +386,12 @@ export const noteRemoteConnectFailed = async (name: string, cwd: string | undefi
   if (sentConfig === undefined || !isRemote(sentConfig)) return;
   const sent = bearerOf(sentConfig.headers);
   if (sent === undefined) return; // 우리 토큰을 안 보냈다 — 401 이면 CLI 가 needs-auth 로 알린다
-  const t = (isProjectMcpCwd(cwd) ? await findRemoteMcpServer(name, cwd) : null) ?? (await findRemoteMcpServer(name));
+  const t = await findRemoteForAuthNote(name, cwd);
   // ★보내는 곳은 **이 턴에 보낸 설정**의 주소다 — 다시 읽은 주소가 다르면(그새 설정이 바뀜·프로젝트 항목 삭제) 보내지 않는다.
   //  다시 읽은 값으로 보내면 프로젝트 서버용 토큰·사용자 헤더가 다른 서버로 갈 수 있었다(재검토 10-18, 두 번 읽는 사이의 차이).
   if (t === null || t.userAuthorization || t.url !== sentConfig.url) return;
+  // 확인 요청(최대 10초)을 보내기 **전**(설정 조회 전)의 세대 — 그 사이 서버가 지워지면 늦은 401 이 지운 서버의 기록을 만들지 않는다(2026-11-06 설계 검토 R1).
+  const gen = t.gen;
   const mark = createHash("sha256").update(`${t.file}\u0000${name}\u0000${sent}`).digest("hex");
   const prev = probedTokens.get(mark);
   if (prev !== undefined && (prev.settled || Date.now() - prev.at < PROBE_RETRY_MS)) return;
@@ -402,7 +417,17 @@ export const noteRemoteConnectFailed = async (name: string, cwd: string | undefi
       .then((r) => r.body?.cancel())
       .catch(() => undefined);
   }
-  if (res.status === 401) await noteMcpUnauthorized({ file: t.file, name, url: t.url }, sent);
+  if (res.status === 401) await noteMcpUnauthorized({ file: t.file, name, url: t.url }, sent, gen);
+};
+
+/**
+ * 인증 상태 통지가 실패했다 — 삼키지 않고 **서버 이름과 오류 코드만** 남긴다(브리지 연결·Claude init 공용). 메시지는 경로·응답을 실을 수 있어
+ *  뺀다. 이 줄이 없으면 «늦었다» 와 «실패했다» 를 로그로 가를 수 없었다(v8 Windows 진단).
+ */
+export const authNoteFailed = (name: string) => (e: unknown): void => {
+  const code = (e as { code?: unknown } | null)?.code;
+  const why = typeof code === "string" || typeof code === "number" ? String(code) : e instanceof Error ? e.name : typeof e;
+  console.warn(`external-mcp: '${name}' 인증 상태 기록 실패 — ${why}`);
 };
 
 /** 보낸 헤더의 Bearer 토큰(대소문자 무관) — 401 이 **어느 토큰**에 대한 것인지 OAuth 코어에 알린다. 없으면 undefined(헤더 없이 보냄). */
@@ -811,6 +836,8 @@ const retire = (sc: Scope, key: string, name: string, c: Conn, why: string): voi
 /** 서버 하나를 백그라운드로 연결한다 — 끝나면 그때의 설정과 지문이 같을 때만 게시, 아니면(바뀜·빠짐·종료) 바로 닫는다. */
 const startConnect = (sc: Scope, key: string, name: string, config: ExternalMcpConfig, fingerprint: string, waitMs: number): void => {
   const entry = { fingerprint, waitMs, done: Promise.resolve() };
+  // 연결 시도를 시작할 때의 인증 기록 세대 — 연결하는 사이 서버가 지워지면 그 401 이 지운 서버의 기록을 만들지 않는다(2026-11-06).
+  const oauthGen = isRemote(config) ? mcpOAuthGeneration({ file: sc.file, name, url: config.url }) : 0;
   entry.done = (async () => {
     try {
       const ext = await connectOne(name, config);
@@ -831,7 +858,9 @@ const startConnect = (sc: Scope, key: string, name: string, config: ExternalMcpC
       sc.failed.set(name, { fingerprint, at: Date.now() });
       // 원격이 401 인데 사용자가 준 인증이 아니면(헤더 없음·로그인 토큰) — «인증 필요» 로 적는다. 로그인 가능 여부는 로그인 시작이 판정한다.
       if (isRemote(config) && isUnauthorized(e) && (!hasUserAuthorization(config.headers) || oauthInjected.has(`${path.resolve(sc.file)}\u0000${name}`))) {
-        void noteMcpUnauthorized({ file: sc.file, name, url: config.url }, bearerOf(config.headers)).catch(() => undefined);
+        // ★기다린다 — 이 연결 시도의 끝(`entry.done`)은 «인증 필요» 기록까지다. 턴은 `waitAtMost(done, waitMs)` 로만 기다리므로 상한은 그대로
+        //  (v8 Windows: 쓰기가 `icacls` 로 느려져 끝나기 전에 상태를 읽었다 — docs/decisions/2026-11-05-v082-oauth-auth-note-completion.md).
+        await noteMcpUnauthorized({ file: sc.file, name, url: config.url }, bearerOf(config.headers), oauthGen).catch(authNoteFailed(name));
       }
       console.error(
         `external-mcp: ${scopeLabel(key)}'${name}' 연결 실패 — skip, 같은 설정이면 ${RETRY_AFTER_MS / 1000}초 뒤 다시 시도 (${e instanceof Error ? e.message : String(e)}).`,

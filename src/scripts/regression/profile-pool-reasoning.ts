@@ -20,11 +20,11 @@
  *  (`getPaths()` 홈 동결 — `_model-reasoning-child` 와 같은 함정).
  */
 import { mkdtempSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { spawnProbe, scrubDiag } from "./_probe-helpers.js";
 
 const CHILD = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -34,29 +34,32 @@ const CHILD = path.join(
 const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
   const home = mkdtempSync(path.join(tmpdir(), "profile-pool-reasoning-"));
-  const r = spawnSync(process.execPath, ["--import", "tsx", CHILD], {
+  const r = spawnProbe(path.resolve(path.dirname(CHILD), "../../.."), [CHILD], {
+    timeout: 30_000,
     encoding: "utf8",
     env: { ...process.env, TIGUCLAW_HOME: home },
   });
   let got: Record<string, unknown> = {};
   try {
-    got = JSON.parse((r.stdout ?? "").trim().split("\n").pop() ?? "{}") as Record<string, unknown>;
+    const marker = "TIGUCLAW_PROFILE_POOL_RESULT:";
+    const rows = (r.stdout ?? "").split(/\r?\n/).filter(line => line.startsWith(marker));
+    // env-file 지연 로그를 판정 JSON으로 오인하지 않는다. 누락/중복은 여전히 실패다.
+    got = rows.length === 1 ? JSON.parse(rows[0]!.slice(marker.length)) as Record<string, unknown> : {};
   } catch {
     got = {};
   }
-  const tail = ((r.stderr ?? "").trim() + " " + String(got.error ?? "")).trim().slice(-300);
+  const tail = scrubDiag(`status=${r.status} signal=${r.signal} error=${r.error?.message ?? "none"} stderr=${r.stderr ?? ""} stdout-tail=${(r.stdout ?? "").slice(-400)} child-error=${String(got.error ?? "")}`, [home], 700);
 
   // 자식이 못 돌면 그것부터 말한다 — 조용히 0건 통과하면 검사가 아니다.
+  const probeOk = r.status === 0 && !r.error && Object.keys(got).length >= 16 && got.error === undefined;
   out.push(
     assert(
-      "프로브가 실제로 돌았다(빈손 통과 금지)",
-      Object.keys(got).length >= 16 && got.error === undefined,
-      Object.keys(got).length >= 16 && got.error === undefined
-        ? `${Object.keys(got).length}개 판정 회수`
-        : `★프로브 실패: ${tail}`,
+      "프로브가 실제로 돌고 정상 종료했다(빈손·부분 결과 뒤 비정상 종료 통과 금지)",
+      probeOk,
+      probeOk ? `${Object.keys(got).length}개 판정 회수` : `★프로브 실패: ${tail}`,
     ),
   );
-  if (Object.keys(got).length < 12 || got.error !== undefined) return out;
+  if (!probeOk) return out;
 
   out.push(
     assert(

@@ -1017,6 +1017,8 @@
       .act-diff-open { background:none; border:none; color:var(--text-mute); cursor:pointer; font-size:0.6875rem; padding:0 2px; line-height:1; flex:none; }
       .act-diff-open:hover { color:var(--text); }
       .act-diff-path-copy:hover { color:var(--text); }
+      /* Read 스텝의 경로 동작(2026-11-05) — diff 머리와 같은 부품(.act-diff-path·.act-diff-open)을 스텝 줄 detail 자리에. */
+      .act-file-ref { display:inline-flex; align-items:center; gap:6px; flex:1; min-width:0; flex-wrap:wrap; font-size:0.625rem; }
       .act-diff-stat .dadd { color:var(--diff-add-fg); font-weight:700; }
       .act-diff-stat .ddel { color:var(--diff-del-fg); font-weight:700; }
       .act-diff-body { display:none; }
@@ -1283,15 +1285,18 @@
       .bg-group-head.collapsed + .bg-group-body { display:none; }
       /* 그룹은 내용 높이 그대로 공통 바깥 스크롤에 쌓인다. 클래스 선택자를 유지해
          collapsed + .bg-group-body 의 display:none 이 display:flex 보다 우선한다. */
-      /* 한 번 타이머(2026-10-20, bg-timers.js) — 작업 그룹 위 짧은 목록. 없으면 [hidden](전역 규칙)으로 숨는다. 한 줄 = 남은 시간 · 이름 · 멈추기. */
+      /* 한 번 타이머(2026-10-20, bg-timers.js) — 작업 그룹 위 짧은 목록. 없으면 [hidden](전역 규칙)으로 숨는다. 남은 시간 · 이름/소속 세션 · 멈추기. */
       .bg-timers { flex:none; padding:8px 12px 2px; }
-      .bg-timers-head { font-size:0.6875rem; font-weight:900; letter-spacing:.03em; text-transform:uppercase; color:var(--text-mute); padding-bottom:4px; }
+      .bg-timers-head { padding:0 0 4px; }
       .bg-timer { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid var(--border); border-radius:9px; margin-bottom:4px; font-size:0.75rem; min-width:0; }
       .bg-timer.off { opacity:.6; }
       .bg-timer.failed { opacity:1; border-color:rgb(var(--danger-rgb) / .5); }
       .bg-timer.failed .bg-timer-when { color:var(--danger-fg); }
       .bg-timer-when { flex:none; font-weight:800; color:var(--accent); white-space:nowrap; }
-      .bg-timer-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+      .bg-timer-info { flex:1; min-width:0; }
+      .bg-timer-label { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+      .bg-timer-session { color:var(--text-mute); font-size:0.625rem; overflow-wrap:anywhere; }
+      .bg-timer-session .bg-job-session { margin-left:0; max-width:100%; }
       .bg-timer-stop { flex:none; padding:3px 8px; border:1px solid var(--border); border-radius:7px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:0.6875rem; font-weight:800; }
       .bg-timer-stop:hover { color:var(--text); background:var(--card-hover); }
       .bg-timer-stop:disabled { opacity:.5; cursor:default; }
@@ -1579,8 +1584,11 @@
       .shell-card-label ~ .shell-card-session { flex-shrink:100; min-width:5.5em; }
       /* 좁은 카드에서 SDK·세션·상태 배지와 접기 버튼의 최소폭을 한 줄에 강제하지 않는다. */
       .shell-card .agent-card-top { flex-wrap:wrap; }
-      .shell-card-collapse { flex:none; margin-left:auto; padding:3px 7px; border:1px solid var(--border); border-radius:6px; background:transparent; color:var(--text-mute); cursor:pointer; }
-      .shell-card-collapse:focus-visible { outline:2px solid var(--accent-2); outline-offset:2px; }
+      .shell-card-head { cursor:pointer; }
+      .shell-card-head:focus-visible { outline:2px solid var(--accent-2); outline-offset:2px; }
+      /* 머리줄은 왼쪽부터 차례로 쌓는다(2026-11-05 사용자: «좌측 정렬로 깔끔하게») — 상태·세션·SDK·중지에 걸린
+         margin-left:auto 가 줄바꿈된 줄에서 배지를 가운데·오른쪽으로 흩었다. 본문 쪽 규칙은 그대로 둔다. */
+      .agent-card.shell-card > .shell-card-head > * { margin-left:0; }
       .shell-card-body { display:flex; flex-direction:column; gap:6px; min-width:0; }
       .shell-card-command { font-family:var(--font-mono); font-size:0.8125rem; }
       .shell-card-cwd { font-family:var(--font-mono); font-size:0.625rem; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

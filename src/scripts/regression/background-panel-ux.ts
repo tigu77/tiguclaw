@@ -309,11 +309,11 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "★보존: 설명 없는 셸 카드는 라벨 칸 없음 · 공통 body 안 기존 줄 순서/클래스 보존 · 설명 있는 카드는 그 앞에 한 칸만 더해진다 · 리소스(위젯)에 설명이 실린다",
-          plain?.label === null && JSON.stringify(plain?.top) === JSON.stringify(["agent-card-kind", "agent-card-status", "shell-card-session", "shell-card-collapse"]) &&
-            JSON.stringify(plain?.kids) === JSON.stringify(["agent-card-top", "shell-card-body"]) &&
-            JSON.stringify(R(`Array.from(document.querySelector('.shell-card[data-shell-id="plain"] .shell-card-body')?.children || []).map(x=>x.className)`)) === JSON.stringify(["agent-card-name shell-card-command", "shell-card-cwd", "agent-card-meta", "shell-card-tailline", "shell-card-controls"]) &&
-            JSON.stringify(r1?.top.slice(1)) === JSON.stringify(["agent-card-kind", "agent-card-status", "shell-card-session", "shell-card-collapse"]) && JSON.stringify(r1?.kids) === JSON.stringify(plain?.kids) &&
+          "★보존: 설명 없는 셸도 헤더에 명령 fallback · 경과 메타는 헤더로 이동하고 명령/폴더/출력은 body 순서 보존 · 리소스(위젯)에 설명이 실린다",
+          plain?.label === "ls" && JSON.stringify(plain?.top) === JSON.stringify(["shell-card-label", "agent-card-kind", "agent-card-status", "shell-card-session", "agent-card-meta"]) &&
+            JSON.stringify(plain?.kids) === JSON.stringify(["agent-card-top shell-card-head", "shell-card-body"]) &&
+            JSON.stringify(R(`Array.from(document.querySelector('.shell-card[data-shell-id="plain"] .shell-card-body')?.children || []).map(x=>x.className)`)) === JSON.stringify(["agent-card-name shell-card-command", "shell-card-cwd", "shell-card-tailline", "shell-card-controls"]) &&
+            JSON.stringify(r1?.top) === JSON.stringify(plain?.top) && JSON.stringify(r1?.kids) === JSON.stringify(plain?.kids) &&
             fed?.description === "개발 서버 띄우기",
           { plain, r1top: r1?.top, fed },
         ),
@@ -364,10 +364,13 @@ export const check: RegressionCheck = {
       R(`window.focusBgJob("p1")`);
       await clock.advance(30);
       const projectOpen = R(`jobCards.get("p1").el.classList.contains("open")`);
+      // 셸 카드는 기본 접힘(2026-11-05) — 사용자가 머리줄로 **연** 카드를 위젯이 그대로 두는지 본다.
       R(`upsertShellEntry("sopen", { command: "a", status: "running", threadKey: "dashboard:default", ownerTk: "dashboard:default", expanded: true }, { visible: true }); renderShellsView();`);
+      R(`document.querySelector('.shell-card[data-shell-id="sopen"] .shell-card-head').click()`);
       R(`window.dispatchEvent(new CustomEvent("tigu:reveal", { detail: { kind: "shell", id: "sopen" } }))`);
       await clock.advance(30);
-      const shellKept = R(`shellRegistry.get("sopen").expanded`);
+      const shellKept = R(`(() => { const e = shellRegistry.get("sopen"), c = document.querySelector('.shell-card[data-shell-id="sopen"]');
+        return e.expanded === true && e.cardOpen === true && !!c && c.querySelector(".shell-card-body").hidden === false && c.querySelector(".shell-card-head").getAttribute("aria-expanded") === "true"; })()`);
       R(`shellRegistry.delete("sopen"); renderShellsView();`);
       out.push(
         assert(

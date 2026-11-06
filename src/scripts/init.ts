@@ -14,11 +14,12 @@
 import { createInterface } from "node:readline/promises";
 import { declaredAuthProviders } from "../core/auth-plugin-presence.js";
 import { randomBytes } from "node:crypto";
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { dashboardUrl, initNextSteps, installedEnvLookup } from "../core/onboard-ready.js";
+import { replacePrivateFile } from "../core/secret-file.js";
 
 // 설정(.env)은 **런타임 홈**에 둔다(공개 레포 checkout 무오염, 2026-07-09). 홈 =
 // TIGUCLAW_HOME env(있으면) / 기본 ~/.tiguclaw — load-env.ts·daemon.ts 와 동일 규칙.
@@ -399,7 +400,9 @@ const main = async (): Promise<void> => {
   // ★0600 (2026-07-28 보안 감사) — 종전엔 mode 미지정이라 umask 기본 0644 로 만들어져
   //  봇 토큰·OAuth 토큰·게이트웨이 토큰이 **같은 머신의 다른 계정에게 읽혔다**.
   //  공유/회사 PC·다중 사용자 환경에서 전 백엔드 크리덴셜 노출 경로.
-  writeFileSync(ENV_PATH, renderEnv(answers), { encoding: "utf8", mode: 0o600 });
+  //  Windows 에선 mode 가 DACL 을 안 바꿔 상위 폴더 상속을 받았다(2026-11-05 v7) — 내용 전에 본인만 읽는 권한을 세우고 교체한다.
+  //  실패하면 던진다(아래 성공 안내는 안 나온다) — 기존 .env 는 그대로, 임시 파일은 남지 않는다.
+  await replacePrivateFile(ENV_PATH, renderEnv(answers));
   console.log("");
   console.log(`✅ Wrote .env: ${ENV_PATH}  (runtime home, not the repo)`);
 

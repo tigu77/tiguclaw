@@ -10,7 +10,9 @@ import { spawn } from "node:child_process";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { bootVerdict, freePort, reapOnExit, seedIsolatedEnv } from "./_probe-helpers.js";
+import { bootVerdict, freePort, seedIsolatedEnv } from "./_probe-helpers.js";
+
+import { stopFixtureProcess, reapFixtureOnExit } from "./_guard-fixture-process.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -20,26 +22,27 @@ const main = async (): Promise<void> => {
   const port = String(await freePort());
   const dashPort = String(await freePort());
   // 장벽 훅 — 시작하면 `waiting` 을 만들고 `release` 가 생길 때까지 기다린다. `code` 가 2 면 차단(stderr = 사유).
-  const hook = path.join(home, "barrier-hook.sh");
-  writeFileSync(
-    hook,
-    [
-      "#!/bin/sh",
-      "cat >/dev/null",
-      `H='${home}'`,
-      'touch "$H/waiting"',
-      'while [ ! -f "$H/release" ]; do sleep 0.05; done',
-      'code=$(cat "$H/code" 2>/dev/null || echo 0)',
-      'rm -f "$H/release" "$H/waiting"',
-      'if [ "$code" = "2" ]; then echo "regr-barrier-block" >&2; exit 2; fi',
-      "exit 0",
-      "",
-    ].join("\n"),
-    { mode: 0o755 },
-  );
+  const hook = path.join(home, "barrier-hook.cjs");
+  writeFileSync(hook, `
+const fs = require("node:fs");
+const path = require("node:path");
+const waiting = path.join(__dirname, "waiting");
+const release = path.join(__dirname, "release");
+process.stdin.resume();
+fs.writeFileSync(waiting, "");
+setInterval(() => {
+  if (!fs.existsSync(release)) return;
+  const codeFile = path.join(__dirname, "code");
+  const code = fs.existsSync(codeFile) ? Number(fs.readFileSync(codeFile, "utf8")) : 0;
+  fs.unlinkSync(release);
+  fs.unlinkSync(waiting);
+  if (code === 2) console.error("regr-barrier-block");
+  process.exit(code);
+}, 50);
+`);
   writeFileSync(
     path.join(home, "settings.json"),
-    JSON.stringify({ locale: "en", hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `sh '${hook}'`, timeout: 30 }] }] } }),
+    JSON.stringify({ locale: "en", hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: `"${process.execPath}" "${hook}"`, timeout: 30 }] }] } }),
   );
   seedIsolatedEnv(home, { TELEGRAM_BOT_TOKEN: "", HTTP_BRIDGE_PORT: port, HTTP_BRIDGE_TOKEN: "stop-starting-probe", DASHBOARD_PORT: dashPort });
   const child = spawn(process.execPath, ["--import", "tsx", path.join(REPO, "src/index.ts")], {
@@ -56,7 +59,7 @@ const main = async (): Promise<void> => {
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  reapOnExit(child.pid);
+  reapFixtureOnExit(child);
   let gone = false;
   child.on("exit", () => { gone = true; });
   let out = "";
@@ -130,9 +133,7 @@ const main = async (): Promise<void> => {
     });
   }
   child.stdin.end();
-  try { process.kill(-child.pid!, "SIGTERM"); } catch { child.kill("SIGTERM"); }
-  await sleep(1500);
-  try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+  await stopFixtureProcess(child);
   console.log(JSON.stringify({ booted: verdict.ok, why: verdict.why, held, steps, tail: verdict.ok ? "" : out.slice(-600) }));
   process.exit(0);
 };

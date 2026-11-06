@@ -21,12 +21,14 @@
  *  없다. 아래는 문자열 대조뿐이고, 진짜 검증은 윈도우 인스턴스에서 실제로 돌리는 것이다.
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Assertion, RegressionCheck } from "./_framework.js";
+
+import { powershellRetryAssertions } from "./_install-powershell-fixture.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 /** ★공용 리더 — 디렉터리를 주면 그 아래 `.ts` 를 전부 본다(브리지가 여러 파일이다). */
@@ -49,12 +51,14 @@ const run = async (): Promise<Assertion[]> => {
   const sh = read("install.sh");
   const ps = read("install.ps1");
 
-  // ── ① 실제로 파싱된다 (sh 만 — pwsh 부재) ────────────────────────────────
+  // ── ① 실제로 파싱된다 — Windows도 Git의 sh로 검사한다(없는 경우 빨강, skip 금지).
   {
     let ok = true;
     let detail = "sh -n 통과";
     try {
-      execFileSync("sh", ["-n", path.join(REPO, "install.sh")], { stdio: "pipe" });
+      const gitSh = path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "sh.exe");
+      const shBin = process.platform === "win32" && existsSync(gitSh) ? gitSh : "sh";
+      execFileSync(shBin, ["-n", path.join(REPO, "install.sh")], { stdio: "pipe" });
     } catch (e) {
       ok = false;
       detail = `🔴 구문 오류: ${e instanceof Error ? e.message.slice(0, 120) : String(e)}`;
@@ -109,39 +113,43 @@ const run = async (): Promise<Assertion[]> => {
     };
     const block = blockOf(/^RETRY_CD=/, /^fi$/);
     const updBlock = blockOf(/^\s*UPDATE_CMD="cd /, /^\s{4}fi$/);
-    const iso = mkdtempSync(path.join(tmpdir(), "retry-cmd-"));
-    try {
-      const dir = path.join(iso, "my $HOME 'tc' tiguclaw");
-      const bin = path.join(dir, ".node", "bin");
-      mkdirSync(bin, { recursive: true });
-      symlinkSync(process.execPath, path.join(bin, "node"));
-      const fake = (name: string): string =>
-        `#!/usr/bin/env node\nif (!(process.env.PATH ?? "").split(":").includes("/usr/bin")) { console.log("lost system PATH"); process.exit(3); }\nconsole.log("${name}-ran " + process.argv.slice(2).join(" ") + " @" + process.cwd());\n`;
-      writeFileSync(path.join(bin, "npm"), fake("npm"), { mode: 0o755 });
-      writeFileSync(path.join(bin, "npx"), fake("npx"), { mode: 0o755 });
-      const show = (b: string, expr: string): string => execFileSync("/bin/sh", ["-c", `${shqLine}\n${b}\nprintf '%s' "${expr}"`], {
-        env: { PATH: "/usr/bin:/bin", DIR: dir, NODE_DIR: path.join(dir, ".node"), NEED_NODE: "1" },
-        encoding: "utf8",
-      });
-      const runIt = (cmd: string): string => {
-        try {
-          return execFileSync("/bin/sh", ["-c", cmd], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 }).trim();
-        } catch (e) {
-          return `rc=${(e as { status?: number }).status} ${String((e as { stdout?: string }).stdout ?? "").trim()} ${String((e as { stderr?: string }).stderr ?? "").trim()}`;
-        }
-      };
-      const ran = runIt(show(block, "$RETRY_CD && $NPM_SHOW run onboard"));
-      const upd = runIt(show(updBlock, "$UPDATE_CMD"));
-      // 안내 네 자리(의존 설치 실패 · 네이티브 재빌드 · 마법사 멈춤 · 마지막 안내)가 전부 이 명령 모양을 쓴다.
-      const uses = (code.match(/\$RETRY_CD && \$NPM_SHOW (ci|rebuild|run onboard)/g) ?? []).length;
-      out.push({
-        name: "★전용 Node 설치의 재시도·업데이트 명령이 node 없는 새 셸에서 그대로 돈다(공백·$·따옴표 경로 · 시스템 PATH 유지) · 안내 네 자리가 같은 명령 모양",
-        ok: block !== "" && updBlock !== "" && shqLine !== "" &&
-          ran === `npm-ran run onboard @${realpathSync(dir)}` && upd === `npx-ran tiguclaw update @${realpathSync(dir)}` && uses >= 4 && !/\$NODE_DIR\/bin\/npm/.test(code),
-        got: `실행=${ran.slice(0, 120)} · 업데이트=${upd.slice(0, 120)} · 안내 자리=${uses}`,
-      });
-    } finally {
-      rmSync(iso, { recursive: true, force: true });
+    if (process.platform === "win32") {
+      out.push(...powershellRetryAssertions(ps, REPO));
+    } else {
+      const iso = mkdtempSync(path.join(tmpdir(), "retry-cmd-"));
+      try {
+        const dir = path.join(iso, "my $HOME 'tc' tiguclaw");
+        const bin = path.join(dir, ".node", "bin");
+        mkdirSync(bin, { recursive: true });
+        symlinkSync(process.execPath, path.join(bin, "node"));
+        const fake = (name: string): string =>
+          `#!/usr/bin/env node\nif (!(process.env.PATH ?? "").split(":").includes("/usr/bin")) { console.log("lost system PATH"); process.exit(3); }\nconsole.log("${name}-ran " + process.argv.slice(2).join(" ") + " @" + process.cwd());\n`;
+        writeFileSync(path.join(bin, "npm"), fake("npm"), { mode: 0o755 });
+        writeFileSync(path.join(bin, "npx"), fake("npx"), { mode: 0o755 });
+        const show = (b: string, expr: string): string => execFileSync("/bin/sh", ["-c", `${shqLine}\n${b}\nprintf '%s' "${expr}"`], {
+          env: { PATH: "/usr/bin:/bin", DIR: dir, NODE_DIR: path.join(dir, ".node"), NEED_NODE: "1" },
+          encoding: "utf8",
+        });
+        const runIt = (cmd: string): string => {
+          try {
+            return execFileSync("/bin/sh", ["-c", cmd], { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 20_000 }).trim();
+          } catch (e) {
+            return `rc=${(e as { status?: number }).status} ${String((e as { stdout?: string }).stdout ?? "").trim()} ${String((e as { stderr?: string }).stderr ?? "").trim()}`;
+          }
+        };
+        const ran = runIt(show(block, "$RETRY_CD && $NPM_SHOW run onboard"));
+        const upd = runIt(show(updBlock, "$UPDATE_CMD"));
+        // 안내 네 자리(의존 설치 실패 · 네이티브 재빌드 · 마법사 멈춤 · 마지막 안내)가 전부 이 명령 모양을 쓴다.
+        const uses = (code.match(/\$RETRY_CD && \$NPM_SHOW (ci|rebuild|run onboard)/g) ?? []).length;
+        out.push({
+          name: "★전용 Node 설치의 재시도·업데이트 명령이 node 없는 새 셸에서 그대로 돈다(공백·$·따옴표 경로 · 시스템 PATH 유지) · 안내 네 자리가 같은 명령 모양",
+          ok: block !== "" && updBlock !== "" && shqLine !== "" &&
+            ran === `npm-ran run onboard @${realpathSync(dir)}` && upd === `npx-ran tiguclaw update @${realpathSync(dir)}` && uses >= 4 && !/\$NODE_DIR\/bin\/npm/.test(code),
+          got: `실행=${ran.slice(0, 120)} · 업데이트=${upd.slice(0, 120)} · 안내 자리=${uses}`,
+        });
+      } finally {
+        rmSync(iso, { recursive: true, force: true });
+      }
     }
   }
 

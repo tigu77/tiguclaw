@@ -1,10 +1,11 @@
       // ── 한 번 타이머(2026-10-20) — 건 대화의 백그라운드 패널에 «⏱ 3분 뒤 · 빌드 확인» + 멈추기 ──
       // 인벤토리엔 안 쌓는다(정태님 «인벤토리에 쌓이는 게 별로»). 서버(GET /api/timers)는 전부 주고 **화면이 거른다** —
-      // 잡 카드와 같은 규칙: «현재 세션» 이면 그 대화가 건 것만, «전체 세션» 이면 전부(`bgSessionScope`, background-drawer.js).
+      // 잡 카드와 같은 규칙: «현재 세션» 이면 그 대화에서 실행할 것만, «전체 세션» 이면 전부(`bgSessionScope`, background-drawer.js).
       // 다시 받는 때: 패널 열기·세션 옮기기·탭이 다시 보일 때(`resyncBackground`) + 턴이 끝날 때(비서가 방금 걸었거나 타이머가 막 울렸다).
       // 남은 시간은 30초마다 다시 그리고, 울릴 시각이 지났으면 다시 받는다(울리면 서버에서 지워진다).
       const bgTimersBox = document.getElementById("bg-timers");
       const bgTimersList = document.getElementById("bg-timers-list");
+      const bgTimersCount = document.getElementById("bg-timers-count");
       let bgTimers = [];
       let bgTimersGen = 0;
       /** «그 카드로» 가 강조 중인 타이머 — 다시 그려도 남게(위 줄 그리기가 읽는다). */
@@ -23,12 +24,15 @@
         return m === 0 ? i18n("bg.timers.inHour", { h }) : i18n("bg.timers.inHourMin", { h, m });
       };
 
+      // 실행기와 같은 정본: origin이 없으면 scheduler:<id> 전용 세션. 표시·범위·reveal이 공유한다.
+      const timerThreadKey = (x) => x.originThreadKey ?? ("scheduler:" + x.id);
       const renderBgTimers = () => {
         if (!bgTimersBox || !bgTimersList) return;
         const all = typeof bgSessionScope === "string" && bgSessionScope === "all";
         const mine = bgTimers
-          .filter((x) => x && typeof x.runAt === "number" && (all || x.originThreadKey === activeThreadKey))
+          .filter((x) => x && typeof x.runAt === "number" && (all || timerThreadKey(x) === activeThreadKey))
           .sort((a, b) => a.runAt - b.runAt);
+        if (bgTimersCount) bgTimersCount.textContent = i18n("bg.timers.count", { n: mine.length });
         bgTimersList.textContent = "";
         for (const x of mine) {
           const row = document.createElement("div");
@@ -53,7 +57,26 @@
           stop.textContent = i18n("bg.timers.stop");
           stop.setAttribute("aria-label", i18n("bg.timers.stopAria", { label: x.label }));
           stop.addEventListener("click", () => cancelBgTimer(x.id, stop));
-          row.append(when, label, stop);
+          const info = document.createElement("div");
+          info.className = "bg-timer-info";
+          const session = document.createElement("div");
+          session.className = "bg-timer-session";
+          // originThreadKey는 최초 등록 장소가 아니라 현재 실행 세션. null은 실행기와 같은 전용 세션.
+          const tk = timerThreadKey(x);
+          const raw = document.createElement("span");
+          raw.className = "bg-job-rawtk";
+          raw.textContent = tk;
+          raw.title = tk;
+          const badge = document.createElement("span");
+          badge.className = "bg-job-session";
+          badge.addEventListener("click", (e) => {
+            e.stopPropagation();
+            jumpToBgSession(tk);
+          });
+          session.append(raw, badge);
+          updateSessionBadge({ ownerTk: tk, sessBadgeEl: badge, rawTkEl: raw });
+          info.append(label, session);
+          row.append(when, info, stop);
           bgTimersList.appendChild(row);
         }
         bgTimersBox.hidden = mine.length === 0;
@@ -101,7 +124,7 @@
       window.renderBgTimers = renderBgTimers;
 
       // 위젯의 «보여 줘»(`ctx.reveal({ kind: "timer", id })`) — 패널의 공통 판정(`revealBgCard`)을 탄다.
-      //  ★타이머엔 펼칠 상세·완료 필터·접는 묶음이 없다 — 그 단계는 없다(아스트라 10-21: 공통화하려고 타이머 칸을 넓히지 않는다).
+      // 타이머엔 펼칠 상세·완료 필터는 없고, 접힌 묶음만 공통 경로로 편다.
       window.addEventListener("tigu:reveal", (ev) => {
         const d = ev.detail || {};
         if (d.kind !== "timer" || (typeof d.id !== "string" && typeof d.id !== "number")) return;
@@ -111,7 +134,8 @@
         setTimeout(renderBgTimers, 950); // 강조를 걷는 다시 그리기
         revealBgCard({
           find: () => (bgTimersList ? bgTimersList.querySelector('.bg-timer[data-timer-id="' + CSS.escape(String(d.id)) + '"]') : null),
-          inScope: x ? x.originThreadKey === activeThreadKey : true,
+          inScope: x ? timerThreadKey(x) === activeThreadKey : true,
+          groupHead: "bg-timers-head",
           rerender: renderBgTimers,
         });
       });

@@ -55,6 +55,16 @@ export const check: RegressionCheck = {
     await routes.handleTimers({ res: resList, bus });
     const listed = (JSON.parse(resList.body) as { timers: Array<{ id: number; originThreadKey: string | null; runAt: number; enabled?: boolean; lastStatus?: string | null; lastError?: string | null }> }).timers;
     const failedListed = listed.find((x) => x.id === failedT.id);
+    updateSchedule(timer.id, { originThreadKey: "dashboard:regr-moved" });
+    const movedRes = fakeRes();
+    await routes.handleTimers({ res: movedRes, bus });
+    updateSchedule(timer.id, { originThreadKey: null });
+    const ownRes = fakeRes();
+    await routes.handleTimers({ res: ownRes, bus });
+    out.push(assert("`/timers`는 최초 등록 장소/발송대상이 아닌 현재 origin 이동과 null 전용세션을 그대로 전달",
+      JSON.parse(movedRes.body).timers.find((x: { id: number }) => x.id === timer.id)?.originThreadKey === "dashboard:regr-moved" &&
+      JSON.parse(ownRes.body).timers.find((x: { id: number }) => x.id === timer.id)?.originThreadKey === null,
+      { moved: JSON.parse(movedRes.body).timers, own: JSON.parse(ownRes.body).timers }));
     deleteSchedule(failedT.id);
     const resCron = fakeRes();
     await routes.handleCancelTimer({ req: fakeReq({ id: cron.id }), res: resCron, bus });
@@ -90,7 +100,7 @@ export const check: RegressionCheck = {
     const dash = bootDashboard({
       clock,
       i18n: i18nForContext,
-      upTo: "side-panels.js",
+      upTo: "bg-timers.js", allIds: true,
       ids: ["bg-timers", "bg-timers-list", "toast"],
       fetch: async (url: string, init?: { body?: string }) => {
         if (url === "/api/timers") {
@@ -107,7 +117,7 @@ export const check: RegressionCheck = {
         }
         return jsonResponse({}, 404);
       },
-      stubs: 'let bgSessionScope = "session"; document.visibilityState = "visible";',
+      stubs: 'document.visibilityState = "visible";',
       extra: { Date: FakeDate },
     });
     dash.run(dashSource("bg-timers.js"), "bg-timers.js");

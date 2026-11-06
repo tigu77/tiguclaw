@@ -9,7 +9,7 @@
  *  ④ 화면: ⤢ → 창(조각 + 지금 파일 + 강조) · 닫은 뒤 늦은 응답 무시 · 「↗ 열기」가 `absPath` 를 쓴다
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -18,11 +18,27 @@ import { buildActivityDiff } from "../../core/llm-runtime/adapters/_activity-dif
 import { initStore, getDb } from "../../store/sessions.js";
 import { upsertProject, forgetProject } from "../../store/projects.js";
 import { bootDashboard, dashSource, dispatch, jsonResponse, makeClock, makeEvent } from "./_mini-dom.js";
-import { assert, assertIsolated, i18nForContext, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, i18nForContext, loadPluginModule, skip, type Assertion, type RegressionCheck } from "./_framework.js";
+import type { TestLinks } from "./file-link-refusal-continues.js";
 
 type Line = { op: string; text: string };
 type Where = { fromLine?: number; toLine?: number; reason?: string };
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** 파일 symlink 가 있어야만 성립하는 단언 — 그 생성이 거부되는 환경(무권한 Windows)에선 이것만 미실행으로 남는다. */
+const LINK_TO_ENV = "★`.env` 를 가리키는 심링크(평범한 이름 `notes.md`)는 403 — 해석 **후** 진짜 경로로 판정";
+const ENV_NAMED_LINK = "★비밀 이름의 링크(`.env.shared` → 평범한 파일)는 403 — 해석 **전** 입력 경로로 판정";
+const ESCAPE_FILE_LINK = "프로젝트 안 이름으로 밖의 일반 파일을 가리키는 파일 링크는 내용 그대로 200";
+const RACE_SWAP_BEFORE = "★★열기 **직전** 비밀 파일(.env)을 가리키는 심링크로 교체 → 403(비밀 내용 0)";
+const RACE_SWAP_AFTER = "★★연 **직후** 비밀 파일(.env)을 가리키는 심링크로 교체 → 403(비밀 내용 0)";
+/** 파일 symlink 없이도 도는 추가·유지 단언 — 위 단언들을 대신하지 않는다(파일 링크 형태와 해석 후 basename `.env` 분기는 못 본다). */
+const ESCAPE_DIR_LINK = "디렉터리 링크(win32 junction · 그 외 dir symlink)로 밖 폴더 아래 일반 파일은 내용 그대로 200";
+const SECRET_DIR_LINK_IN = "★평범한 이름의 디렉터리 링크가 프로젝트 안 `.ssh/` 를 가리키면 그 아래 파일은 403 — 해석 **후** 진짜 경로로 판정";
+const SECRET_DIR_LINK_OUT = "★평범한 이름의 디렉터리 링크가 밖의 `.ssh/` 를 가리키면 그 아래 파일은 403 — 해석 **후** 진짜 경로로 판정";
+const ENV_NAMED_PLAIN = "비밀 이름의 일반 파일(`plain/.env.shared`)은 403 — 입력 경로 이름으로 판정(링크 해석 전 판정의 대체는 아니다)";
+const RACE_NO_SWAP = "★★검사 뒤 파일이 바뀌어도 검사가 읽은 내용에 닿는다 — 연 뒤 다른 파일로 교체 → 409 · 연 뒤 3MB 로 커짐 → 413 · **읽은 양이 상한+1 이하** · 정상 200";
+export const FILE_LINK_ASSERTIONS: readonly string[] = [LINK_TO_ENV, ENV_NAMED_LINK, ESCAPE_FILE_LINK, RACE_SWAP_BEFORE, RACE_SWAP_AFTER];
+export const LINK_FREE_COVERAGE: readonly string[] = [ESCAPE_DIR_LINK, SECRET_DIR_LINK_IN, SECRET_DIR_LINK_OUT, ENV_NAMED_PLAIN, RACE_NO_SWAP];
 
 export const check: RegressionCheck = {
   name: "file-view-current-file",
@@ -78,20 +94,30 @@ export const check: RegressionCheck = {
       return { status: res.status, body: JSON.parse(res.body || "{}") as Record<string, unknown> };
     };
     let routeOut: Record<string, unknown> = {};
+    const links = await loadPluginModule<TestLinks>("./_test-links.mjs");
+    const notRun = (r: true | string): string | undefined => (r === true ? undefined : `${links.FILE_LINK_NOT_RUN} · ${r}`);
     try {
       upsertProject({ path: root, name: "regr-fileview", status: "active" } as never);
       writeFileSync(path.join(root, "a.ts"), "const a = 1;\n");
+      mkdirSync(path.join(root, ".ssh"));
+      writeFileSync(path.join(root, ".ssh", "id_test"), "KEY\n");
       writeFileSync(path.join(root, ".env"), "TOKEN=secret\n");
       writeFileSync(path.join(root, ".env.local"), "TOKEN=secret\n");
       mkdirSync(path.join(root, ".git"));
       writeFileSync(path.join(root, ".git", "config"), "[core]\n");
-      symlinkSync(path.join(root, ".env"), path.join(root, "notes.md")); // 이름은 평범, 실제는 .env
-      symlinkSync(path.join(root, "a.ts"), path.join(root, ".env.shared")); // 이름이 비밀, 실제는 평범 — 해석 **전** 경로 판정이 막는다
+      const linkToEnvRefused = notRun(links.linkFile(path.join(root, ".env"), path.join(root, "notes.md"))); // 이름은 평범, 실제는 .env
+      const envNamedRefused = notRun(links.linkFile(path.join(root, "a.ts"), path.join(root, ".env.shared"))); // 이름이 비밀, 실제는 평범 — 해석 **전** 경로 판정이 막는다
       writeFileSync(path.join(outside, "b.ts"), "out\n");
-      symlinkSync(path.join(outside, "b.ts"), path.join(root, "escape.ts")); // 안의 이름, 실제는 밖
+      const escapeRefused = notRun(links.linkFile(path.join(outside, "b.ts"), path.join(root, "escape.ts"))); // 안의 이름, 실제는 밖
+      // 파일 링크 없이도 만드는 별칭 — 디렉터리 링크(무권한 Windows 는 junction)
+      links.linkDir(outside, path.join(root, "outdir")); // 안의 이름, 실제는 밖 폴더
+      links.linkDir(path.join(root, ".ssh"), path.join(root, "keys")); // 평범한 이름, 실제는 안의 .ssh/
+      mkdirSync(path.join(outside, ".ssh"));
+      writeFileSync(path.join(outside, ".ssh", "id_out"), "KEY\n");
+      links.linkDir(path.join(outside, ".ssh"), path.join(root, "keys-out")); // 평범한 이름, 실제는 밖의 .ssh/
+      mkdirSync(path.join(root, "plain"));
+      writeFileSync(path.join(root, "plain", ".env.shared"), "TOKEN=secret\n"); // 링크 없이 — 이름만 비밀
       writeFileSync(path.join(root, "bin.dat"), Buffer.from([0x41, 0x00, 0x42]));
-      mkdirSync(path.join(root, ".ssh"));
-      writeFileSync(path.join(root, ".ssh", "id_test"), "KEY\n");
       mkdirSync(path.join(root, ".aws"));
       writeFileSync(path.join(root, ".aws", "credentials"), "KEY\n");
       writeFileSync(path.join(root, "big.txt"), "x".repeat(2 * 1024 * 1024 + 1));
@@ -104,8 +130,12 @@ export const check: RegressionCheck = {
         git: await view(path.join(root, ".git", "config")),
         linkToEnv: await view(path.join(root, "notes.md")),
         envNamedLink: await view(path.join(root, ".env.shared")),
+        envNamedPlain: await view(path.join(root, "plain", ".env.shared")),
         outside: await view(path.join(outside, "b.ts")),
         escape: await view(path.join(root, "escape.ts")),
+        escapeDir: await view(path.join(root, "outdir", "b.ts")),
+        secretDirIn: await view(path.join(root, "keys", "id_test")),
+        secretDirOut: await view(path.join(root, "keys-out", "id_out")),
         binary: await view(path.join(root, "bin.dat")),
         big: await view(path.join(root, "big.txt")),
         relative: await view("a.ts"),
@@ -124,6 +154,7 @@ export const check: RegressionCheck = {
       };
       const eventsAfter = (getDb().prepare("SELECT count(*) AS n FROM events").get() as { n: number }).n;
       routeOut = { ...Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v.status])), content: r.ok.body.content, eventsDelta: eventsAfter - eventsBefore };
+      const st = (v: { status: number }): string => String(v.status);
       // 판정 함수 자체 — 대소문자 무시 파일시스템에선 위 라우트 검사가 «진짜 이름» 판정(realpath.native)으로도 막혀, 이 함수가 대소문자를 놓쳐도 초록이 된다.
       const secretCases = ["/a/.ENV", "/a/.Env.Local", "/a/.SSH/id", "/a/.Git/config", "/a/.AWS/credentials"];
       const plainCases = ["/a/env.ts", "/a/.envrc-notes/x", "/a/my.git.md"];
@@ -136,16 +167,24 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "★★읽기 경로: 일반 파일은 **어떤 경로든** 내용 그대로(프로젝트 밖·밖을 가리키는 링크 포함 — 10-21 정태님 «유저가 풀권한») · 비밀 파일 `.env`·`.env.*`·`.git/`·`.ssh/`·`.aws/` 403(★대소문자 별칭 `.ENV`·`.SSH/` 도) · ★**`.env` 를 가리키는 심링크·비밀 이름의 링크도 403**(심링크 전후 둘 다) · 바이너리 415 · 2MB 초과 413 · 상대 경로 400 · 디렉터리 거절 · 없는 파일 404 · 아무것도 저장 안 함",
+          "★★읽기 경로: 일반 파일은 **어떤 경로든** 내용 그대로(프로젝트 밖 포함 — 10-21 정태님 «유저가 풀권한») · 비밀 파일 `.env`·`.env.*`·`.git/`·`.ssh/`·`.aws/` 403(★대소문자 별칭 `.ENV`·`.SSH/` 도) · 바이너리 415 · 2MB 초과 413 · 상대 경로 400 · 디렉터리 거절 · 없는 파일 404 · 아무것도 저장 안 함",
           r.ok.status === 200 && r.ok.body.content === "const a = 1;\n" && r.env.status === 403 && r.envLocal.status === 403 && r.git.status === 403 &&
             r.ssh.status === 403 && r.aws.status === 403 &&
             r.envUpper.status === 403 && r.envLocalMixed.status === 403 && r.sshUpper.status === 403 && r.gitUpper.status === 403 && r.sshFolded.status !== 200 &&
-            r.linkToEnv.status === 403 && r.envNamedLink.status === 403 && r.outside.status === 200 && r.outside.body.content === "out\n" &&
-            r.escape.status === 200 && r.binary.status === 415 && r.big.status === 413 &&
+            r.outside.status === 200 && r.outside.body.content === "out\n" &&
+            r.binary.status === 415 && r.big.status === 413 &&
             r.relative.status === 400 && r.dir.status === 403 && r.missing.status === 404 && eventsAfter === eventsBefore,
           JSON.stringify(routeOut),
         ),
       );
+      // 파일 링크에 기대는 판정 — 그 링크가 거부된 환경에선 그 단언만 미실행
+      out.push(linkToEnvRefused !== undefined ? skip(LINK_TO_ENV, linkToEnvRefused) : assert(LINK_TO_ENV, r.linkToEnv.status === 403, st(r.linkToEnv)));
+      out.push(envNamedRefused !== undefined ? skip(ENV_NAMED_LINK, envNamedRefused) : assert(ENV_NAMED_LINK, r.envNamedLink.status === 403, st(r.envNamedLink)));
+      out.push(escapeRefused !== undefined ? skip(ESCAPE_FILE_LINK, escapeRefused) : assert(ESCAPE_FILE_LINK, r.escape.status === 200 && r.escape.body.content === "out\n", JSON.stringify({ status: r.escape.status, content: r.escape.body.content })));
+      out.push(assert(ESCAPE_DIR_LINK, r.escapeDir.status === 200 && r.escapeDir.body.content === "out\n", JSON.stringify({ status: r.escapeDir.status, content: r.escapeDir.body.content })));
+      out.push(assert(SECRET_DIR_LINK_IN, r.secretDirIn.status === 403 && r.secretDirIn.body.content === undefined, st(r.secretDirIn)));
+      out.push(assert(ENV_NAMED_PLAIN, r.envNamedPlain.status === 403 && r.envNamedPlain.body.content === undefined, st(r.envNamedPlain)));
+      out.push(assert(SECRET_DIR_LINK_OUT, r.secretDirOut.status === 403 && r.secretDirOut.body.content === undefined, st(r.secretDirOut)));
     } finally {
       forgetProject(root);
       rmSync(root, { recursive: true, force: true });
@@ -157,19 +196,27 @@ export const check: RegressionCheck = {
     const raceHome = mkdtempSync(path.join(tmpdir(), "tiguclaw-regression-fvrace-home-"));
     const rr = spawnSync(process.execPath, ["--import", "tsx", child], { encoding: "utf8", timeout: 60_000, env: { ...process.env, TIGUCLAW_HOME: raceHome } });
     rmSync(raceHome, { recursive: true, force: true });
-    let race: Record<string, { status: number; bytes?: number; outside: boolean; other: boolean; readBytes?: number }> = {};
+    type RaceResult = { status: number; bytes?: number; outside: boolean; other: boolean; readBytes?: number } | { skipped: string };
+    let race: Record<string, RaceResult | undefined> = {};
     try { race = JSON.parse((rr.stdout ?? "").trim().split("\n").pop() ?? "{}"); } catch { race = {}; }
+    const ran = (m: string) => { const v = race[m]; return v === undefined || "skipped" in v ? undefined : v; };
+    const raceGot = JSON.stringify({ race, stderr: (rr.stderr ?? "").slice(-300) });
+    const none = ran("none"), replaceAfter = ran("replaceAfter"), growOnRead = ran("growOnRead");
     out.push(
       assert(
-        "★★검사 뒤 파일이 바뀌어도 검사가 읽은 내용에 닿는다 — 열기 직전·직후 **비밀 파일(.env)을 가리키는 심링크**로 교체 → 403(비밀 내용 0) · 연 뒤 다른 파일로 교체 → 409 · 연 뒤 3MB 로 커짐 → 413 · **읽은 양이 상한+1 이하** · 정상 200",
-        race.none?.status === 200 && race.none.bytes === 5 &&
-          race.swapBefore?.status === 403 && !race.swapBefore.outside &&
-          race.swapAfter?.status === 403 && !race.swapAfter.outside &&
-          race.replaceAfter?.status === 409 && !race.replaceAfter.other &&
-          race.growOnRead?.status === 413 && race.growOnRead.readBytes !== undefined && race.growOnRead.readBytes <= 2 * 1024 * 1024 + 1,
-        JSON.stringify({ race, stderr: (rr.stderr ?? "").slice(-300) }),
+        RACE_NO_SWAP,
+        none?.status === 200 && none.bytes === 5 &&
+          replaceAfter?.status === 409 && !replaceAfter.other &&
+          growOnRead?.status === 413 && growOnRead.readBytes !== undefined && growOnRead.readBytes <= 2 * 1024 * 1024 + 1,
+        raceGot,
       ),
     );
+    // 파일 symlink 교체 모드 — 자식이 그 링크를 못 만들면 `{ skipped }` 를 낸다(그 모드만 미실행). 결과가 아예 없으면 실패다.
+    for (const [name, m] of [[RACE_SWAP_BEFORE, "swapBefore"], [RACE_SWAP_AFTER, "swapAfter"]] as const) {
+      const v = race[m];
+      if (v !== undefined && "skipped" in v) { out.push(skip(name, v.skipped)); continue; }
+      out.push(assert(name, v?.status === 403 && !v.outside, raceGot));
+    }
 
     // ── ③ 관측 — 그 턴의 cwd 로 absPath ──────────────────────────────────────
     const relEdit = buildActivityDiff("Edit", { file_path: "src/a.ts", old_string: "x", new_string: "y" }, "/proj");

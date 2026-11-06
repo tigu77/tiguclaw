@@ -731,7 +731,7 @@ const publishInboundEcho = (
         threadKey: msg.threadKey,
         synthetic: true,
         // 무엇 때문에 도는지 한 마디 — 진행 표시가 "왜" 를 같이 말할 수 있게.
-        reason: "매니저·에이전트 결과 정리",
+        reason: "결과 정리 중",
       },
     });
     return;

@@ -30,6 +30,17 @@ export const startFakeOAuthMcp = async () => {
       /** true 면 보호 자원 탐색 응답을 붙잡아 둔다 — 로그인 준비를 «auth() 대기 중» 에 세워 두는 제어 가능한 대기점. `releaseDiscovery()` 로 보낸다. */
       holdDiscovery: false,
       heldDiscovery: [] as Array<() => void>,
+      /** true 면 받아들이지 않는 토큰의 `/mcp` 요청을 401 로 답하기 전에 붙잡아 둔다 — 확인 요청이 «아직 답 없음» 인 동안을 만드는 대기점. `releaseMcp()` 로 보낸다. */
+      holdMcp: false,
+      heldMcp: [] as Array<() => void>,
+      /** 붙잡는 순간 불린다 — 검사가 «요청이 왔다» 를 시간 대신 이 사건으로 안다. */
+      onHeldMcp: undefined as undefined | (() => void),
+      /** 이 grant 의 토큰 요청을 받은 뒤 처리하기 전에 붙잡아 둔다(그 뒤는 평소대로 — 갱신은 `refreshMode` 대로) — 갱신·코드 교환이 «도중» 인 동안
+       *  다른 일을 끼워 넣는 대기점. `releaseGrant()` 로 이어 간다. */
+      holdGrant: undefined as undefined | "refresh_token" | "authorization_code",
+      heldGrant: [] as Array<() => void>,
+      /** 붙잡는 순간 불린다 — 검사가 «토큰 요청이 왔다» 를 시간 대신 이 사건으로 안다. */
+      onHeldGrant: undefined as undefined | (() => void),
       /** refresh 토큰을 안 주는 공급자(GitHub OAuth 앱 류) 흉내. */
       noRefresh: false,
       /** refresh 토큰 → 발급받은 클라이언트(RFC 6749 §6 — 다른 클라이언트의 갱신은 거절). */
@@ -108,6 +119,7 @@ export const startFakeOAuthMcp = async () => {
         if (g === "authorization_code" || g === "refresh_token") as.resourceSeen.push({ at: g, resource: p.get("resource") });
         as.tokenRequests.push(Object.fromEntries([...p].filter(([k]) => !["code", "code_verifier", "refresh_token"].includes(k))));
         if (!targetOk(p.get("resource"))) return json(res, 400, { error: "invalid_target" });
+        if (g !== null && as.holdGrant === g) await new Promise<void>((go) => (as.heldGrant.push(go), as.onHeldGrant?.()));
         if (p.get("grant_type") === "authorization_code") {
           const c = as.codes.get(p.get("code") ?? "");
           as.codes.delete(p.get("code") ?? "");
@@ -134,7 +146,11 @@ export const startFakeOAuthMcp = async () => {
         const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
         if (!as.access.has(bearer)) {
           as.rejected.push(bearer); // 어떤 토큰이 거절됐나(빈 문자열 = 토큰 없음) — «우리 토큰이 거절됨» 과 «토큰을 안 보냄» 을 가른다
-          res.writeHead(401, { "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"` }).end("unauthorized");
+          const deny = () => void res.writeHead(401, { "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"` }).end("unauthorized");
+          if (as.holdMcp) {
+            as.heldMcp.push(deny);
+            as.onHeldMcp?.();
+          } else deny();
           return;
         }
         const body = await readBody(req);
@@ -159,9 +175,19 @@ export const startFakeOAuthMcp = async () => {
       as.holdDiscovery = false;
       for (const send of as.heldDiscovery.splice(0)) send();
     };
+    /** 붙잡아 둔 `/mcp` 401 응답을 보낸다. */
+    const releaseMcp = (): void => {
+      as.holdMcp = false;
+      for (const deny of as.heldMcp.splice(0)) deny();
+    };
+    /** 붙잡아 둔 토큰 요청을 이어 처리한다. */
+    const releaseGrant = (): void => {
+      as.holdGrant = undefined;
+      for (const go of as.heldGrant.splice(0)) go();
+    };
     /** 쥐고 있던 응답을 끊는다(클라이언트엔 연결 오류). */
     const release = (): void => {
       for (const r of as.held.splice(0)) r.destroy();
     };
-    return { as, origin, url, release, releaseDiscovery, close: (): Promise<void> => (release(), releaseDiscovery(), new Promise<void>((r) => http.close(() => r()))) };
+    return { as, origin, url, release, releaseDiscovery, releaseMcp, releaseGrant, close: (): Promise<void> => (release(), releaseDiscovery(), releaseMcp(), releaseGrant(), new Promise<void>((r) => http.close(() => r()))) };
 };

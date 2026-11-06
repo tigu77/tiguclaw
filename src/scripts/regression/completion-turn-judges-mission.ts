@@ -21,6 +21,9 @@ import { registerChannelOutbound } from "../../core/channel-outbound.js";
 import { replyCommand } from "../../core/entry/reply-command.js";
 import { __resetJobsForTest, markCancelled, markDone, onWorkerComplete, registerJob, registerWorkerHandler } from "../../core/worker-jobs.js";
 import type { IncomingMessage } from "../../channels/types.js";
+import { RESULT_JUDGMENT_GUIDANCE, RESULT_JUDGMENT_LINE } from "../../core/result-judgment.js";
+import { createSpawnAgentMcpServer } from "../../core/llm-runtime/capabilities/agent-registry.js";
+import { packJoinResponse } from "../../core/llm-runtime/capabilities/join-response.js";
 import { srvEn } from "./_srv-text.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -73,6 +76,67 @@ export const check: RegressionCheck = {
         ok.prompt.slice(-700),
       ),
       assert("메인이 답하면 raw 안전망은 안 뜬다", ok.raws.length === 0, ok.raws),
+    );
+
+    // 2026-11-05 — «다 하지 못함» 을 작업자 분류가 아니라 필수 조건·결과 근거로 판정하는 기준(`result-judgment.ts`)이
+    //  수령 자리마다 실린다. ★문구 효과는 여기서 못 잰다 — 전후 행동 평가는 결정 기록
+    //  `docs/decisions/2026-11-05-delegated-completion-judgment.md`. 여기는 «실렸나» 와 «자리» 만.
+    const tail = ok.prompt.slice(ok.prompt.indexOf("〔/알림〕"));
+    out.push(
+      assert(
+        "★★판정 기준 상수가 비어 있지 않다 — 비면 아래 «실린다» 단언이 includes(\"\") 로 공짜 통과한다",
+        RESULT_JUDGMENT_GUIDANCE.trim().length > 150,
+        RESULT_JUDGMENT_GUIDANCE.trim().length,
+      ),
+      assert(
+        "★완료 알림: 판정 기준이 «보고로 끝내지 마세요» 뒤·갈래 앞(알림 블록 밖 지시부)에 실린다 · 재위임 때 못 푼 필수 조건 유지·중복 발주 금지",
+        ok.prompt.indexOf("〔/알림〕") > 0 &&
+          tail.indexOf("보고로 끝내지 마세요") >= 0 &&
+          tail.indexOf(RESULT_JUDGMENT_GUIDANCE) > tail.indexOf("보고로 끝내지 마세요") &&
+          tail.indexOf(RESULT_JUDGMENT_GUIDANCE) < tail.indexOf("- 멈춘 원인을 확인") &&
+          tail.includes("다시 맡길 때 아직 못 푼 필수 조건을 빼지 말고") &&
+          tail.includes("같은 일로 이미 도는 작업이 있으면 새로 맡기지 마세요"),
+        tail.slice(0, 400),
+      ),
+    );
+    // 합류(wait_for_worker) 응답 — 같은 결과를 도구 응답으로 받는 자리. 결과 본문이 있을 때만 싣고, 첫 줄(압축 뒤 남는 복구 안내)은 그대로다.
+    const joined = packJoinResponse([{ jobId: "j-1", label: "회귀", status: "✅ 완료", body: RESULT }]);
+    const runningOnly = packJoinResponse([{ jobId: "j-2", label: "회귀", status: "⏳ 아직 진행 중", body: "" }]);
+    out.push(
+      assert(
+        "★합류 응답: 결과 본문을 받으면 같은 판정 기준이 실리고(첫 줄 복구 안내 유지), 진행 중만이면 안 실린다",
+        joined.includes(RESULT_JUDGMENT_GUIDANCE) &&
+          (joined.split("\n")[0] ?? "").includes("read_worker_result") &&
+          !(joined.split("\n")[0] ?? "").includes(RESULT_JUDGMENT_GUIDANCE) &&
+          !runningOnly.includes(RESULT_JUDGMENT_GUIDANCE),
+        { joinedHead: joined.split("\n").slice(0, 2), runningOnly },
+      ),
+    );
+    // 원문 재조회(read_worker_result) — 합류 응답이 잘리거나 압축되면 본문은 여기서 다시 받는다. 그때 합류 응답의 기준 줄은
+    //  이미 치워졌으므로 이 응답도 같은 줄을 싣는다(GPT 구현 검토 R1 #1). 실제 도구 핸들러로 — 첫 쪽·다음 쪽 둘 다, 본문은 «──» 뒤 그대로.
+    __resetJobsForTest();
+    const longResult = `회귀-재조회-${"나".repeat(9_000)}-끝`;
+    const readJob = registerJob({ kind: "agent", label: "회귀 재조회", task: TASK, threadKey: `${CH}:read`, channel: CH, channelUserId: "regr-user" } as never);
+    markDone(readJob, longResult);
+    type ToolReg = { handler: (a: unknown, e: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }> };
+    const tools = (createSpawnAgentMcpServer({ text: "x", threadKey: `${CH}:read`, channel: CH } as never) as unknown as {
+      instance: { _registeredTools: Record<string, ToolReg> };
+    }).instance._registeredTools;
+    const readText = async (a: unknown): Promise<string> =>
+      ((await tools["read_worker_result"]!.handler(a, {})).content.map((c) => c.text ?? "").join("\n"));
+    const first = await readText({ job_id: readJob });
+    const next = await readText({ job_id: readJob, offset: 8_000 });
+    const listOnly = await readText({});
+    const bodyOf = (t: string): string => t.slice(t.indexOf("\n──\n") + 4);
+    out.push(
+      assert(
+        "★원문 재조회: 본문을 돌려주는 쪽마다(첫 쪽·다음 쪽) 같은 기준 줄이 «──» 앞에 실리고, 본문 구간은 그대로 · 목록 응답엔 안 실린다",
+        first.indexOf(RESULT_JUDGMENT_LINE) >= 0 && first.indexOf(RESULT_JUDGMENT_LINE) < first.indexOf("\n──\n") &&
+          next.indexOf(RESULT_JUDGMENT_LINE) >= 0 && next.indexOf(RESULT_JUDGMENT_LINE) < next.indexOf("\n──\n") &&
+          bodyOf(first) === longResult.slice(0, 8_000) && bodyOf(next) === longResult.slice(8_000) &&
+          !listOnly.includes(RESULT_JUDGMENT_GUIDANCE),
+        { firstHead: first.slice(0, first.indexOf("\n──\n")).slice(0, 300), nextLen: bodyOf(next).length, listOnly: listOnly.slice(0, 200) },
+      ),
     );
 
     // P-1 — 완료 턴이 실패해 오류 안내만 보냈다(진입점 catch 와 같은 길: replyCommand + turnFailed)

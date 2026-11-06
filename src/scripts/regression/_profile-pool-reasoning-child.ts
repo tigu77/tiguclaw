@@ -123,4 +123,4 @@ try {
 } catch (e) {
   out.error = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
 }
-console.log(JSON.stringify(out));
+console.log("TIGUCLAW_PROFILE_POOL_RESULT:" + JSON.stringify(out));

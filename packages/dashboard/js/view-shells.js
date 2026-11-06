@@ -41,7 +41,8 @@
         if (!e) {
           e = {
             shellId, command: "", cwd: "", status: "running", startedAt: Date.now(),
-            threadKey: "", ownerTk: "", exitCode: null, cardOpen: true, expanded: false, killRequested: false,
+            // 카드는 **접힌 채** 태어난다(2026-11-05 사용자 요청) — 머리줄(이름·상태·세션·경과·중지)만. 펼침은 이 항목의 상태라 재렌더가 되돌리지 않는다.
+            threadKey: "", ownerTk: "", exitCode: null, cardOpen: false, expanded: false, killRequested: false,
             visible: !!(opts && opts.visible), lastLine: "",
             // owner/killable(Phase 3b, ADR §6) — 부재=killable:true(codex/openai, 프로세스 우리
             // 소유·⏹️ 가능). owner:"sdk"/killable:false(claude 관측 브리지)=⏹️ 비활성·SDK 표식.
@@ -294,15 +295,27 @@
         // «그 카드로» 의 강조는 **항목의 상태**다 — 셸 목록은 출력이 올 때마다 통째로 다시 그려 노드에 붙인 강조가 곧바로 사라졌다(헤드리스 10-21).
         if (typeof entry.flashUntil === "number" && entry.flashUntil > Date.now()) card.classList.add("bg-flash");
         card.dataset.shellId = entry.shellId;
-        const top = document.createElement("div"); top.className = "agent-card-top";
-        // ★설명(Bash `description`)이 있을 때만 맨 윗줄 첫 칸에 이름 (2026-10-23) — 나머지 줄(명령·폴더·경과·종료 코드·꼬리·토글·Kill)은
-        //  그대로다(사용자: «기존 표시는 그대로 두고 라벨만 보완»). 없으면 지금 카드와 DOM 이 같다.
-        if ((typeof entry.description === "string" && entry.description !== "") || !entry.cardOpen) {
-          const label = document.createElement("span"); label.className = "shell-card-label";
-          label.textContent = entry.description || entry.command || i18n("shell.noCommand");
-          label.title = label.textContent;
-          top.appendChild(label);
-        }
+        const top = document.createElement("div"); top.className = "agent-card-top shell-card-head";
+        top.setAttribute("role", "button");
+        top.tabIndex = 0;
+        top.setAttribute("aria-expanded", String(entry.cardOpen));
+        top.setAttribute("aria-controls", "shell-card-body-" + entry.shellId);
+        top.title = i18n(entry.cardOpen ? "shell.card.collapse" : "shell.card.expand");
+        // 잡 카드와 같은 클릭·텍스트 드래그 판정. 자식 액션은 머리줄 토글이 아니다. 펼치기 버튼·캐럿은 두지 않는다(머리줄 자체가 토글, 2026-11-05).
+        onToggleClick(top, (ev) => {
+          const action = ev.target.closest("button, a, input, select, textarea, [role=button], [role=menuitem]");
+          if (action && action !== top) return;
+          toggleShellCard(entry.shellId);
+        });
+        top.addEventListener("keydown", (ev) => {
+          if (ev.target !== top || (ev.key !== "Enter" && ev.key !== " ")) return;
+          ev.preventDefault();
+          if (!ev.repeat) toggleShellCard(entry.shellId);
+        });
+        const label = document.createElement("span"); label.className = "shell-card-label";
+        label.textContent = entry.description || entry.command || i18n("shell.noCommand");
+        label.title = label.textContent;
+        top.appendChild(label);
         const kind = document.createElement("span"); kind.className = "agent-card-kind";
         kind.textContent = i18n("shell.badge");
         top.appendChild(kind);
@@ -332,16 +345,6 @@
             : i18n("shell.session.unknownHint");
           top.appendChild(sess);
         }
-        const collapse = document.createElement("button");
-        collapse.type = "button"; collapse.className = "shell-card-collapse";
-        collapse.textContent = entry.cardOpen ? "▾" : "▸";
-        collapse.setAttribute("aria-expanded", String(entry.cardOpen));
-        collapse.setAttribute("aria-controls", "shell-card-body-" + entry.shellId);
-        const collapseLabel = i18n(entry.cardOpen ? "shell.card.collapse" : "shell.card.expand");
-        collapse.setAttribute("aria-label", collapseLabel);
-        collapse.title = collapseLabel;
-        collapse.addEventListener("click", (ev) => { ev.stopPropagation(); toggleShellCard(entry.shellId); });
-        top.appendChild(collapse);
         card.appendChild(top);
         const body = document.createElement("div"); body.className = "shell-card-body";
         body.id = "shell-card-body-" + entry.shellId;
@@ -372,7 +375,7 @@
           codeEl.textContent = "exit " + entry.exitCode;
           meta.appendChild(codeEl);
         }
-        body.appendChild(meta);
+        top.appendChild(meta);
         // 마지막 출력 꼬리(1줄) — 최소 한 번 펼쳐 폴링한 적 있어야 채워짐(전 카드 상시 폴링은
         // 백엔드 부하라 안 함, ADR §5 "폴 간격 바운드"). 없으면 안내만.
         const tailLine = document.createElement("div"); tailLine.className = "shell-card-tailline";
@@ -396,7 +399,7 @@
             const note = document.createElement("span"); note.className = "shell-card-kill-disabled";
             note.textContent = i18n("shell.status.sdkOwned");
             note.title = i18n("shell.sdkOwned.kill");
-            controls.appendChild(note);
+            top.appendChild(note);
           } else {
             const killBtn = document.createElement("button");
             killBtn.type = "button"; killBtn.className = "bg-job-stop shell-card-kill";
@@ -404,7 +407,7 @@
             killBtn.disabled = entry.killRequested;
             killBtn.textContent = entry.killRequested ? i18n("common.stopping") : "⏹️ Kill";
             killBtn.addEventListener("click", (ev) => { ev.stopPropagation(); void requestKillShell(entry.shellId); });
-            controls.appendChild(killBtn);
+            top.appendChild(killBtn);
           }
         }
         body.appendChild(controls);
@@ -456,7 +459,7 @@
         const empty = document.getElementById("bg-shells-empty");
         if (!grid) return;
         const active = document.activeElement;
-        const restoreFocus = focusShellId || (active && grid.contains(active) && active.classList.contains("shell-card-collapse")
+        const restoreFocus = focusShellId || (active && grid.contains(active) && active.classList.contains("shell-card-head")
           ? active.closest(".shell-card").dataset.shellId : null);
         // 이 파일의 초기 seed가 드로어 스크립트 로드보다 먼저 끝날 수도 있다.
         if (typeof bgGeometryChanged === "function") bgGeometryChanged();
@@ -492,8 +495,8 @@
         keepShellReadingAnchor(grid, anchor);
         if (restoreFocus) {
           const card = grid.querySelector('.shell-card[data-shell-id="' + CSS.escape(restoreFocus) + '"]');
-          const button = card && card.querySelector(".shell-card-collapse");
-          if (button) button.focus({ preventScroll: true });
+          const head = card && card.querySelector(".shell-card-head");
+          if (head) head.focus({ preventScroll: true });
         }
         // 빌더는 조회하지 않는다. 모든 새 출력 DOM이 부착된 다음 시작한다.
         for (const shellId of shellOutputEls.keys()) startShellTailPoll(shellId);

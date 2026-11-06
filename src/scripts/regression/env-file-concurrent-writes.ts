@@ -6,8 +6,10 @@
  * 지키는 것: 겹친 저장이 전부 성공 · 모든 키가 남는다 · 같은 키는 **나중에 부른 값** · 임시 파일 잔재 없음 · 0600 · 다른 키 보존 ·
  *  `process.env` 는 줄 서기 전에 즉시.
  */
-import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { secretFilePermissions } from "./_env-file-permissions.js";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 export const check: RegressionCheck = {
@@ -32,6 +34,20 @@ export const check: RegressionCheck = {
       const val = (k: string) => lines.find((l) => l.startsWith(`${k}=`))?.slice(k.length + 1);
       const leftovers = readdirSync(home).filter((f) => f.startsWith(".env.tmp"));
       const mode = (statSync(envPath).mode & 0o777).toString(8);
+      const permissions = secretFilePermissions(envPath);
+      const leak = path.join(home, "permission-leak-fixture");
+      writeFileSync(leak, "synthetic-only", { mode: 0o644 });
+      let leakInjected = true;
+      if (process.platform === "win32") {
+        // ★부모 상속과 무관하게 만든다 — 먼저 «본인·SYSTEM·Administrators 만, 상속 없음» 으로 세우고 Everyone 만 명시로 더한다.
+        //  (종전엔 같은 폴더 상속을 그대로 둬서, 부모에 다른 SID 가 있으면 Everyone 이 아니라 그것 때문에 거부될 수 있었다 — v7 진단)
+        const { restrictToCurrentUser } = await import("../../core/secret-file.js");
+        await restrictToCurrentUser(leak);
+        const grant = spawnSync("icacls.exe", [leak, "/grant", "*S-1-1-0:(R)"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+        leakInjected = grant.status === 0;
+      }
+      const leakingPermissions = secretFilePermissions(leak);
+      rmSync(leak);
       // ★rename 이 실패하면 임시 파일(토큰 전부의 사본)을 남기지 않는다 — 검사 동안만 rename 을 EPERM 으로 실패시킨다
       //  (윈도우 백신·인덱서가 `.env` 를 잡고 있을 때와 같은 모양). env-file 은 호출 때 `fs.promises.rename` 을 읽는다.
       const fsp = (await import("node:fs/promises")).default as unknown as { rename: (...a: unknown[]) => Promise<void> };
@@ -50,7 +66,9 @@ export const check: RegressionCheck = {
         assert("겹친 저장이 전부 성공한다(rename 충돌로 던지지 않는다)", rs.every((r) => r.status === "fulfilled"), rs.map((r) => r.status)),
         assert("★겹친 저장의 모든 키가 파일에 남는다", keys.every((k, i) => val(k) === `v${i}`), lines.map((l) => l.split("=")[0])),
         assert("같은 키는 나중에 부른 저장의 값이 남고, 한 줄뿐이다", val("REGR_ENV_SAME") === `same-${keys.length - 1}` && lines.filter((l) => l.startsWith("REGR_ENV_SAME=")).length === 1, val("REGR_ENV_SAME")),
-        assert("다른 키를 보존하고 권한은 0600, 임시 파일 잔재가 없다", val("OTHER_KEY") === "keep-me" && val("HTTP_BRIDGE_TOKEN") === "fake-bridge" && mode === "600" && leftovers.length === 0, { mode, leftovers }),
+        assert("다른 키를 보존하고 임시 파일 잔재가 없다", val("OTHER_KEY") === "keep-me" && val("HTTP_BRIDGE_TOKEN") === "fake-bridge" && leftovers.length === 0, { mode, leftovers }),
+        assert("비밀 파일은 소유자만 읽는다(POSIX 0600 / Windows DACL)", permissions.ok, permissions.got),
+        assert("권한 판정은 실제 누출 fixture를 거부한다(POSIX 0644 / 상속 없는 DACL 에 명시 Everyone Read)", leakInjected && !leakingPermissions.ok && !leakingPermissions.got.includes("unverified") && (process.platform !== "win32" || leakingPermissions.got.includes("S-1-1-0")), { leakInjected, permission: leakingPermissions.got }),
         assert("process.env 는 파일 쓰기를 기다리지 않고 즉시 바뀐다", immediate, immediate),
       ];
     } finally {

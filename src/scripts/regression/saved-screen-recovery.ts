@@ -4,12 +4,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
-import { assert, assertIsolated, loadPluginModule, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, assertIsolated, loadPluginModule, skip, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
+import type { TestLinks } from "./file-link-refusal-continues.js";
 import { adaptClaudeMcpServer } from "../../core/llm-runtime/adapters/_mcp-bridge.js";
 import { splitMcpToolContent, toolResultForAdapter } from "../../core/llm-runtime/adapters/_mcp-content.js";
 import { appendToolResultsToInput, compactOldToolOutputs, type ResponseInputItem } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
 
 type Rec = Record<string, unknown>;
+/** 파일 symlink 가 있어야만 성립하는 단언 — 그 생성이 거부되는 환경(무권한 Windows)에선 이것만 미실행으로 남는다. */
+const SYMLINK_REJECTED = "원본 바이트가 같아도 심링크 거절";
+/** 링크 성공·거부 양쪽에서 도는 단언 — 위 단언을 대신하지 않는다(복원 경로가 뒤 단언의 전제임을 확인할 뿐). */
+const RESTORED_READS_ORIGINAL = "원본 복원 직후 정상 재열람은 최초 원본 바이트";
+export const FILE_LINK_ASSERTIONS: readonly string[] = [SYMLINK_REJECTED];
+export const LINK_FREE_COVERAGE: readonly string[] = [RESTORED_READS_ORIGINAL];
 type Tools = Parameters<typeof createSdkMcpServer>[0]["tools"];
 export const check: RegressionCheck = {
   name: "saved-screen-recovery",
@@ -100,9 +107,17 @@ export const check: RegressionCheck = {
       await fs.rm(file);
       await failure("삭제된 원본 거절, 새 캡처로 대체하지 않음", () => b.callTool("look", { saved: ra }));
       const target = path.join(dir, "link-target.jpg"); await fs.writeFile(target, original);
-      await fs.symlink(target, file);
-      await failure("원본 바이트가 같아도 심링크 거절", () => b.callTool("look", { saved: ra }));
-      await fs.rm(file); await fs.writeFile(file, original);
+      const links = await loadPluginModule<TestLinks>("./_test-links.mjs");
+      const linked = links.linkFile(target, file);
+      if (linked === true) {
+        await failure(SYMLINK_REJECTED, () => b.callTool("look", { saved: ra }));
+        await fs.rm(file);
+      } else {
+        out.push(skip(SYMLINK_REJECTED, `${links.FILE_LINK_NOT_RUN} · ${linked}`));
+      }
+      await fs.writeFile(file, original);
+      const back = splitMcpToolContent(await b.callTool("look", { saved: ra }));
+      out.push(assert(RESTORED_READS_ORIGINAL, back.media.length === 1 && back.media[0]?.data === sa.media[0]?.data, { media: back.media.length, same: back.media[0]?.data === sa.media[0]?.data, text: back.text.slice(0, 150) }));
       const payload = JSON.parse(Buffer.from(ra.split(".")[0]!, "base64url").toString()) as Rec;
       payload.file = "../outside.jpg";
       const forged = `${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${ra.split(".")[1]}`;

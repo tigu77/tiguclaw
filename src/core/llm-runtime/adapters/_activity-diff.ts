@@ -14,7 +14,7 @@
 import { diffLines } from "diff";
 import fs from "node:fs";
 import nodePath from "node:path";
-import type { ActivityDiff, ActivityDiffLine } from "../types.js";
+import type { ActivityDiff, ActivityDiffLine, ActivityFileRef } from "../types.js";
 
 /** 렌더용 줄 수 상한 — 초과 시 컷 + truncated. 스트림 위생. */
 const MAX_LINES = 60;
@@ -212,6 +212,49 @@ export function buildActivityDiff(
     if (toolName === "Write") return writeDiff(input, cwd);
   } catch {
     /* diff 생성 실패가 관측/턴을 무르지 않는다. */
+  }
+  return undefined;
+}
+
+/**
+ * 정규화된 tool input → 그 도구가 **읽은** 파일 참조(Read 만, 그 외 undefined) — 2026-11-05.
+ *  경로는 Edit/Write 의 `absPath` 와 **같은 규칙**(`absPathOf`)으로 그 턴의 cwd 기준 절대 경로로 푼다.
+ *  ★못 풀면(상대 경로인데 cwd 없음) undefined — 화면은 지금처럼 detail 한 줄만 보인다(지어낸 경로로 열지 않는다).
+ *  ★`cwd` 는 그 Read 를 **실제로 푼 기준**이어야 한다 — 호출부(어댑터)가 file-ops 에 준 것과 같은 값을 넘긴다.
+ */
+export function buildActivityFile(
+  toolName: string,
+  input: Record<string, unknown> | undefined | null,
+  cwd?: string,
+): ActivityFileRef | undefined {
+  if (toolName !== "Read" || !input || typeof input !== "object") return undefined;
+  const p =
+    typeof input.path === "string"
+      ? input.path
+      : typeof input.file_path === "string"
+        ? input.file_path
+        : undefined;
+  const absPath = absPathOf(p, cwd);
+  if (p === undefined || absPath === undefined) return undefined;
+  const off = input.offset;
+  const startLine = typeof off === "number" && Number.isInteger(off) && off >= 1 ? off : undefined;
+  return { path: p, absPath, ...(startLine !== undefined ? { startLine } : {}) };
+}
+
+/** JSON 문자열 인자(codex/openai) → 읽은 파일 참조. 파싱 실패·비객체면 undefined. */
+export function buildActivityFileFromJson(
+  toolName: string,
+  argsJson: string | undefined | null,
+  cwd?: string,
+): ActivityFileRef | undefined {
+  if (toolName !== "Read" || !argsJson) return undefined;
+  try {
+    const parsed = JSON.parse(argsJson) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return buildActivityFile(toolName, parsed as Record<string, unknown>, cwd);
+    }
+  } catch {
+    /* 부분 JSON — 참조 생략(detail 은 원문 요약으로 별도). */
   }
   return undefined;
 }

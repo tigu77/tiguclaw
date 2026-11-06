@@ -13,6 +13,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { appRoot, getPaths, pluginDataDir } from "../paths.js";
 import { activePluginDirs, declaredPluginName } from "./active-dirs.js";
+import { readPluginText } from "./plugin-file-reader.js";
 
 /** 티구클로가 실제로 내는 훅 이벤트 — 실행·인벤토리가 공유한다. 새 이벤트를 내면 여기에 더한다. */
 export const EMITTED_HOOK_EVENTS = [
@@ -193,7 +194,7 @@ export const pluginHookSources = async (roots: string[] = defaultRoots()): Promi
     }
     let text: string;
     try {
-      text = await fs.readFile(file, "utf8");
+      text = await readPluginText(file);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
       out.push({ plugin: d.name, dir: d.dir, file, status: "invalid", reason: "unreadable", entries: [] });

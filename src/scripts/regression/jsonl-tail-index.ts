@@ -15,6 +15,7 @@
 import { mkdtemp, writeFile, appendFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const rec = (role: string, text: string): string =>
@@ -120,28 +121,40 @@ export const check: RegressionCheck = {
       indexJsonlIfNeeded({ ...key3, jsonlPath: big });
       const fsMod = await import("node:fs");
       const realRead = fsMod.default.readFileSync;
+      const other = path.join(dir, "unrelated-settings.json");
+      await writeFile(other, JSON.stringify({ synthetic: true }));
       let fullReadBytes = 0;
+      let indexedReadBytes = 0;
+      let calibrationBytes = 0;
+      const otherReads: Array<{ file: string; bytes: number }> = [];
       const spy = ((...args: Parameters<typeof realRead>) => {
         const res = realRead(...args);
-        if (typeof res === "string") fullReadBytes += res.length;
+        const file = args[0] instanceof URL ? fileURLToPath(args[0]) : Buffer.isBuffer(args[0]) ? args[0].toString() : args[0];
+        const bytes = typeof res === "string" ? Buffer.byteLength(res) : Buffer.isBuffer(res) ? res.length : 0;
+        if (typeof file === "string" && path.resolve(file) === path.resolve(big)) fullReadBytes += bytes;
+        else otherReads.push({ file: String(file), bytes });
         return res;
       }) as typeof realRead;
       (fsMod.default as { readFileSync: typeof realRead }).readFileSync = spy;
       try {
         await appendFile(big, rec("user", "새 줄 하나"), "utf8");
+        fsMod.default.readFileSync(other, "utf8"); // actual unrelated read, on every OS
         indexJsonlIfNeeded({ ...key3, jsonlPath: big });
+        indexedReadBytes = fullReadBytes;
+        fsMod.default.readFileSync(big); // real Buffer return
+        fsMod.default.readFileSync(pathToFileURL(big)); // real URL path
+        calibrationBytes = fullReadBytes - indexedReadBytes;
       } finally {
         (fsMod.default as { readFileSync: typeof realRead }).readFileSync = realRead;
       }
       out.push(
         assert(
           "★1MB 파일에 한 줄 추가 시 전체를 다시 읽지 않는다",
-          fullReadBytes === 0,
-          fullReadBytes === 0
-            ? "readFileSync 전체 읽기 0회 (꼬리만)"
-            : `★전체 읽기 ${fullReadBytes}자 — 여전히 통째로 읽는다`,
+          indexedReadBytes === 0,
+          { indexedReadBytes, otherReads },
         ),
       );
+      out.push(assert("계측은 비대상 파일을 제외하되 target Buffer·URL 전체 읽기를 실제 바이트로 센다", calibrationBytes === 2 * fsMod.default.statSync(big).size && otherReads.some((r) => r.file === other), { calibrationBytes, expected: 2 * fsMod.default.statSync(big).size, otherReads }));
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }

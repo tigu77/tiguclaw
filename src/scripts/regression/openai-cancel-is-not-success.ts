@@ -10,7 +10,7 @@
  * 등급: **동작** — 자식 프로세스(`_openai-run-child.ts`)에서 시나리오 하나 = 프로세스 하나.
  */
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { assert, assertIsolated, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -76,7 +76,7 @@ export const check: RegressionCheck = {
     // 주입점은 회귀 모드에서만 받는다 — 운영에서 실모델 가드를 여는 스위치가 아니다.
     const { TIGUCLAW_REGRESSION_NO_LIVE_MODEL: _flag, ...envNoFlag } = process.env;
     const outside = await spawnWithin(30_000, "inject-outside-regression", ["--import", "tsx", "-e",
-      `import("${path.join(HERE, "../../core/llm-runtime/regression-model-guard.ts").replace(/\\/g, "/")}").then((g) => { try { g.injectRegressionModel({}); console.log("ACCEPTED"); } catch (e) { console.log("REFUSED " + e.message); } })`,
+      `import(${JSON.stringify(pathToFileURL(path.join(HERE, "../../core/llm-runtime/regression-model-guard.ts")).href)}).then((g) => { try { g.injectRegressionModel({}); console.log("ACCEPTED"); } catch (e) { console.log("REFUSED " + e.message); } })`,
     ], { stdio: ["ignore", "pipe", "pipe"], env: envNoFlag });
     out.push(assert("주입점은 회귀 모드 밖에서 거절한다(가드를 여는 일반 스위치가 아니다)", /REFUSED/.test(outside.out), outside.out.trim().slice(0, 120) || outside.err.slice(-200)));
     return out;

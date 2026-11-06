@@ -84,32 +84,47 @@ const run = async (): Promise<void> => {
     if (/무진전|무응답|codex-stall/.test(line)) logs.push(line);
   };
   const ow = console.warn, ol = console.log;
-  console.warn = (...a: unknown[]) => { keep(a); };
+  let cancelDuringBackoff: (() => void) | undefined;
+  console.warn = (...a: unknown[]) => {
+    keep(a);
+    // 실제 무진전 판정 뒤 backoff에 들어가는 사건에 맞춘다. turn 진입 + 820ms는
+    // Windows의 준비 시간이 120ms만 길어져도 watchdog 전에 취소해 다른 분기를 잰다.
+    if (a.map(String).join(" ").includes("같은 컨텍스트로 스텝 재개")) cancelDuringBackoff?.();
+  };
   console.log = (...a: unknown[]) => { keep(a); };
 
   const { runOpenAiCodex } = await import("../../core/llm-runtime/adapters/openai-codex-oauth.js");
   const turns: Record<string, unknown> = {};
-  const turn = async (name: string, plan: Plan, cancelAtMs?: number): Promise<void> => {
+  const turn = async (name: string, plan: Plan, cancelAt?: "backoff" | "retry-stream"): Promise<void> => {
     let call = 0;
     const bodies: string[] = [];
+    const ac = new AbortController();
+    let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+    const cancel = (): void => {
+      cancelDuringBackoff = undefined;
+      cancelTimer = setTimeout(() => ac.abort(Object.assign(new Error("사용자 중단"), { name: "UserCancelledError" })), 10);
+    };
+    cancelDuringBackoff = cancelAt === "backoff" ? cancel : undefined;
     (globalThis as unknown as { fetch: unknown }).fetch = fakeNetwork(async (_u: string, init: { signal?: AbortSignal; body?: string }) => {
       const step = plan[Math.min(call, plan.length - 1)];
       call += 1;
       bodies.push(init.body ?? "");
+      if (cancelAt === "retry-stream" && call === 2) cancel();
       if (step === "fetchRetry") return new Response("unavailable", { status: 503 });
       if (step === "hang") return new Response(hanging(init.signal, false, call), { status: 200 });
       if (step === "hangAfterText") return new Response(hanging(init.signal, true, call), { status: 200 });
       if (step === "slow") return new Response(slowText(init.signal), { status: 200 });
       return new Response(completedText("완료"), { status: 200 });
     });
-    const ac = new AbortController();
-    if (cancelAtMs !== undefined) setTimeout(() => ac.abort(Object.assign(new Error("사용자 중단"), { name: "UserCancelledError" })), cancelAtMs);
     const s0 = stalls.length, l0 = logs.length;
     let outcome = "returned";
     try {
       await runOpenAiCodex({ text: "회귀", threadKey: `regr:stall:${name}`, channel: "cli", abortSignal: ac.signal } as RegionASdkInput);
     } catch (e) {
       outcome = e === ac.signal.reason ? "cancelled" : `threw:${e instanceof Error ? e.name : String(e)}`;
+    } finally {
+      clearTimeout(cancelTimer);
+      cancelDuringBackoff = undefined;
     }
     turns[name] = { stalls: stalls.slice(s0), logs: logs.slice(l0), outcome, calls: call, requestedModels: bodies.map((b) => JSON.parse(b).model), sameBody: bodies.every((b) => b === bodies[0]) };
   };
@@ -121,13 +136,13 @@ const run = async (): Promise<void> => {
   // ③ 답 조각이 한계보다 오래 흘러도 진전이다 — 멈춤 아님
   await turn("progress", ["slow"]);
   // ④ 무진전 감지 → 백오프 중 취소 → 재개 아님(이벤트 없음) · 결과=취소
-  await turn("cancel", ["hang", "ok"], 700 + 120);
+  await turn("cancel", ["hang", "ok"], "backoff");
   // ⑤ 세 번 다 멈춤 → 재시도 2/2 뒤 소진 · 결과=소진 · 턴은 실패로 끝난다
   await turn("exhaust", ["hang", "hang", "hang"]);
   // ⑥ 답 조각 하나 뒤 멈춤 → 마지막 진전 종류(text)가 로그·이벤트에 · 이벤트가 무진전 한계를 싣는다
   await turn("afterText", ["hangAfterText", "ok"]);
   // ⑦ 재시도가 시작된 뒤 그 스트림 도중 취소 → 결과=실패(취소) — 종전엔 결과 줄이 없었다
-  await turn("cancelInRetry", ["hang", "hang", "ok"], 700 + 300 + 400);
+  await turn("cancelInRetry", ["hang", "hang", "ok"], "retry-stream");
 
   // ⑧ 503 전송 재시도 후 두 번 무진전: 실제 전송순번은 2,3 (스톨 순번 1,2 아님).
   await turn("fetchRetry", ["fetchRetry", "hang", "hang", "ok"]);

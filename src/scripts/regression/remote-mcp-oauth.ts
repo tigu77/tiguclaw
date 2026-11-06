@@ -11,9 +11,11 @@
  *  ⑥ code·state·verifier·access·refresh 토큰이 로그에 안 남는다
  *  ⑬ 발급 서버 표식(`issuer`) — 갱신 뒤에도 유지 · 옛 기록은 갱신 후 묶임 · 다른 인가 서버에 묶인 것은 refresh 를 안 보낸다(만료 전 토큰은 그대로)
  *  ⑭ 자원 지시자 — 경로 없는 자원에서 로그인·갱신의 resource 가 같다 · 같은 기록으로 우리 갱신과 SDK `auth()` 갱신 요청이 같다
+ *  ⑮ 인증 상태 기록이 실패하면 서버 이름·오류 코드만 경고로 남고 상태는 «인증 필요» 로 보이지 않는다(①·⑦ 은 고정 대기 없이 기록 완료 뒤 읽는다)
  * 등급: **실행**(격리 홈 · 같은 프로세스의 실제 HTTP 서버들). 실서비스 로그인은 하지 않는다.
  */
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import path from "node:path";
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 import { startFakeOAuthMcp } from "./_fake-oauth-server.js";
@@ -37,7 +39,24 @@ export const check: RegressionCheck = {
     const prev = existsSync(file) ? readFileSync(file, "utf8") : undefined;
     const logs: string[] = [];
     const orig = { log: console.log, warn: console.warn, error: console.error };
-    for (const m of ["log", "warn", "error"] as const) console[m] = (...a: unknown[]) => void logs.push(a.map(String).join(" "));
+    /** 그 줄이 남는 순간 — 기다리지 않는 백그라운드 경로(Claude init `failed` 의 확인)의 끝을 시간 대신 이 사건으로 안다. */
+    const warns: string[] = [];
+    const logWaiters = new Set<{ test: (l: string) => boolean; done: () => void }>();
+    const nextLog = (test: (l: string) => boolean): Promise<void> => new Promise((done) => void logWaiters.add({ test, done }));
+    for (const m of ["log", "warn", "error"] as const)
+      console[m] = (...a: unknown[]) => {
+        const line = a.map(String).join(" ");
+        logs.push(line);
+        if (m === "warn") warns.push(line); // 경고 수준만 — 기록 실패는 «경고» 로 남아야 한다(독립 변이 사냥: log 로 낮춰도 초록이었다)
+        for (const w of logWaiters) if (w.test(line)) (logWaiters.delete(w), w.done());
+      };
+    /** 실패 판정 전용 시한 — 정상 경로는 사건이 오는 즉시 끝나 이 시간을 쓰지 않는다. 사건이 안 오면(변이) 매달리지 않고 «timeout» 으로 빨개진다. */
+    const within = <T>(p: Promise<T>, ms = 10_000): Promise<T | "timeout"> => {
+      let t: NodeJS.Timeout | undefined;
+      return Promise.race([p, new Promise<"timeout">((r) => (t = setTimeout(() => r("timeout"), ms)))]).finally(() => clearTimeout(t));
+    };
+    /** 인증 상태 기록 실패 경고의 허용 형식 — 서버 이름과 오류 코드(또는 오류 이름)뿐. 메시지·경로·그 밖의 값이 붙으면 맞지 않는다. */
+    const AUTH_NOTE_WARN = /^external-mcp: '[A-Za-z0-9_-]+' 인증 상태 기록 실패 — [A-Za-z0-9_]+$/;
     const key = { file, name: "oauthsrv", url };
     const follow = async (authUrl: string): Promise<string> => (await fetch(authUrl, { redirect: "manual" })).headers.get("location") ?? "";
     /** 기록을 지우고 지금 `as.expiresIn` 으로 새로 로그인한다. */
@@ -50,10 +69,12 @@ export const check: RegressionCheck = {
     try {
       writeFileSync(file, JSON.stringify({ mcpServers: { oauthsrv: { type: "http", url }, withheader: { type: "http", url, headers: { authorization: "Bearer user-given" } } } }));
 
-      // ① 토큰 없이 → 401 → 인증 필요
+      // ① 토큰 없이 → 401 → 인증 필요. 연결 시도의 끝(턴이 기다리는 그것)이 기록까지 포함한다 — 고정 대기 없이 바로 읽는다(v8 Windows: 50ms 대기가 느린 쓰기를 못 기다렸다).
+      const tConn1 = Date.now();
       for (const b of await ext.getConnectedExternalMcpBridges()) await b.close();
-      await new Promise((r) => setTimeout(r, 50));
-      out.push(assert("① 토큰 없이 연결 → 401 → «인증 필요»(login-needed) 로 적힌다", (await oauth.mcpOAuthStatus(key)) === "login-needed", await oauth.mcpOAuthStatus(key)));
+      const waited1 = Date.now() - tConn1; // 실패 진단용 — 연결 시도(기록 포함)를 기다린 시간
+      out.push(assert("① 토큰 없이 연결 → 401 → «인증 필요»(login-needed) 로 적힌다", (await oauth.mcpOAuthStatus(key)) === "login-needed",
+        `${await oauth.mcpOAuthStatus(key)} (연결 시도·기록 대기 ${waited1}ms)`));
 
       // ② 로그인
       const started = await oauth.startMcpLogin(key, redirectUrl);
@@ -532,17 +553,91 @@ export const check: RegressionCheck = {
           yield { type: "system", subtype: "init", session_id: "s", model: "claude-fake", tools: [], mcp_servers: [{ name: "oauthsrv", status: "needs-auth" }] };
           yield { type: "result", subtype: "success", is_error: false, result: "답", num_turns: 1, session_id: "s2", modelUsage: {}, usage: { input_tokens: 1, output_tokens: 1 } };
         })()) as never;
+      // 턴 신호 관찰 — 가짜 SDK 가 받는 턴의 AbortController(어댑터의 중단 신호 그 자체)에서, 스트림이 끝난 뒤 붙는 abort 리스너(인증 기록
+      //  대기)가 정상 완료 뒤 떨어지는지 본다(제품 상태 0 · 코드 검토 R1).
+      const afterEnd = { ended: false, added: 0, live: new Set<unknown>() };
+      const watchedQuery = ((args: { options?: { abortController?: AbortController } }) => {
+        const sig = args.options?.abortController?.signal;
+        if (sig !== undefined) {
+          type Listen = (t: string, f: unknown, o?: unknown) => void;
+          const s = sig as unknown as { addEventListener: Listen; removeEventListener: Listen };
+          const add = s.addEventListener.bind(sig);
+          const remove = s.removeEventListener.bind(sig);
+          s.addEventListener = (t, f, o) => {
+            if (t === "abort" && afterEnd.ended) (afterEnd.added += 1, afterEnd.live.add(f));
+            add(t, f, o);
+          };
+          s.removeEventListener = (t, f, o) => {
+            if (t === "abort") afterEnd.live.delete(f);
+            remove(t, f, o);
+          };
+        }
+        return (async function* () {
+          yield* (fakeQuery as unknown as () => AsyncGenerator<unknown>)();
+          afterEnd.ended = true;
+        })();
+      }) as never;
       const prevKey = process.env.ANTHROPIC_API_KEY;
       process.env.ANTHROPIC_API_KEY = "sk-ant-regression-not-a-key";
+      const t7 = Date.now();
       try {
-        await withFakeClaudeQuery(fakeQuery, () => runClaude({ text: "해줘", threadKey: "regr:oauth-claude", channel: "cli" } as never));
+        await withFakeClaudeQuery(watchedQuery, () => runClaude({ text: "해줘", threadKey: "regr:oauth-claude", channel: "cli" } as never));
       } finally {
         if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
         else process.env.ANTHROPIC_API_KEY = prevKey;
       }
-      await new Promise((r) => setTimeout(r, 50));
+      const waited7 = Date.now() - t7; // 실패 진단용 — 턴(기록 대기 포함) 시간
+      // 고정 대기 없음 — 턴은 init 이 알린 인증 상태의 기록이 끝난 뒤에 돌아온다.
       out.push(assert("★⑦ Claude 경로 — SDK init 의 needs-auth 가 «인증 필요» 로 적힌다(브리지와 같은 상태)",
-        (await oauth.mcpOAuthStatus(key)) === "login-needed", await oauth.mcpOAuthStatus(key)));
+        (await oauth.mcpOAuthStatus(key)) === "login-needed", `${await oauth.mcpOAuthStatus(key)} (턴·기록 대기 ${waited7}ms)`));
+      out.push(assert("⑦ 기록 대기의 abort 리스너는 정상 완료 뒤 떨어진다(턴 신호에 남지 않는다)",
+        afterEnd.ended && afterEnd.added >= 1 && afterEnd.live.size === 0, JSON.stringify({ ended: afterEnd.ended, added: afterEnd.added, live: afterEnd.live.size })));
+      // ⑦d 그 기록을 기다리는 중에도 취소가 막히지 않는다 — 기록 쓰기를 붙잡아 둔 채 턴을 취소하면 쓰기를 풀기 전에 중단 사유로 끝난다(설계 검토 R1).
+      //  붙잡는 자리는 이 프로세스의 `fs.promises.writeFile` 중 인증 기록 폴더로 가는 것만(제품 훅 0 · 비밀 파일 쓰기의 첫 단계라 POSIX·Windows 공통).
+      //  풀 때는 그 쓰기를 실패시켜 늦은 기록이 뒤 단계와 겹치지 않게 하고, 그 실패도 같은 경고로 남는지 본다.
+      await oauth.forgetMcpOAuth(file, "oauthsrv");
+      const fsp = (await import("node:fs/promises")).default;
+      const origWriteFile = fsp.writeFile;
+      const storeMark = `${path.sep}mcp-oauth${path.sep}`;
+      let openGate: () => void = () => undefined;
+      const gate = new Promise<void>((r) => (openGate = r));
+      let reached: () => void = () => undefined;
+      const writeReached = new Promise<void>((r) => (reached = r));
+      fsp.writeFile = (async (...a: Parameters<typeof origWriteFile>) => {
+        if (String(a[0]).includes(storeMark)) {
+          reached();
+          await gate;
+          throw Object.assign(new Error("regression: held auth write dropped"), { code: "EREGRHELD" });
+        }
+        return origWriteFile.apply(fsp, a);
+      }) as typeof origWriteFile;
+      const cancel = new AbortController();
+      let reachedWrite: unknown = "not-run";
+      let cancelOutcome: unknown = "not-run";
+      let droppedWarn: unknown = "not-run";
+      process.env.ANTHROPIC_API_KEY = "sk-ant-regression-not-a-key";
+      try {
+        const turn = withFakeClaudeQuery(fakeQuery, () => runClaude({ text: "해줘", threadKey: "regr:oauth-claude-d", channel: "cli", abortSignal: cancel.signal } as never))
+          .then(() => "returned", (e: unknown) => String((e as Error)?.message ?? e));
+        reachedWrite = await within(writeReached.then(() => "reached"));
+        cancel.abort(new Error("regr-cancel-during-auth-note"));
+        cancelOutcome = await within(turn); // 쓰기는 아직 붙잡혀 있다
+        const dropped = nextLog((l) => l.startsWith("external-mcp: 'oauthsrv' 인증 상태 기록 실패"));
+        openGate();
+        droppedWarn = await within(dropped.then(() => "warned"));
+        await within(turn);
+      } finally {
+        openGate();
+        fsp.writeFile = origWriteFile;
+        if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = prevKey;
+      }
+      const droppedLine = warns.find((l) => l.startsWith("external-mcp: 'oauthsrv' 인증 상태 기록 실패")) ?? "";
+      out.push(assert("★⑦d 인증 기록을 기다리는 중 취소 → 쓰기를 풀기 전에 중단 사유로 끝난다 · 풀린 쓰기의 실패는 형식대로 경고되고 기록은 남지 않는다",
+        reachedWrite === "reached" && cancelOutcome === "regr-cancel-during-auth-note" && droppedWarn === "warned" &&
+          droppedLine === "external-mcp: 'oauthsrv' 인증 상태 기록 실패 — EREGRHELD" && AUTH_NOTE_WARN.test(droppedLine) && // 주입한 그 코드가 그대로(가짜 코드로 바꾸면 빨강)
+          (await oauth.mcpOAuthStatus(key)) === "none",
+        JSON.stringify({ reachedWrite, cancelOutcome, droppedWarn, droppedLine, status: await oauth.mcpOAuthStatus(key) })));
       // ⑦b 로그인돼 있는데 공급자가 그 토큰을 거절 — ★실제 CLI 는 이때 `needs-auth` 가 아니라 `failed` 를 낸다(싱크 전 적대 검토 10-18, 실 CLI 확인).
       //  우리는 그 토큰으로 한 번 직접 물어 401 이면 브리지와 같은 규칙(갱신 1회 먼저)으로 간다. 종전 이 검사는 가짜 CLI 가 needs-auth 를 내게 짜여
       //  실제와 다른 동작을 고정하고 있었다.
@@ -587,11 +682,113 @@ export const check: RegressionCheck = {
         if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
         else process.env.ANTHROPIC_API_KEY = prevKey;
       }
-      await new Promise((r) => setTimeout(r, 50));
       const cTok = await oauth.mcpAccessToken(key);
       await oauth.noteMcpUnauthorized(key, cTok);
       out.push(assert("⑦c Claude init 의 connected 가 강제 갱신 토큰을 «검증됨» 으로 — 그 뒤 401 은 로그인 필요가 아니다",
         (await oauth.mcpOAuthStatus(key)) === "authorized", await oauth.mcpOAuthStatus(key)));
+
+      // ⑮ 기록이 실패하면 — 두 경로(브리지 401 · Claude init needs-auth) 모두 서버 이름·오류 코드만 경고로 남기고, 연결·턴은 예외 없이 끝나며,
+      //  상태가 «인증 필요» 로 보이지 않는다(기다림이 실패를 성공으로 만들지 않는다). 실패 주입은 제품 훅 없이: 기록 폴더 자리에 같은 이름의
+      //  **파일**을 둬 기록 폴더 만들기를 실패시킨다(POSIX·Windows 공통). 끝나면 원상 복구.
+      writeFileSync(file, JSON.stringify({ mcpServers: { oauthsrv: { type: "http", url }, authfail: { type: "http", url } } }));
+      const failKey = { file, name: "authfail", url };
+      const store = path.join(getPaths().home, "mcp-oauth");
+      const aside = `${store}.regression-aside`;
+      const warnFrom = warns.length;
+      let failErr = "";
+      let expectCode = "not-run";
+      renameSync(store, aside);
+      try {
+        writeFileSync(store, "not a folder");
+        // 기대 코드 = 같은 자리에 같은 폴더 만들기를 직접 해 본 결과(플랫폼마다 달라도 된다) — 경고가 **실제** 코드를 싣는지 본다.
+        expectCode = await fsp.mkdir(store, { recursive: true, mode: 0o700 }).then(() => "no-error", (e: unknown) => String((e as { code?: unknown })?.code ?? (e as Error)?.name));
+        for (const b of await ext.getConnectedExternalMcpBridges()) await b.close();
+        const failQuery = (() =>
+          (async function* () {
+            yield { type: "system", subtype: "init", session_id: "s", model: "claude-fake", tools: [], mcp_servers: [{ name: "authfail", status: "needs-auth" }] };
+            yield { type: "result", subtype: "success", is_error: false, result: "답", num_turns: 1, session_id: "s4", modelUsage: {}, usage: { input_tokens: 1, output_tokens: 1 } };
+          })()) as never;
+        process.env.ANTHROPIC_API_KEY = "sk-ant-regression-not-a-key";
+        try {
+          await withFakeClaudeQuery(failQuery, () => runClaude({ text: "해줘", threadKey: "regr:oauth-claude-fail", channel: "cli" } as never));
+        } finally {
+          if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+          else process.env.ANTHROPIC_API_KEY = prevKey;
+        }
+      } catch (e) {
+        failErr = String((e as Error)?.message ?? e).slice(0, 120);
+      } finally {
+        rmSync(store, { force: true });
+        renameSync(aside, store);
+      }
+      const failWarns = warns.slice(warnFrom).filter((l) => l.includes("'authfail' 인증 상태 기록 실패 — "));
+      const failStatus = await oauth.mcpOAuthStatus(failKey);
+      out.push(assert("★⑮ 인증 상태 기록 실패 — 브리지·Claude 두 경로 모두 서버 이름·오류 코드만(형식 고정) 경고 · 연결·턴은 예외 없이 끝남 · 상태는 none(실패가 «인증 필요» 로 보이지 않음)",
+        failErr === "" && failWarns.length === 2 && failWarns.every((l) => AUTH_NOTE_WARN.test(l) && l === `external-mcp: 'authfail' 인증 상태 기록 실패 — ${expectCode}`) &&
+          failStatus === "none",
+        JSON.stringify({ failErr, expectCode, failWarns, failStatus })));
+      // ⑮b Claude init `failed` 의 직접 확인은 턴이 **기다리지 않는다**(시한 10초 네트워크) — 확인 응답을 붙잡아 둔 채 턴이 돌아오고, 그 뒤 확인이
+      //  401 로 끝나 기록이 실패하면 같은 형식의 경고가 남는다(설계 검토 R1).
+      writeFileSync(file, JSON.stringify({ mcpServers: { oauthsrv: { type: "http", url } } }));
+      await loginFresh(key);
+      const tokE = await oauth.mcpAccessToken(key);
+      as.access.delete(tokE ?? ""); // 공급자가 무효화 — 확인 요청이 401 을 받게
+      let probeHeld: () => void = () => undefined;
+      const probeArrived = new Promise<void>((r) => (probeHeld = r));
+      as.onHeldMcp = () => probeHeld();
+      as.holdMcp = true;
+      const probeQuery = (() =>
+        (async function* () {
+          yield { type: "system", subtype: "init", session_id: "s", model: "claude-fake", tools: [], mcp_servers: [{ name: "oauthsrv", status: "failed" }] };
+          yield { type: "result", subtype: "success", is_error: false, result: "답", num_turns: 1, session_id: "s5", modelUsage: {}, usage: { input_tokens: 1, output_tokens: 1 } };
+        })()) as never;
+      let turnE: unknown = "not-run";
+      let probeE: unknown = "not-run";
+      let warnE: unknown = "not-run";
+      process.env.ANTHROPIC_API_KEY = "sk-ant-regression-not-a-key";
+      try {
+        const turn = withFakeClaudeQuery(probeQuery, () => runClaude({ text: "해줘", threadKey: "regr:oauth-claude-e", channel: "cli" } as never))
+          .then(() => "returned", (e: unknown) => String((e as Error)?.message ?? e));
+        turnE = await within(turn); // 확인 응답은 아직 붙잡혀 있다 — 돌아왔다면 기다리지 않은 것
+        probeE = await within(probeArrived.then(() => "held"));
+        renameSync(store, aside);
+        try {
+          writeFileSync(store, "not a folder");
+          const warned = nextLog((l) => l.startsWith("external-mcp: 'oauthsrv' 인증 상태 기록 실패"));
+          fake.releaseMcp();
+          warnE = await within(warned.then(() => "warned"));
+        } finally {
+          rmSync(store, { force: true });
+          renameSync(aside, store);
+        }
+        await within(turn);
+      } finally {
+        as.onHeldMcp = undefined;
+        fake.releaseMcp();
+        if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = prevKey;
+      }
+      const warnLineE = [...warns].reverse().find((l) => l.startsWith("external-mcp: 'oauthsrv' 인증 상태 기록 실패")) ?? "";
+      out.push(assert("★⑮b Claude init failed 의 확인 요청은 턴이 기다리지 않는다(응답 전에 돌아옴) · 그 확인이 401 로 끝나 기록이 실패하면 형식대로 경고",
+        turnE === "returned" && probeE === "held" && warnE === "warned" && warnLineE === `external-mcp: 'oauthsrv' 인증 상태 기록 실패 — ${expectCode}`,
+        JSON.stringify({ turnE, probeE, warnE, expectCode, warnLineE })));
+      // ⑮c 그 확인이 401 이 아니면(서버 일시 오류 503) 인증 상태를 바꾸지 않는다 — 일시 장애가 재로그인 요구로 보이면 안 된다
+      //  (독립 변이 사냥: 401 판정을 «200 아님» 으로 넓혀도 초록이었다). 확인 함수를 직접 기다린다(고정 대기 없음).
+      let flakyServed = 0; // 확인 요청이 실제로 와서 503 을 받았나 — 안 오면(요청 실패) «none» 이 거짓 통과가 된다(R3)
+      const flaky = createServer((_req, res) => void (flakyServed += 1, res.writeHead(503).end("busy")));
+      await new Promise<void>((r) => flaky.listen(0, "127.0.0.1", () => r()));
+      const flakyUrl = `http://127.0.0.1:${(flaky.address() as { port: number }).port}/mcp`;
+      const flakyKey = { file, name: "flaky", url: flakyUrl };
+      let flakyStatus = "not-run";
+      try {
+        writeFileSync(file, JSON.stringify({ mcpServers: { oauthsrv: { type: "http", url }, flaky: { type: "http", url: flakyUrl } } }));
+        await ext.noteRemoteConnectFailed("flaky", undefined, { type: "http", url: flakyUrl, headers: { Authorization: "Bearer at-regression-flaky" } });
+        flakyStatus = await oauth.mcpOAuthStatus(flakyKey);
+      } finally {
+        await new Promise<void>((r) => flaky.close(() => r()));
+      }
+      out.push(assert("⑮c failed 확인이 401 이 아닌 오류(503)면 «로그인 필요» 로 적지 않는다(확인 요청이 실제로 503 을 받은 뒤)",
+        flakyServed === 1 && flakyStatus === "none", JSON.stringify({ flakyServed, flakyStatus })));
 
       // ⑥ 비밀이 로그에 없다
       const leaked = as.issued.filter((sec) => logs.some((l) => l.includes(sec)));

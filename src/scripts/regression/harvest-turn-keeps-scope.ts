@@ -19,6 +19,7 @@
  * 등급: **동작** — 레지스트리를 실제로 돌려 거두기 입력을 받아낸다. 모델 호출 0.
  */
 import { runWorkerJob, HARVEST_SCOPE_GUIDANCE } from "../../core/llm-runtime/capabilities/worker-registry.js";
+import { RESULT_JUDGMENT_GUIDANCE } from "../../core/result-judgment.js";
 import {
   __resetJobsForTest,
   getJob,
@@ -140,6 +141,12 @@ export const check: RegressionCheck = {
         "★★판단 규칙이 실린다 — 이게 장치의 나머지 절반이다. 없으면 매니저는 «무엇과 대조하라» 는 말을 못 듣는다(문구를 지워도 초록이던 자리)",
         text.includes(HARVEST_SCOPE_GUIDANCE),
         text.includes(HARVEST_SCOPE_GUIDANCE) ? "판단 규칙 실림" : "★안 실림",
+      ),
+      // 2026-11-05 — 상수 길이·포함만 보면 판정 기준 한 줄을 빼도 초록이다(GPT 설계 검토 #3). 기준 자체가 실렸나를 따로 잰다.
+      assert(
+        "★★거두기 턴에 수령 판정 기준(`result-judgment.ts`)이 실린다 — 자기 손실·필수 실패를 «범위 밖» 으로 적어도 완료조건을 깬 것",
+        RESULT_JUDGMENT_GUIDANCE.trim().length > 150 && HARVEST_SCOPE_GUIDANCE.includes(RESULT_JUDGMENT_GUIDANCE) && text.includes(RESULT_JUDGMENT_GUIDANCE),
+        `상수=${HARVEST_SCOPE_GUIDANCE.includes(RESULT_JUDGMENT_GUIDANCE)} 입력=${text.includes(RESULT_JUDGMENT_GUIDANCE)}`,
       ),
       assert(
         "★★자식 결과가 **전부** 실린다 — 한 건만 실으면 나머지는 수신함에서 이미 비워져 영구 유실이다",

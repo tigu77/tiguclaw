@@ -34,6 +34,7 @@ import { getEventBus } from "../../eventbus.js";
 import { DAEMON_SUBAGENT_TOOL } from "../subagent-tools.js";
 import type { SteeringChannel, SteeringInput } from "../../steering.js";
 import type { WorkerOutcome } from "../../worker-jobs.js";
+import { RESULT_JUDGMENT_LINE } from "../../result-judgment.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -1089,7 +1090,8 @@ export const createSpawnAgentMcpServer = (
             (page.done
               ? " · 마지막 구간입니다."
               : ` · 다음은 read_worker_result("${args.job_id}", ${page.end}).`) +
-            `${noticeLine}\n──\n${page.text}`,
+            // 본문을 돌려줄 때마다 수령 판정 기준 한 줄 — 합류 응답이 압축된 뒤엔 이 자리만 남는다(`result-judgment.ts`).
+            `${noticeLine}\n${RESULT_JUDGMENT_LINE}\n──\n${page.text}`,
         );
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);

@@ -106,7 +106,7 @@ import { adaptClaudeMcpServer, adaptSharedClaudeMcpServer } from "./_mcp-bridge.
 import { claimToolNames, hideTakenTools, probeBridgeTools } from "../tool-name-claim.js";
 import { buildActivityDetailFromJson } from "./_activity-detail.js";
 import { createRequestTimeline, openAiStreamMark } from "./_request-timing.js";
-import { buildActivityDiffFromJson } from "./_activity-diff.js";
+import { buildActivityDiffFromJson, buildActivityFileFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { TURN_MAX_MODEL_CALLS } from "./_turn-completion.js";
@@ -1607,6 +1607,14 @@ export const runOpenAi = async (
                       ? buildActivityDiffFromJson(raw.name || "tool", raw.arguments, input.cwd)
                       : undefined;
                   return diff !== undefined ? { diff } : {};
+                })(),
+                // 읽은 파일(Read) — ★기준은 file-ops 가 실제로 경로를 푼 `discoveryCwd`(= input.cwd ?? home)다.
+                ...(() => {
+                  const file =
+                    typeof raw.arguments === "string"
+                      ? buildActivityFileFromJson(raw.name || "tool", raw.arguments, discoveryCwd)
+                      : undefined;
+                  return file !== undefined ? { file } : {};
                 })(),
               } satisfies RegionAActivityPayload,
             });

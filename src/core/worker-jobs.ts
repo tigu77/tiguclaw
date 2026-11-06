@@ -3200,6 +3200,7 @@ import { loadNotifyOwnerEnabled, readProgressNoticeSettings } from "./settings.j
 import { readLocale } from "./i18n.js";
 // 통지 문구는 판정과 같은 자리(tool-watchdog)에서 만든다 — 두 곳에 두면 한쪽만 늙는다.
 import { formatToolSlowNotice } from "./llm-runtime/tool-watchdog.js";
+import { RESULT_JUDGMENT_GUIDANCE } from "./result-judgment.js";
 
 /**
  * notifyDest 없는 잡의 *폴백* target 도출. 텔레그램은 `telegramTargetFor`(유일 판정 — 세션 id 를
@@ -3776,10 +3777,12 @@ const buildCompletionPrompt = (
     `결과:\n${job.result ?? ""}\n` +
     `〔/알림〕\n\n` +
     `${NOTICE_LANGUAGE_NOTE}\n` +
-    `위 결과를 사용자에게 자연스럽게 보고하세요. 단, 결과가 맡긴 임무를 다 하지 못했거나 중간에 멈췄다면 보고로 끝내지 마세요:\n` +
+    `위 결과를 사용자에게 자연스럽게 보고하세요. 단, 결과가 맡긴 임무를 다 하지 못했거나 중간에 멈췄다면 보고로 끝내지 마세요. ` +
+    `${RESULT_JUDGMENT_GUIDANCE}\n` +
     `- 멈춘 원인을 확인하고, 이 임무로 이미 받은 권한 안에서 바로잡을 수 있으면 고쳐서 남은 일을 끝까지 하세요. ` +
     `남은 일이 짧으면 직접 하고, 길면 다시 맡긴 뒤 이 턴은 무엇을 왜 다시 하는지 한 줄 알리고 끝내세요` +
-    `(직접 오래 붙들면 그동안 사용자에게 아무 말도 안 가고 이 대화도 막힙니다).\n` +
+    `(직접 오래 붙들면 그동안 사용자에게 아무 말도 안 가고 이 대화도 막힙니다). ` +
+    `다시 맡길 때 아직 못 푼 필수 조건을 빼지 말고, 같은 일로 이미 도는 작업이 있으면 새로 맡기지 마세요.\n` +
     `- 사용자의 결정·승인이 필요한 일(파괴적·비가역 행위, 임무 범위 밖)이거나 작업자가 그 확인을 받으려고 멈췄으면, ` +
     `무엇이 필요한지 적어 물어보세요.\n` +
     `- 이 대화에서 같은 임무를 이미 다시 시도했다면 앞선 시도가 멈춘 이유와 비교하세요. 같은 이유로 또 멈췄으면 같은 방법을 ` +

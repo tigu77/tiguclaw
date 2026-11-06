@@ -35,6 +35,11 @@ const SDK_MESSAGES = [
   "Claude Code executable at /p exists but failed to launch.",
 ];
 
+const runtimePath = (env: string, label: string): string | undefined =>
+  env.split("\n").find((line) => line.startsWith(`tiguclaw ${label}: `))
+    ?.slice(`tiguclaw ${label}: `.length).split("  (")[0];
+const spacePaths = "tiguclaw home: C:\\후보 좌석\\home  (사용자)\ntiguclaw app root: C:\\후보 좌석\\app  (제품)";
+
 export const check: RegressionCheck = {
   name: "claude-runtime-is-visible",
   guards:
@@ -92,17 +97,21 @@ export const check: RegressionCheck = {
       assert(
         "★env 블록이 홈과 앱 루트를 싣는다(cwd 는 턴마다 달라 홈과 무관하다)",
         ["home", "app root"].every((label) => {
-          const value = env.split("\n").find((line) => line.startsWith(`tiguclaw ${label}: `))
-            ?.slice(`tiguclaw ${label}: `.length).split("  (")[0];
+          const value = runtimePath(env, label);
           return value !== undefined && path.isAbsolute(value);
         }),
         env.split("\n").filter((l) => l.startsWith("tiguclaw ")).join(" · ") || "★두 줄이 없다",
       ),
       assert(
         "★홈과 앱 루트가 서로 다른 값으로 나온다(같으면 구분이 죽은 것)",
-        (/tiguclaw home: (\S+)/.exec(env)?.[1] ?? "a") !==
-          (/tiguclaw app root: (\S+)/.exec(env)?.[1] ?? "b"),
-        `home=${/tiguclaw home: (\S+)/.exec(env)?.[1]} · root=${/tiguclaw app root: (\S+)/.exec(env)?.[1]}`,
+        runtimePath(env, "home") !== runtimePath(env, "app root"),
+        `home=${runtimePath(env, "home")} · root=${runtimePath(env, "app root")}`,
+      ),
+      assert(
+        "★공백·한글 경로도 끝까지 비교한다(공통 prefix만 같다고 같은 홈이 아니다)",
+        runtimePath(spacePaths, "home") === "C:\\후보 좌석\\home" &&
+          runtimePath(spacePaths, "app root") === "C:\\후보 좌석\\app",
+        `${runtimePath(spacePaths, "home")} · ${runtimePath(spacePaths, "app root")}`,
       ),
       assert(
         "★테마 도구가 **만드는 자리**를 알려준다(고르기·덮어쓰기만 알던 것)",

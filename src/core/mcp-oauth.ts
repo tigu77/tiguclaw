@@ -14,7 +14,7 @@
  *  사용자가 열어야 하므로 도구 답에 실리고, 링크엔 state 가 들어 있다(공급자 규약). state 만으로는 아무것도 못 한다(code 가 함께 와야 한다).
  *
  * 보관: `<home>/mcp-oauth/<열쇠 해시>.json` — 열쇠 = (설정 파일 경로 · 서버 이름 · URL). 프로젝트가 같은 이름을 덮어써도 파일이 다르면 따로,
- *  URL 이 바뀌면 옛 토큰을 안 쓴다. 쓰기는 임시 파일 → 교체(원자적). 0600 은 Unix 에서만 의미가 있다 — Windows 는 홈 폴더 권한에 기댄다.
+ *  URL 이 바뀌면 옛 토큰을 안 쓴다. 쓰기는 임시 파일 → 교체(원자적) — 권한은 `secret-file.ts`(POSIX 0600 · Windows 상속 끊은 DACL).
  * 진행 중 로그인(state·verifier)은 **메모리에만** 둔다 — 재시작하면 로그인을 다시 시작한다(콜백이 와도 «만료» 로 답한다).
  */
 import { createHash, randomBytes } from "node:crypto";
@@ -31,6 +31,7 @@ import {
 import { OAuthError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthClientInformationMixed, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { getPaths } from "./paths.js";
+import { replacePrivateFile } from "./secret-file.js";
 import { translate } from "./i18n.js";
 
 /** 로그인 대상 하나 — 어느 설정 파일의 어느 이름·어느 URL. */
@@ -88,10 +89,7 @@ const readRecord = async (k: McpOAuthKey): Promise<StoredRecord | undefined> => 
 };
 const writeRecord = async (k: McpOAuthKey, r: StoredRecord): Promise<void> => {
   await fs.mkdir(storeDir(), { recursive: true, mode: 0o700 });
-  const dest = recordPath(k);
-  const tmp = `${dest}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(r), { encoding: "utf8", mode: 0o600 });
-  await fs.rename(tmp, dest);
+  await replacePrivateFile(recordPath(k), JSON.stringify(r)); // 토큰이 든다 — 내용 전에 본인만 읽는 권한(Windows DACL 포함), 교체 실패면 사본 제거
 };
 
 /**
@@ -105,7 +103,35 @@ const generations = new Map<string, number>();
  */
 const nameGenerations = new Map<string, number>();
 const nameKey = (file: string, name: string): string => `${path.resolve(file)}\u0000${name}`;
-const genOf = (k: McpOAuthKey): number => (generations.get(keyHash(k)) ?? 0) + (nameGenerations.get(nameKey(k.file, k.name)) ?? 0);
+const genOf = (k: McpOAuthKey): number => (generations.get(keyHash(k)) ?? 0) + mcpOAuthNameGeneration(k.file, k.name);
+/**
+ * 요청을 **보낸 시점**의 세대 — 늦게 돌아온 401 통지에 넘긴다(`noteMcpUnauthorized` 셋째 인자). 그사이 서버가 지워졌으면 그 통지는 기록을 만들지 않는다
+ *  (2026-11-06 — 연결·확인 요청이 도는 동안 삭제가 끝나면, 통지 시점의 세대로는 «지운 서버의 기록» 이 새로 생겼다).
+ */
+export const mcpOAuthGeneration = (k: McpOAuthKey): number => genOf(k);
+/** (설정 파일, 서버 이름) 세대 — 주소(URL)를 알기 전, 설정을 **읽기 전**에 잡아 둔다. 읽은 뒤 달라졌으면 그사이 서버가 지워졌다(`findRemoteForAuthNote`). */
+export const mcpOAuthNameGeneration = (file: string, name: string): number => nameGenerations.get(nameKey(file, name)) ?? 0;
+
+/**
+ * 같은 (설정 파일, 서버 이름)의 기록 «읽기 → 판단 → 쓰기·지우기» 를 **한 번에 하나씩** (2026-11-06 —
+ *  [결정](../../docs/decisions/2026-11-06-v082-oauth-record-races.md)). 종전엔 각자 시작 때 읽은 사본으로 판단해 통째로 덮었고, 삭제는 진행 중
+ *  쓰기를 몰랐다 — 느린 쓰기(Windows 권한 확립) 도중 삭제하면 지운 서버의 기록이 되살아났고, 로그인 완료 쓰기 도중 온 401 이 방금 마친 로그인을 덮었다.
+ * ★키가 이름인 이유 — 삭제는 URL 무관이고 기록이 아직 없을 때도 대상이라 기록 해시를 모른다. 다른 이름(다른 서버)은 기다리지 않는다.
+ * ★안에는 **로컬 읽기·쓰기만** — 로그인 준비·코드 교환·갱신 요청(네트워크)은 밖에서 하고, 밖에서 끝난 작업은 잠금 안에서 근거를 다시 확인한다.
+ *  데몬 한 프로세스 안의 직렬화다(`external-mcp` `withFileLock` 과 같은 꼴). 안에서 부르는 것은 잠금을 잡지 않는 함수뿐이다(재진입 없음).
+ */
+const recordQueues = new Map<string, Promise<unknown>>();
+const withRecordLock = async <T>(file: string, name: string, fn: () => Promise<T>): Promise<T> => {
+  const q = nameKey(file, name);
+  const run = (recordQueues.get(q) ?? Promise.resolve()).then(fn, fn);
+  const tail = run.then(() => undefined, () => undefined);
+  recordQueues.set(q, tail);
+  try {
+    return await run;
+  } finally {
+    if (recordQueues.get(q) === tail) recordQueues.delete(q);
+  }
+};
 
 interface Attempt {
   key: McpOAuthKey;
@@ -115,7 +141,7 @@ interface Attempt {
   redirectUrl: string;
   createdAt: number;
   gen: number;
-  /** 콜백 주소가 바뀌어 다시 등록한 클라이언트 — 완료 때 기록에 넣는다(`startMcpLogin`). */
+  /** 이 시도가 인가에 쓴 클라이언트(콜백 주소가 바뀌어 다시 등록한 것 포함) — 완료는 이것으로 교환하고 기록에 넣는다(`startMcpLogin`). */
   client?: OAuthClientInformationMixed;
 }
 /** 진행 중 로그인 — state → 시도. 대상마다 하나(새로 시작하면 옛 시도는 취소). */
@@ -182,12 +208,22 @@ export const mcpOAuthStatus = async (k: McpOAuthKey): Promise<McpOAuthStatus> =>
   return r.tokens !== undefined ? "authorized" : "none";
 };
 
-/** 로그인이 필요하다고 적는다. 토큰은 지우지 않는다(다음 로그인이 덮는다). 그 사이 서버가 지워졌으면 적지 않는다(지운 서버를 되살리지 않게). */
-export const markMcpLoginNeeded = async (k: McpOAuthKey, gen: number = genOf(k)): Promise<void> => {
+/**
+ * «로그인 필요» 표시 — **잠금 안에서만** 부른다. 토큰은 지우지 않는다(다음 로그인이 덮는다). 그 사이 서버가 지워졌으면(세대) 적지 않는다(지운 서버를
+ *  되살리지 않게). `basis` = 그 판단의 근거였던 액세스 토큰 — 지금 기록의 토큰이 다르면(그사이 새 로그인·갱신) 적지 않는다. 근거가 맞았으면 true.
+ */
+const markLocked = async (k: McpOAuthKey, gen: number, basis?: string): Promise<boolean> => {
   const r = (await readRecord(k)) ?? { file: path.resolve(k.file), name: k.name, url: k.url };
-  if (r.loginNeeded === true || gen !== genOf(k)) return;
-  r.loginNeeded = true;
-  await writeRecord(k, r);
+  if (gen !== genOf(k) || (basis !== undefined && r.tokens?.access_token !== basis)) return false;
+  if (r.loginNeeded !== true) {
+    r.loginNeeded = true;
+    await writeRecord(k, r);
+  }
+  return true;
+};
+/** 로그인이 필요하다고 적는다(`markLocked`). */
+export const markMcpLoginNeeded = async (k: McpOAuthKey, gen: number = genOf(k)): Promise<void> => {
+  await withRecordLock(k.file, k.name, () => markLocked(k, gen));
 };
 
 /** 401 을 받은 액세스 토큰 — 다음 읽기는 만료와 무관하게 **한 번** 갱신한다. */
@@ -213,29 +249,32 @@ const boundElsewhereToken = new Map<string, string>();
  * ★401 하나로 곧장 «로그인 필요» 로 두면 살아 있는 refresh 토큰을 버린다(적대 검토 P2-1) — 공급자가 `expires_in` 을 안 주거나 토큰을 일찍
  *  무효화한 경우, 일시 실패 동안 헤더 없이 붙어 401 을 받은 경우가 전부 영구 재로그인이 됐다.
  */
-export const noteMcpUnauthorized = async (k: McpOAuthKey, sentToken?: string): Promise<void> => {
-  const gen0 = genOf(k);
-  const h = keyHash(k);
-  const r = await readRecord(k);
-  if (r?.loginNeeded === true) return;
-  // 이미 바뀐 토큰에 대한 늦은 401 — refresh 가 없는 공급자에서도 방금 한 로그인을 버리지 않는다(재검토 10-18).
-  if (sentToken !== undefined && r?.tokens !== undefined && sentToken !== r.tokens.access_token) return;
-  if (r?.tokens?.refresh_token === undefined || r.client === undefined) {
-    await markMcpLoginNeeded(k, gen0);
-    return;
-  }
-  // ★판정은 **실제로 보낸 토큰**으로 한다(재검토 P2-a) — 기록 속 토큰으로 보면, 헤더 없이 받은 401·이미 바뀐 토큰에 대한 늦은 401 이
-  //  방금 받은 새 토큰을 «또 거절됨» 으로 읽어 살아 있는 refresh 를 버렸다.
-  //  헤더 없이 받은 401: 갱신할 수 있으니 표시하지 않는다(다음 읽기가 만료·백오프대로 갱신) · 옛 토큰에 대한 401: 이미 지나간 일.
-  if (sentToken === undefined || sentToken !== r.tokens.access_token) return;
-  // 만료 시각을 알고 이미 지났으면 정상 만료다 — «갱신 직후 새 토큰도 거절» 과 같게 보지 않는다(아스트라 회신 Q2).
-  const expired = r.expiresAt !== undefined && r.expiresAt <= Date.now();
-  if (!expired && forcedToken.get(h) === sentToken) {
-    await markMcpLoginNeeded(k, gen0);
-    return;
-  }
-  forceRefresh.set(h, sentToken);
-};
+export const noteMcpUnauthorized = (k: McpOAuthKey, sentToken?: string, gen0: number = genOf(k)): Promise<void> =>
+  // 판단은 잠금 안의 **현재 기록**으로 — 잠금 밖에서 읽은 기록으로 판단하면, 그사이 끝난 로그인 완료를 옛 기록으로 덮었다(2026-11-06 (b)).
+  //  `gen0` 은 요청을 보낸 시점의 세대(호출부가 주면) — 그사이 지워진 서버의 기록을 만들지 않는다.
+  withRecordLock(k.file, k.name, async () => {
+    const h = keyHash(k);
+    const r = await readRecord(k);
+    if (r?.loginNeeded === true) return;
+    // 지금 토큰이 아닌 요청의 401 — 이미 바뀐 옛 토큰이든, 토큰 없이(헤더 없이) 보낸 요청이든 지금 토큰에 대한 증거가 아니다.
+    //  refresh 가 없는 공급자에서도 방금 한 로그인을 버리지 않는다(재검토 10-18 · 헤더 없음은 2026-11-06: 로그인 전에 보낸 요청의 늦은 401 이 새 로그인을 지웠다).
+    if (r?.tokens !== undefined && sentToken !== r.tokens.access_token) return;
+    if (r?.tokens?.refresh_token === undefined || r.client === undefined) {
+      await markLocked(k, gen0);
+      return;
+    }
+    // ★판정은 **실제로 보낸 토큰**으로 한다(재검토 P2-a) — 기록 속 토큰으로 보면, 헤더 없이 받은 401·이미 바뀐 토큰에 대한 늦은 401 이
+    //  방금 받은 새 토큰을 «또 거절됨» 으로 읽어 살아 있는 refresh 를 버렸다.
+    //  헤더 없이 받은 401: 갱신할 수 있으니 표시하지 않는다(다음 읽기가 만료·백오프대로 갱신) · 옛 토큰에 대한 401: 이미 지나간 일.
+    if (sentToken === undefined || sentToken !== r.tokens.access_token) return;
+    // 만료 시각을 알고 이미 지났으면 정상 만료다 — «갱신 직후 새 토큰도 거절» 과 같게 보지 않는다(아스트라 회신 Q2).
+    const expired = r.expiresAt !== undefined && r.expiresAt <= Date.now();
+    if (!expired && forcedToken.get(h) === sentToken) {
+      await markLocked(k, gen0);
+      return;
+    }
+    forceRefresh.set(h, sentToken);
+  });
 
 /** 이 토큰으로 인증에 성공했다(연결됨) — 강제 갱신으로 받은 토큰이면 «검증됨» 으로 둔다(`forcedToken` 주석). 디스크를 안 읽는다. */
 export const noteMcpAuthorized = (k: McpOAuthKey, sentToken: string | undefined): void => {
@@ -255,6 +294,8 @@ export const startMcpLogin = async (
   fetchFn?: typeof fetch,
 ): Promise<{ status: "redirect"; url: string; expiresInMs: number } | { status: "authorized" }> => {
   const rec: StoredRecord = (await readRecord(k)) ?? { file: path.resolve(k.file), name: k.name, url: k.url };
+  // 준비를 시작할 때의 인증 묶음(토큰·클라이언트) — 준비(네트워크)하는 사이 다른 로그인이 저장됐으면 그 묶음을 건드리지 않는다(아래 게시).
+  const basis = { token: rec.tokens?.access_token, client: clientIdOf(rec.client) };
   // ★등록한 클라이언트는 그때의 콜백 주소에 묶인다 — 브리지 포트가 바뀌었으면 다시 등록한다(안 하면 공급자가 redirect_uri 불일치로
   //  영구 거절했다, 리뷰 10-18). 등록 응답에 주소 목록이 없으면 판단할 수 없으니 그대로 쓴다.
   const registered = (rec.client as { redirect_uris?: unknown } | undefined)?.redirect_uris;
@@ -272,13 +313,28 @@ export const startMcpLogin = async (
   if (result !== "REDIRECT" || attempt.authorizationUrl === undefined) {
     throw new Error("mcp-oauth: the server did not start an authorization flow");
   }
-  // 준비하는 사이에 서버가 지워졌으면 아무것도 남기지 않는다(기록·시도 게시 전 — 아스트라 10-19).
-  if (attempt.gen !== genOf(k)) throw new Error("mcp-oauth: the server was removed while the sign-in was being prepared");
-  if (reRegister) attempt.client = work.client;
-  else await writeRecord(k, rec); // 동적 등록한 클라이언트·탐색 결과
-  attempts.set(attempt.state, attempt);
+  // 게시(기록·시도)는 잠금 안에서 — 삭제와 순서가 선다. 준비하는 사이에 서버가 지워졌으면 아무것도 남기지 않는다(아스트라 10-19).
+  const published = await withRecordLock(k.file, k.name, async () => {
+    if (attempt.gen !== genOf(k)) return false;
+    // ★이 시도가 인가에 쓴 클라이언트는 **언제나** 시도에 싣는다 — 완료는 그 클라이언트로 교환하고 그 토큰과 함께 저장한다. 완료 때 디스크를 다시 읽어
+    //  쓰면, 준비를 마친 뒤 다른 로그인 완료가 클라이언트를 바꾼 경우 새 refresh 토큰에 다른 클라이언트가 짝지어져 다음 갱신이 거절됐다(설계 검토 2026-11-06 R1·R2).
+    attempt.client = work.client;
+    if (!reRegister) {
+      // (다시 등록한 클라이언트는 디스크에 넣지 않는다 — 완료 때만, 위 `work` 주석.)
+      // 동적 등록한 클라이언트·탐색 결과는 다음 시작이 다시 쓰도록 **지금 기록**에 얹는다(토큰·«로그인 필요»·만료는 지금 것 그대로) — 준비하는 사이 다른
+      //  로그인이 저장돼 묶음(토큰·클라이언트)이 바뀌었으면 그 묶음을 건드리지 않는다.
+      const cur = await readRecord(k);
+      if (cur?.tokens?.access_token === basis.token && clientIdOf(cur?.client) === basis.client) {
+        await writeRecord(k, { ...(cur ?? rec), client: rec.client, discovery: rec.discovery });
+      }
+    }
+    attempts.set(attempt.state, attempt);
+    return true;
+  });
+  if (!published) throw new Error("mcp-oauth: the server was removed while the sign-in was being prepared");
   return { status: "redirect", url: attempt.authorizationUrl, expiresInMs: MCP_OAUTH_ATTEMPT_TTL_MS };
 };
+const clientIdOf = (c: OAuthClientInformationMixed | undefined): string | undefined => (c as { client_id?: string } | undefined)?.client_id;
 
 /** 붙여넣은 주소 또는 콜백 쿼리에서 code·state — **기대하는 콜백 주소일 때만**(엉뚱한 URL 은 파싱하지 않는다). 그 주소로 요청을 보내지 않는다. */
 export const parseMcpOAuthRedirect = (raw: string): { code: string; state: string } | null => {
@@ -332,9 +388,13 @@ export const completeMcpLogin = async (
   } catch {
     return { ok: false, reason: "exchange-failed" };
   }
-  if (attempt.gen !== genOf(attempt.key)) return { ok: false, reason: "stale" }; // 교환하는 사이에 지워졌다.
-  await writeRecord(attempt.key, rec);
-  return { ok: true, name: attempt.key.name };
+  // 저장은 잠금 안에서 — 새 로그인이 이긴다(통째로). 교환하는 사이에 지워졌으면 저장하지 않는다.
+  const saved = await withRecordLock(attempt.key.file, attempt.key.name, async () => {
+    if (attempt.gen !== genOf(attempt.key)) return false;
+    await writeRecord(attempt.key, rec);
+    return true;
+  });
+  return saved ? { ok: true, name: attempt.key.name } : { ok: false, reason: "stale" };
 };
 
 /** 붙여넣기 완료 명령 — 채널 입구(`src/index.ts`)가 모델로 보내지 않고 이것만 부른다. 답에는 서버 이름·결과 이름만. */
@@ -391,15 +451,29 @@ const startRefresh = (k: McpOAuthKey, fetchFn: typeof fetch | undefined): Promis
     const gen0 = genOf(k);
     const rec = await readRecord(k);
     if (rec?.tokens === undefined || rec.loginNeeded === true) return undefined;
-    const forced = forceRefresh.get(h) === rec.tokens.access_token;
-    if (!forced && (rec.expiresAt === undefined || rec.expiresAt > Date.now() + REFRESH_SKEW_MS)) return rec.tokens.access_token;
+    const basis = rec.tokens.access_token;
+    /**
+     * 이 갱신의 근거(시작 때 세대·액세스 토큰)가 **지금 기록에도 그대로일 때만** `fn` — 잠금 안에서. 그사이 새 로그인·삭제가 있었으면 이 옛 갱신의 결과가
+     *  기록도, 401 판정에 쓰는 메모리(`forceRefresh`·`forcedToken`·`refreshFailedAt`)도 바꾸지 않는다(2026-11-06 — 디스크만 막으면 새 토큰의
+     *  강제 갱신 표시가 지워졌다, 설계 검토 R1).
+     */
+    const whileCurrent = (fn: (cur: StoredRecord) => Promise<unknown> | void): Promise<boolean> =>
+      withRecordLock(k.file, k.name, async () => {
+        const cur = await readRecord(k);
+        if (cur === undefined || gen0 !== genOf(k) || cur.tokens?.access_token !== basis) return false;
+        await fn(cur);
+        return true;
+      });
+    const staleNote = (what: string): void => console.warn(`mcp-oauth: '${k.name}' ${what} 그사이 인증 기록이 바뀌어 그대로 둠`);
+    const forced = forceRefresh.get(h) === basis;
+    if (!forced && (rec.expiresAt === undefined || rec.expiresAt > Date.now() + REFRESH_SKEW_MS)) return basis;
     const stillValid = (): string | undefined =>
       !forced && rec.tokens !== undefined && rec.expiresAt !== undefined && rec.expiresAt > Date.now() ? rec.tokens.access_token : undefined;
     if (rec.tokens.refresh_token === undefined || rec.client === undefined) {
       // 한 번 재서 쓴다 — 두 번 재면 그 사이 만료될 때 «로그인 필요» 기록·로그 없이 undefined 로 빠진다(독립 검토 10-25 A-2).
       const valid = stillValid();
       if (valid !== undefined) return valid;
-      if (gen0 === genOf(k)) await markMcpLoginNeeded(k, gen0);
+      await withRecordLock(k.file, k.name, () => markLocked(k, gen0, basis));
       return undefined;
     }
     const f = timedFetch(fetchFn ?? fetch);
@@ -423,9 +497,13 @@ const startRefresh = (k: McpOAuthKey, fetchFn: typeof fetch | undefined): Promis
           boundElsewhereToken.set(h, valid);
           return valid;
         }
-        forceRefresh.delete(h);
-        if (gen0 === genOf(k)) await markMcpLoginNeeded(k, gen0);
-        console.warn(`mcp-oauth: '${k.name}' 저장된 인증이 다른 인가 서버에 묶여 있어 갱신하지 않음 — 다시 로그인이 필요합니다.`);
+        const marked = await withRecordLock(k.file, k.name, async () => {
+          const ok = await markLocked(k, gen0, basis);
+          if (ok) forceRefresh.delete(h);
+          return ok;
+        });
+        if (marked) console.warn(`mcp-oauth: '${k.name}' 저장된 인증이 다른 인가 서버에 묶여 있어 갱신하지 않음 — 다시 로그인이 필요합니다.`);
+        else staleNote("저장된 인증이 다른 인가 서버에 묶여 있지만");
         return undefined;
       }
       const provider = providerFor(rec, {});
@@ -443,27 +521,34 @@ const startRefresh = (k: McpOAuthKey, fetchFn: typeof fetch | undefined): Promis
       });
       provider.saveTokens({ ...fresh, issuer });
       if (typeof rec.client.issuer !== "string") rec.client = { ...rec.client, issuer }; // 옛 기록 — 받아 준 이 서버에 묶는다(SDK `bindClientInformation`)
-      refreshFailedAt.delete(h);
-      forceRefresh.delete(h);
-      if (forced) forcedToken.set(h, fresh.access_token);
-      else forcedToken.delete(h);
+      const saved = await whileCurrent(async () => {
+        refreshFailedAt.delete(h);
+        forceRefresh.delete(h);
+        if (forced) forcedToken.set(h, fresh.access_token);
+        else forcedToken.delete(h);
+        await writeRecord(k, rec);
+      });
+      if (saved) return fresh.access_token;
       if (gen0 !== genOf(k)) return undefined; // 갱신하는 사이에 지워졌다 — 되살리지 않는다.
-      await writeRecord(k, rec);
+      // 그사이 새 로그인이 저장됐다 — 그 로그인을 덮지 않는다. 받은 토큰은 공급자가 발급한 유효 토큰이라 이번 읽기에는 준다(401 판정은 기록 토큰 기준).
+      staleNote("토큰을 갱신했지만");
       return fresh.access_token;
     } catch (e) {
       if (e instanceof OAuthError && !(e instanceof ServerError)) {
-        // 공급자가 거절했다(잘못된 grant·클라이언트 등) — 다시 로그인해야 한다.
-        forceRefresh.delete(h);
-        rec.tokens = undefined;
-        rec.expiresAt = undefined;
-        rec.loginNeeded = true;
-        if (gen0 === genOf(k)) await writeRecord(k, rec);
-        console.warn(`mcp-oauth: '${k.name}' 토큰 갱신이 거절됨 — 다시 로그인이 필요합니다(${e.name}).`);
+        // 공급자가 거절했다(잘못된 grant·클라이언트 등) — 다시 로그인해야 한다. 지금 기록에 토큰만 빼고 «로그인 필요» 를 얹는다.
+        const cleared = await whileCurrent(async (cur) => {
+          forceRefresh.delete(h);
+          await writeRecord(k, { ...cur, tokens: undefined, expiresAt: undefined, loginNeeded: true });
+        });
+        if (cleared) console.warn(`mcp-oauth: '${k.name}' 토큰 갱신이 거절됨 — 다시 로그인이 필요합니다(${e.name}).`);
+        else staleNote(`토큰 갱신이 거절됐지만(${e.name})`);
         return undefined;
       }
       // 일시 실패 — 아직 만료 전이면 그대로 쓴다. 잠시 뒤(`REFRESH_RETRY_AFTER_MS`) 다시 갱신한다.
-      refreshFailedAt.set(h, Date.now());
-      console.warn(`mcp-oauth: '${k.name}' 토큰 갱신 일시 실패 — ${e instanceof Error ? e.name : "error"} (${REFRESH_RETRY_AFTER_MS / 1000}초 뒤 다시 시도)`);
+      const why = e instanceof Error ? e.name : "error";
+      if (await whileCurrent(() => void refreshFailedAt.set(h, Date.now()))) {
+        console.warn(`mcp-oauth: '${k.name}' 토큰 갱신 일시 실패 — ${why} (${REFRESH_RETRY_AFTER_MS / 1000}초 뒤 다시 시도)`);
+      } else staleNote(`토큰 갱신 일시 실패(${why}) —`);
       return stillValid();
     }
   })().finally(() => refreshing.delete(h));
@@ -497,31 +582,34 @@ export const mcpAccessToken = async (k: McpOAuthKey, fetchFn?: typeof fetch): Pr
 /** 서버 제거·로그아웃 — 그 파일·이름의 모든 레코드(URL 무관)를 로컬에서 지우고 세대를 올린다. ★공급자 쪽 토큰 폐기(revocation)는 하지 않는다. */
 export const forgetMcpOAuth = async (file: string, name: string): Promise<number> => {
   const abs = path.resolve(file);
-  // 기록이 없어도 — 진행 중인 로그인 준비까지 무효화한다(위 `nameGenerations` 주석).
+  // 기록이 없어도 — 진행 중인 로그인 준비까지 무효화한다(위 `nameGenerations` 주석). ★잠금 **전에** 올린다: 기다리는 쓰기·네트워크 작업이 지금부터 낡은 것이 된다.
   nameGenerations.set(nameKey(file, name), (nameGenerations.get(nameKey(file, name)) ?? 0) + 1);
-  let removed = 0;
-  let entries: string[] = [];
-  try {
-    entries = await fs.readdir(storeDir());
-  } catch {
-    return 0;
-  }
-  for (const f of entries) {
-    if (!f.endsWith(".json")) continue;
+  // 진행 중인 쓰기가 끝난 뒤에 열거·삭제한다 — 종전엔 쓰기 도중의 임시 파일(.json 아님)을 못 보고 0건으로 끝나, 그 쓰기가 지운 서버의 기록을 되살렸다.
+  return withRecordLock(file, name, async () => {
+    let removed = 0;
+    let entries: string[] = [];
     try {
-      const r = JSON.parse(await fs.readFile(path.join(storeDir(), f), "utf8")) as StoredRecord;
-      if (path.resolve(r.file) !== abs || r.name !== name) continue;
-      const k = { file: r.file, name: r.name, url: r.url };
-      generations.set(keyHash(k), (generations.get(keyHash(k)) ?? 0) + 1);
-      for (const m of [forceRefresh, forcedToken, refreshFailedAt, boundElsewhereToken]) m.delete(keyHash(k));
-      dropAttemptsFor(k);
-      await fs.rm(path.join(storeDir(), f), { force: true });
-      removed += 1;
+      entries = await fs.readdir(storeDir());
     } catch {
-      /* 깨진 레코드 — 건너뛴다 */
+      return 0;
     }
-  }
-  return removed;
+    for (const f of entries) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        const r = JSON.parse(await fs.readFile(path.join(storeDir(), f), "utf8")) as StoredRecord;
+        if (path.resolve(r.file) !== abs || r.name !== name) continue;
+        const k = { file: r.file, name: r.name, url: r.url };
+        generations.set(keyHash(k), (generations.get(keyHash(k)) ?? 0) + 1);
+        for (const m of [forceRefresh, forcedToken, refreshFailedAt, boundElsewhereToken]) m.delete(keyHash(k));
+        dropAttemptsFor(k);
+        await fs.rm(path.join(storeDir(), f), { force: true });
+        removed += 1;
+      } catch {
+        /* 깨진 레코드 — 건너뛴다 */
+      }
+    }
+    return removed;
+  });
 };
 
 /** 사용자가 인증 헤더를 직접 줬나(대소문자 무관) — 줬으면 OAuth 를 타지 않는다(사용자가 정한 인증이 우선). 일반 헤더만 있으면 해당 없음. */

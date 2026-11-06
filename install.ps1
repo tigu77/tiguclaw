@@ -264,11 +264,18 @@ if ($NeedNode) { Move-PrivateNode }
 #  `install.sh` 는 같은 날 고쳤는데 이 파일만 그대로였다.
 if ($NeedNode) {
   $NpmShow  = Join-Path $NodeDir 'npm.cmd'
-  $HowtoTail = "`n   (This install uses a private Node — to keep using it from your terminal, add this to your PATH:`n      `$env:PATH = '$NodeDir;' + `$env:PATH`n    Even without it, you can update from chat with /update.)"
+  $NodeDirLiteral = "'" + $NodeDir.Replace("'", "''") + "'"
+  $HowtoTail = "`n   (This install uses a private Node — to keep using it from your terminal, add this to your PATH:`n      `$env:PATH = $NodeDirLiteral + [IO.Path]::PathSeparator + `$env:PATH`n    Even without it, you can update from chat with /update.)"
 } else {
   $NpmShow = 'npm.cmd'
   $HowtoTail = ''
 }
+# Copyable in a fresh PowerShell: literal paths, plus private Node for npm's children.
+$RetryBase = "Set-Location -LiteralPath '" + $Dir.Replace("'", "''") + "'; "
+if ($NeedNode) {
+  $RetryBase += "`$env:PATH = $NodeDirLiteral + [IO.Path]::PathSeparator + `$env:PATH; "
+}
+$RetryBase += "& '" + $NpmShow.Replace("'", "''") + "'"
 
 # ★이제서야 npm 을 해석한다 — 전용 Node 를 깔았으면 그쪽 `npm.cmd` 가 잡혀야 한다(P2).
 $Npm = (Get-Command npm.cmd -ErrorAction Stop).Source
@@ -284,7 +291,7 @@ if ($LASTEXITCODE -ne 0) {
 Dependency install failed.
    You may need the C++ build tools:
      winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
-   Then retry:  cd $Dir; $NpmShow ci --ignore-scripts=false
+   Then retry:  $RetryBase ci --ignore-scripts=false
 "@
 }
 
@@ -312,7 +319,7 @@ Cannot load the SQLite native module - the daemon would crash on every start.
 
    The C++ build tools are required:
      winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
-   Then:  cd $Dir; $NpmShow rebuild better-sqlite3
+   Then:  $RetryBase rebuild better-sqlite3
 "@
   }
   Write-Host "   Native module repaired."

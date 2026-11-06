@@ -1,3 +1,5 @@
+import { RESULT_JUDGMENT_LINE } from "../../result-judgment.js";
+
 /**
  * **묶음 합류 응답 조립 — 자식이 조용히 사라지지 않게** (2026-09-14)
  *
@@ -104,6 +106,8 @@ export const packJoinResponse = (
     //  UUID 를 나열했더니 자식 6명에서 **넷만 남고 둘이 잘렸다**(외부 재현 실측). 복구
     //  가능성이 안내문 길이에 걸려 있으면 안 된다. 목록은 `read_worker_result()` 가 준다.
     `작업자 결과 ${n}건 — 본문이 생략됐으면 read_worker_result() 로 목록(첫 쪽에 없으면 cursor 로 다음 쪽), read_worker_result(job_id, offset) 로 원문 구간을 읽으세요(읽기 전용).`,
+    // 결과 본문을 받을 때만 판정 기준을 싣는다(진행 중·취소만이면 판정할 결과가 없다) — 완료 알림·거두기 턴·원문 재조회와 같은 기준.
+    ...(bodies.length > 0 ? [RESULT_JUDGMENT_LINE] : []),
     ...manifest,
     ...bodies,
   ].join("\n");

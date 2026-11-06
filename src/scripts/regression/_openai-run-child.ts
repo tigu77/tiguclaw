@@ -73,7 +73,7 @@ const main = async (): Promise<void> => {
       // 1번째 호출 = 오래 걸리는 도구 실행 요청, 실행 중에 취소.
       if (n === 1) {
         setTimeout(() => turnAc.abort(new UserCancelledError()), 400);
-        yield { type: "response_done", response: { id: "r1", usage, output: [call("Bash", JSON.stringify({ command: "sleep 3", description: "wait" }))] } };
+        yield { type: "response_done", response: { id: "r1", usage, output: [call("Bash", JSON.stringify({ command: `"${process.execPath}" -e "setTimeout(()=>{},3000)"`, description: "wait" }))] } };
         return;
       }
       yield { type: "response_done", response: { id: "r2", usage, output: [message("도구 뒤 답")] } };

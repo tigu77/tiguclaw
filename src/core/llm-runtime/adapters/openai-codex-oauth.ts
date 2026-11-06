@@ -152,7 +152,7 @@ import { summarizeInputComposition } from "./_codex-input-composition.js";
 import { formatRequestSpans, formatTurnTiming, requestSpans, summarizeTurnTiming, type RequestSpans, type TurnBounds } from "./_request-timing.js";
 import { codexSpeedBody } from "./_openai-speed.js";
 import { buildActivityDetail, buildActivityDetailFromJson } from "./_activity-detail.js";
-import { buildActivityDiffFromJson } from "./_activity-diff.js";
+import { buildActivityDiffFromJson, buildActivityFileFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
@@ -2497,6 +2497,11 @@ export const runOpenAiCodex = async (
                 input.cwd,
               );
               return diff !== undefined ? { diff } : {};
+            })(),
+            // 읽은 파일(Read) — ★기준은 file-ops 가 실제로 경로를 푼 `discoveryCwd`(= input.cwd ?? home)다. `input.cwd` 는 메인 대화에서 비어 있다.
+            ...(() => {
+              const file = buildActivityFileFromJson(tc.name || "tool", tc.partialJson, discoveryCwd);
+              return file !== undefined ? { file } : {};
             })(),
           } satisfies RegionAActivityPayload,
         });

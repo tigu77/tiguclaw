@@ -99,7 +99,8 @@ export const check: RegressionCheck = {
     const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const cli = await readFile(path.join(REPO, "src/cli.ts"), "utf8");
     const pkg = await readFile(path.join(REPO, "package.json"), "utf8");
-    const writes = [...init.matchAll(/writeFileSync\(\s*([A-Za-z_.]+)/g)].map((m) => m[1]);
+    // 비밀 파일 쓰기 헬퍼(`replacePrivateFile` — 2026-11-05 Windows DACL)도 쓰기다 — 세지 않으면 «쓰기 0» 으로 읽힌다.
+    const writes = [...init.matchAll(/\b(?:writeFileSync|writeFile|replacePrivateFile)\(\s*([A-Za-z_.]+)/g)].map((m) => m[1]);
     const writesNothing =
       writes.length > 0 && writes.every((w) => w === "ENV_PATH") && !/^REGION_A_MODELS=|^MODEL_TIER_/m.test(init);
     out.push(

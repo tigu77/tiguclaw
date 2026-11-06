@@ -576,6 +576,13 @@ export interface RegionAActivityPayload {
    */
   diff?: ActivityDiff;
   /**
+   * 그 도구가 **읽은** 파일 (2026-11-05, additive·optional) — 지금은 Read 만. `phase:"start"` 에만(인자가 알려지는 시점 — diff 와 같은 자리).
+   *  화면이 Write/Edit 카드처럼 경로 복사·↗ 열기·⤢ 지금 파일 보기를 붙인다(`docs/decisions/2026-11-05-read-card-path-actions.md`).
+   *  ★`diff` 가 아니다 — 읽기를 쓰기처럼 보이게 하지 않는다. 파일 내용도 싣지 않는다(누를 때 읽는다).
+   *  ★LLM-agnostic(#2): 세 어댑터가 공유 빌더(`_activity-diff.ts` `buildActivityFile`)로 채운다.
+   */
+  file?: ActivityFileRef;
+  /**
    * 리치 렌더용 도구 출력 프리뷰 (2026-07-09, additive·optional). diff 와 달리 *결과*
    * (tool_result)라 `phase:"end"` 에만 실린다 — Bash 출력·Read 내용·Grep/Glob 결과.
    * 화이트리스트(Bash/Read/Grep/Glob) 밖 도구는 미설정. 크기 캡(프리뷰).
@@ -666,6 +673,19 @@ export interface ActivityDiff {
    * ★못 구하면 **생략한다** — 지어내지 않는다. 파일이 없거나(도구 실행 후 관측), 너무 크거나,
    *  `old_string` 이 안 맞으면 없는 채로 간다. 화면은 번호 없이 그리면 그만이다.
    */
+  startLine?: number;
+}
+
+/**
+ * 도구가 읽은 파일의 참조(2026-11-05, Read) — 기록 시점의 **경로만**(내용 없음).
+ *  `absPath` 는 그 Read 를 실제로 푼 기준(그 턴의 cwd)으로 푼 절대 경로다 — **못 풀면 이 값 자체를 싣지 않는다**(지어내지 않는다).
+ */
+export interface ActivityFileRef {
+  /** 모델이 준 경로 그대로(화면 표시·복사용). */
+  path: string;
+  /** 그 턴의 cwd 로 푼 절대 경로 — ↗ 열기·⤢ 지금 파일 보기의 대상. */
+  absPath: string;
+  /** 읽기 시작 줄(입력 `offset`, 1부터) — 준 경우만. 화면은 `경로:줄` 로 쓴다(Edit 의 `startLine` 과 같은 관습). */
   startLine?: number;
 }
 

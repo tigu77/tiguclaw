@@ -895,6 +895,7 @@
           try { localStorage.setItem(key, "0"); } catch {}
         });
       };
+      wireBgGroup("bg-timers-head");
       wireBgGroup("bg-jobs-head");
       wireBgGroup("bg-shells-head");
 
@@ -1071,6 +1072,15 @@
       // 뒤늦게 채울 수 있고, 세션 이름도 `/api/sessions` 폴 뒤에야 알려질 수 있으므로 여러 번
       // 불린다. ★모르면 숨긴다 — 원시 좌표(`dashboard:1784…`)를 대신 보여주지 않는다(사용자에게
       // 의미 없는 문자열이고, 그걸 이름처럼 두면 "없는 것을 지어낸" 배지가 된다).
+      // 잡/타이머 이름 배지는 같은 이동 동작을 쓴다. 모르는 이름의 원시좌표는 비클릭 표시다.
+      const jumpToBgSession = (tk) => {
+        if (!tk || typeof switchToThread !== "function") return;
+        if (typeof openTabs !== "undefined" && !openTabs.some((t) => t.threadKey === tk)) {
+          openTabs.push({ threadKey: tk, name: sessionNameFor(tk) || deriveTabFallbackName(tk) });
+        }
+        if (typeof setActiveNav === "function") setActiveNav("chat");
+        switchToThread(tk);
+      };
       const updateSessionBadge = (entry) => {
         const el = entry && entry.sessBadgeEl;
         if (!el) return;
@@ -1189,14 +1199,7 @@
           sessBadge.className = "bg-job-session"; sessBadge.style.display = "none";
           sessBadge.addEventListener("click", (e) => {
             e.stopPropagation();
-            const tk = entry && entry.ownerTk;
-            if (tk && typeof switchToThread === "function") {
-              if (typeof openTabs !== "undefined" && !openTabs.some((t) => t.threadKey === tk)) {
-                openTabs.push({ threadKey: tk, name: sessionNameFor(tk) || deriveTabFallbackName(tk) });
-              }
-              if (typeof setActiveNav === "function") setActiveNav("chat");
-              switchToThread(tk);
-            }
+            jumpToBgSession(entry && entry.ownerTk);
           });
           meta.appendChild(sessBadge);
           // «↖ 부모 매니저» — 매니저가 띄운 자식에만(updateParentBtn). 누르면 부모 카드로 간다:
@@ -1792,6 +1795,7 @@
       // 한 번 훑어 배지를 채운다 — 끝난 잡은 더 이상 이벤트가 안 와서 스스로는 갱신되지 않는다.
       window.refreshBgSessionBadges = () => {
         for (const e of jobCards.values()) updateSessionBadge(e);
+        if (typeof window.renderBgTimers === "function") window.renderBgTimers();
       };
 
       // 🛠 스킬 스텝 인식 (2026-07-14) — invoke_skill 도구 호출을 스킬 배지로 승격한다.
@@ -1935,10 +1939,13 @@
         const lab = document.createElement("span"); lab.className = skill ? "bg-step-label bg-skill" : "bg-step-label";
         lab.textContent = skill ? i18n("bg.step.skill", { name: skill.name }) : (p.label || p.kind || i18n("bg.activity"));
         line.appendChild(icon); line.appendChild(lab);
-        if (p.detail && !skill) { // 스킬 스텝은 detail(=name=…)이 라벨과 중복 → 생략.
+        // Read 는 경로 동작(복사·↗·⤢)이 detail 자리에 — 채팅 스텝과 같은 함수(virtualization.js `buildFileRefActions`, 2026-11-05).
+        const fileRef = !skill && typeof buildFileRefActions === "function" ? buildFileRefActions(p.file) : null;
+        if (p.detail && !skill && !fileRef) { // 스킬 스텝은 detail(=name=…)이 라벨과 중복 → 생략.
           const d = document.createElement("span"); d.className = "bg-step-detail";
           d.textContent = p.detail; line.appendChild(d);
         }
+        if (fileRef) line.appendChild(fileRef);
         // ★상대시간 — "언제" (2026-08-24 사용자 요청: "몇분전·몇시간전이 걸린시간 옆에").
         //  실행시간(얼마나)만으론 긴 잡의 타임라인에서 그 스텝이 **언제 일** 이었는지 모른다.
         //  포매터는 잡 카드 머리와 **같은 것**(`fmtAgo`) — 두 벌이면 같은 시각을 다르게 부른다.

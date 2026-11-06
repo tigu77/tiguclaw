@@ -60,7 +60,7 @@ import { bundledClaudeMissingHint } from "../../claude-cli.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import { buildActivityDetail } from "./_activity-detail.js";
 import { claudeStreamMark, createRequestTimeline } from "./_request-timing.js";
-import { buildActivityDiff } from "./_activity-diff.js";
+import { buildActivityDiff, buildActivityFile } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
 import { DISALLOWED_TOOLS } from "../../../auth/permissions.js";
@@ -113,7 +113,7 @@ import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp
 import { assembleMcpServers, warnShadowedOnce } from "../plugin-mcp-merge.js";
 import { reaches, turnKindOf } from "../capability-reach.js";
 import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
-import { cliOwnAuthToolNames, moveRemoteHeadersToEnv, readExternalMcpServers, isProjectMcpCwd, noteRemoteAuthorized, noteRemoteAuthRequired, noteRemoteConnectFailed, type ExternalMcpConfig } from "../../external-mcp.js";
+import { authNoteFailed, cliOwnAuthToolNames, moveRemoteHeadersToEnv, readExternalMcpServers, isProjectMcpCwd, noteRemoteAuthorized, noteRemoteAuthRequired, noteRemoteConnectFailed, type ExternalMcpConfig } from "../../external-mcp.js";
 import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js";
 import { notifyDestFromCoords } from "../../self-update.js";
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
@@ -1638,6 +1638,11 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   // 요청별 벽시계 분해(`_request-timing.ts`, 세 어댑터 공용) — 시도마다 새로 만들되 **루프 밖에서 보이게** 둔다
   //  (반환·실패 줄이 마지막 시도의 분해를 싣는다). 재시도가 있었으면 그 앞 시도들은 «턴 준비» 에 들어간다.
   let requestTimeline = createRequestTimeline(turnStartAt);
+  /**
+   * init 이 알린 원격 MCP 인증 상태의 기록(로컬 쓰기) — 턴이 정상으로 끝나면 돌려주기 전에 기다린다. 그래야 돌려준 시점에 그 턴이 본 상태가
+   *  디스크에 있다(v8 Windows: 쓰기가 느려져 끝나기 전에 읽혔다). 각 promise 는 넣을 때 catch 가 붙어 있어 던지는 경로에서 안 기다려도 새지 않는다.
+   */
+  const authNotes: Promise<void>[] = [];
   try {
   for (;;) {
   try {
@@ -1802,10 +1807,12 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         if (typeof s.name !== "string" || !(s.name in (externalMcpServers ?? {}))) continue;
         // 이 턴에 실제로 보낸 헤더 — 401 이 어느 토큰에 대한 것인지 코어가 가른다(재검토 P2-a).
         const sent = (externalRead[s.name] as { headers?: Record<string, string> } | undefined)?.headers;
-        if (s.status === "needs-auth") void noteRemoteAuthRequired(s.name, input.cwd, sent).catch(() => undefined);
-        else if (s.status === "connected") void noteRemoteAuthorized(s.name, input.cwd, sent).catch(() => undefined);
+        // 로컬 기록뿐인 두 통지는 턴이 돌려주기 전에 끝을 기다린다(`authNotes`) — 실패는 삼키지 않고 이름·코드만 남긴다.
+        if (s.status === "needs-auth") authNotes.push(noteRemoteAuthRequired(s.name, input.cwd, sent).catch(authNoteFailed(s.name)));
+        else if (s.status === "connected") authNotes.push(noteRemoteAuthorized(s.name, input.cwd, sent).catch(authNoteFailed(s.name)));
         // 우리 토큰이 거절돼도 CLI 는 `failed` 로만 알린다 — 직접 한 번 물어 401 이면 같은 판정으로(`noteRemoteConnectFailed` 주석).
-        else if (s.status === "failed") void noteRemoteConnectFailed(s.name, input.cwd, externalRead[s.name] as ExternalMcpConfig | undefined).catch(() => undefined);
+        //  ★이건 기다리지 않는다 — 확인 요청(시한 10초)·갱신이 들어 있어 턴 끝을 늦출 수 있다.
+        else if (s.status === "failed") void noteRemoteConnectFailed(s.name, input.cwd, externalRead[s.name] as ExternalMcpConfig | undefined).catch(authNoteFailed(s.name));
       }
       if (typeof msg.model === "string") {
         lastModel = msg.model;
@@ -2169,6 +2176,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
                 : undefined;
             const detail = buildActivityDetail(normInput);
             const diff = buildActivityDiff(toolName, normInput, cwd);
+            // 읽은 파일(Read) — SDK Read 와 file-ops Read 모두 이 `cwd` 로 경로를 푼다(위 options.cwd·createFileOpsMcpServer(cwd)).
+            const file = buildActivityFile(toolName, normInput, cwd);
             // ExitPlanMode(plan 모드 계획 승인) — 전체 계획을 잘리지 않게 실어 대시보드가
             // 전체 렌더(detail 1줄로는 계획이 잘려 안 보이던 갭, A안). 과대 payload 방지 캡.
             const plan =
@@ -2264,6 +2273,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
                   label: toolName,
                   detail,
                   ...(diff !== undefined ? { diff } : {}),
+                  ...(file !== undefined ? { file } : {}),
                   ...(plan !== undefined ? { plan } : {}),
                   // ★알려진 회귀 (2026-08-08, 레드팀 F2): 스텝→잡카드 점프가 죽었다.
                   //  종전엔 SDK Task 등록 시점의 jobId 를 여기 실어 대시보드가 칩 클릭으로
@@ -2598,6 +2608,18 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     // 전혀 없었던) 턴 종료 시점까지 누적된 텍스트를 kind:"text" 로 발행. flush() 다음(델타
     // 코얼레스 버퍼와 무관한 별개 버퍼) — 순서·타이밍 상관없이 항상 이 자리 1회.
     closeTextSegment();
+  }
+  // init 이 알린 인증 상태 기록을 기다리되 **중단을 막지 않는다** — 취소·상위 시한이 왔으면(또는 기다리는 중에 오면) 바로 아래 중단 승격으로
+  //  간다(설계 검토 R1: 무조건 기다리면 느린 쓰기가 `/stop` 을 붙잡는다). 앱 도구 캡처의 내부 중단도 같은 길이라 기다리지 않는다.
+  if (authNotes.length > 0 && !effectiveAc.signal.aborted) {
+    await new Promise<void>((resolve) => {
+      const stop = (): void => {
+        effectiveAc.signal.removeEventListener("abort", stop);
+        resolve();
+      };
+      effectiveAc.signal.addEventListener("abort", stop, { once: true });
+      void Promise.all(authNotes).then(stop); // 각 항목에 catch 가 붙어 있어 거절되지 않는다
+    });
   }
 
   // 유휴/턴 abort 의 "조용한 종결" 승격 (§2.2) — SDK 가 abort 시 throw 없이 for-await 를

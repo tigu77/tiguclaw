@@ -277,8 +277,12 @@ export const check: RegressionCheck = {
         models: {
           // 일부러 뒤섞어 둔다 — 순서가 아니라 **패밀리**로 고르는지 본다.
           anthropic: ["claude-fable-9", "claude-opus-9", "claude-sonnet-9", "claude-haiku-9"],
-          codex: ["codex-auto-review", "gpt-9.9-sol", "gpt-9.9-mini"],
+          // codex 는 공식 Codex 규칙(priority·visibility)으로 고른다 — 배열 순서와 다르게 둔다(2026-11-05).
+          codex: ["codex-auto-review", "gpt-9.9-mini", "gpt-9.9-sol"],
         },
+        priority: { "codex:codex-auto-review": 0, "codex:gpt-9.9-mini": 2, "codex:gpt-9.9-sol": 1 },
+        visibility: { "codex:codex-auto-review": "hide", "codex:gpt-9.9-mini": "list", "codex:gpt-9.9-sol": "list" },
+        succeededAt: { codex: Date.now() },
       });
       const live = builtinPool(empty);
       out.push(

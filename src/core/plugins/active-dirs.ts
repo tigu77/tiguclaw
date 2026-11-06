@@ -9,11 +9,12 @@
  */
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { readPluginText } from "./plugin-file-reader.js";
 
 /** 매니페스트(`package.json` 의 `tiguclaw.name`)가 선언한 이름 — 없거나 비었거나 읽을 수 없으면 `undefined`. 이 판정은 여기 한 곳이다. */
 export const declaredPluginName = async (dir: string): Promise<string | undefined> => {
   try {
-    const pkg = JSON.parse(await fs.readFile(path.join(dir, "package.json"), "utf8")) as { tiguclaw?: { name?: unknown } };
+    const pkg = JSON.parse(await readPluginText(path.join(dir, "package.json"))) as { tiguclaw?: { name?: unknown } };
     return typeof pkg.tiguclaw?.name === "string" && pkg.tiguclaw.name !== "" ? pkg.tiguclaw.name : undefined;
   } catch {
     return undefined;

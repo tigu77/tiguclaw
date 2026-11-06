@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.82.0] - 2026-11-04
 
 ### Added
+- Each timer now shows its execution session using the same rules as job cards, in both Current session and All sessions scope. Click a known name to open that conversation; an unknown name is shown as its session key. The existing top-level filter still selects the list.
+- Shell/process cards now collapse and expand from the entire heading, like job cards, with a click, Enter, or Space. The separate collapse button is removed. The task name, status, elapsed time, and Stop action (or its unavailable notice) remain in the heading; commands and output stay in the body. Stop actions and text selection do not toggle the card.
+- The timer group in the background panel can now be collapsed and expanded from its heading with a click, Enter, or Space. The heading keeps showing the count for the current scope, and the browser remembers the collapsed state. It starts expanded; timer execution, notifications, and Stop are unchanged.
+- File read (Read) cards now have the same path actions as write and edit cards. Clicking the path copies it as shown, ↗ opens the file in the default app on the computer the assistant runs on, and ⤢ shows the file as it is on disk now (what was read at the time stays in the card output).
 - `/model` now shows the model configuration that applies to the current conversation and lets you choose from the same profiles as the dashboard without a model call. Choosing a profile clears a direct model override and applies to the next regular message. `/model reset` clears only the direct override; Use default also clears the conversation profile selection.
 - The project menu (dashboard 📁 chip · Telegram `/project`) now has Open folder, which opens that project's folder on the computer the assistant runs on.
 - A command in your home or a plugin with `scope: projects` appears as a shared item in the menu of every project linked to a conversation, and runs against the project you pressed it in. A project or home command with the same name takes precedence.
@@ -18,9 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A plugin can handle a project menu item in its own code with `handler:`. The same item does not run twice at once, and `/stop` stops it.
 - Hooks in `hooks/hooks.json` (the same format as Claude Code plugins) in an enabled plugin's folder now run once the plugin is installed and enabled. They run after your home and project hooks, so they do not run if your own hook blocks first, and their output is labeled with the plugin it came from.
 - `/status`, `/plugins`, and the dashboard inventory show each plugin's hooks and their status. Disabling or removing a plugin stops its hooks from the next call.
+- New built-in skill `incident-response`. When work crosses a safety boundary (such as reading a secret file, or deleting or sending something without approval), the assistant contains it, separates facts from impact, proposes the smallest fix that addresses the cause, and acts and verifies only within what you approve. Related guidelines are tidied with the existing `confirm_feedback` only when needed.
 
 ### Changed
 - On Telegram, messages and attachments sent in quick succession are now collected for a moment (2.5 seconds by default, up to 6 seconds) and answered together. Replies start that much later; slash commands and button answers don't wait. You can change the wait or set it to 0 to turn it off in the Telegram plugin settings.
+- When results come back from a manager or subagent, the assistant now also receives the rule that the work is not complete if a required condition it assigned failed or was not confirmed.
 
 ### Removed
 - The bundled self-growth (`self-growth`) plugin has been removed (it had been off by default since 0.71.0). Automatically creating guidelines from failures, suggesting skill improvements, and its module cards are gone. Confirmed guidelines saved with `confirm_feedback`, and the guidelines you already have, keep working.
@@ -28,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - A `null` hook entry or an invalid `timeout` in your home or project `settings.json` could stop the later hooks for the same event from running, and a hook with a very large `timeout` was terminated as soon as it started. Now only the invalid entry is skipped, and entries without a `command` are not run.
+- Removing a remote MCP server while its sign-in state was being saved could leave a "sign-in required" record for the removed server, and a rejected request sent before sign-in finished could turn a just-completed sign-in back into "sign-in required". On Windows, saved sign-in tokens and `.env` no longer inherit the parent folder's permissions: access is limited to the current user, SYSTEM, and Administrators, and the file is not saved if that limit cannot be set.
 
 ## [0.81.0] - 2026-11-02
 

@@ -12,13 +12,15 @@
  *  ② **원자적 write** — temp 에 쓰고 rename. 재작성 도중 죽어도 기존 `.env` 가 truncate
  *     되지 않는다.
  *  ③ **0600 유지** — mode 미지정이면 tmp 가 0644 로 생기고 rename 이 그 퍼미션을 가져간다.
- *     사용자가 `chmod 600` 해도 다음 갱신 때 0644 로 되돌아가는 루프였다.
+ *     사용자가 `chmod 600` 해도 다음 갱신 때 0644 로 되돌아가는 루프였다. Windows 는 mode 가 DACL 을 안 바꿔
+ *     상위 폴더 상속을 받았다(2026-11-05 v7) — 지금은 `secret-file.ts` 가 내용 전에 DACL 을 세운다.
  *  ④ **in-memory 를 먼저** 갱신한다 — 파일 write 성패와 무관하게 현재 프로세스가 새 값을
  *     즉시 쓴다.
  */
 import fs from "node:fs/promises";
 import { homeEnvPath } from "./load-env.js";
 import { noteSelfEnvWrite, trackSelfEnvWrite } from "./credential-env.js";
+import { replacePrivateFile } from "./secret-file.js";
 
 /**
  * 여러 키를 한 번에 upsert. 반환값은 **쓴 파일 경로**(호출자가 사용자에게 보여준다).
@@ -76,17 +78,11 @@ const writeHomeEnvVars = async (updates: Record<string, string>): Promise<string
 
   const out = next.join("\n");
   const finalBody = out.endsWith("\n") ? out : `${out}\n`;
-  const tmp = `${envPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
-  // ★실패하면 임시 파일을 지운다 — 이름이 저장마다 달라(동시 저장 대비) 남은 것이 쌓이고, 하나하나가 **모든 토큰을 담은 사본**이다
-  //  (적대 검토: rename 을 EPERM 으로 세 번 실패시키니 세 개가 남았다 — 윈도우 백신·인덱서가 잡고 있으면 실제로 난다).
-  try {
-    await fs.writeFile(tmp, finalBody, { encoding: "utf8", mode: 0o600 }); // ②③
-    await fs.rename(tmp, envPath);
-    noteSelfEnvWrite(updates); // 이번에 쓴 키만 — 감시가 우리 쓰기를 바깥 변경으로 오인하지 않게(뒤 저장 실패), 실려 간 남의 값은 그대로 따르게
-  } catch (e) {
-    await fs.unlink(tmp).catch(() => {});
-    throw e;
-  }
+  // ★임시 파일에 쓰고 교체 — 내용 전에 «본인만 읽는» 권한을 세우고(Windows 는 DACL, `secret-file.ts`), 교체가 실패하면 임시 파일
+  //  (토큰 전부의 사본)을 지운다(적대 검토: rename 을 EPERM 으로 세 번 실패시키니 세 개가 남았다 — 윈도우 백신·인덱서가 잡고 있으면 실제로 난다).
+  //  권한을 못 세우면 쓰지 않고 던진다 — `.env` 는 그대로, `process.env` 는 이미 새 값(④).
+  await replacePrivateFile(envPath, finalBody); // ②③
+  noteSelfEnvWrite(updates); // 이번에 쓴 키만 — 감시가 우리 쓰기를 바깥 변경으로 오인하지 않게(뒤 저장 실패), 실려 간 남의 값은 그대로 따르게
   await fs.chmod(envPath, 0o600).catch(() => {}); // 구 설치본 치유
   return envPath;
 };

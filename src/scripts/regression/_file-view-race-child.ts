@@ -8,7 +8,8 @@
  *   · `replaceAfter` — 연 직후 같은 이름의 **다른 파일**로 바꾼다(경로 판정은 통과 · 파일이 다르다)
  *   · `growOnRead` — 첫 읽기 직전 같은 파일을 2MB+1 로 키운다(연 뒤 커짐 — 상한+1 까지만 읽어야 한다)
  *   · `none` — 정상
- * 결과를 마지막 줄 JSON 으로 낸다.
+ * 결과를 마지막 줄 JSON 으로 낸다. 교체용 **파일** symlink 를 이 환경이 거부하면(무권한 Windows) 그 모드만 `{ skipped: 사유 }` —
+ * 판정은 `_test-links.mjs` 의 `linkFile` 하나(같은 조건을 여기 복사하지 않는다).
  */
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -26,7 +27,18 @@ const target = path.join(root, "a.txt");
 // 범위가 «어떤 경로든» 이 된 뒤(10-21) 경합이 지킬 것은 **비밀 파일**이다 — 교체 대상은 밖의 `.env`.
 const outside = path.join(outsideDir, ".env");
 fs.writeFileSync(outside, "SYNTHETIC_OUTSIDE");
-const swapToOutside = (): void => { fs.unlinkSync(target); fs.symlinkSync(outside, target); };
+const links = (await import(new URL("./_test-links.mjs", import.meta.url).href)) as {
+  FILE_LINK_NOT_RUN: string;
+  linkFile: (target: string, at: string) => true | string;
+};
+let refused: string | undefined; // 이번 모드에서 파일 symlink 가 거부된 사유
+const swapToOutside = (): void => {
+  fs.unlinkSync(target);
+  const r = links.linkFile(outside, target);
+  if (r === true) return;
+  refused = `${links.FILE_LINK_NOT_RUN} · ${r}`;
+  fs.writeFileSync(target, "small"); // 교체를 못 했다 — 이 모드 결과는 버리고, 라우트는 원래 파일로 끝까지 돌게 둔다
+};
 const originalOpen = fsp.open;
 let mode: (typeof MODES)[number] = "none";
 let readBytes = 0; // 라우트가 실제로 읽은 양 — «상한+1 까지만» 을 응답 코드가 아니라 읽은 양으로 잰다
@@ -52,16 +64,17 @@ let readBytes = 0; // 라우트가 실제로 읽은 양 — «상한+1 까지만
 const { handleFileView } = (await import(new URL("../../../plugins/http-bridge/routes-files.ts", import.meta.url).href)) as {
   handleFileView: (c: unknown) => Promise<void>;
 };
-const out: Record<string, { status: number; bytes?: number; outside: boolean; other: boolean; readBytes?: number }> = {};
+const out: Record<string, { status: number; bytes?: number; outside: boolean; other: boolean; readBytes?: number } | { skipped: string }> = {};
 try {
   for (const m of MODES) {
     fs.rmSync(target, { force: true });
     fs.writeFileSync(target, "small");
     mode = m;
+    refused = undefined;
     const res = { status: 0, body: "", writeHead(s: number) { res.status = s; return res; }, setHeader() {}, end(b?: string) { res.body = b ?? ""; } };
     await handleFileView({ res, url: new URL("http://x/file-view?path=" + encodeURIComponent(target)) } as never);
     const d = JSON.parse(res.body || "{}") as { content?: string };
-    out[m] = { status: res.status, bytes: d.content?.length, outside: d.content === "SYNTHETIC_OUTSIDE", other: d.content === "OTHER_FILE", ...(m === "growOnRead" ? { readBytes } : {}) };
+    out[m] = refused !== undefined ? { skipped: refused } : { status: res.status, bytes: d.content?.length, outside: d.content === "SYNTHETIC_OUTSIDE", other: d.content === "OTHER_FILE", ...(m === "growOnRead" ? { readBytes } : {}) };
   }
 } finally {
   (fsp as { open: typeof fsp.open }).open = originalOpen;

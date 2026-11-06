@@ -77,9 +77,11 @@ export const check: RegressionCheck = {
       else env.OPENAI_CODEX_OAUTH_REFRESH = "fixture-refresh";
       const r = spawnSync(process.execPath, ["--import", tsxLoader, path.join(root, "src/scripts/doctor.ts")], { cwd: path.join(fixture, mode), env, encoding: "utf8", timeout: 30_000 });
       const ready = (r.stdout ?? "").includes("available ✅ (model response not tested)");
-      out.push(assert(`실제 doctor ${mode}: 설치 health 실패와 LLM 인증 유무를 별도로 판정`, (mode === "disabled" ? r.status === 1 : r.status === 0 || r.status === 1) && ready === (mode !== "disabled") &&
+      // Exit 1 is also what an uncaught throw gives — only a doctor that reached its closing «Next step» line is judged.
+      const completed = /^Next step/m.test(r.stdout ?? "");
+      out.push(assert(`실제 doctor ${mode}: 설치 health 실패와 LLM 인증 유무를 별도로 판정`, completed && (mode === "disabled" ? r.status === 1 : r.status === 0 || r.status === 1) && ready === (mode !== "disabled") &&
         (mode === "disabled" ? r.stdout.includes("No authenticated provider") : !r.stdout.includes("No authenticated provider")) &&
-        (mode !== "refresh" || r.stdout.includes("codex:")), { exit: r.status, authLine: r.stdout.split("\n").find((line) => line.includes("LLM credentials")), error: r.stderr.slice(-100) }));
+        (mode !== "refresh" || r.stdout.includes("codex:")), { exit: r.status, completed, authLine: r.stdout.split("\n").find((line) => line.includes("LLM credentials")), error: r.stderr.slice(-600) }));
     }
     // Execute real CLI until build, replacing only npm. Never starts a daemon.
     if (process.platform !== "win32") {
@@ -161,9 +163,22 @@ await import(${JSON.stringify(pathToFileURL(siblingEntry).href)});console.log("L
       assert("배선: 기존·부분 폴더/가동 여부 검증이 의존성 교체 앞에 있고 npm.cmd/node.exe 사용", installer.indexOf("Get-CimInstance Win32_Process") < installer.indexOf("& $Npm ci") && installer.includes("if ($ExistingInstall)") && installer.includes("Join-Path $NodeDir 'node.exe'") && !/npx tiguclaw update|^git clone/m.test(psCode) && installer.includes("Get-Command npm.cmd -ErrorAction Stop"), { processCheckAt: installer.indexOf("Get-CimInstance Win32_Process"), ciAt: installer.indexOf("& $Npm ci"), bareCommands: psCode.match(/npx tiguclaw update|^git clone/gm), npm: installer.match(/Get-Command npm.cmd -ErrorAction Stop/)?.[0] }),
       assert("배선: 모델 응답을 health/auth 존재와 구분", doctor.includes("model response not tested") && cli.includes("a real model reply has not been tested"), { doctorNotice: doctor.match(/model response not tested/)?.[0], cliNotice: cli.match(/a real model reply has not been tested/)?.[0] }),
     );
+    // Probe the very same allow expression with Windows paths even on Mac, without launching an OS tool.
+    const sandbox = readFileSync(path.join(root, "src/scripts/regression/_windows-onboarding-sandbox.cjs"), "utf8");
+    const compilerExpression = sandbox.match(/^const compiler = (.+);$/m)?.[1];
+    const allowExpression = sandbox.slice(sandbox.indexOf("cp.spawn = ")).match(/^  const allowed = (.+);$/m)?.[1];
+    const vm = await import("node:vm");
+    const compilerRoot = String.raw`D:\synthetic seat\node_modules\esbuild\package.json`;
+    const compiler = compilerExpression && vm.runInNewContext(compilerExpression, { path: path.win32, require: { resolve: () => compilerRoot }, process: { platform: "win32", arch: "x64" } });
+    const nativeCompiler = String.raw`D:\synthetic seat\node_modules\@esbuild\win32-x64\esbuild.exe`;
+    const allowed = (cmd: string): boolean => !!allowExpression && vm.runInNewContext(allowExpression, { cmd, compiler, path: path.win32 });
+    out.push(assert("Windows native esbuild.exe만 compiler guard를 통과하고 다른 exe/설치본은 거부", compiler === nativeCompiler && allowed(nativeCompiler) && !allowed(path.win32.join(path.win32.dirname(nativeCompiler), "other.exe")) && !allowed(nativeCompiler.replace("synthetic seat", "other seat")), { compiler, nativeCompiler, allowExpression }));
     const auditRoots = [fixture, ...["access", "refresh", "disabled", "none", "claude", "openai", "custom", "resume", "fresh-oauth"].map((name) => path.join(fixture, name))];
     const events = auditRoots.flatMap(readAudit);
     out.push(assert("모든 auth/doctor/CLI child의 자격 읽기 경로가 fixture 안이며 가드는 네트워크를 거부", events.filter((e) => e.kind === "sandbox-ready").length >= 10 && !events.some((e) => e.kind === "credential-read" && !e.allowed), { ready: events.filter((e) => e.kind === "sandbox-ready").length, deniedCredential: events.filter((e) => e.kind === "credential-read" && !e.allowed), networkBlocked: events.filter((e) => e.kind === "network-denied").length }));
+    // Each of the three doctor runs reaches the Windows excluded-port probe on Windows only, and the sandbox never runs netsh.
+    const netsh = events.filter((e) => e.kind === "spawn" && (e as { command?: string }).command === "netsh");
+    out.push(assert("doctor의 Windows 예약 포트 조회는 fixture에서 실행되지 않고 거부 결과로만 응답", netsh.length === (process.platform === "win32" ? 3 : 0) && netsh.every((e) => e.allowed === false && (e as { synthetic?: string }).synthetic === "refused"), { netsh, platform: process.platform }));
     return out;
     } finally { rmSync(fixture, { recursive: true, force: true }); }
   },

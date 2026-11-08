@@ -534,7 +534,7 @@
         // 모바일 페이지스크롤(전체 마운트)에선 스크롤마다 relayout 불필요 — 아이템 위치가 고정이라
         // 재마운트/anchor-setScrollTop 이 네이티브 스크롤과 싸워 *끊김*을 만든다. 데스크탑(윈도잉)만
         // 스크롤 중 relayout(가시범위 재계산). 콘텐츠 변화(append/prepend/measure)는 별도 경로.
-        if (st < VT_BUFFER && !loadingOlder && !reachedOldest) void loadOlderHistory();
+        if (st < VT_BUFFER && !loadingOlder && !reachedOldest && !historyOlderPaused) void loadOlderHistory();
       };
       stream.addEventListener("scroll", onScroll, { passive: true });
       window.addEventListener("scroll", () => { if (pageScroll()) onScroll(); }, { passive: true });
@@ -1070,6 +1070,72 @@
         return wrap;
       };
 
+      // Read observation is already bounded server-side. This helper never reads/fetches a file.
+      const buildReadBlock = (output, file) => {
+        const missing = !output;
+        output = output || { text: "" };
+        const read = output.read || { kind: "unknown" };
+        // Image/non-text tools retain the existing output/media route; never invent text rows.
+        if (read.kind === "non-text") return buildOutputBlock(output);
+        const wrap = document.createElement("div");
+        wrap.className = "act-output act-read" + (output.isError ? " err" : "");
+        const head = document.createElement("div");
+        head.className = "act-output-head";
+        const caret = document.createElement("span");
+        caret.className = "act-diff-caret"; caret.textContent = "▸";
+        const label = document.createElement("span");
+        label.className = "act-output-lbl";
+        const text = typeof output.text === "string" ? output.text : "";
+        const rows = text.split("\n");
+        const known = !output.isError && read.kind === "text" && Number.isSafeInteger(read.startLine) && read.startLine > 0 &&
+          Number.isSafeInteger(read.returnedLineCount) && read.returnedLineCount > 0;
+        const visible = known ? rows.slice(0, read.returnedLineCount) : rows;
+        const partial = known && (read.previewLastLinePartial || (read.partialLastLine && visible.length === read.returnedLineCount));
+        label.textContent = missing ? i18n("stream.read.missing") : output.isError ? i18n("stream.output.err")
+          : known ? i18n("stream.read.range", { start: read.startLine, end: read.startLine + read.returnedLineCount - 1 }) + (partial ? " · " + i18n("stream.read.partial") : "")
+          : read.kind === "empty" ? i18n("stream.read.empty")
+          : read.kind === "eof" ? i18n("stream.read.eof")
+          : read.kind === "notice" ? i18n("stream.read.notice")
+          : i18n("stream.read.unknown");
+        head.appendChild(caret); head.appendChild(label);
+        const body = document.createElement("div"); body.className = "act-diff-body";
+        const caption = document.createElement("div"); caption.className = "act-read-caption";
+        caption.textContent = i18n("stream.read.snapshot") + (known ? " · " + i18n("stream.read.visible", { start: read.startLine, end: read.startLine + visible.length - 1 }) : "");
+        if (!missing) body.appendChild(caption);
+        if (known) {
+          const grid = document.createElement("div"); grid.className = "act-read-lines";
+          visible.forEach((line, index) => {
+            const row = document.createElement("div"); row.className = "act-read-line";
+            const num = document.createElement("span"); num.className = "act-read-num"; num.textContent = String(read.startLine + index);
+            const code = document.createElement("span"); code.className = "act-read-text"; code.textContent = line;
+            row.appendChild(num); row.appendChild(code); grid.appendChild(row);
+          });
+          body.appendChild(grid);
+        } else if (read.kind !== "empty" && read.kind !== "eof") {
+          const pre = document.createElement("pre"); pre.className = "act-output-pre"; pre.textContent = text; body.appendChild(pre);
+        }
+        // Clipping is a separate footer, not another file row. No current-file fallback.
+        if (output.truncated || read.sourceTruncated || partial) {
+          const note = document.createElement("div"); note.className = "act-read-caption";
+          note.textContent = i18n(output.truncated || read.sourceTruncated ? "stream.read.truncated" : "stream.read.partial");
+          body.appendChild(note);
+        }
+        wrap.appendChild(head); wrap.appendChild(body);
+        return wrap;
+      };
+      // Bind to the persistent step, not the lazy body (worker collapse removes that body).
+      const wireReadToggle = (step) => {
+        if (!step || step.dataset.readToggle) return;
+        step.dataset.readToggle = "1";
+        step.tabIndex = 0; step.setAttribute("role", "button"); step.setAttribute("aria-expanded", "false");
+        step.addEventListener("keydown", (e) => {
+          if (e.target !== step || (e.key !== "Enter" && e.key !== " ")) return;
+          e.preventDefault(); e.stopPropagation(); step.click();
+        });
+        step.addEventListener("click", () => queueMicrotask(() => step.setAttribute("aria-expanded", String(step.classList.contains("expanded")))));
+      };
+      const buildToolOutputBlock = (output, file, label) => label === "Read" ? buildReadBlock(output, file) : buildOutputBlock(output);
+
       // ExitPlanMode 계획 카드 — 계획(마크다운)을 *항상 보이게* 렌더(펼침 뒤 숨김 아님, 사용자가
       // 계획을 봐야 하므로). detail 1줄로 잘려 안 보이던 갭 수정(A안). renderMarkdown 은 봇출력용
       // sanitize 렌더(markdown.js) 재사용. plan 없으면 호출 안 함.
@@ -1254,6 +1320,10 @@
         }
         // 리치 diff(Edit/Write) — 있으면 스텝 줄 아래 접이식 블록(flex-wrap 로 다음 줄).
         if (hasDiff) line.appendChild(buildDiffBlock(p.diff));
+        if (p.label === "Read") {
+          wireReadToggle(line);
+          if (p.output || p._readComplete || p.durationMs != null) line.appendChild(buildReadBlock(p.output, p.file));
+        }
         // ExitPlanMode 계획 — 항상 보이는 계획 카드(즉시 append).
         if (p.plan) line.appendChild(buildPlanBlock(p.plan));
         // 클릭 = 도구 스텝 펼침/접힘(항상 인라인, sticky·hover 무관). 리치 diff·출력이 있으면
@@ -1263,7 +1333,9 @@
           let block = line.querySelector(":scope > .act-diff, :scope > .act-output, :scope > .act-plan");
           if (!block) {
             const stored = activityByStep.get(stepKey(line.dataset.threadkey, line.dataset.seq)) || p;
-            block = buildDetailBlock(stored);
+            block = stored.label === "Read"
+              ? (stored.output || stored._readComplete || stored.durationMs != null ? buildReadBlock(stored.output, stored.file) : null)
+              : buildDetailBlock(stored);
             if (block) line.appendChild(block);
           }
           if (block) line.classList.toggle("expanded");

@@ -665,6 +665,11 @@ export const initStore = (): void => {
     CREATE INDEX IF NOT EXISTS idx_watches_enabled ON watches(enabled);
   `);
 
+  // 기존 행은 deliver. 기존 once 테이블 재작성 이후에 더해 필드를 잃지 않는다.
+  if (!(handle.prepare(`PRAGMA table_info(schedules)`).all() as Array<{ name: string }>).some((c) => c.name === "report_default")) {
+    handle.exec(`ALTER TABLE schedules ADD COLUMN report_default TEXT NOT NULL DEFAULT 'deliver'`);
+  }
+
   // ─── watches.keep_runs + watch_runs (2026-10-19) — 감시 이력 정책 ───────────────
   //  스케줄 `keep_runs`·`schedule_runs` 와 같은 뜻·같은 판정(`applyRunHistory`·`trigger-runs.ts`). NULL = 계속(기본 — 기존 감시 동작 불변).
   //  회사 PC 10-19: 감시 스레드가 자기 옛 답(«5발 유지»)을 이력으로 이어받아 사용자 정정 뒤에도 같은 답을 냈다(추정 기제).
@@ -673,6 +678,7 @@ export const initStore = (): void => {
     if (!watchCols.some((c) => c.name === "keep_runs")) handle.exec(`ALTER TABLE watches ADD COLUMN keep_runs INTEGER`);
     // ─── watches.origin_thread_key (2026-10-20) — 감시를 만든 대화에서 처리. NULL = 전용 세션(기존 감시 전부 — 자동 전환 없음).
     if (!watchCols.some((c) => c.name === "origin_thread_key")) handle.exec(`ALTER TABLE watches ADD COLUMN origin_thread_key TEXT`);
+    if (!watchCols.some((c) => c.name === "report_default")) handle.exec(`ALTER TABLE watches ADD COLUMN report_default TEXT NOT NULL DEFAULT 'deliver'`);
   }
   handle.exec(`
     CREATE TABLE IF NOT EXISTS watch_runs (

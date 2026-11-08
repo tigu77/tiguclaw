@@ -14,6 +14,7 @@ import { RUNNING_WORK, stampFor } from "../../src/core/resource-revision.js";
 import { cancelJob, cancelQueuedTurn, getJobActivity, getJobForRead, listJobs, resolveOwnerThreadKey } from "../../src/core/worker-jobs.js";
 import { NOTICE_MAX_ATTEMPTS, safeNoticeRecoverability } from "../../src/core/job-report-delivery.js";
 import { deleteSchedule, getSchedule, isTimer, listSchedules } from "../../src/store/schedules.js";
+import { Cron } from "croner";
 import { readJsonBody, bodyErrorStatus } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
 
@@ -176,10 +177,25 @@ export const handleCancelWorker = async (ctx: RouteCtx): Promise<void> => {
  *  ★실패한 타이머는 실행기가 꺼 둔 채 남긴다(`lastStatus: "error"`) — 화면이 «실패» 로 보이고 사용자가 지운다.
  */
 export const handleTimers = async (ctx: RouteCtx): Promise<void> => {
-  const timers = listSchedules()
+  const rows = listSchedules();
+  const timers = rows
     .filter(isTimer)
     .map((r) => ({ id: r.id, label: r.label, prompt: r.prompt.slice(0, 200), runAt: r.runAt, originThreadKey: r.originThreadKey, enabled: r.enabled, lastStatus: r.lastStatus, lastError: r.lastError }));
-  writeJson(ctx.res, 200, { timers });
+  // 예약은 실행 중인 작업이 아니다. 기존 타이머 응답은 보존하고, 반복 예약은 화면에
+  // 필요한 안전 메타만 가산한다(실행 prompt/발송 목적지/오류 본문을 이름 상세로 노출하지 않는다).
+  const schedules = rows.filter((r) => !isTimer(r)).map((r) => {
+    let nextRun: number | null = null;
+    if (r.enabled && r.triggerType === "cron") {
+      try {
+        nextRun = new Cron(r.cronExpr, { timezone: r.timezone, paused: true }).nextRun()?.getTime() ?? null;
+      } catch {
+        // 미정인 다음 시각을 클라이언트에서 추정하지 않는다(인벤토리와 같은 계산 기준).
+      }
+    }
+    return { id: r.id, label: r.label, triggerType: r.triggerType, cronExpr: r.cronExpr,
+      timezone: r.timezone, originThreadKey: r.originThreadKey, enabled: r.enabled, nextRun };
+  });
+  writeJson(ctx.res, 200, { timers, schedules });
 };
 
 /** 타이머 멈추기 — **타이머만** 지운다(정기 스케줄은 이 문으로 못 지운다 — 그건 인벤토리·`/schedule delete` 의 일). */

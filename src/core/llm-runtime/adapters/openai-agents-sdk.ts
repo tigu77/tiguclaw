@@ -62,6 +62,10 @@ import {
   summarizeInstructions,
   type ResponseInputItem } from "./openai-codex-oauth-history.js";
 import {
+  readObservationFromContent,
+  ownReadCustomData,
+  validateReadObservation,
+  READ_RESULT_META,
   toolResultForAdapter,
   toolMediaNote,
   createToolMediaWindow,
@@ -603,6 +607,7 @@ export const runOpenAi = async (
   // 선택지를 전달하지 못해 텍스트로 대신 물어야 하는 질문 — 비어 있지 않으면 보고 생략을 증명하지 않는다(판정은 prompt-options 팩토리).
   const fallbackQuestions = new Set<string>();
 
+  let ownFileOpsBridge: MCPServer | undefined;
   const mcpServers: MCPServer[] = toolsNone
     ? []
     : [
@@ -611,7 +616,7 @@ export const runOpenAi = async (
         // (프로젝트). claude(SDK options.cwd) 와 대칭 = #2 parity(ADR 2026-07-06 §3b).
         // threadKey(ADR 2026-07-17 §Phase 2/§6 마감) — openai 백그라운드 셸의
         // shell.started.threadKey 가 실 세션이 되도록 전파(이전엔 baseCwd 만 넘겨 "" 폴백).
-        await adaptClaudeMcpServer(
+        ownFileOpsBridge = await adaptClaudeMcpServer(
           // ★includeWebSearch — openai 어댑터는 자체 웹 검색 수단이 없다(claude=SDK
           //  builtin, codex=backend native). 여기만 config-driven provider 로 닫는다
           //  (settings.json search.provider + 키 env, 미설정이면 도구 미등록).
@@ -951,6 +956,7 @@ export const runOpenAi = async (
   const toolMediaWindow = createToolMediaWindow<SdkImageItem>();
   const wireToolHooks = (server: MCPServer, external: boolean): MCPServer => ({
     ...server,
+    ...(server === ownFileOpsBridge ? { customDataExtractor: ownReadCustomData } : {}),
     async callTool(toolName, args, meta) {
       const toolInput = (args ?? {}) as Record<string, unknown>;
       const pre = await runPreToolUseHooks({
@@ -1001,7 +1007,8 @@ export const runOpenAi = async (
             image: `data:${m.mimeType};base64,${m.data}`,
           })),
         );
-        return [{ type: "text", text: decided.text }] as Awaited<
+        const read = server === ownFileOpsBridge && toolName === "Read" ? readObservationFromContent(result) : undefined;
+        return [{ type: "text", text: decided.text, ...(read ? { _meta: { [READ_RESULT_META]: read } } : {}) }] as Awaited<
           ReturnType<MCPServer["callTool"]>
         >;
       } catch (e) {
@@ -1667,13 +1674,17 @@ export const runOpenAi = async (
             //  `{text}` 만 보던 종전 코드는 String(undefined ?? "") = "" 를 만들어 openai
             //  에서만 출력이 안 붙었다(codex 는 배열 join, claude 는 블록 배열 join — 이쪽만
             //  빠진 parity 구멍). MCP 도구까지 출력을 붙이기로 한 이상 여기서 닫아야 한다.
-            const outText = openAiToolOutputText(raw?.output);
+            // customData is only installed on the own bridge. item.output retains the original
+            // MCP result; rawItem.output is SDK-normalized model input and is left untouched.
+            const item = (ev as { item?: { customData?: { tiguclawRead?: unknown }; output?: unknown } }).item;
+            const read = timing.label === "Read" ? validateReadObservation(item?.customData?.tiguclawRead) : undefined;
+            const outText = openAiToolOutputText(read ? item?.output : raw?.output);
             // isError 전달 (parity) — claude/codex 는 넘기는데 여기만 빠져 오류 틴트가 없었다.
             const outIsError =
               raw && typeof raw === "object"
                 ? (raw as { isError?: unknown }).isError === true
                 : false;
-            const outPreview = buildActivityOutput(timing.label, outText, outIsError);
+            const outPreview = buildActivityOutput(timing.label, outText, outIsError, read, read !== undefined);
             bus.publish({
               type: "llm.activity",
               ts: Date.now(),

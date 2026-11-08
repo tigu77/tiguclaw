@@ -27,6 +27,8 @@ export interface WatchRow {
    *  만든 대화가 없던 감시(스케줄이 만든 것 등)와 이 칸이 생기기 전의 감시. ★서버가 그 턴의 대화로 적는다 — 모델이 넘긴 값을 받지 않는다.
    */
   originThreadKey: string | null;
+  /** 명시 선택 확인용 실행만 omit. 기존·미인식 값은 deliver. */
+  reportDefault: "deliver" | "omit";
 }
 
 interface DbWatchRow {
@@ -50,14 +52,16 @@ interface DbWatchRow {
   last_error: string | null;
   keep_runs: number | null;
   origin_thread_key: string | null;
+  report_default: string;
 }
 
 const SELECT_COLS = `id, label, path, pattern, recursive, debounce_ms,
        event_filter, prompt, dest_channel, dest_target, enabled,
        created_at, updated_at,
-       last_fired_at, last_path, last_event, last_status, last_error, keep_runs, origin_thread_key`;
+       last_fired_at, last_path, last_event, last_status, last_error, keep_runs, origin_thread_key, report_default`;
 
 const toRow = (r: DbWatchRow): WatchRow => ({
+  reportDefault: r.report_default === "omit" ? "omit" : "deliver",
   id: r.id,
   label: r.label,
   path: r.path,
@@ -93,6 +97,7 @@ export const addWatch = (input: {
   destTarget?: string | null;
   keepRuns?: number | null;
   originThreadKey?: string | null;
+  reportDefault?: "deliver" | "omit";
 }): WatchRow => {
   const handle = getDb();
   const now = Date.now();
@@ -107,8 +112,8 @@ export const addWatch = (input: {
        (label, path, pattern, recursive, debounce_ms, event_filter,
         prompt, dest_channel, dest_target,
         enabled, created_at, updated_at,
-        last_fired_at, last_path, last_event, last_status, last_error, keep_runs, origin_thread_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        last_fired_at, last_path, last_event, last_status, last_error, keep_runs, origin_thread_key, report_default)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, ?)`,
     )
     .run(
       input.label,
@@ -124,6 +129,7 @@ export const addWatch = (input: {
       now,
       input.keepRuns ?? null,
       input.originThreadKey ?? null,
+      input.reportDefault === "omit" ? "omit" : "deliver",
     );
   const id = Number(result.lastInsertRowid);
   const created = getWatch(id);
@@ -177,6 +183,7 @@ export const updateWatch = (
     enabled: boolean;
     keepRuns: number | null;
     originThreadKey: string | null;
+    reportDefault: "deliver" | "omit";
   }>,
 ): WatchRow | undefined => {
   const existing = getWatch(id);
@@ -231,6 +238,10 @@ export const updateWatch = (
   if (patch.originThreadKey !== undefined) {
     sets.push("origin_thread_key = ?");
     vals.push(patch.originThreadKey);
+  }
+  if (patch.reportDefault !== undefined) {
+    sets.push("report_default = ?");
+    vals.push(patch.reportDefault === "omit" ? "omit" : "deliver");
   }
   if (sets.length === 0) return existing;
 

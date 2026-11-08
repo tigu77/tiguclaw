@@ -1,5 +1,6 @@
 /** 실제 플러그인 시작→발화→기본 실행→중단 통지 경로. 시계/파일감시/DB/LLM/전송만 모의한다. */
 import fs from "node:fs";
+import * as replyCommand from "../../core/entry/reply-command.js";
 import path from "node:path";
 import vm from "node:vm";
 import ts from "typescript";
@@ -45,6 +46,7 @@ export const check: RegressionCheck = {
           const exports = {};
           cache.set(filename, exports);
           const requireFixture = (name: string): any => {
+            if (name.endsWith("/entry/reply-command.js")) return replyCommand;
             if (name === "node:path") return path;
             // 콜백 없는 Cron 은 놓친 실행 보충의 시각 계산용(2026-10-20) — 발화 콜백을 덮지 않는다.
             if (name === "croner") return { Cron: class { constructor(_expr: unknown, _opts: unknown, cb?: () => void) { if (cb !== undefined) fire = cb; } stop() {} previousRuns() { return []; } } };

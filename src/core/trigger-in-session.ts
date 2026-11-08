@@ -40,13 +40,14 @@ export interface TriggerInSessionInput {
 /** 이 실행이 지금 쓸 것 — 지시와 결과 목적지. */
 export interface TriggerTurnSpec {
   text: string;
+  reportDefault?: "omit";
   dest: { channel: string; target: string | null };
 }
 
 export type TriggerInSessionResult =
   | { skipped: string }
   /** `dest` = 이 실행이 **실제로 쓴** 목적지(차례에서 확정한 값) — 기록·로그는 이걸 쓴다. 끝난 뒤 DB 를 다시 읽으면 그새 또 바뀐 값과 섞인다(아스트라 재검토 10-20). */
-  | { replied: number; failed?: string; dest: TriggerTurnSpec["dest"] };
+  | { replied: number; reportOmitted?: true; failed?: string; dest: TriggerTurnSpec["dest"] };
 
 /** 부팅 중엔 메인 핸들러가 아직 없다 — 플러그인 시작부터 핸들러 등록까지의 창에 시각이 오면 기다린다(적대 검토 10-20 #3: 실패로 끝나 타이머가 지워졌다). */
 const HANDLER_WAIT_MS = 60_000;
@@ -72,6 +73,7 @@ export const runTriggerInSession = async (i: TriggerInSessionInput): Promise<Tri
   // 차례가 실제로 왔나 — 종료 중엔 핸들러가 합성 메시지를 **조용히** 끝낸다(`refuseWhileClosing`). 그걸 «답 0자 성공» 으로 세면 타이머가 안 돈 채 지워진다(적대 검토 #4).
   let reached = false;
   let replied = 0;
+  let reportOmitted = false;
   let failed: string | undefined;
   let dest = first.dest;
   // 대화 안 트리거의 결과·선택지·파일은 «자동 알림» — 만든 대화의 세션 라벨(기본 세션 포함, 2026-10-26 확정 기준).
@@ -90,6 +92,8 @@ export const runTriggerInSession = async (i: TriggerInSessionInput): Promise<Tri
     receivedAt: Date.now(),
     text: textOf(first),
     triggerRun: run,
+    ...(first.reportDefault === "omit" ? { reportDefault: "omit" as const } : {}),
+    onReportOmitted: () => { reportOmitted = true; },
     beforeTurn: () => {
       reached = true;
       const now = i.atTurn();
@@ -98,6 +102,7 @@ export const runTriggerInSession = async (i: TriggerInSessionInput): Promise<Tri
       else {
         // ★지금의 값으로 이 턴을 확정한다 — 핸들러는 이 뒤에 글·좌표·통로를 읽는다(`src/index.ts` 줄: beforeTurn → handler).
         msg.text = textOf(now);
+        if (now.reportDefault === "omit") msg.reportDefault = "omit"; else delete msg.reportDefault;
         bindDest(now.dest);
       }
       return skipped === undefined ? null : `${i.marker}: ${skipped}`;
@@ -124,5 +129,5 @@ export const runTriggerInSession = async (i: TriggerInSessionInput): Promise<Tri
   await handler(msg);
   if (skipped !== undefined) return { skipped };
   if (!reached) return { skipped: "not-run" };
-  return { replied, ...(failed !== undefined ? { failed } : {}), dest };
+  return { replied, ...(reportOmitted ? { reportOmitted: true as const } : {}), ...(failed !== undefined ? { failed } : {}), dest };
 };

@@ -84,7 +84,7 @@ export const check: RegressionCheck = {
         //  으로 이 `continue` 를 특정했는데, 그러면 코드를 주석 처리해도 초록이다(적대 검토
         //  F2 가 같은 수법으로 배선 하나를 통째로 통과시켰다). 대기→중단확인→재전송이라는
         //  **연속된 코드**로 특정한다 — 파일에 `continue` 는 여럿이지만 이 셋은 여기뿐이다.
-        /await sleep\(wait, effectiveAc\.signal\);\s*if \(effectiveAc\.signal\.aborted\) throw e;\s*continue;/,
+        /await sleep\(wait, effectiveAc\.signal\);\s*if \(effectiveAc\.signal\.aborted\) throw effectiveAc\.signal\.reason \?\? e;\s*continue;/,
       ],
     );
     out.push(
@@ -106,7 +106,8 @@ export const check: RegressionCheck = {
         //  두 번 같은 방식으로 틀렸다: IdleTimeoutError 만 → 07-30 에 손으로 하나 추가 →
         //  형제인 HTTP-status 실패(502·body null·전송 소진, 전부 plain Error)는 여전히
         //  비껴갔다(2026-07-31 검토 확인). 이름을 늘리지 말고 조건을 뒤집는다.
-        /if \(sideEffectExecuted\) \{/,
+        // context-limit도 전턴 재실행 없이 끝내지만 부작용 실패 전체의 OR 조건은 유지한다.
+        /if \(sideEffectExecuted(?: \|\| e instanceof CodexContextLimitError)?\) \{/,
       ],
     );
     out.push(

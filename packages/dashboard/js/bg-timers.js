@@ -6,7 +6,14 @@
       const bgTimersBox = document.getElementById("bg-timers");
       const bgTimersList = document.getElementById("bg-timers-list");
       const bgTimersCount = document.getElementById("bg-timers-count");
+      const bgSchedulesBox = document.getElementById("bg-schedules");
+      const bgSchedulesList = document.getElementById("bg-schedules-list");
+      const bgSchedulesCount = document.getElementById("bg-schedules-count");
+      const bgSchedulesOff = document.getElementById("bg-schedules-off");
+      const bgSchedulesOffList = document.getElementById("bg-schedules-off-list");
+      const bgSchedulesOffSummary = document.getElementById("bg-schedules-off-summary");
       let bgTimers = [];
+      let bgSchedules = [];
       let bgTimersGen = 0;
       /** «그 카드로» 가 강조 중인 타이머 — 다시 그려도 남게(위 줄 그리기가 읽는다). */
       const bgTimerFlash = { id: "", until: 0 };
@@ -26,60 +33,200 @@
 
       // 실행기와 같은 정본: origin이 없으면 scheduler:<id> 전용 세션. 표시·범위·reveal이 공유한다.
       const timerThreadKey = (x) => x.originThreadKey ?? ("scheduler:" + x.id);
-      const renderBgTimers = () => {
-        if (!bgTimersBox || !bgTimersList) return;
-        const all = typeof bgSessionScope === "string" && bgSessionScope === "all";
-        const mine = bgTimers
-          .filter((x) => x && typeof x.runAt === "number" && (all || timerThreadKey(x) === activeThreadKey))
-          .sort((a, b) => a.runAt - b.runAt);
-        if (bgTimersCount) bgTimersCount.textContent = i18n("bg.timers.count", { n: mine.length });
-        bgTimersList.textContent = "";
-        for (const x of mine) {
-          const row = document.createElement("div");
-          row.className = "bg-timer" + (x.enabled ? "" : " off");
-          row.dataset.timerId = String(x.id);
-          // «그 카드로» 강조는 **상태**다 — 패널을 열면 타이머를 다시 받아 목록을 통째로 다시 그려, 줄에 붙인 강조가 0.45초 만에 사라졌다(적대 검토 10-21, 셸과 같은 부류).
-          if (String(x.id) === bgTimerFlash.id && bgTimerFlash.until > Date.now()) row.classList.add("bg-flash");
-          const when = document.createElement("span");
-          when.className = "bg-timer-when";
-          // 꺼진 타이머 둘 — 실행기가 실패로 꺼 둔 것(«실패», 사유는 툴팁)과 사용자가 끈 것(«꺼짐»).
-          const failed = !x.enabled && x.lastStatus === "error";
-          if (failed) row.classList.add("failed");
-          when.textContent = "⏱ " + (x.enabled ? timerLeftText(x.runAt) : i18n(failed ? "bg.timers.failed" : "bg.timers.off"));
-          when.title = failed && x.lastError ? x.lastError : new Date(x.runAt).toLocaleString();
-          const label = document.createElement("span");
-          label.className = "bg-timer-label";
-          label.textContent = x.label;
-          label.title = x.prompt || x.label;
+      // 같은 id의 노드를 보존한다. 주기/배지 갱신은 이름·Stop·세션 배지·꺼짐 summary의
+      // focus와 native details.open을 건드리지 않는다(정렬로 옮길 때만 focus 복구).
+      const bgTimerRows = new Map();
+      const bgScheduleRows = new Map();
+      const bgTimerDetail = document.createElement("div");
+      bgTimerDetail.id = "bg-reservation-detail";
+      bgTimerDetail.className = "bg-reservation-detail";
+      bgTimerDetail.setAttribute("role", "tooltip");
+      bgTimerDetail.hidden = true;
+      document.body.appendChild(bgTimerDetail);
+      let bgDetailOwner = null;
+      let bgDetailPinned = false;
+      let bgDetailLeave = null;
+      const closeBgTimerDetail = () => {
+        if (bgDetailLeave !== null) clearTimeout(bgDetailLeave);
+        bgDetailLeave = null;
+        if (bgDetailOwner) bgDetailOwner.label.removeAttribute("aria-describedby");
+        bgDetailOwner = null;
+        bgDetailPinned = false;
+        bgTimerDetail.hidden = true;
+      };
+      window.closeBgTimerDetail = closeBgTimerDetail;
+      const positionBgTimerDetail = () => {
+        if (!bgDetailOwner) return;
+        const anchor = bgDetailOwner.label.getBoundingClientRect();
+        const panel = document.getElementById("bg-panel").getBoundingClientRect();
+        const left = Math.max(8, panel.left);
+        const right = Math.min(window.innerWidth - 8, panel.right);
+        const top = Math.max(8, panel.top);
+        const bottom = Math.min(window.innerHeight - 8, panel.bottom);
+        bgTimerDetail.style.maxWidth = Math.max(0, right - left) + "px";
+        bgTimerDetail.style.maxHeight = Math.max(0, bottom - top) + "px";
+        const rect = bgTimerDetail.getBoundingClientRect();
+        bgTimerDetail.style.left = Math.max(left, Math.min(anchor.left, right - rect.width)) + "px";
+        bgTimerDetail.style.top = Math.max(top, Math.min(anchor.bottom + 4, bottom - rect.height)) + "px";
+      };
+      const showBgTimerDetail = (entry) => {
+        if (bgDetailLeave !== null) clearTimeout(bgDetailLeave);
+        bgDetailLeave = null;
+        if (bgDetailOwner && bgDetailOwner !== entry) closeBgTimerDetail();
+        bgDetailOwner = entry;
+        // 안전 whitelist: label + 표시 시각/주기만. prompt/자유문을 복제하지 않는다.
+        bgTimerDetail.textContent = entry.detail;
+        entry.label.setAttribute("aria-describedby", bgTimerDetail.id);
+        bgTimerDetail.hidden = false;
+        positionBgTimerDetail();
+      };
+      const leaveBgTimerDetail = () => {
+        if (bgDetailLeave !== null) clearTimeout(bgDetailLeave);
+        bgDetailLeave = setTimeout(() => {
+          bgDetailLeave = null;
+          if (!bgDetailPinned && bgDetailOwner && document.activeElement !== bgDetailOwner.label) closeBgTimerDetail();
+        }, 120); // 이름에서 tooltip으로 포인터 이동은 허용한다(WCAG hoverable).
+      };
+      bgTimerDetail.addEventListener("pointerenter", () => {
+        if (bgDetailLeave !== null) clearTimeout(bgDetailLeave);
+        bgDetailLeave = null;
+      });
+      bgTimerDetail.addEventListener("pointerleave", leaveBgTimerDetail);
+      document.addEventListener("pointerdown", (e) => {
+        if (bgDetailOwner && !bgDetailOwner.label.contains(e.target) && !bgTimerDetail.contains(e.target)) closeBgTimerDetail();
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && bgDetailOwner) { e.preventDefault(); e.stopPropagation(); closeBgTimerDetail(); }
+      }, true);
+      window.addEventListener("resize", closeBgTimerDetail);
+      const bgReservationScroll = document.getElementById("bg-scroll");
+      if (bgReservationScroll) bgReservationScroll.addEventListener("scroll", closeBgTimerDetail);
+      if (bgSchedulesOff) bgSchedulesOff.addEventListener("toggle", () => {
+        if (!bgSchedulesOff.open && bgDetailOwner && bgSchedulesOff.contains(bgDetailOwner.row)) closeBgTimerDetail();
+      });
+
+      const makeBgReservationRow = (x, schedule) => {
+        const row = document.createElement("div");
+        row.className = schedule ? "bg-schedule" : "bg-timer";
+        row.dataset[schedule ? "scheduleId" : "timerId"] = String(x.id);
+        const when = document.createElement("span");
+        when.className = schedule ? "bg-schedule-when" : "bg-timer-when";
+        const info = document.createElement("div");
+        info.className = "bg-timer-info";
+        const label = document.createElement("button");
+        label.type = "button";
+        label.className = "bg-timer-label";
+        const session = document.createElement("div");
+        session.className = "bg-timer-session";
+        const raw = document.createElement("span");
+        raw.className = "bg-job-rawtk";
+        const badge = document.createElement("button");
+        badge.type = "button";
+        badge.className = "bg-job-session";
+        const entry = { row, when, label, badge, raw, x, detail: "" };
+        badge.addEventListener("click", (e) => {
+          e.stopPropagation();
+          closeBgTimerDetail();
+          jumpToBgSession(timerThreadKey(entry.x));
+        });
+        label.addEventListener("pointerenter", (e) => {
+          if (e.pointerType !== "touch" && !bgDetailPinned) showBgTimerDetail(entry);
+        });
+        label.addEventListener("pointerleave", leaveBgTimerDetail);
+        label.addEventListener("focus", () => showBgTimerDetail(entry));
+        label.addEventListener("blur", () => { if (bgDetailOwner === entry && !bgDetailPinned) closeBgTimerDetail(); });
+        // hover/focus는 preview, click은 pin. touch의 pointerdown→focus→click 첫 입력도
+        // preview가 열렸다는 이유로 닫지 않는다. 둘째 click만 닫음. Enter/Space는 native click.
+        label.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (bgDetailOwner === entry && bgDetailPinned) closeBgTimerDetail();
+          else { showBgTimerDetail(entry); bgDetailPinned = true; }
+        });
+        session.append(raw, badge);
+        info.append(label, session);
+        row.append(when, info);
+        if (!schedule) {
           const stop = document.createElement("button");
           stop.type = "button";
           stop.className = "bg-timer-stop";
           stop.textContent = i18n("bg.timers.stop");
-          stop.setAttribute("aria-label", i18n("bg.timers.stopAria", { label: x.label }));
-          stop.addEventListener("click", () => cancelBgTimer(x.id, stop));
-          const info = document.createElement("div");
-          info.className = "bg-timer-info";
-          const session = document.createElement("div");
-          session.className = "bg-timer-session";
-          // originThreadKey는 최초 등록 장소가 아니라 현재 실행 세션. null은 실행기와 같은 전용 세션.
-          const tk = timerThreadKey(x);
-          const raw = document.createElement("span");
-          raw.className = "bg-job-rawtk";
-          raw.textContent = tk;
-          raw.title = tk;
-          const badge = document.createElement("span");
-          badge.className = "bg-job-session";
-          badge.addEventListener("click", (e) => {
-            e.stopPropagation();
-            jumpToBgSession(tk);
-          });
-          session.append(raw, badge);
-          updateSessionBadge({ ownerTk: tk, sessBadgeEl: badge, rawTkEl: raw });
-          info.append(label, session);
-          row.append(when, info, stop);
-          bgTimersList.appendChild(row);
+          stop.addEventListener("click", () => { closeBgTimerDetail(); cancelBgTimer(entry.x.id, stop); });
+          row.appendChild(stop);
+          entry.stop = stop;
         }
-        bgTimersBox.hidden = mine.length === 0;
+        return entry;
+      };
+      const updateBgReservationRow = (entry, x, schedule) => {
+        entry.x = x;
+        entry.label.textContent = x.label;
+        entry.label.setAttribute("aria-label", x.label);
+        entry.row.classList.toggle("off", !x.enabled);
+        const tk = timerThreadKey(x);
+        entry.raw.textContent = tk;
+        entry.raw.title = tk;
+        updateSessionBadge({ ownerTk: tk, sessBadgeEl: entry.badge, rawTkEl: entry.raw });
+        if (schedule) {
+          const next = typeof x.nextRun === "number" && Number.isFinite(x.nextRun) ? new Date(x.nextRun).toLocaleString() : i18n("bg.schedules.unknown");
+          entry.when.textContent = !x.enabled ? i18n("bg.timers.off") : x.triggerType === "reboot" ? i18n("bg.schedules.reboot") : i18n("bg.schedules.waiting", { when: next });
+          entry.detail = x.label + "\n" + entry.when.textContent;
+          if (x.triggerType === "cron") entry.detail += "\n" + x.cronExpr + " · " + x.timezone;
+        } else {
+          const failed = !x.enabled && x.lastStatus === "error";
+          entry.row.classList.toggle("failed", failed);
+          entry.row.classList.toggle("bg-flash", String(x.id) === bgTimerFlash.id && bgTimerFlash.until > Date.now());
+          entry.when.textContent = "⏱ " + (x.enabled ? timerLeftText(x.runAt) : i18n(failed ? "bg.timers.failed" : "bg.timers.off"));
+          entry.when.title = failed && x.lastError ? x.lastError : new Date(x.runAt).toLocaleString();
+          entry.stop.setAttribute("aria-label", i18n("bg.timers.stopAria", { label: x.label }));
+          entry.detail = x.label + "\n" + new Date(x.runAt).toLocaleString();
+        }
+        if (bgDetailOwner === entry) { bgTimerDetail.textContent = entry.detail; positionBgTimerDetail(); }
+      };
+      const syncBgReservationRows = (items, rows, list, schedule) => {
+        if (!list) return;
+        items.forEach((x, i) => {
+          const key = String(x.id);
+          let entry = rows.get(key);
+          if (!entry) { entry = makeBgReservationRow(x, schedule); rows.set(key, entry); }
+          updateBgReservationRow(entry, x, schedule);
+          if (list.children[i] !== entry.row) list.insertBefore(entry.row, list.children[i] || null);
+        });
+      };
+      const pruneBgReservationRows = (rows, keep) => {
+        for (const [id, entry] of rows) if (!keep.has(id)) {
+          if (bgDetailOwner === entry) closeBgTimerDetail();
+          entry.row.remove();
+          rows.delete(id);
+        }
+      };
+      const renderBgTimers = () => {
+        const focus = document.activeElement;
+        const detailOwner = bgDetailOwner;
+        const detailPinned = bgDetailPinned;
+        const all = typeof bgSessionScope === "string" && bgSessionScope === "all";
+        const inScope = (x) => all || timerThreadKey(x) === activeThreadKey;
+        const mine = bgTimers.filter((x) => x && typeof x.runAt === "number" && inScope(x)).sort((a, b) => a.runAt - b.runAt);
+        if (bgTimersCount) bgTimersCount.textContent = i18n("bg.timers.count", { n: mine.length });
+        pruneBgReservationRows(bgTimerRows, new Set(mine.map((x) => String(x.id))));
+        syncBgReservationRows(mine, bgTimerRows, bgTimersList, false);
+        if (bgTimersBox) bgTimersBox.hidden = mine.length === 0;
+        const schedules = bgSchedules.filter((x) => x && (x.triggerType === "cron" || x.triggerType === "reboot") && inScope(x));
+        const enabled = schedules.filter((x) => x.enabled).sort((a, b) => (a.nextRun ?? Infinity) - (b.nextRun ?? Infinity) || a.id - b.id);
+        const off = schedules.filter((x) => !x.enabled).sort((a, b) => a.id - b.id);
+        pruneBgReservationRows(bgScheduleRows, new Set(schedules.map((x) => String(x.id))));
+        syncBgReservationRows(enabled, bgScheduleRows, bgSchedulesList, true);
+        syncBgReservationRows(off, bgScheduleRows, bgSchedulesOffList, true);
+        if (bgSchedulesCount) bgSchedulesCount.textContent = i18n("bg.timers.count", { n: schedules.length });
+        if (bgSchedulesOffSummary) bgSchedulesOffSummary.textContent = i18n("bg.schedules.offCount", { n: off.length });
+        if (bgSchedulesOff) bgSchedulesOff.hidden = off.length === 0;
+        if (bgSchedulesBox) bgSchedulesBox.hidden = schedules.length === 0;
+        if (focus && focus.isConnected && document.activeElement !== focus) focus.focus({ preventScroll: true });
+        // 행 이동의 native blur/focus로 열린 상세가 사라지지 않게 한다. 사라진 id나
+        // 접힌 꺼짐 영역으로 옮겨진 항목은 다시 열지 않는다.
+        if (!detailOwner && bgDetailOwner) closeBgTimerDetail(); // 닫힌 채 focus만 있던 버튼은 재배치로 열지 않는다.
+        if (detailOwner && detailOwner.row.isConnected) {
+          if (bgSchedulesOff && bgSchedulesOff.contains(detailOwner.row) && !bgSchedulesOff.open) closeBgTimerDetail();
+          else { showBgTimerDetail(detailOwner); bgDetailPinned = detailPinned; }
+        }
       };
 
       // 늦게 온 옛 응답이 새 목록을 덮지 않게 — 받을 때마다 세대를 올리고 마지막 것만 쓴다.
@@ -90,6 +237,7 @@
           .then((d) => {
             if (gen !== bgTimersGen || !d || !Array.isArray(d.timers)) return;
             bgTimers = d.timers;
+            bgSchedules = Array.isArray(d.schedules) ? d.schedules : [];
             timersRes.set(bgTimers);
             renderBgTimers();
           })
@@ -141,8 +289,8 @@
       });
 
       setInterval(() => {
-        if (bgTimers.length === 0 || document.visibilityState !== "visible") return;
-        if (bgTimers.some((x) => x.enabled && x.runAt < Date.now() - 5000)) loadBgTimers();
+        if ((bgTimers.length === 0 && bgSchedules.length === 0) || document.visibilityState !== "visible") return;
+        if (bgTimers.some((x) => x.enabled && x.runAt < Date.now() - 5000) || bgSchedules.some((x) => x.enabled && typeof x.nextRun === "number" && x.nextRun < Date.now() - 5000)) loadBgTimers();
         else renderBgTimers();
       }, 30000);
 

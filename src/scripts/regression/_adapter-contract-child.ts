@@ -15,8 +15,9 @@ process.env.ANTHROPIC_API_KEY = "sk-ant-regression-not-a-key"; // 인증 판정 
 import { mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated, fakeNetwork } from "./_framework.js";
+import { contractDiagnostic, contractError } from "./_adapter-contract-result.js";
 
-const [adapter, scenario, via] = process.argv.slice(2) as ["codex" | "claude" | "openai", string, string | undefined];
+const [adapter, scenario, via, fixtureFault] = process.argv.slice(2) as ["codex" | "claude" | "openai", string, string | undefined, string | undefined];
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -50,6 +51,11 @@ const SCENARIOS: Record<string, Scenario> = {
 };
 const ECHO = /echo:[A-Za-z0-9-]+:[A-Za-z0-9-]*/;
 
+/** child가 연 서버는 child가 닫는다. 강제 process.exit로 native 정리를 건너뛰지 않는다. */
+let closeRemoteMcp: (() => Promise<void>) | undefined;
+const cleanupCompleted: string[] = [];
+let storeForCleanup: { readonly open: boolean } | undefined;
+
 /** 원격 MCP 서버(실제 HTTP · 세션 있는 Streamable HTTP) — 받은 호출과 그때의 헤더를 적는다. */
 const startRemoteMcp = async () => {
   const { createServer } = await import("node:http");
@@ -57,6 +63,7 @@ const startRemoteMcp = async () => {
   const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
   const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
   const { z } = await import("zod");
+  const servers = new Set<InstanceType<typeof McpServer>>();
   const got: Array<{ text: string; hdr: string }> = [];
   const transports = new Map<string, InstanceType<typeof StreamableHTTPServerTransport>>();
   let hdr = "";
@@ -75,12 +82,22 @@ const startRemoteMcp = async () => {
             got.push({ text, hdr });
             return { content: [{ type: "text", text: `echo:${text}:${hdr}` }] };
           });
+          servers.add(srv);
           await srv.connect(t);
         }
         await t.handleRequest(req, res, b === "" ? undefined : JSON.parse(b));
       })();
     });
   });
+  closeRemoteMcp = async () => {
+    try {
+      await Promise.all([...servers].map((srv) => srv.close()));
+    } finally {
+      const closed = new Promise<void>((resolve, reject) => http.close((e) => e ? reject(e) : resolve()));
+      http.closeAllConnections();
+      await closed;
+    }
+  };
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", () => r()));
   return { url: `http://127.0.0.1:${(http.address() as { port: number }).port}/mcp`, got };
 };
@@ -90,11 +107,12 @@ const main = async (): Promise<void> => {
   process.env.TIGUCLAW_HOME = mkdtempSync(path.join(process.env.TIGUCLAW_HOME!, `contract-${adapter}-`));
   const sc = SCENARIOS[scenario];
   if (sc === undefined) throw new Error(`unknown scenario ${scenario}`);
-  const { initStore } = await import("../../store/sessions.js");
+  const { initStore, getDb } = await import("../../store/sessions.js");
   const { UserCancelledError } = await import("../../core/steering.js");
   const { TurnTimeoutError } = await import("../../core/llm-runtime/turn-timeout.js");
   const { getEventBus } = await import("../../core/eventbus.js");
   initStore();
+  storeForCleanup = getDb();
   const remote = sc.remote === true ? await startRemoteMcp() : undefined;
   if (remote !== undefined) {
     // 설정은 사용자가 쓰는 모양 그대로 — 값은 `${VAR}` 로 두고 환경에서 채운다.
@@ -155,6 +173,9 @@ const main = async (): Promise<void> => {
       ? { inputTokens: 1, outputTokens: 1, totalTokens: 2, requests: 1 }
       : { inputTokens: u.input, outputTokens: u.output, totalTokens: u.input + u.output, requests: 1, inputTokensDetails: { cached_tokens: u.cached } };
   let cliSeen: { configHasSecret: boolean; blocksCliAuth: boolean } | undefined;
+  const mcpDiagnostics: Array<{ stage: string; error: string }> = [];
+  let closedCliClients = 0;
+  let mcpStage = "config";
   const input = { text: "해줘", threadKey, channel: "cli", cwd: process.env.TIGUCLAW_HOME, abortSignal: turnAc.signal };
   if (adapter === "codex") {
     const enc = new TextEncoder();
@@ -237,8 +258,13 @@ const main = async (): Promise<void> => {
      * 원격 서버에 붙어 호출한다(그 설정으로 서버에 닿는가가 Claude 쪽 계약이다).
      */
     const callViaConfig = async (cfg: unknown, env: Record<string, string> | undefined, tool: string, args: Record<string, unknown>): Promise<string> => {
+      mcpStage = "config";
       const c = cfg as { type?: string; url: string; headers?: Record<string, string> } | undefined;
-      if (c?.type !== "http" || typeof c.url !== "string") return `설정 없음:${JSON.stringify(cfg ?? null).slice(0, 80)}`;
+      if (c?.type !== "http" || typeof c.url !== "string") {
+        const summary = JSON.stringify({ present: c !== undefined, http: c?.type === "http", urlString: typeof c?.url === "string" });
+        mcpDiagnostics.push({ stage: mcpStage, error: `설정 없음:${summary}` });
+        return `설정 없음:${summary}`;
+      }
       // 실제 CLI 처럼 헤더의 `${VAR}` 를 **자기 환경**(어댑터가 넘긴 options.env, 없으면 이 프로세스)에서 채운다(2026-10-18 실CLI 로 확인한 동작).
       const fill = (v: string): string => v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, k: string) => (env ?? (process.env as Record<string, string>))[k] ?? "");
       c.headers = Object.fromEntries(Object.entries(c.headers ?? {}).map(([h, v]) => [h, fill(v)]));
@@ -246,10 +272,19 @@ const main = async (): Promise<void> => {
       const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
       const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
       const client = new Client({ name: "fake-claude-cli", version: "0" });
-      await client.connect(new StreamableHTTPClientTransport(new URL(c.url), { requestInit: { headers: c.headers ?? {} } }));
-      const r = (await client.callTool({ name: tool, arguments: args })) as { content?: Array<{ text?: string }> };
-      await client.close();
-      return (r.content ?? []).map((x) => x.text ?? "").join("");
+      client.onclose = () => { closedCliClients += 1; };
+      try {
+        mcpStage = "connect";
+        await client.connect(new StreamableHTTPClientTransport(new URL(c.url), { requestInit: { headers: c.headers ?? {} } }));
+        mcpStage = "callTool";
+        // 검사 자체의 진단 selfcheck: 실제 연결 뒤 기존 catch 접점에 합성 예외를 넣는다.
+        if (fixtureFault === "mcp-error") throw Object.assign(new Error("synthetic MCP call failure", { cause: new Error("synthetic MCP cause") }), { code: "SYNTH_MCP" });
+        const r = (await client.callTool({ name: tool, arguments: args })) as { content?: Array<{ text?: string }> };
+        mcpStage = "close";
+        return (r.content ?? []).map((x) => x.text ?? "").join("");
+      } finally {
+        await client.close();
+      }
     };
     const fake = ((args: { options: { abortController: AbortController; mcpServers?: Record<string, unknown>; env?: Record<string, string>; disallowedTools?: string[] } }) => {
       calls += 1;
@@ -284,7 +319,10 @@ const main = async (): Promise<void> => {
         // ★실제 SDK 처럼 **취소되면 조용히 끝난다**(가장 나쁜 쪽 — 어댑터가 승격해야 한다).
         let done = await play(sig, emit);
         if (done === "called" && toolCall !== undefined) {
-          const seen = await callViaConfig(structuredClone(args.options.mcpServers?.regremote), args.options.env, toolCall.tool, toolCall.args).catch((e: unknown) => `호출 실패:${String(e).slice(0, 80)}`);
+          const seen = await callViaConfig(fixtureFault === "mcp-missing" ? undefined : structuredClone(args.options.mcpServers?.regremote), args.options.env, toolCall.tool, toolCall.args).catch((e: unknown) => {
+            mcpDiagnostics.push({ stage: mcpStage, error: contractError(e) });
+            return `호출 실패:${contractDiagnostic(String(e), 80)}`;
+          });
           done = await play(sig, emit, 2, seen);
         }
         for (const f of q) yield f;
@@ -320,13 +358,27 @@ const main = async (): Promise<void> => {
     const r = await runTurn();
     out = { outcome: "returned", text: r.text, ...(r.usage !== undefined ? { usage: r.usage } : {}) };
   } catch (e) {
-    out = { outcome: "threw", name: (e as Error).name, message: String((e as Error).message).slice(0, 120), ...(process.env.CONTRACT_DEBUG === "1" ? { stack: String((e as Error).stack).slice(0, 900) } : {}) };
+    out = { outcome: "threw", name: (e as Error).name, message: contractDiagnostic((e as Error).message, 120), ...(process.env.CONTRACT_DEBUG === "1" ? { stack: contractDiagnostic((e as Error).stack, 900) } : {}) };
   }
-  console.log(JSON.stringify({ ...out, calls, events, ...(remote !== undefined ? { remoteCalls: remote.got } : {}), ...(cliSeen !== undefined ? { cli: cliSeen } : {}) }));
-  process.exit(0);
+  console.log(JSON.stringify({ ...out, calls, events, ...(mcpDiagnostics.length === 0 ? {} : { mcpDiagnostics }), ...(remote !== undefined ? { remoteCalls: remote.got } : {}), ...(cliSeen !== undefined ? { cli: cliSeen, closedCliClients } : {}) }));
 };
 
-main().catch((e) => {
-  console.log(JSON.stringify({ outcome: "harness-error", message: String((e as Error)?.stack ?? e).slice(0, 400) }));
-  process.exit(0);
+main().finally(async () => {
+  try {
+    await (await import("../../core/external-mcp.js")).closeAllExternalMcp();
+    cleanupCompleted.push("external");
+    // 앞 단계가 실패해도 뒤의 서버·DB 정리가 완료되는지 실제 경계에서 검사한다.
+    if (fixtureFault === "cleanup-error") throw new Error("synthetic cleanup failure");
+  } finally {
+    try {
+      await closeRemoteMcp?.();
+      cleanupCompleted.push("remote");
+    } finally {
+      (await import("../../store/sessions.js")).closeStore();
+      cleanupCompleted.push("store");
+    }
+  }
+}).catch((e) => {
+  console.log(JSON.stringify({ outcome: "harness-error", message: contractError(e), cleanupCompleted, storeClosed: storeForCleanup?.open === false }));
+  process.exitCode = 1;
 });

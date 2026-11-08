@@ -6,6 +6,7 @@
  * 실행해 MCP 로 넘기는 훅을 가로채 부른다(DB·LLM·전송만 모의 — trigger-interrupt-destination 과 같은 틀).
  */
 import fs from "node:fs";
+import * as replyCommand from "../../core/entry/reply-command.js";
 import path from "node:path";
 import vm from "node:vm";
 import ts from "typescript";
@@ -43,6 +44,7 @@ export const check: RegressionCheck = {
       const exports = {};
       cache.set(filename, exports);
       const requireFixture = (name: string): unknown => {
+            if (name.endsWith("/entry/reply-command.js")) return replyCommand;
         if (name === "node:path") return path;
         if (name === "croner") return { Cron: class { stop() {} } };
         if (name.endsWith("/eventbus.js")) return { safeUnsubscribe: (fn: (() => void) | undefined) => fn?.() };

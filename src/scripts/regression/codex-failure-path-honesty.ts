@@ -140,7 +140,7 @@ export const check: RegressionCheck = {
       /if \(\s*e\.retryable &&/,
       // 백오프가 취소되고, 깨면 재전송하지 않는다.
       /await sleep\(wait, effectiveAc\.signal\)/,
-      /if \(effectiveAc\.signal\.aborted\) throw e;/,
+      /if \(effectiveAc\.signal\.aborted\) throw effectiveAc\.signal\.reason \?\? e;/,
       // 사용자 답장엔 raw 를 뺀 판 + retryable 별 실효 대책.
       /translate\("srv\.codex\.backendFailed", \{ why: e\.userWhy \}\)\}\$\{ranList\}\\n\\n\$\{codexFailureAdvice\(e\)\}/,
     ]);

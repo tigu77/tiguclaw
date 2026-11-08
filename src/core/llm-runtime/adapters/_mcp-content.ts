@@ -1,3 +1,4 @@
+import type { ActivityRead } from "../types.js";
 import { savedScreenReference } from "./_saved-screen-reference.js";
 /**
  * **MCP 도구 결과를 텍스트와 미디어로 가른다** — 어댑터 무관 (2026-09-15).
@@ -226,3 +227,59 @@ export const createToolMediaWindow = <T>(
     },
   };
 };
+
+/** 자체 file-ops 결과만 이 namespace를 채택한다. 외부 MCP의 같은 메타는 신뢰하지 않는다. */
+export const READ_RESULT_META = "tiguclaw.read";
+
+/** JSON scalar만 복사. SDK extractor의 예외는 도구 자체를 실패시키므로 반드시 no-throw. */
+export function validateReadObservation(value: unknown): ActivityRead | undefined {
+  try {
+    if (!value || typeof value !== "object") return undefined;
+    const v = value as Record<string, unknown>;
+    const kind = v.kind;
+    if (!["text", "empty", "eof", "notice", "non-text", "unknown"].includes(kind as string)) return undefined;
+    const read: ActivityRead = { kind: kind as ActivityRead["kind"] };
+    const startLine = v.startLine;
+    const returnedLineCount = v.returnedLineCount;
+    if (read.kind === "text") {
+      if (!Number.isSafeInteger(startLine) || (startLine as number) < 1 ||
+          !Number.isSafeInteger(returnedLineCount) || (returnedLineCount as number) < 1 ||
+          !Number.isSafeInteger((startLine as number) + (returnedLineCount as number) - 1)) return undefined;
+      read.startLine = startLine as number;
+      read.returnedLineCount = returnedLineCount as number;
+      if (v.sourceTruncated === true) read.sourceTruncated = true;
+      if (v.partialLastLine === true) read.partialLastLine = true;
+      if (v.previewLastLinePartial === true) read.previewLastLinePartial = true;
+    } else if (startLine !== undefined || returnedLineCount !== undefined) return undefined;
+    return read;
+  } catch { return undefined; }
+}
+
+export function readObservationFromContent(content: unknown): ActivityRead | undefined {
+  try {
+    const nodes = Array.isArray(content) ? content : [content];
+    const node = nodes.find(c => c && typeof c === "object" && c.type === "text");
+    return validateReadObservation(node?._meta?.[READ_RESULT_META]);
+  } catch { return undefined; }
+}
+
+/** SDK-only provenance channel; only attached to the own file-ops bridge wrapper. */
+export function ownReadCustomData(context: { toolName: string; toolOutput: unknown }) {
+  try {
+    const { toolName, toolOutput } = context;
+    if (toolName !== "Read") return undefined;
+    const read = readObservationFromContent(toolOutput);
+    return read === undefined ? undefined : { tiguclawRead: read };
+  } catch { return undefined; }
+}
+
+/** Codex empty JSON fallback에서는 신규 관측 메타만 제거해 기존 모델 본문을 유지한다. */
+export function withoutReadObservation(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.map(node => {
+    if (!node || typeof node !== "object" || !node._meta || !(READ_RESULT_META in node._meta)) return node;
+    const { [READ_RESULT_META]: _read, ...rest } = node._meta;
+    const { _meta: _meta, ...bare } = node;
+    return Object.keys(rest).length ? { ...bare, _meta: rest } : bare;
+  });
+}

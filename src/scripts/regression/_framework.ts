@@ -110,20 +110,31 @@ export const within = async <T>(
  * ★주의 — 이것이 그 `EBUSY` 의 범인이라는 **증거는 아직 없다**(두 검사 모두 그 기계에서
  *  초록이었다 = 시한을 안 넘겼다). 범인과 무관하게 **결함은 결함**이라 닫는다.
  */
+export type SpawnResult = {
+  out: string; err: string; timedOut: boolean;
+  code: number | null; signal: NodeJS.Signals | null; error?: string;
+};
+
 export const spawnWithin = async (
   ms: number,
   what: string,
   argv: string[],
   opts: SpawnOptions = {},
-): Promise<{ out: string; err: string; timedOut: boolean }> => {
+): Promise<SpawnResult> => {
   const p = spawn(process.execPath, argv, { stdio: ["ignore", "pipe", "pipe"], ...opts });
   let so = "";
   let se = "";
-  p.stdout?.on("data", (d: Buffer) => (so += d.toString()));
-  p.stderr?.on("data", (d: Buffer) => (se += d.toString()));
+  let code: number | null = null;
+  let signal: NodeJS.Signals | null = null;
+  let error: string | undefined;
+  p.stdout?.setEncoding("utf8");
+  p.stderr?.setEncoding("utf8");
+  p.stdout?.on("data", (d: string) => (so += d));
+  p.stderr?.on("data", (d: string) => (se += d));
   const ended = new Promise<void>((resolve) => {
-    p.on("close", () => resolve());
-    p.on("error", () => resolve());
+    p.on("close", (exitCode, exitSignal) => { code = exitCode; signal = exitSignal; resolve(); });
+    // error 뒤 close 까지 기다려 이미 출력한 stderr 도 수집한다.
+    p.on("error", (e) => { error = e.message; });
   });
   const r = await within(ms, what, ended);
   if (!("value" in r)) {
@@ -133,9 +144,9 @@ export const spawnWithin = async (
     } catch {
       /* 이미 죽었으면 할 일이 없다 */
     }
-    return { out: so, err: se, timedOut: true };
+    return { out: so, err: se, timedOut: true, code, signal, ...(error !== undefined ? { error } : {}) };
   }
-  return { out: so, err: se, timedOut: false };
+  return { out: so, err: se, timedOut: false, code, signal, ...(error !== undefined ? { error } : {}) };
 };
 
 /**

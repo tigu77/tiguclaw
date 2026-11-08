@@ -31,6 +31,8 @@ export interface ScheduleRow {
   runAt: number | null;
   /** 처리되는 대화 — 만든 사람의 대화(서버가 적음). null = 전용 세션 `scheduler:<id>`(이 칸 전의 스케줄·사람 없는 자리에서 만든 것). */
   originThreadKey: string | null;
+  /** 명시 선택 확인용 실행만 omit. 기존·미인식 값은 deliver. */
+  reportDefault: "deliver" | "omit";
 }
 
 interface DbScheduleRow {
@@ -51,15 +53,17 @@ interface DbScheduleRow {
   keep_runs: number | null;
   run_at: number | null;
   origin_thread_key: string | null;
+  report_default: string;
 }
 
 const SELECT_COLS = `id, label, cron_expr, timezone, prompt,
        dest_channel, dest_target, enabled,
        created_at, updated_at,
        last_fired_at, last_status, last_error,
-       trigger_type, keep_runs, run_at, origin_thread_key`;
+       trigger_type, keep_runs, run_at, origin_thread_key, report_default`;
 
 const toRow = (r: DbScheduleRow): ScheduleRow => ({
+  reportDefault: r.report_default === "omit" ? "omit" : "deliver",
   id: r.id,
   label: r.label,
   cronExpr: r.cron_expr,
@@ -91,6 +95,7 @@ export const addSchedule = (input: {
   keepRuns?: number | null;
   runAt?: number | null;
   originThreadKey?: string | null;
+  reportDefault?: "deliver" | "omit";
 }): ScheduleRow => {
   const handle = getDb();
   const now = Date.now();
@@ -102,8 +107,8 @@ export const addSchedule = (input: {
       `INSERT INTO schedules
        (label, cron_expr, timezone, prompt, dest_channel, dest_target,
         enabled, created_at, updated_at,
-        last_fired_at, last_status, last_error, trigger_type, keep_runs, run_at, origin_thread_key)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`,
+        last_fired_at, last_status, last_error, trigger_type, keep_runs, run_at, origin_thread_key, report_default)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.label,
@@ -118,6 +123,7 @@ export const addSchedule = (input: {
       input.keepRuns ?? null,
       input.runAt ?? null,
       input.originThreadKey ?? null,
+      input.reportDefault === "omit" ? "omit" : "deliver",
     );
   const id = Number(result.lastInsertRowid);
   const created = getSchedule(id);
@@ -170,6 +176,7 @@ export const updateSchedule = (
     keepRuns: number | null;
     runAt: number | null;
     originThreadKey: string | null;
+    reportDefault: "deliver" | "omit";
   }>,
 ): ScheduleRow | undefined => {
   const existing = getSchedule(id);
@@ -220,6 +227,10 @@ export const updateSchedule = (
   if (patch.originThreadKey !== undefined) {
     sets.push("origin_thread_key = ?");
     vals.push(patch.originThreadKey);
+  }
+  if (patch.reportDefault !== undefined) {
+    sets.push("report_default = ?");
+    vals.push(patch.reportDefault === "omit" ? "omit" : "deliver");
   }
   if (sets.length === 0) return existing;
 

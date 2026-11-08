@@ -114,7 +114,7 @@
        *
        * @returns {{show:boolean, title:string, body:string, examples:string[]}}
        */
-      const chatEmptyView = (state, count) => {
+      const chatEmptyView = (state, count, olderPaused = false) => {
         if (count > 0) return { show: false, title: "", body: "", examples: [] };
         if (state === "loading")
           return { show: true, title: i18n("chat.loading"), body: "", examples: [] };
@@ -125,6 +125,8 @@
             body: i18n("chat.loadFailed.hint"),
             examples: [],
           };
+        if (olderPaused)
+          return { show: true, title: i18n("chat.historyPending"), body: "", examples: [] };
         return {
           show: true,
           title: i18n("chat.empty"),
@@ -144,7 +146,7 @@
       const refreshChatEmpty = () => {
         const chatEmpty = document.getElementById("chat-empty");
         if (!chatEmpty) return;
-        const v = chatEmptyView(historyLoadState, localChatCount);
+        const v = chatEmptyView(historyLoadState, localChatCount, historyOlderPaused);
         chatEmpty.style.display = v.show ? "" : "none";
         if (!v.show) return;
         // 정적 문구지만 DOM 으로 구성한다(문자열 연결 innerHTML 을 이 레포에서 금지).

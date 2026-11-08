@@ -626,42 +626,65 @@
         const tk = ap.threadKey || "";
         // 사이드바 상세도 실행시간·출력 보이게 — 저장된 시작 payload 에 병합(있으면).
         const stored = activityByStep.get(stepKey(tk, ap.seq));
+        const toolLabel = ap.label || (stored && stored.label);
         if (stored) {
           if (ap.durationMs != null) stored.durationMs = ap.durationMs;
           if (ap.output) stored.output = ap.output;
+          if (toolLabel === "Read") stored._readComplete = true;
         }
         // 리치 출력(Bash/Read/Grep/Glob, phase:end) — 시작 스텝 라인에 접이식 블록 append.
         // (메인 스트림 스텝만; 잡 카드 스텝은 durationMs 뱃지만 — 아래 (a) 에서 return.)
-        if (ap.output && (tk.indexOf("worker:") !== 0 && tk.indexOf("agent:") !== 0)) {
+        if ((ap.output || toolLabel === "Read") && (tk.indexOf("worker:") !== 0 && tk.indexOf("agent:") !== 0)) {
           const oLines = stream.querySelectorAll('.act-line[data-seq="' + ap.seq + '"][data-threadkey="' + tk + '"]');
           let target = null;
           for (let i = oLines.length - 1; i >= 0; i--) {
-            if (!oLines[i].querySelector(":scope > .act-output")) { target = oLines[i]; break; }
+            if (toolLabel === "Read" || !oLines[i].querySelector(":scope > .act-output")) { target = oLines[i]; break; }
           }
           if (target) {
-            target.appendChild(buildOutputBlock(ap.output));
+            if (toolLabel === "Read") {
+              const prior = target.querySelector(":scope > .act-output");
+              if (prior) prior.remove();
+              wireReadToggle(target);
+            }
+            target.appendChild(buildToolOutputBlock(ap.output, stored && stored.file, toolLabel));
             // 표면 A(Phase 3b) — 백그라운드 셸 인라인 칩. 백엔드 무변경, 출력 텍스트에 이미 실린
             // bash_id 를 파싱만(virtualization.js SHELL_CHIP_ID_RE/attachShellChip, 정의 순서
             // 무관 — SSE 는 부팅 완료 후에만 발화, typeof 가드 불요할 만큼 확정적이나 방어적으로 유지).
-            const shellM = (typeof ap.output.text === "string" && typeof SHELL_CHIP_ID_RE !== "undefined")
+            const shellM = (ap.output && typeof ap.output.text === "string" && typeof SHELL_CHIP_ID_RE !== "undefined")
               ? SHELL_CHIP_ID_RE.exec(ap.output.text) : null;
             if (shellM && typeof attachShellChip === "function") attachShellChip(target, shellM[1]);
           }
         }
-        if (ap.durationMs == null) return;
+        if (ap.durationMs == null && toolLabel !== "Read") return;
         // (a) 잡 카드 스텝 — worker:/agent: 좌표면 그 카드 stepsEl 에서 seq 로 찾아 주석.
         if (tk.indexOf("worker:") === 0 || tk.indexOf("agent:") === 0) {
           const jobId = tk.slice(tk.indexOf(":") + 1);
           const card = jobCards.get(jobId);
           if (card && card.stepsEl) {
             const stepEl = card.stepsEl.querySelector('.bg-step[data-seq="' + ap.seq + '"]');
-            applyDurationBadge(stepEl, ap.durationMs);
+            if (toolLabel === "Read") clearStepRunning(stepEl);
+            if (ap.durationMs != null) applyDurationBadge(stepEl, ap.durationMs);
             // 매니저 output(Bash/Read/Grep/Glob 등)은 자동 append 하지 않고(채팅 누수/컴팩트 유지)
             // 스텝에 보관 + 펼침 affordance 만 배선 — on-demand 로만 buildOutputBlock 렌더.
-            if (stepEl && ap.output) { stepEl._output = ap.output; ensureStepExpandable(stepEl); }
+            if (stepEl && (ap.output || toolLabel === "Read")) {
+              stepEl._readComplete = toolLabel === "Read";
+              if (ap.output) stepEl._output = ap.output;
+              stepEl._toolLabel = ap.label || (stored && stored.label) || stepEl._toolLabel;
+              stepEl._readFile = (stored && stored.file) || stepEl._readFile;
+              if (stepEl._toolLabel === "Read") {
+                wireReadToggle(stepEl);
+                if (ap.output && stepEl.classList.contains("expanded")) {
+                  const prior = stepEl.querySelector(":scope > .act-output");
+                  if (prior) prior.remove();
+                  stepEl.appendChild(buildReadBlock(stepEl._output, stepEl._readFile));
+                }
+              }
+              ensureStepExpandable(stepEl);
+            }
           }
           return;
         }
+        if (ap.durationMs == null) return;
         // (b) 메인 스트림 활동 라인 — threadKey+seq 매칭. seq 는 턴마다 리셋(0,1,2…)이라
         // 스트림에 같은 seq 라인이 누적될 수 있으므로, 아직 실행시간이 안 붙은 가장 최근 라인을
         // 고른다(방금 끝난 도구 = 그 스텝). 전부 붙었으면 마지막. threadKey 엔 따옴표 없어 안전.
@@ -702,7 +725,7 @@
         if (wasOpen && !narrow) openBg();
       } catch { /* 조회 실패 = 닫힌 채 시작(기존 동작) */ }
       /** @param {boolean} [keepRemembered] 자리가 모자라 닫는 것(side-panels) — «열려 있었다» 기억은 그대로(레드팀 10-20: 부팅 때 저장값이 0 으로 지워졌다). */
-      const closeBg = (keepRemembered) => { document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); if (keepRemembered !== true) rememberBgOpen(false); };
+      const closeBg = (keepRemembered) => { if (typeof window.closeBgTimerDetail === "function") window.closeBgTimerDetail(); document.body.classList.remove("bg-open"); bgPanel.setAttribute("aria-hidden", "true"); if (keepRemembered !== true) rememberBgOpen(false); };
       sidePanels.register("bg", { el: bgPanel, cls: "bg-open", close: () => closeBg(true) });
       /**
        * **그 카드로 간다** — 패널 열기 → 카드를 가린 축만 풀기 → 펼치기 → 가운데로 → 잠깐 강조 (2026-10-21,
@@ -872,6 +895,7 @@
         const apply = (collapsed) => {
           bgGeometryChanged();
           head.classList.toggle("collapsed", collapsed);
+          if (collapsed && typeof window.closeBgTimerDetail === "function") window.closeBgTimerDetail();
           head.setAttribute("aria-expanded", collapsed ? "false" : "true");
           bgPin();
           if (headId === "bg-shells-head" && typeof stopHiddenShellTailPolls === "function") stopHiddenShellTailPolls();
@@ -896,6 +920,7 @@
         });
       };
       wireBgGroup("bg-timers-head");
+      wireBgGroup("bg-schedules-head");
       wireBgGroup("bg-jobs-head");
       wireBgGroup("bg-shells-head");
 
@@ -1597,12 +1622,12 @@
         }
         // 접힘 → 펼침. 현재 보관된 최신 데이터로 리치 블록 빌드(output 이 나중에 온 경우도 반영).
         if (stepEl._diff && Array.isArray(stepEl._diff.lines)) stepEl.appendChild(buildDiffBlock(stepEl._diff));
-        if (stepEl._output) stepEl.appendChild(buildOutputBlock(stepEl._output));
+        if (stepEl._output || (stepEl._toolLabel === "Read" && stepEl._readComplete)) stepEl.appendChild(buildToolOutputBlock(stepEl._output, stepEl._readFile, stepEl._toolLabel));
         stepEl.classList.add("expanded");
       };
       const ensureStepExpandable = (stepEl) => {
         if (!stepEl) return;
-        const hasRich = (stepEl._diff && Array.isArray(stepEl._diff.lines)) || stepEl._output;
+        const hasRich = (stepEl._diff && Array.isArray(stepEl._diff.lines)) || stepEl._output || (stepEl._toolLabel === "Read" && stepEl._readComplete);
         if (!hasRich || stepEl._expandable) return; // 리치 데이터 없거나 이미 배선됨 → no-op(멱등).
         stepEl._expandable = true;
         stepEl.classList.add("bg-step-rich");
@@ -1932,6 +1957,9 @@
         entry.seenSteps.add(stepKey);
         const line = document.createElement("div");
         line.className = "bg-step";
+        line._toolLabel = p.label;
+        line._readFile = p.file;
+        if (p.label === "Read") wireReadToggle(line);
         if (p.seq != null) line.dataset.seq = String(p.seq); // #3 — phase:"end" 가 실행시간 붙일 앵커.
         const skill = skillStepInfo(p);
         const icon = document.createElement("span"); icon.className = "bg-step-icon";

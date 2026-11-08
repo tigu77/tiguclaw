@@ -489,7 +489,7 @@ const runInOrigin = async (input: Parameters<RunnerDeps["runClaude"]>[0], origin
       if (isTimer(latest) && latest.runAt !== null && latest.runAt > Date.now() && latest.runAt !== input.slot?.firedRunAt) return "rescheduled";
       // 이 실행이 실제로 쓴 행 상태 — 실행기가 정산 기준으로 읽는다(반환값이 아니라 실행기가 만든 칸: 핸들러가 던져도 남는다).
       if (input.slot !== undefined) input.slot.turnRunAt = latest.runAt;
-      return { text: latest.prompt, dest: { channel: latest.destChannel, target: latest.destTarget } };
+      return { text: latest.prompt, ...(latest.reportDefault === "omit" ? { reportDefault: "omit" as const } : {}), dest: { channel: latest.destChannel, target: latest.destTarget } };
     },
   });
   if ("skipped" in r) return { text: "", skipped: r.skipped as "deleted" | "disabled" | "moved" | "origin-gone" | "not-run" | "rescheduled" };

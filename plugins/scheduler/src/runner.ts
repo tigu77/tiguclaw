@@ -19,6 +19,7 @@ import { canonicalSessionChannel } from "../../../src/store/sessions.js";
 import { applyRunHistory } from "../../../src/store/thread-reset.js";
 import { enqueueThreadTurn } from "../../../src/core/worker-jobs.js";
 import { isUserCancelled } from "../../../src/core/steering.js";
+import { finishTriggerOutput } from "../../../src/core/entry/reply-command.js";
 import { translate } from "../../../src/core/i18n.js";
 
 /**
@@ -46,6 +47,7 @@ export interface RunnerDeps {
     cwd: string;
     notifyDest?: WorkerNotifyDest;
     triggerRun?: TriggerRun;
+    reportOmittable?: true;
     /** 만든 대화 — 있으면 파사드가 그 대화의 줄에 넣는다(`runTriggerInSession`, 감시와 같은 문). null·없음 = 전용 세션. */
     originThreadKey?: string | null;
     /**
@@ -55,10 +57,11 @@ export interface RunnerDeps {
     slot?: { firedRunAt: number | null; turnRunAt?: number | null };
   }) => Promise<{
     text: string;
+    reportOmitted?: true;
     /** 만든 대화 실행이 차례에서 건너뛰었다 — 지워짐·꺼짐·처리 자리 바뀜·대화 없음·예정 시각이 미래로 바뀜. */
     skipped?: "deleted" | "disabled" | "moved" | "origin-gone" | "not-run" | "rescheduled";
     /** 만든 대화에서 처리됐다 — 답은 이미 목적지로 나갔다(여기서 다시 보내지 않는다). */
-    inOrigin?: { replied: number; failed?: string; dest?: { channel: string; target: string | null } };
+    inOrigin?: { replied: number; reportOmitted?: true; failed?: string; dest?: { channel: string; target: string | null } };
   }>;
   /** recordFiring 주입 — spike 에서 mock 가능. */
   recordFiring: (id: number, result: { ok: boolean; error?: string }) => void;
@@ -238,6 +241,7 @@ export const runScheduleFiring = async (
   };
   try {
     let resultText: string;
+    let output: { reportOmitted?: true } = {};
 
     // ★직송 모드 (2026-07-30 사용자 확정: "재시작알림은 LLM 안태워도 돼").
     //
@@ -368,7 +372,7 @@ export const runScheduleFiring = async (
         }
         console.log(`${tag} 만든 대화(${origin})에서 처리 · 답 ${out.inOrigin?.replied ?? 0}자 → ${used.channel}:${used.target ?? "-"}`);
         record({ ok: true });
-        bus.publish({ type: "scheduler.fired", ts: Date.now(), payload: { scheduleId: schedule.id, destChannel: used.channel, destTarget: used.target, ok: true } });
+        bus.publish({ type: "scheduler.fired", ts: Date.now(), payload: { scheduleId: schedule.id, destChannel: used.channel, destTarget: used.target, ok: true, ...(out.inOrigin?.reportOmitted === true ? { reportOmitted: true } : {}) } });
       } catch (e) {
         if (changedDuringRun()) {
           console.log(`${tag} 실행 도중 타이머가 바뀌거나 지워짐 — 결과를 정산하지 않는다(바꾼 쪽 몫)`);
@@ -433,12 +437,13 @@ export const runScheduleFiring = async (
         if (latest === undefined || latest.enabled === false) return SKIPPED_IN_QUEUE;
         // 그새 «이 대화로 옮겨 줘» 를 받았다 — 이 전용 세션에서 돌리지 않고 새 자리에서 다시 한 번.
         if (latest.originThreadKey !== null) return MOVED_IN_QUEUE;
-        Object.assign(schedule, { destChannel: latest.destChannel, destTarget: latest.destTarget, label: latest.label, prompt: latest.prompt });
+        Object.assign(schedule, { destChannel: latest.destChannel, destTarget: latest.destTarget, label: latest.label, prompt: latest.prompt, reportDefault: latest.reportDefault });
         applyHistory();
         // 발화 시작 시각 — 대화가 남으면 발화 기록에 이 시각으로 적는다(«직전 N회» 경계가 이 실행을 통째로 품게).
         firedAt = Date.now();
         return deps.runClaude({
           text: schedule.prompt,
+          ...(schedule.reportDefault === "omit" ? { reportOmittable: true as const } : {}),
           threadKey: `scheduler:${schedule.id}`,
           channel: "scheduler",
           cwd: deps.cwd,
@@ -463,10 +468,11 @@ export const runScheduleFiring = async (
         return;
       }
       resultText = out.text;
+      output = out;
       // ★대화가 남은 발화만 적는다 — 실패한 발화까지 세면 실제로 남는 대화가 N회보다 적어진다. 전달(dispatch) 실패와는
       //  무관하다(대화는 이미 남았다). 한계: Claude 는 실패한 발화도 SDK 기록에 남아 다음 턴에 색인될 수 있다 — 그때 창이
       //  N회보다 **커질** 뿐 줄지는 않는다(적대 검토 2026-09-28). 기록 실패가 발화·전달을 막지 않는다(다음은 프롬프트 일치로).
-      if (resultText !== "") {
+      if (resultText !== "" || (schedule.reportDefault === "omit" && out.reportOmitted === true)) {
         try { recordScheduleRun(schedule.id, firedAt); } catch (e) {
           console.warn(`[scheduler:${schedule.id}] 발화 기록 실패 — 이력 정책은 프롬프트 일치로 대신합니다: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -506,13 +512,20 @@ export const runScheduleFiring = async (
     // runClaude 성공. dispatch 시도 — 실패 시 last_status=error (영역 A 결과는 손실 0).
     const dispatchFn = deps.dispatch ?? dispatch;
     try {
-      await dispatchFn({
-        scheduleId: schedule.id,
-        destChannel: schedule.destChannel,
-        destTarget: schedule.destTarget,
-        text: resultText,
-        bus,
-        // 표시 세션은 dispatcher 가 목적지에서 정한다(`sessionOfDestination` — 대시보드 대화 목적지면 그 대화, 아니면 기본 세션).
+      const fate = await finishTriggerOutput({
+        reportDefault: schedule.reportDefault === "omit" ? "omit" : undefined,
+        out: output,
+        channel: "scheduler", threadKey: `scheduler:${schedule.id}`, kind: "schedule", bus,
+        deliver: async () => {
+          await dispatchFn({
+            scheduleId: schedule.id,
+            destChannel: schedule.destChannel,
+            destTarget: schedule.destTarget,
+            text: resultText,
+            bus,
+            // 표시 세션은 dispatcher가 목적지에서 정한다. 생략 기록은 실행 세션에만 남는다.
+          });
+        },
       });
       record({ ok: true });
       bus.publish({
@@ -523,6 +536,7 @@ export const runScheduleFiring = async (
           destChannel: schedule.destChannel,
           destTarget: schedule.destTarget,
           ok: true,
+          ...(fate === "omitted" ? { reportOmitted: true } : {}),
         },
       });
     } catch (e) {

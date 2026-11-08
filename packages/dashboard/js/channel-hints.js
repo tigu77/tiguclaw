@@ -454,6 +454,15 @@
             if (card.replyMsg) card.replyMsg.classList.remove("streaming");
             card.replyBubble = null; card.replyMsg = null; card.replyRaw = "";
           }
+          if (isRecordOnlyMessage(payload)) {
+            // 트리거의 기록 전용 마감은 대체 상태 줄도 만들지 않는다.
+            // 스트리밍/활성 턴은 끝내고 사용량·활동 기록은 그대로 유지한다.
+            completeTurnGroup(thread);
+            refreshChatEmpty();
+            if (currentView === "overview") setTimeout(showOverview, 0);
+            scheduleRelayout();
+            return;
+          }
         } else if (isOut) {
           const card = cardByThread.get(thread);
           // 인터리브(2026-07-13): 이 턴이 kind:"text" 세그먼트를 냈으면 마지막 텍스트는 이미

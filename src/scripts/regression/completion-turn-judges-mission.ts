@@ -72,10 +72,35 @@ export const check: RegressionCheck = {
       assert(
         "기본은 보고 · 덜 됐거나 멈췄으면 보고로 끝내지 말고 원인 확인 후 이어서 끝냄(길면 다시 맡기고 짧게) · 결정 필요하면 물음 · 같은 이유 반복이면 접근 변경",
         ok.prompt.includes("다 하지 못했거나 중간에 멈췄다면 보고로 끝내지 마세요") && ok.prompt.includes("멈춘 원인을 확인") &&
-          ok.prompt.includes("길면 다시 맡긴 뒤") && ok.prompt.includes("결정·승인이 필요한 일") && ok.prompt.includes("같은 이유로 또 멈췄으면"),
+          ok.prompt.includes("길면 다시 맡긴 뒤") && ok.prompt.includes("결정·승인이 필요한 차이") && ok.prompt.includes("같은 이유로 또 멈췄으면"),
         ok.prompt.slice(-700),
       ),
       assert("메인이 답하면 raw 안전망은 안 뜬다", ok.raws.length === 0, ok.raws),
+    );
+
+    // 2026-11-08 — 작업자의 승인대기를 사용자 승인 필요로 곧장 승격하지 않는다.
+    // 실제 완료 알림에 새 분기가 실리는지만 확인한다 — 모델의 재판단·행동 개선 증거는 아니다.
+    out.push(
+      assert(
+        "★승인대기 재판단: 원 요청·최신 지시·기존 승인·실제 제한을 기준으로 삼는다",
+        ok.prompt.includes("작업자가 승인 필요로 멈췄더라도 원 요청·최신 사용자 지시·기존 승인·실제 제한에 비춰 판단하세요"),
+        ok.prompt.slice(-950),
+      ),
+      assert(
+        "★출처 보존: 작업자 판단·비서가 고른 방법·미확인 가정을 사용자 승인·필수 조건으로 올리지 않는다",
+        ok.prompt.includes("작업자의 판단이나 비서·작업자가 선택한 방법·미확인 가정을 사용자 승인·필수 조건으로 취급하지 마세요"),
+        ok.prompt.slice(-950),
+      ),
+      assert(
+        "★승인 범위 안이면 계속 · 실제 차이만 질문 · 고정 조건·실제 제한 존중 · 옛 OR 제거 · 기본 보고 보존",
+        ok.prompt.includes("이미 승인된 범위에서 해결할 수 있으면 계속하고") &&
+          ok.prompt.includes("파괴적·비가역 행위, 새 권한·외부 영향·임무 범위 밖·사용자가 고정한 조건의 변경") &&
+          ok.prompt.includes("실제로 있을 때만 그 차이와 근거를 밝혀 물어보세요") &&
+          ok.prompt.includes("실제 시스템·도구 제한을 우회하지 마세요") &&
+          !ok.prompt.includes("이거나 작업자가 그 확인을 받으려고 멈췄으면") &&
+          ok.prompt.includes("위 결과를 사용자에게 자연스럽게 보고하세요. 단, 결과가 맡긴 임무를 다 하지 못했거나 중간에 멈췄다면"),
+        ok.prompt.slice(-950),
+      ),
     );
 
     // 2026-11-05 — «다 하지 못함» 을 작업자 분류가 아니라 필수 조건·결과 근거로 판정하는 기준(`result-judgment.ts`)이

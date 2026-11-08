@@ -39,7 +39,7 @@ import {
   withinWindow,
 } from "../../core/llm-runtime/adapters/openai-codex-oauth-loop.js";
 import { isCheckinGuardedThread } from "../../core/worker-jobs.js";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -92,27 +92,24 @@ const simulate = (opts: {
       halted = "★무한";
       break;
     }
-    if (flush) {
-      if (!background) break;
+    if (background && shouldStopContinuing(iteration + 1, maxTotal)) {
       total = iteration;
-      if (shouldStopContinuing(total, maxTotal)) {
-        halted = "백스톱";
-        break;
-      }
-      flush = false;
-      base = iteration;
-      lastCheckpoint = iteration;
-      continues.push(iteration);
-      continue;
+      halted = "백스톱";
+      break; // 마지막 누적 슬롯은 tools:[] 보고 전용.
     }
+    if (flush) break;
     if (iteration >= work) break;
     if (isWindowEnd(iteration, base, hard)) {
-      flush = true;
       caps.push(iteration);
       labels.push(iterLabel(iteration, base, hard));
-      // ★`continue` — **iteration 을 안 올린다.** flush turn 이 그 슬롯을 대체한다.
-      //  올리면 `withinWindow` 가 즉시 거짓이 되어 마무리 요청이 영영 전송되지 않는다
-      //  (어댑터가 그 이유를 주석으로 적어뒀고, 여기가 그 흐름을 그대로 따른다).
+      if (willAutoContinue(background, iteration + 2, maxTotal)) {
+        iteration += 1;
+        base = iteration;
+        lastCheckpoint = iteration;
+        continues.push(iteration);
+      } else {
+        flush = true; // 최종 보고는 슬롯을 대체하므로 iteration을 올리지 않는다.
+      }
       continue;
     }
     if (isCheckpointDue(iteration, base, every, lastCheckpoint)) {
@@ -132,6 +129,53 @@ const labelsSane = (labels: string[]): boolean =>
     const m = /^(\d+)\/(\d+)/.exec(l);
     return m !== null && Number(m[1]) <= Number(m[2]);
   });
+
+type WindowResult = {
+  requests: Array<{ input: Array<Record<string, unknown>>; tools: unknown[] }>;
+  script: string[]; effects: string[]; error: string; text?: string;
+  activities: Array<{ kind: string; phase?: string; seq: number }>;
+  external?: Array<{ name: string }>;
+};
+const adapterAssertions = async (): Promise<Assertion[]> => {
+  const assertions: Assertion[] = [];
+  for (const mode of ["continue", "main", "total", "reserved", "one-slot", "cap-reserved", "empty-final", "cancel", "external"]) {
+    const r = await spawnWithin(45_000, `Codex 창 계속 ${mode}`, ["--import", "tsx", fileURLToPath(new URL("./_codex-window-continue-child.ts", import.meta.url)), mode]);
+    const line = r.out.split(/\r?\n/).find(l => l.startsWith("WINDOW_RESULT "));
+    assertions.push(assert(`${mode}: 격리 실제 어댑터가 끝난다`, !r.timedOut && line !== undefined, line ? mode : r.err.slice(-1800)));
+    if (!line) continue;
+    const v = JSON.parse(line.slice("WINDOW_RESULT ".length)) as WindowResult;
+    const starts = v.activities.filter(a => a.kind === "tool" && a.phase !== "end");
+    const ends = v.activities.filter(a => a.kind === "tool" && a.phase === "end");
+    // Only synthetic append responses, bounded; keep Bash exit/stderr in failed-assertion evidence.
+    const appendOutputs = v.requests.flatMap(b => b.input.filter(x => x.type === "function_call_output" && /^(?:effect_[a-z0-9_]+|discarded)$/.test(String(x.call_id))))
+      .slice(-6).map(x => ({ callId: x.call_id, output: String(x.output).slice(-1200) }));
+    const got = { mode, script: v.script, tools: v.requests.map(b => b.tools.length), effects: v.effects, error: v.error, starts: starts.length, ends: ends.length, appendOutputs };
+    assertions.push(assert(`${mode}: 실제 실행 활동만 같은 seq로 닫힌다`, starts.length === ends.length && starts.every(s => ends.some(e => e.seq === s.seq)), got));
+    assertions.push(assert(`${mode}: 경계 제안의 orphan call/output/reasoning은 다음 요청에 없다`, v.requests.every(b => !b.input.some(x => String(x.call_id ?? "").startsWith("discarded") || x.id === "rs_discarded")), got));
+    if (mode !== "cancel") assertions.push(assert(`${mode}: 취소 아닌 실행이 오류를 숨기지 않는다`, v.error === "", got));
+    if (mode === "continue") {
+      assertions.push(assert("ordinary continue: 중간 checkpoint 요청 0, 실제 모델 대본은 4왕복이고 전부 도구 허용", v.script.join(",") === "execute-first,discard-boundary,execute-next,natural-finish" && v.requests.length === 4 && v.requests.every(b => b.tools.length > 0) && v.text === "synthetic natural finish", got));
+      const carried = v.requests[2]?.input ?? [];
+      const rs = carried.findIndex(x => x.id === "rs_first");
+      const replay = carried.slice(rs, rs + 5);
+      assertions.push(assert("창을 넘겨도 실제 실행한 reasoning→calls→outputs 순서·단일성이 보존된다", rs >= 0 && replay.map(x => x.type).join(",") === "reasoning,function_call,function_call,function_call_output,function_call_output" && replay[1]?.call_id === "read_first" && replay[2]?.call_id === "effect_first" && replay[3]?.call_id === "read_first" && String(replay[3]?.output).includes("synthetic window fixture") && replay[4]?.call_id === "effect_first" && carried.filter(x => x.id === "rs_first").length === 1, replay));
+      assertions.push(assert("창 이동 후 실행은 계속되며 append 부작용의 재실행·경계 실행은 0", v.effects.join(",") === "effect_first,effect_next" && starts.length === 4, got));
+    } else if (mode === "total") {
+      assertions.push(assert("누적 백스톱: 여러 창에서도 6요청 중 마지막 1회만 tools:[], final 슬롯 이후 요청 0", v.requests.length === 6 && v.requests.slice(0, 5).every(b => b.tools.length > 0) && v.requests[5]?.tools.length === 0 && v.script.join(",") === "execute-first,discard-boundary,execute-next,discard-boundary,execute-next,final-report" && v.text === "synthetic final report", got));
+      assertions.push(assert("누적 iteration을 되돌리지 않고 실행된 부작용은 각각 한 번만 남긴다", v.effects.join(",") === "effect_first,effect_3,effect_5" && starts.length === 6, got));
+    } else if (mode === "reserved" || mode === "one-slot" || mode === "cap-reserved") {
+      const expected = mode === "reserved" ? 2 : mode === "one-slot" ? 1 : 3;
+      assertions.push(assert(`${mode}: 다음 슬롯이 보고 예약선이면 계속하지 않고 최종 보고를 보존`, v.requests.length === expected && v.requests.at(-1)?.tools.length === 0 && v.script.at(-1) === "final-report" && v.text === "synthetic final report" && v.effects.join(",") === (mode === "one-slot" ? "" : "effect_first"), got));
+    } else if (mode === "main" || mode === "empty-final") {
+      assertions.push(assert(`${mode}: 메인 최종 flush와 필요한 빈 보고 재요청은 제거하지 않는다`, v.script.join(",") === (mode === "main" ? "execute-first,discard-boundary,final-report" : "execute-first,discard-boundary,final-report,final-report") && v.requests.slice(2).every(b => b.tools.length === 0) && v.effects.join(",") === "effect_first" && v.text === "synthetic final report", got));
+    } else if (mode === "cancel") {
+      assertions.push(assert("경계 취소: 다음 모델 요청·미실행 batch·중복 부작용 0, 취소를 성공으로 바꾸지 않는다", v.error.includes("synthetic boundary cancellation") && v.requests.length === 2 && v.effects.join(",") === "effect_first" && starts.length === 2, got));
+    } else if (mode === "external") {
+      assertions.push(assert("창 이동 뒤 external passthrough도 실행하지 않고 호출자에게 반환", v.requests.length === 3 && v.external?.[0]?.name === "synthetic_external" && v.effects.join(",") === "effect_first" && starts.length === 2, got));
+    }
+  }
+  return assertions;
+};
 
 export const check: RegressionCheck = {
   name: "codex-cap-continues-background",
@@ -168,6 +212,7 @@ export const check: RegressionCheck = {
     const adviceArgs = adviceAt < 0 ? "" : code.slice(adviceAt, adviceAt + 220);
 
     return [
+      ...await adapterAssertions(),
       assert(
         "★★한도에서 **끊지 않고 이어간다** — 잘린 작업은 다음 실행이 처음부터 반복해 영영 수렴 못 한다",
         bg.continues.length > 1 && bg.caps.length > 1,
@@ -175,7 +220,7 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★★**끝난다** — 이어가기에 횟수를 안 뒀으므로 누적 백스톱이 유일한 종료 보장이다(창을 절대값으로 재면 iteration 이 고정돼 무한 루프가 되고 백스톱도 원리적으로 안 걸린다)",
-        bg.halted === "백스톱" && bg.totalIterations >= 1500,
+        bg.halted === "백스톱" && bg.totalIterations === 1499,
         `종료=${bg.halted} 누적=${bg.totalIterations}`,
       ),
       assert(
@@ -295,18 +340,16 @@ export const check: RegressionCheck = {
         `배경300=${String(willAutoContinue(true, 300, 1500))} 메인300=${String(willAutoContinue(false, 300, 1500))} 배경1500=${String(willAutoContinue(true, 1500, 1500))}`,
       ),
       assert(
-        "★★«뭐라고 시킬까» 와 «이어갈까» 가 **한 결정**이다 — 어댑터가 저장한 값을 쓰고, 이어가기 분기에서 스레드를 다시 묻지 않는다(다시 물으면 두 문구가 또 갈린다)",
-        /flushWillContinue = willAutoContinue\(/.test(code) &&
-          /capFlushPrompt\(\{ willContinue: flushWillContinue/.test(code) &&
-          /if \(flushWillContinue\) \{/.test(code) &&
-          !/if \(isCheckinGuardedThread\(input\.threadKey\)\) \{/.test(code),
-        `저장=${/flushWillContinue = willAutoContinue\(/.test(code)} 넛지=${/capFlushPrompt\(\{ willContinue: flushWillContinue/.test(code)} 소비=${/if \(flushWillContinue\) \{/.test(code)} 재질의잔존=${/if \(isCheckinGuardedThread\(input\.threadKey\)\) \{/.test(code)}`,
+        "★★정상 계속과 빈 응답 복구가 같은 예약선 판정을 쓴다 — 최종 보고 전용 다음 슬롯으로 계속하지 않는다",
+        /const canContinue = willAutoContinue\(background, iteration \+ 2, CODEX_MAX_TOTAL_ITERATIONS\)/.test(code) &&
+          /if \(canContinue\) \{/.test(code) && /flushWillContinue = canContinue;/.test(code),
+        "실제 경계·예약선·final-slot 동작은 위 합성 SSE 어댑터 검사로도 확인",
       ),
       assert(
-        "★flush 를 켜는 **모든** 자리가 그 결정을 세운다 — 하나라도 빠지면 그 경로의 이어가기가 조용히 사라진다(기본값 false)",
-        (code.match(/finalFlushRequested = true;/g) ?? []).length ===
-          (code.match(/flushWillContinue = willAutoContinue\(/g) ?? []).length,
-        `flush 켜는 곳 ${(code.match(/finalFlushRequested = true;/g) ?? []).length}곳 · 결정 세우는 곳 ${(code.match(/flushWillContinue = willAutoContinue\(/g) ?? []).length}곳`,
+        "★누적 보고 예약은 요청의 tools 조립보다 먼저다 — 다음 도구 batch를 실행한 뒤 예약하지 않는다",
+        code.indexOf("shouldStopContinuing(iteration + 1, CODEX_MAX_TOTAL_ITERATIONS)") >= 0 &&
+          code.indexOf("shouldStopContinuing(iteration + 1, CODEX_MAX_TOTAL_ITERATIONS)") < code.indexOf("tools: finalFlushRequested ? [] : responsesTools"),
+        { reserveIndex: code.indexOf("shouldStopContinuing(iteration + 1, CODEX_MAX_TOTAL_ITERATIONS)"), toolsIndex: code.indexOf("tools: finalFlushRequested ? [] : responsesTools") },
       ),
       assert(
         "★★어댑터가 그 판정을 **위임한다**(인라인으로 되돌리면 위 실행 검사가 못 본다)",

@@ -22,6 +22,7 @@
           return div;
         }
         const isOut = entry.role === "assistant";
+        if (isOut && isRecordOnlyMessage(entry)) return null;
         // 시스템 통지 — 라이브(renderChannelMessage) 파리티. 새로고침해도 구분이 유지돼야
         //  한다(chat_log.notice 컬럼 → /chat-history entries 로 그대로 따라온다).
         const isNotice = isOut && entry.notice === true;
@@ -354,7 +355,8 @@
           line.appendChild(bg);
         }
         if (hasDiff) line.appendChild(buildDiffBlock(a.diff));
-        if (a.output && typeof a.output.text === "string") line.appendChild(buildOutputBlock(a.output));
+        if (a.label === "Read") wireReadToggle(line);
+        if ((a.output && typeof a.output.text === "string") || a.label === "Read") line.appendChild(buildToolOutputBlock(a.output, a.file, a.label));
         if (a.plan) line.appendChild(buildPlanBlock(a.plan)); // ExitPlanMode 계획 — 항상 보이게.
         // 클릭 = 스텝 펼침/접힘(리치 블록 있으면). 부모 turn 접힘으로 전파 방지(stopPropagation).
         if (line.querySelector(":scope > .act-diff, :scope > .act-output, :scope > .act-plan")) {
@@ -536,6 +538,15 @@
               units.push({ kind: "msg", entry: it.m });
               continue;
             }
+            if (it.m.role === "assistant" && isRecordOnlyMessage(it.m)) {
+              // flush로 앞 활동을 보존한 뒤 숨긴 마감 자체는 그리지 않는다.
+              // 뒤 턴의 세그먼트/강도가 앞 턴으로 새지 않도록 경계도 닫는다.
+              giveTurnEffort(it.m);
+              renderedMsgKeys.add(msgKey(it.m.ts, "assistant"));
+              sawTextThread = null;
+              lastTextUnit = null;
+              continue;
+            }
             // 인터리브(2026-07-13): 이 턴이 kind:"text" 세그먼트를 가졌으면 뒤의 flat assistant
             // chat_log 행은 세그먼트의 중복 → 드롭(단 msgKey 등록해 SSE out replay 도 재렌더 안 함).
             // ★단 첨부(send_file) 를 실은 assistant 행은 텍스트 세그먼트의 중복이 아니므로 절대 드롭
@@ -633,6 +644,8 @@
       // 초기 최근 HISTORY_PAGE + 위(최古)로 스크롤 시 더 로드. 트리거는 가상화 스크롤 리스너가
       // scrollTop < VT_BUFFER(상단 근처)에서 loadOlderHistory() 를 호출(구 IntersectionObserver 센티넬 대체).
       const HISTORY_PAGE = 20;
+      const HISTORY_FETCH_BUDGET = 3; // 첫 로드도 포함. 소진 후엔 명시 더보기로만 재개.
+      let historyOlderPaused = false; // 원시 이력은 더 있지만 이번 조회 예산에서 멈춤.
       let oldestLoadedTs = null; // 현재 로드된 가장 오래된 메시지 ts(다음 beforeTs).
       // ★복합 커서의 두 번째 축 — 같은 ts 가 여럿이면 `ts <` 만으로는 경계 행이 유실된다
       //  (2026-08-23 적대 검토 D-1: 라이브에 동률 그룹 18개, 대부분 질문·답 쌍이라
@@ -690,39 +703,75 @@
       //  탭 전환이 언제나 `switchToken` 을 올리므로 토큰 하나로 판정한다(판정은 tabs.js 와 같은 것).
       const sameLoadToken = (token) => token === switchToken;
 
-      const loadOlderHistory = async () => {
-        if (loadingOlder || reachedOldest || oldestLoadedTs === null) return;
+      // 필요할 때만 스트림 바로 위에 둔다. 가상화 좌표/높이와 실제 행 순서는 건드리지 않는다.
+      let olderHistoryControl = null;
+      let olderHistoryButton = null;
+      const setHistoryOlderPaused = (paused) => {
+        historyOlderPaused = paused;
+        if (paused && !olderHistoryControl) {
+          olderHistoryControl = document.createElement("div");
+          olderHistoryControl.className = "chat-start-examples";
+          olderHistoryButton = document.createElement("button");
+          olderHistoryButton.id = "history-load-older";
+          olderHistoryButton.type = "button";
+          olderHistoryButton.className = "chat-start-ex";
+          olderHistoryButton.textContent = i18n("chat.loadOlder");
+          olderHistoryButton.addEventListener("click", () => { void loadOlderHistory(HISTORY_FETCH_BUDGET, true); });
+          olderHistoryControl.appendChild(olderHistoryButton);
+          stream.parentNode.insertBefore(olderHistoryControl, stream);
+        }
+        if (olderHistoryControl) {
+          olderHistoryControl.style.display = paused && !reachedOldest ? "" : "none";
+          olderHistoryButton.disabled = loadingOlder;
+        }
+        refreshChatEmpty();
+      };
+
+      const loadOlderHistory = async (maxPages = HISTORY_FETCH_BUDGET, resume = false) => {
+        if (loadingOlder || reachedOldest || oldestLoadedTs === null || (historyOlderPaused && !resume)) return;
         loadingOlder = true;
+        if (olderHistoryButton) olderHistoryButton.disabled = true;
         const myToken = switchToken;
+        let fetchedPages = 0;
         try {
-          const r = await fetch(
-            historyPageQuery(HISTORY_PAGE, oldestLoadedTs, oldestLoadedId) +
-              "&threadKey=" + encodeURIComponent(activeThreadKey), // 멀티세션 — active 세션만 더보기.
-          );
-          if (!r.ok) return; // ★더보기 실패는 전체 상태를 안 바꾼다(이미 내용이 있다).
-          const data = await r.json().catch(() => ({}));
-          if (!sameLoadToken(myToken)) return; // 그 사이 탭이 바뀌었다 — 그리지도 커서를 옮기지도 않는다.
-          const entries = Array.isArray(data.entries) ? data.entries : [];
-          const activities = Array.isArray(data.activities) ? data.activities : [];
-          if (entries.length === 0) {
-            reachedOldest = true; // 더 없음.
+          while (fetchedPages < maxPages) {
+            fetchedPages += 1;
+            const previousTs = oldestLoadedTs;
+            const previousId = oldestLoadedId;
+            const r = await fetch(
+              historyPageQuery(HISTORY_PAGE, oldestLoadedTs, oldestLoadedId) +
+                "&threadKey=" + encodeURIComponent(activeThreadKey),
+            );
+            if (!r.ok) return; // 더보기 실패는 이미 있는 내용을 지우지 않는다.
+            const data = await r.json().catch(() => ({}));
+            if (!sameLoadToken(myToken)) return;
+            const entries = Array.isArray(data.entries) ? data.entries : [];
+            const activities = Array.isArray(data.activities) ? data.activities : [];
+            if (entries.length === 0) { reachedOldest = true; setHistoryOlderPaused(false); return; }
+            // 커서는 그린 행이 아니라 받은 원시 행을 가리킨다. 렌더 예외/숨긴 행에도 전진한다.
+            setOldestCursor(entries, oldestLoadedTs);
+            renderHistoryBatch(entries, activities, true);
+            if (entries.length < HISTORY_PAGE) reachedOldest = true;
+            const advanced = oldestLoadedTs < previousTs ||
+              (oldestLoadedTs === previousTs && oldestLoadedId != null && previousId != null && oldestLoadedId < previousId);
+            // 기록 전용 행만 한 페이지를 채웠다고 과거 대화가 없는 것은 아니다.
+            // 같은 커서/다른 세션으로 반복하지 않으며 실제 대화·활동을 만나면 여기서 멈춘다.
+            if (!reachedOldest && advanced && activities.length === 0 &&
+                entries.every((e) => e.role === "assistant" && isRecordOnlyMessage(e))) continue;
+            // 비전진도 자동 반복하지 않는다. exhausted 로 거짓 확정하지 않고 사용자가 재개한다.
+            setHistoryOlderPaused(!reachedOldest && !advanced);
             return;
           }
-          // ★**커서를 먼저 옮긴다** (2026-09-10). 종전엔 그린 **뒤에** 옮겼는데, 그리는 도중
-          //  예외가 나면 `catch` 가 삼키고 커서가 **그대로 남는다** — 다음 스크롤이 같은
-          //  페이지를 다시 받아 **이미 그린 것 위에 또 그린다.** 부분 렌더 + 재요청은
-          //  «같은 메시지가 두 개» 로 보이는 정확한 모양이다.
-          //  커서의 의미는 «어디까지 받았나» 이지 «어디까지 그렸나» 가 아니다.
-          setOldestCursor(entries, oldestLoadedTs);
-          // 도구 스텝·diff·출력·묶음도 함께 복원(초기 로드와 동일 로직, older prepend 방향).
-          renderHistoryBatch(entries, activities, true);
-          if (entries.length < HISTORY_PAGE) reachedOldest = true; // 페이지 미만 = 마지막 묶음.
+          setHistoryOlderPaused(true);
         } catch (err) {
           console.warn("older history load failed:", err && err.message ? err.message : err);
         } finally {
           // ★버려진 배치는 새 탭의 가드를 풀지 않는다 — 전환이 이미 false 로 되돌렸고, 그 뒤
           //  새 탭이 시작한 더보기가 돌고 있을 수 있다(풀면 같은 페이지를 두 번 받는다).
-          if (sameLoadToken(myToken)) loadingOlder = false;
+          if (sameLoadToken(myToken)) {
+            loadingOlder = false;
+            setHistoryOlderPaused(!reachedOldest && (historyOlderPaused || fetchedPages === maxPages));
+          }
         }
       };
 
@@ -789,7 +838,7 @@
 
       // SSE 연결 *전에* 과거 이력을 await 로드해 채팅 흐름을 복원한다. 비어있으면 chat-empty
       // 안내가 그대로 유지된다(첫 사용). 실패는 무해 — 라이브 SSE 경로엔 영향 0(과거 로드는 추가).
-      // 초기 limit 100(기능 2). 100 미만이면 더 없음(reachedOldest), 아니면 센티넬 관찰 시작.
+      // 첫 페이지 미만이면 더 없음(reachedOldest). 숨김 페이지 연속 조회도 첫 fetch 포함 3회까지.
       // 비서 이름을 정적 문구(채팅 설명 등)에 반영 — 라벨은 렌더 시점에 assistantName 참조.
       const applyAssistantName = () => {
         const desc = document.querySelector(".chat-desc");
@@ -818,7 +867,7 @@
           if (!sameLoadToken(myToken)) return;
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
-          if (entries.length === 0 && activities.length === 0) return; // 빈 이력(아래 finally 가 ready 로 닫는다).
+          if (entries.length === 0 && activities.length === 0) { reachedOldest = true; return; } // 빈 이력.
           // 메시지 + 도구 스텝(기능 B)을 병합·묶음 렌더(초기=prepend). 각 dedup 키 등록 →
           // 곧 연결될 SSE replay 가 같은 메시지/스텝을 중복 렌더 안 하게.
           renderHistoryBatch(entries, activities, false);
@@ -826,6 +875,10 @@
           setOldestCursor(entries, activities.length > 0 ? activities[0].ts : oldestLoadedTs);
           // 첫 로드가 페이지 미만 = 더 없음. 아니면 상단 스크롤이 loadOlderHistory 를 트리거(스크롤 리스너).
           if (entries.length < HISTORY_PAGE) reachedOldest = true;
+          if (!reachedOldest && activities.length === 0 && entries.every((e) => e.role === "assistant" && isRecordOnlyMessage(e))) {
+            await loadOlderHistory(HISTORY_FETCH_BUDGET - 1);
+            if (!sameLoadToken(myToken)) return;
+          }
           refreshChatEmpty();
           scrollChatToNewest(); // 초기 로드 후 최신(하단) 고정 — 앵커 드리프트 보정.
           if (currentView === "overview") setTimeout(showOverview, 0);

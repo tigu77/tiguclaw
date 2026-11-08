@@ -312,6 +312,21 @@
         <div class="bg-group-body bg-timers-list" id="bg-timers-list"></div>
       </div>
       <div id="bg-scroll" class="bg-scroll" tabindex="0">
+        <!-- 예약 대기는 실행 중 작업과 별도 집계. 꺼진 예약의 native details는 갱신해도 유지한다. -->
+        <div id="bg-schedules" hidden>
+          <div class="bg-group-head" id="bg-schedules-head" role="button" tabindex="0" aria-expanded="true" aria-controls="bg-schedules-body">
+            <span class="bg-group-chevron" aria-hidden="true">▾</span>
+            <span class="bg-group-label" data-i18n="bg.schedules.head">↻ 반복 스케줄</span>
+            <span class="bg-group-label" id="bg-schedules-count"></span>
+          </div>
+          <div class="bg-group-body bg-schedules-body" id="bg-schedules-body">
+            <div id="bg-schedules-list"></div>
+            <details id="bg-schedules-off" hidden>
+              <summary id="bg-schedules-off-summary"></summary>
+              <div id="bg-schedules-off-list"></div>
+            </details>
+          </div>
+        </div>
         <!-- 작업 그룹(매니저·에이전트 혼재) — 접이식 카테고리 헤더 + 본문(상태필터 + 리스트).
              kind(매니저/에이전트)는 카드 배지로만 구분, 그룹은 나누지 않는다(사용자 확정). -->
         <div class="bg-group-head" id="bg-jobs-head" role="button" tabindex="0" aria-expanded="true">

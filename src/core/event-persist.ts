@@ -389,10 +389,16 @@ const startChatLogPersistence = (bus: EventBus): void => {
         // 시스템 통지 표식 승계 — 새로고침 후에도 비서 발화와 구분되게. 라이브만 구분되면
         // 같은 데이터가 경로마다 달라진다(모델 표시에서 겪은 함정과 동형).
         ...(payload.notice === true ? { notice: true } : {}),
-        ...(replyTo !== undefined ? { data: { replyTo } } : {}),
-        // «내부 처리» 표식(2026-11-02, notify-owner-report-contract §11·§12) — 행·문구는 그대로 남기고 표식을 `data` 에 싣는다(스키마 변경 0).
-        //  비서 out 에만 온다(`publishInternalHandled`) — 사용자 행의 `replyTo` 와 겹치지 않는다.
-        ...(event.type === "channel.message.out" && payload.audience === "internal" ? { data: { audience: "internal" } } : {}),
+        // replyTo와 내부 표식을 한 data에 합친다. recordOnly는 internal out에서만 신뢰한다.
+        ...((replyTo !== undefined || (event.type === "channel.message.out" && payload.audience === "internal")) ? {
+          data: {
+            ...(replyTo !== undefined ? { replyTo } : {}),
+            ...(event.type === "channel.message.out" && payload.audience === "internal" ? {
+              audience: "internal",
+              ...(payload.recordOnly === true ? { recordOnly: true } : {}),
+            } : {}),
+          },
+        } : {}),
         // 실제 응답 모델 — 있으면 함께 영속(새로고침 후 표시). 없으면 키 생략(거짓값 금지).
         ...(typeof payload.model === "string" && payload.model !== ""
           ? { model: payload.model }

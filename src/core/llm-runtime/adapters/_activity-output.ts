@@ -10,7 +10,7 @@
  * 빌더로 프리뷰화. ★캡처/렌더 분리(ADR): 여기선 프리뷰 텍스트만, 초록/붉은 뷰는 대시보드.
  */
 
-import type { ActivityOutput } from "../types.js";
+import type { ActivityOutput, ActivityRead } from "../types.js";
 
 /**
  * 출력 프리뷰를 **붙이지 않는** 도구 (2026-07-29 반전).
@@ -59,7 +59,12 @@ export function buildActivityOutput(
   toolName: string,
   text: string | undefined | null,
   isError?: boolean,
+  read?: ActivityRead,
+  knownReadSuccess = false,
 ): ActivityOutput | undefined {
+  if (toolName === "Read") {
+    try { return buildReadOutput(text, isError, read, knownReadSuccess); } catch { return undefined; }
+  }
   if (typeof text !== "string" || text === "") return undefined;
   // ★제외는 **성공 결과**의 잡음 때문이다 — 실패는 잡음이 아니다(2026-10-14 적대 검토). 종전엔 제외가 오류 표시까지 지워
   //  Edit·Write 실패가 대시보드에도, 진행 알림의 «오류 N건» 에도 안 잡혔다(같은 실패 반복 = 대표적인 정체 형상인데).
@@ -96,4 +101,38 @@ export function buildActivityOutput(
   } catch {
     return undefined;
   }
+}
+
+/** Read에만 세 상한을 엄격히 집행한다. 다른 도구의 기존 결과는 바꾸지 않는다. */
+function buildReadOutput(text: string | undefined | null, isError?: boolean, read?: ActivityRead, knownSuccess = false): ActivityOutput | undefined {
+  if (typeof text !== "string") return undefined;
+  if (text === "" && read === undefined) return undefined;
+  const err = isError === true || (!knownSuccess && /^Error:\s/.test(text.trimStart()));
+  const observation: ActivityRead = err ? { kind: "unknown" } : { ...(read ?? { kind: "unknown" }) };
+  const out: string[] = [];
+  let chars = 0;
+  let truncated = false;
+  // split preserves real blank rows and trailing whitespace; no trim/pop.
+  const split = text.split("\n");
+  // Only producer row counts can remove the final split sentinel. Never trim real blank rows.
+  const lines = observation.kind === "text" && observation.returnedLineCount !== undefined
+    ? split.slice(0, observation.returnedLineCount) : split;
+  for (const raw of lines) {
+    const separator = out.length ? 1 : 0;
+    const room = MAX_CHARS - chars - separator;
+    if (out.length >= MAX_LINES || room < 0 || (room === 0 && raw.length > 0)) { truncated = true; break; }
+    const width = Math.min(LINE_MAX, room);
+    const cut = raw.length > width;
+    // Keep the existing row-wise preview policy; ellipses mark earlier clipped rows too.
+    const row = cut ? raw.slice(0, Math.max(0, width - 1)) + (width > 0 ? "…" : "") : raw;
+    out.push(row);
+    chars += separator + row.length;
+    if (cut) truncated = true;
+    if (observation.kind === "text") {
+      if (cut) observation.previewLastLinePartial = true;
+      else delete observation.previewLastLinePartial;
+    }
+  }
+  return { text: out.join("\n"), fullChars: text.length, read: observation,
+    ...(truncated ? { truncated: true } : {}), ...(err ? { isError: true } : {}) };
 }

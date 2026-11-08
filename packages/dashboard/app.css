@@ -1077,6 +1077,13 @@
       .act-diff-pre .dl-ctx .dl-op { color:var(--text-dim); }
       .act-diff-pre .dl-trunc { color:var(--text-dim); font-style:italic; }
       /* 리치 출력 프리뷰(Bash/Read/Grep/Glob) — diff 와 동형 접이식, 단색 mono. */
+      .act-read-lines { margin:3px 0 2px; padding:6px 0; background:rgb(var(--shadow-rgb) / .28); border-radius:6px; font:11px/1.5 ui-monospace,"SF Mono",Menlo,monospace; }
+      .act-read-line { display:flex; min-width:0; }
+      .act-read-num { flex:none; min-width:4ch; padding:0 8px; text-align:right; color:var(--text-dim); user-select:none; border-right:1px solid var(--border); }
+      .act-read-text { flex:1; min-width:0; padding:0 8px; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--text-mute); user-select:text; }
+      .act-read-caption { margin:3px 4px; color:var(--text-dim); font-size:0.625rem; }
+      [data-read-toggle="1"]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
       .act-output { flex-basis:100%; width:100%; margin:2px 0 1px; }
       .act-output-head { display:inline-flex; align-items:center; gap:6px; cursor:pointer; user-select:none; font-size:0.625rem; color:var(--text-dim); padding:1px 4px; border-radius:6px; }
       .act-output-head:hover { background:rgb(var(--fg-rgb) / .05); }
@@ -1293,10 +1300,18 @@
       .bg-timer.failed { opacity:1; border-color:rgb(var(--danger-rgb) / .5); }
       .bg-timer.failed .bg-timer-when { color:var(--danger-fg); }
       .bg-timer-when { flex:none; font-weight:800; color:var(--accent); white-space:nowrap; }
-      .bg-timer-info { flex:1; min-width:0; }
-      .bg-timer-label { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
-      .bg-timer-session { color:var(--text-mute); font-size:0.625rem; overflow-wrap:anywhere; }
-      .bg-timer-session .bg-job-session { margin-left:0; max-width:100%; }
+      .bg-timer-info { flex:1; min-width:0; display:flex; align-items:center; gap:6px; }
+      .bg-timer-label { flex:1; min-width:0; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); border:0; padding:3px 0; background:transparent; font:inherit; text-align:left; cursor:pointer; }
+      .bg-timer-label:focus-visible, .bg-timer-session button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+      .bg-timer-session { flex:0 1 auto; min-width:0; max-width:30%; color:var(--text-mute); font-size:0.625rem; }
+      .bg-timer-session .bg-job-session, .bg-timer-session .bg-job-rawtk { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; margin:0; }
+      .bg-timer-session button.bg-job-session { border:0; padding:2px; background:transparent; font:inherit; color:var(--accent); cursor:pointer; }
+      .bg-reservation-detail { position:fixed; z-index:10020; box-sizing:border-box; width:max-content; max-width:min(360px, calc(100vw - 16px)); max-height:calc(100dvh - 16px); overflow:auto; padding:10px 12px; border:1px solid var(--border); border-radius:9px; background:rgb(var(--panel-solid-rgb)); color:var(--text); box-shadow:0 4px 20px rgba(var(--shadow-rgb) / calc(4 / 15)); white-space:pre-wrap; overflow-wrap:anywhere; font-size:0.75rem; }
+      .bg-schedules-body { padding:4px 12px 8px; }
+      .bg-schedule { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid var(--border); border-radius:9px; margin-bottom:4px; font-size:0.75rem; min-width:0; }
+      .bg-schedule-when { flex:0 1 auto; min-width:0; max-width:45%; color:var(--text-mute); }
+      .bg-schedules-body details > summary { color:var(--text-mute); font-size:0.6875rem; cursor:pointer; padding:6px 0; }
+      .bg-schedules-body details .bg-schedule { opacity:.6; }
       .bg-timer-stop { flex:none; padding:3px 8px; border:1px solid var(--border); border-radius:7px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:0.6875rem; font-weight:800; }
       .bg-timer-stop:hover { color:var(--text); background:var(--card-hover); }
       .bg-timer-stop:disabled { opacity:.5; cursor:default; }

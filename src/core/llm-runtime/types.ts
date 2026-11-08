@@ -624,7 +624,19 @@ export interface RegionAActivityPayload {
 }
 
 /** 리치 도구 출력 프리뷰 (ADR 2026-07-09 슬라이스 2/3). */
+/** Read 당시 반환의 근거만. 본문은 ActivityOutput.text 하나에 유지한다. */
+export interface ActivityRead {
+  kind: "text" | "empty" | "eof" | "notice" | "non-text" | "unknown";
+  startLine?: number;
+  returnedLineCount?: number;
+  sourceTruncated?: true;
+  partialLastLine?: true;
+  previewLastLinePartial?: true;
+}
+
 export interface ActivityOutput {
+  /** 선택적인 Read 관측. 요청 offset/limit으로 범위를 추측하지 않는다. */
+  read?: ActivityRead;
   /** 출력 프리뷰 텍스트 (크기 캡 적용). */
   text: string;
   /**

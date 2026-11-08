@@ -51,19 +51,38 @@ export const omitsTurnReport = (
  *  `deliver` 가 던지면(전송 실패) 그대로 올린다 — 생략으로 바꾸지 않는다(전달 실패 ≠ 생략, 설계 §3-4).
  */
 export const finishTurnOutput = async (t: {
-  msg: { reportDefault?: "omit"; channel: string; threadKey: string };
+  msg: { reportDefault?: "omit"; channel: string; threadKey: string; triggerRun?: { kind: string }; onReportOmitted?: () => void };
   out: { reportOmitted?: true };
   appended: string;
   bus: EventBus;
   deliver: () => Promise<void>;
 }): Promise<"omitted" | "delivered"> => {
   if (omitsTurnReport(t.msg, t.out, t.appended)) {
-    publishInternalHandled(t.bus, { channel: t.msg.channel, threadKey: t.msg.threadKey });
+    const trigger = t.msg.triggerRun?.kind === "schedule" || t.msg.triggerRun?.kind === "watch";
+    publishInternalHandled(t.bus, { channel: t.msg.channel, threadKey: t.msg.threadKey, ...(trigger ? { recordOnly: true } : {}) });
+    t.msg.onReportOmitted?.();
     return "omitted";
   }
   await t.deliver();
   return "delivered";
 };
+
+/** 전용 트리거의 발송만 마감한다. 원문·usage·실행 이력은 호출자가 그대로 보존한다. */
+export const finishTriggerOutput = async (t: {
+  reportDefault?: "omit";
+  out: { reportOmitted?: true };
+  channel: string;
+  threadKey: string;
+  kind: "schedule" | "watch";
+  bus: EventBus;
+  deliver: () => Promise<void>;
+}): Promise<"omitted" | "delivered"> => finishTurnOutput({
+  msg: { channel: t.channel, threadKey: t.threadKey, reportDefault: t.reportDefault, triggerRun: { kind: t.kind } },
+  out: t.out,
+  appended: "",
+  bus: t.bus,
+  deliver: t.deliver,
+});
 
 /**
  * **턴의 답을 보낸다** — 채널 답(`msg.reply`) → 대화 기록·화면(`channel.message.out`) → 함께 보낼 채널 사본 → 다음 메시지 제안(2026-11-01 진입점에서 뽑음 —
@@ -118,14 +137,15 @@ export const deliverTurnReply = async (t: {
  *   세션 목록 미리보기에서만 빠진다. 저장은 행 `data.audience` 로 따라간다(`event-persist`). 라이브는 이 out 이 그 턴 카드를 마감한다.
  *  `unread:false` — 안 읽음 배지를 올리지 않는다(배지 판정은 이 필드 — `sse.js`).
  */
-export const publishInternalHandled = (bus: EventBus, at: { channel: string; threadKey: string }): OutCoords =>
+export const publishInternalHandled = (bus: EventBus, at: { channel: string; threadKey: string; recordOnly?: true }): OutCoords =>
   publishReplyOut(bus, {
     channel: at.channel,
     threadKey: at.threadKey,
-    text: translate("srv.notice.handledInternally"),
+    text: translate(at.recordOnly === true ? "srv.notice.triggerReportOmitted" : "srv.notice.handledInternally"),
     notice: true,
     unread: false,
     audience: "internal",
+    ...(at.recordOnly === true ? { recordOnly: true } : {}),
   });
 
 /**

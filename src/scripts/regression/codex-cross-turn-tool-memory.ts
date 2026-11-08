@@ -68,7 +68,7 @@ export const check: RegressionCheck = {
     const types = A.input.map((x) => (x.type === "message" ? `${x.type}:${x.role}` : x.type));
     const outsA = outputsOf(A.input);
 
-    // ── B. 이력 출력은 턴 안 몰아서 압축에서 빠진다 · 상한 근처(batchChars 0)만 예외 ──
+    // ── B. 이력 출력은 일반/상한 근처에서 보호 · explicit overflow 옵션만 예외 ──
     const hist = H.buildCodexInputArray([{ role: "user", content: "q" }, { role: "assistant", content: "a",
       items: Array.from({ length: 6 }, (_, i) => [
         { type: "function_call" as const, call_id: `h${i}`, name: "Read", arguments: "{}" },
@@ -80,6 +80,8 @@ export const check: RegressionCheck = {
     const histAfterNormal = outputsOf(hist).filter((o) => o.output.startsWith("HIST-")).length;
     H.compactOldToolOutputs(hist, { batchChars: 0 });
     const histAfterForced = outputsOf(hist).filter((o) => o.output.startsWith("HIST-")).length;
+    H.compactOldToolOutputs(hist, { batchChars: 0, includeRestored: true });
+    const histAfterRescue = outputsOf(hist).filter((o) => o.output.startsWith("HIST-")).length;
 
     // ── C. 큰 턴(아스트라 재현): 16K 안쪽 결과 14개 = 21만 자 ──
     const tkC = TK("c");
@@ -360,7 +362,7 @@ export const check: RegressionCheck = {
       assert("A 추론(암호문)·짝 없는 호출·최종 답 중복은 저장하지 않는다",
         !JSON.stringify(t1.items).includes("SECRET-CIPHER") && !JSON.stringify(t1.items).includes("orphan") && !t1.items.some((i) => i.type === "message" && i.text === "T1 답입니다") && t1.items.every((i) => !("id" in i)), t1.items),
       assert("★A 출처 경계 = 이력 **항목** 수(턴 수가 아니다)", A.boundary.historyCount === A.input.length - 1 - A.boundary.summaryCount, A.boundary),
-      assert("★B 이력에서 온 출력은 턴 안 몰아서 압축(128K)에서 빠지고, 상한 근처 즉시 압축에선 접힌다", histAfterNormal === 6 && newCompacted > 0 && histAfterForced < 6, { histAfterNormal, newCompacted, histAfterForced }),
+      assert("★B 이력 출력은 일반/상한 근처에서 보호하고 explicit overflow 옵션만 연다", histAfterNormal === 6 && newCompacted > 0 && histAfterForced === 6 && histAfterRescue < 6, { histAfterNormal, newCompacted, histAfterForced, histAfterRescue }),
       assert("C 재현 조건: 큰 턴 원문이 20만 자를 넘는다(없으면 아래는 공짜 초록)", bigRawChars > 200_000, bigRawChars),
       assert("★C 큰 턴 뒤에도 앞 턴이 창에 남는다(종전 0턴)", C.win.some((t) => t.content === "C0 답입니다") && outputsOf(C.input).some((o) => o.output.includes("EARLY-42")), C.win.map((t) => t.content.slice(0, 12))),
       assert("★C 큰 턴은 되살릴 상한 안으로 들어오고, 호출·출력 짝은 전부 남는다",

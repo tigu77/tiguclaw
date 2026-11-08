@@ -49,6 +49,8 @@
  *  - 위험 명령·위험 경로 차단은 *LLM 측 정책* (sysprompt prompt-gated). MCP server
  *    본체는 DISALLOWED_TOOLS/DISALLOWED_URLS 만 차단 (정책 진실 소스 hook) — 경로 벽 0.
  */
+import type { ActivityRead } from "../types.js";
+import { READ_RESULT_META } from "../adapters/_mcp-content.js";
 import { coreMcpServer } from "./_core-server.js";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -1212,6 +1214,9 @@ const makeFileOpsTools = (
     errText("검색이 취소되었습니다 — 결과 없음이 아니라 중단입니다(부분 결과도 버렸습니다).");
 
   // ─── Read 도구 ─────────────────────────────────────────────────────────
+  const readText = (text: string, read: ActivityRead) => ({
+    content: [{ type: "text" as const, text, _meta: { [READ_RESULT_META]: read } }],
+  });
   const readTool = tool(
     "Read",
     "파일 본문을 읽어 반환합니다. 상대경로는 현재 작업폴더(프로젝트/홈) 기준, 절대경로면 밖도 허용. limit 미지정 시 2000 라인. offset 은 1-based.",
@@ -1250,10 +1255,11 @@ const makeFileOpsTools = (
           hit.stubs < READ_CACHE_MAX_STUBS
         ) {
           hit.stubs += 1;
-          return okText(
+          return readText(
             `(이 턴에서 이미 읽은 파일입니다 — 파일이 그대로라 본문을 다시 싣지 않습니다.)\n` +
               `path=${abs}${args.offset !== undefined ? `, offset=${args.offset}` : ""} · ${hit.lines}줄\n` +
               `앞서 이 턴에서 반환한 내용을 그대로 사용하세요. 다시 확인이 꼭 필요하면 한 번 더 호출하면 본문을 줍니다.`,
+            { kind: "notice" },
           );
         }
         // ★이미지는 **비전 채널로** 답한다 (2026-08-01, 라이브 사고).
@@ -1288,6 +1294,7 @@ const makeFileOpsTools = (
             content: [
               {
                 type: "text" as const,
+                _meta: { [READ_RESULT_META]: { kind: "non-text" } },
                 text: `이미지를 비전 채널로 첨부했습니다(${imageMime}, ${Math.round(stat.size / 1024)}KB). path=${abs}`,
               },
               { type: "image" as const, data: b64, mimeType: imageMime },
@@ -1299,10 +1306,11 @@ const makeFileOpsTools = (
         //  도구 이름을 열거해 주지는 않는다 — 파일 종류마다 맞는 도구가 다르고 그 판단은
         //  모델이 하는 게 맞다(목록을 박으면 그게 또 손으로 관리하는 목록이 된다).
         if (looksBinary(headBuf)) {
-          return okText(
+          return readText(
             `이 파일은 텍스트가 아닙니다 — 본문을 싣지 않았습니다.\n` +
               `path=${abs} · ${humanBytes(stat.size)}\n` +
               `내용을 확인하려면 Bash 로 그 형식에 맞는 도구를 쓰세요(예: 무엇인지부터 알아보려면 \`file\`).`,
+            { kind: "non-text" },
           );
         }
         const raw = await fs.readFile(abs, "utf8");
@@ -1317,13 +1325,26 @@ const makeFileOpsTools = (
         const limit = args.limit ?? DEFAULT_READ_LIMIT;
         const slice = lines.slice(start, start + limit);
         let body = slice.join("\n");
+        const sourceTruncated = body.length > READ_BODY_HARD_CAP;
         if (body.length > READ_BODY_HARD_CAP) {
           body = `${body.slice(0, READ_BODY_HARD_CAP - 1)}…`;
         }
         // 캐시 적재(턴 스코프). 상한을 둬 긴 턴에서도 Map 이 무한 증가하지 않는다.
         if (turnReadCache.size >= READ_CACHE_MAX_ENTRIES) turnReadCache.clear();
         turnReadCache.set(ck, { sig, lines: slice.length, bytes: body.length, stubs: 0 });
-        return okText(body);
+        // raw.split's final empty sentinel is not a file row. A selected *real* blank row is.
+        const logicalCount = raw === "" ? 0 : lines.length - (raw.endsWith("\n") ? 1 : 0);
+        const selectedCount = Math.max(0, Math.min(slice.length, logicalCount - start));
+        // The hard-cap ellipsis is an explanation, not a byte returned from the next file row.
+        const retainedBody = sourceTruncated ? body.slice(0, -1) : body;
+        const retainedCount = retainedBody.split("\n").length - (retainedBody.endsWith("\n") ? 1 : 0);
+        const read: ActivityRead = abs.endsWith(".ipynb") ? { kind: "unknown" }
+          : raw === "" ? { kind: "empty" }
+          : selectedCount === 0 ? { kind: "eof" }
+          : { kind: "text", startLine: start + 1,
+              returnedLineCount: sourceTruncated ? Math.min(selectedCount, retainedCount) : selectedCount,
+              ...(sourceTruncated ? { sourceTruncated: true, ...(!retainedBody.endsWith("\n") ? { partialLastLine: true } : {}) } : {}) };
+        return readText(body, read);
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));
       }

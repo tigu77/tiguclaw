@@ -119,6 +119,7 @@ interface CodexSseEvent {
   };
   response?: {
     id?: string;
+    model?: string;
     output_text?: string;
     /** `response.failed` 의 사유 — 공식 `ResponseError`(code·message). */
     error?: { code?: string; message?: string } | null;
@@ -163,6 +164,9 @@ export interface CodexToolCall {
 }
 
 export interface CodexSseResult {
+  /** Strict terminal sample for invocation-local pressure only; normal accounting is unchanged. */
+  terminalUsage?: { responseId: string; model: string | undefined; inputTokens: number; outputTokens: number; totalTokens: number };
+  replayUnchanged?: boolean;
   /** CODEX_CACHE_CURVE 진단 전용. 공통 usage 및 비용 집계와 분리한다. */
   cacheAttribution?: CacheAttribution;
   /** 정상 완료된 출력 항목. 같은 실행의 다음 요청에만 원래 순서로 재전송한다. */
@@ -408,6 +412,7 @@ export const parseCodexSse = async (
   let answerText = "";
   let sawCommentary = false;
   let responseId: string | undefined;
+  let terminalUsage: CodexSseResult["terminalUsage"];
   let cacheAttribution: CacheAttribution | undefined;
   let usage:
     | { inputTokens: number; outputTokens: number; reasoningTokens?: number }
@@ -683,8 +688,12 @@ export const parseCodexSse = async (
             }
             // /status 개편 — usage 항상 캡처 (CODEX_DEBUG_USAGE gate 밖). 이미 받는
             // event 에서 추출 (추가 호출 0). usage 부재 시 미설정 (graceful).
+            terminalUsage = undefined;
             if (event.response?.usage) {
               const u = event.response.usage;
+              if (typeof event.response.id === "string") {
+                terminalUsage = { responseId: event.response.id, model: event.response.model, inputTokens: u.input_tokens!, outputTokens: u.output_tokens!, totalTokens: u.total_tokens! };
+              }
               if (process.env.CODEX_CACHE_CURVE === "1") {
                 cacheAttribution = summarizeCacheAttribution(u.attribution);
               }
@@ -739,7 +748,8 @@ export const parseCodexSse = async (
     ...(sawCommentary ? { answerText } : {}),
     responseId,
     toolCalls,
-    ...(replayOutput !== undefined ? { replayOutput } : {}),
+    ...(replayOutput !== undefined ? { replayOutput, replayUnchanged: JSON.stringify(rawOutput) === JSON.stringify(replayOutput) } : {}),
+    ...(terminalUsage !== undefined ? { terminalUsage } : {}),
     usage,
     lastEvent,
     eventCounts,
@@ -3376,6 +3386,9 @@ export const capToolOutputForEntry = (
 // 이력 원소의 수명에만 묶는다. 공급자 JSON에는 내부 필드를 추가하지 않는다.
 const savedScreenRefs = new WeakMap<ResponseInputFunctionCallOutput, readonly string[]>();
 
+export const incomingToolResultChars = (results: readonly { output: string }[]): number =>
+  results.reduce((n, r) => n + Math.min(r.output.length, CODEX_TOOL_OUTPUT_ENTRY_CAP), 0);
+
 export const appendToolResultsToInput = (
   inputArray: ResponseInputItem[],
   results: readonly {
@@ -3397,12 +3410,12 @@ export const appendToolResultsToInput = (
    * ★**필수** — 직전 요청 크기와(있으면) 모델 상한. 빠뜨리면 상한 근처에서도 몰아서 기다리게 되므로
    *  타입으로 강제한다(호출부 배선을 검사가 못 보는 자리를 컴파일러가 본다).
    */
-  room: { requestChars: number; ceilingChars?: number | undefined; label?: string },
+  room: { requestChars: number; ceilingChars?: number | undefined; label?: string; deferTextCompaction?: boolean },
 ): number => {
-  const incoming = results.reduce((n, r) => n + Math.min(r.output.length, CODEX_TOOL_OUTPUT_ENTRY_CAP), 0);
+  const incoming = incomingToolResultChars(results);
   const ceiling = room.ceilingChars ?? CODEX_KNOWN_SAFE_INPUT_CHARS;
   const nearCeiling = room.requestChars + incoming > ceiling;
-  const textCompacted = compactOldToolOutputs(inputArray, nearCeiling ? { batchChars: 0 } : undefined);
+  const textCompacted = room.deferTextCompaction ? 0 : compactOldToolOutputs(inputArray, nearCeiling ? { batchChars: 0 } : undefined);
   let compacted = textCompacted;
   let mediaCompacted = 0;
   // C2 — inputArray *진입* 직전 단발 cap. 큰 단일 output(Bash 1MB·Read 대용량)이 턴 끝까지
@@ -3560,9 +3573,15 @@ export const isToolMediaMessage = (item: ResponseInputItem | undefined): boolean
   return typeof first.text === "string" && first.text.startsWith(TOOL_MEDIA_NOTE_PREFIX);
 };
 
+/** Freeze pre-append object identities; the compactor applies recent-K within this set, never the new batch. */
+export const oldToolOutputCandidates = (inputArray: readonly ResponseInputItem[], includeRestored = false): ReadonlySet<ResponseInputItem> => {
+  const outputs = inputArray.filter((it) => it.type === "function_call_output" && (includeRestored || !historyToolOutputs.has(it)));
+  return new Set(outputs);
+};
+
 export const compactOldToolOutputs = (
   inputArray: ResponseInputItem[],
-  opts?: { keepRecent?: number; minOutputChars?: number; batchChars?: number },
+  opts?: { keepRecent?: number; minOutputChars?: number; batchChars?: number; includeRestored?: boolean; eligible?: ReadonlySet<ResponseInputItem> },
 ): number => {
   const keepRecent = opts?.keepRecent ?? CODEX_COMPACT_KEEP_RECENT;
   const minOutputChars = opts?.minOutputChars ?? CODEX_COMPACT_MIN_OUTPUT;
@@ -3576,11 +3595,12 @@ export const compactOldToolOutputs = (
   //  오진했다. 세는 건 공짜고, 호출부는 무시해도 된다(additive).
   let compacted = 0;
   const outputIdxs: number[] = [];
-  // ★이력에서 되살린 출력은 뺀다 — 크기는 이력 요약 몫이다. 상한 근처 즉시 압축(batchChars 0)만 전부 본다.
-  const force = batchChars === 0;
+  // Restored history is opened only by the explicit context-overflow rescue, never batchChars=0.
   for (let i = 0; i < inputArray.length; i++) {
     const it = inputArray[i];
-    if (it?.type === "function_call_output" && (force || !historyToolOutputs.has(it))) outputIdxs.push(i);
+    if (it?.type === "function_call_output" &&
+        (!historyToolOutputs.has(it) || opts?.includeRestored === true) &&
+        (opts?.eligible === undefined || opts.eligible.has(it))) outputIdxs.push(i);
   }
   if (outputIdxs.length <= keepRecent) return 0; // 압축할 만큼 안 쌓임 → no-op.
 

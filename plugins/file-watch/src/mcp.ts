@@ -83,6 +83,7 @@ const addWatchTool = (turnSession: TurnSession) => tool(
     prompt: z.string().min(1).max(4096),
     dest_channel: z.string().min(1).max(64),
     dest_target: z.string().max(256).optional(),
+    report_default: z.enum(["deliver", "omit"]).optional().describe("보고 정책 — 생략 또는 deliver는 기존처럼 결과를 전달합니다. omit는 사용자가 선택한 확인용 실행에서만, 정상 확인 후 새 소식이 없으면 메시지·대체 안내 없이 기록만 남길 수 있게 합니다. 요청한 알람·최종 결과를 임의로 omit로 바꾸지 마세요. 중요한 변화·오류·승인/결정 요청은 report_to_user 또는 prompt_options로 전달합니다. 실행·사용량·이력·타이머 정산은 생략하지 않습니다."),
     keep_runs: keepRunsArg,
   },
   async (args) => {
@@ -113,6 +114,7 @@ const addWatchTool = (turnSession: TurnSession) => tool(
       destTarget: args.dest_target ?? null,
       keepRuns: args.keep_runs ?? null,
       originThreadKey: origin,
+      reportDefault: args.report_default,
     });
     console.log(`[file-watch:${row.id}] '${row.label}' 등록 — 처리: ${origin ?? `전용 세션 file-watch:${row.id}`} · 결과 → ${row.destChannel}:${row.destTarget ?? "-"}`);
 
@@ -126,6 +128,7 @@ const addWatchTool = (turnSession: TurnSession) => tool(
     return okJson({
       ok: true,
       id: row.id,
+      report_default: row.reportDefault,
       path: absPath,
       runs_in: origin !== null ? "this_conversation" : "own_session",
     });
@@ -158,6 +161,7 @@ const listWatchesTool = tool(
       last_status: r.lastStatus,
       last_error: r.lastError,
       keep_runs: r.keepRuns,
+      report_default: r.reportDefault,
       // 처리되는 자리 — 대화 키(만든 대화) 또는 전용 세션.
       runs_in: r.originThreadKey ?? `own_session file-watch:${r.id}`,
     }));
@@ -172,15 +176,16 @@ const listWatchesTool = tool(
  */
 const updateWatchTool = (turnSession: TurnSession) => tool(
   "update_watch",
-  "기존 file-watch 를 고친다 — 감시를 지우고 다시 등록하지 않아도 다음 실행부터 적용된다. ①move_here=true: 이 감시를 **이 대화에서 처리**하도록 옮긴다(사용자가 «감시를 이 대화로 옮겨 줘» 라고 할 때 — 기준은 이 수정을 부른 대화, 다른 대화로는 못 옮긴다. 옮기면 keep_runs 는 지워진다). ②keep_runs: 전용 세션 감시의 이력 정책. 다른 필드는 지금 바꿀 수 없다(바꾸려면 delete_watch 뒤 add_watch). 존재하지 않는 id 면 ok:false, error:'not_found'.",
+  "기존 file-watch 를 고친다 — 감시를 지우고 다시 등록하지 않아도 다음 실행부터 적용된다. ①move_here=true: 이 감시를 **이 대화에서 처리**하도록 옮긴다(사용자가 «감시를 이 대화로 옮겨 줘» 라고 할 때 — 기준은 이 수정을 부른 대화, 다른 대화로는 못 옮긴다. 옮기면 keep_runs 는 지워진다). ②keep_runs: 전용 세션 감시의 이력 정책. ③report_default: 선택 확인용 실행의 보고 정책. 다른 필드는 지금 바꿀 수 없다(바꾸려면 delete_watch 뒤 add_watch). 존재하지 않는 id 면 ok:false, error:'not_found'.",
   {
     id: z.number().int().min(1),
     move_here: z.boolean().optional(),
+    report_default: z.enum(["deliver", "omit"]).optional().describe("보고 정책 — 생략 또는 deliver는 기존처럼 결과를 전달합니다. omit는 사용자가 선택한 확인용 실행에서만, 정상 확인 후 새 소식이 없으면 메시지·대체 안내 없이 기록만 남길 수 있게 합니다. 요청한 알람·최종 결과를 임의로 omit로 바꾸지 마세요. 중요한 변화·오류·승인/결정 요청은 report_to_user 또는 prompt_options로 전달합니다. 실행·사용량·이력·타이머 정산은 생략하지 않습니다."),
     keep_runs: keepRunsArg,
   },
   async (args) => {
-    if (args.keep_runs === undefined && args.move_here !== true) {
-      return okJson({ ok: false, error: "nothing_to_update", detail: "move_here 또는 keep_runs 를 주세요." });
+    if (args.report_default === undefined && args.keep_runs === undefined && args.move_here !== true) {
+      return okJson({ ok: false, error: "nothing_to_update", detail: "move_here, keep_runs 또는 report_default 를 주세요." });
     }
     const before = getWatch(args.id);
     if (before === undefined) return okJson({ ok: false, error: "not_found" });
@@ -196,10 +201,11 @@ const updateWatchTool = (turnSession: TurnSession) => tool(
     const row = updateWatch(args.id, {
       ...(args.move_here === true ? { originThreadKey: origin, keepRuns: null } : {}),
       ...(args.keep_runs !== undefined ? { keepRuns: args.keep_runs } : {}),
+      ...(args.report_default !== undefined ? { reportDefault: args.report_default } : {}),
     });
     if (args.move_here === true) console.log(`[file-watch:${args.id}] '${before.label}' 처리 자리 변경 — ${before.originThreadKey ?? "전용 세션"} → ${origin}`);
     if (args.keep_runs !== undefined) console.log(`[file-watch:${args.id}] '${before.label}' 이력 정책 변경 — ${before.keepRuns ?? "이어감"} → ${row?.keepRuns ?? "이어감"}`);
-    return okJson({ ok: true, id: args.id, keep_runs: row?.keepRuns ?? null, runs_in: row?.originThreadKey ?? `own_session file-watch:${args.id}` });
+    return okJson({ ok: true, id: args.id, report_default: row?.reportDefault, keep_runs: row?.keepRuns ?? null, runs_in: row?.originThreadKey ?? `own_session file-watch:${args.id}` });
   },
 );
 

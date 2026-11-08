@@ -22,6 +22,8 @@
 export interface ReplayGuard {
   /** 되돌릴 수 없는 도구가 **실행에 들어갔다**. 한 번 참이면 다시 거짓이 되지 않는다. */
   unsafe: boolean;
+  /** Turn-local prohibition independent of the failure cause (e.g. a context rescue already rewrote input). */
+  blockedReason?: string;
   /** 그 첫 도구 이름 — 실패 보고가 «무엇까지 갔나» 를 말할 수 있게. */
   firstTool?: string;
   /** 되돌릴 수 없는 도구가 실행에 들어간 횟수 — 끼워넣기 장부가 «그 메시지를 받은 **뒤에** 부작용이 있었나» 를 본다. */
@@ -83,8 +85,8 @@ export const mcpServerOf = (rawToolName: string): string | undefined => {
 
 /** 이 턴을 다시 돌려도 되나 — `runPool` 의 폴백과 어댑터 내부 재시작이 함께 본다. */
 export const canReplay = (guard: ReplayGuard | undefined): boolean =>
-  guard === undefined || !guard.unsafe;
+  guard === undefined || (!guard.unsafe && guard.blockedReason === undefined);
 
 /** 폴백을 멈춘 이유를 사람이 읽는 한 줄로. */
 export const replayBlockedReason = (guard: ReplayGuard): string =>
-  `'${guard.firstTool ?? "a tool"}' had already started running, so this request can't be re-run — running it again would execute that tool twice.`;
+  guard.blockedReason ?? `'${guard.firstTool ?? "a tool"}' had already started running, so this request can't be re-run — running it again would execute that tool twice.`;

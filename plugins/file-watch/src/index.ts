@@ -238,7 +238,7 @@ const runInOrigin = async (
       if (latest === undefined) return "deleted";
       if (!latest.enabled) return "disabled";
       if (latest.originThreadKey !== origin) return "moved";
-      return { text: substitutePrompt(latest.prompt, { path: run.path, event: run.event }), dest: { channel: latest.destChannel, target: latest.destTarget } };
+      return { text: substitutePrompt(latest.prompt, { path: run.path, event: run.event }), ...(latest.reportDefault === "omit" ? { reportDefault: "omit" as const } : {}), dest: { channel: latest.destChannel, target: latest.destTarget } };
     },
   });
   if ("skipped" in r) return { text: "", skipped: r.skipped as "deleted" | "disabled" | "moved" | "origin-gone" | "not-run" };
@@ -269,16 +269,18 @@ const defaultRunClaude: WatcherDeps["runClaude"] = async (input) => {
       // 발화 시작 = 줄에 선 시각이 아니라 **실제로 도는 시각**(«직전 N회» 경계가 이 실행을 통째로 품게).
       const startedAt = Date.now();
       console.log(`[file-watch:${watchId}] 이력 정책: ${applyWatchHistory(latest, turn.threadKey)}`);
-      const out = await runClaude({ ...turn, abortSignal: ac.signal });
+      // 정책은 실제 차례의 최신 행 한 번으로 고정한다. 실행기엔 사용한 값을 함께 돌려준다.
+      const reportDefault = latest.reportDefault === "omit" ? "omit" as const : undefined;
+      const out = await runClaude({ ...turn, ...(reportDefault === "omit" ? { reportOmittable: true } : {}), abortSignal: ac.signal });
       // ★대화가 남은 발화만 적는다(스케줄 실행기와 같은 규칙) — 기록 실패가 결과·배달을 막지 않는다(다음은 프롬프트 일치로).
-      if (out.text.trim() !== "") {
+      if (out.text.trim() !== "" || (reportDefault === "omit" && out.reportOmitted === true)) {
         try {
           recordWatchRun(watchId, startedAt);
         } catch (e) {
           console.warn(`[file-watch:${watchId}] 발화 기록 실패 — 이력 정책은 프롬프트 일치로 대신합니다: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
-      return out;
+      return { ...out, reportDefault };
     },
   );
 };

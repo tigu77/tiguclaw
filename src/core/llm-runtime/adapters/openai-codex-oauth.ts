@@ -113,7 +113,7 @@ import { createCommandToolsMcpServer } from "../capabilities/command-tools-mcp.j
 import { createMcpAdminMcpServer } from "../capabilities/mcp-admin-mcp.js";
 import { createModelSettingsMcpServer } from "../capabilities/model-settings-mcp.js";
 import { reaches, turnKindOf } from "../capability-reach.js";
-import { isReplaySafeTool, markToolDispatch } from "../replay-safety.js";
+import { canReplay, isReplaySafeTool, markToolDispatch } from "../replay-safety.js";
 import { createHomeWidgetsMcpServer } from "../capabilities/home-widgets-mcp.js";
 import { getConnectedExternalMcpBridges, isProjectMcpCwd } from "../../external-mcp.js";
 import { createUpdateSelfMcpServer } from "../capabilities/update-self-mcp.js";
@@ -123,6 +123,12 @@ import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js"
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createNotifyOwnerMcpServer } from "../capabilities/notify-owner-mcp.js";
 import { createToolRecallMcpServer } from "../capabilities/tool-recall-mcp.js";
+import {
+  CodexContextLimitError, hasExplicitContextLimit, pressureSnapshot,
+  committedPressureAnchor, matchedPressureChars, currentPressureCeiling,
+  type PressureAnchor, type PressureSnapshot,
+} from "./_codex-pressure.js";
+import { oldToolOutputCandidates, compactOldToolOutputs, incomingToolResultChars } from "./openai-codex-oauth-history.js";
 import { recordTokenDensity, tokenDensityOf } from "../../../store/token-density.js";
 import { createPromptOptionsMcpServer } from "../capabilities/prompt-options-mcp.js";
 import { createProjectRegistryMcpServer } from "../capabilities/project-registry.js";
@@ -194,7 +200,7 @@ import {
   type CodexSseResult,
   type ResponseInputItem,
 } from "./openai-codex-oauth-history.js";
-import { splitMcpToolContent, emptyToolText } from "./_mcp-content.js";
+import { splitMcpToolContent, emptyToolText, readObservationFromContent, withoutReadObservation } from "./_mcp-content.js";
 import {
   addUsage,
   describeTally,
@@ -1463,6 +1469,11 @@ export const runOpenAiCodex = async (
   // throw 금지(중복 회피) — 대신 정직한 fallback 텍스트 반환. 부작용 0(순수 읽기/빈 턴)
   // 일 때만 throw 해 안전하게 풀 폴백 유도.
   let sideEffectExecuted = false;
+  // Monotone turn-local evidence, not successful tool counts: hooks and failed
+  // dispatches may already have effects. Native execution can precede its event.
+  let toolHandlingStarted = false;
+  let responseEmitted = false;
+  let nativeStreamAccepted = false;
   /** 이 시도가 **호스트가 쓴 글**로 끝났나 — 부작용 뒤 오류를 안내문으로 삼킴 · 빈 글 대체 문구. 그 턴은 생략을 증명하지 못한다(notify-owner-report-contract §3-3). */
   let hostComposedEnd = false;
   // 2026-06-05 — agentic loop 중 *성공적으로 실행된* MCP 도구 이름 누적. 빈 응답 nudge
@@ -1535,7 +1546,7 @@ export const runOpenAiCodex = async (
    *  의심. 그런데 `/clear` 후에도 실패 → 고정 스캐폴딩(instructions·인덱스) 의심. 둘을 가르려면
    *  instructions / input / tools 를 **따로** 재야 한다.
    */
-  let lastReqBytes = { total: 0, mediaChars: 0, instructions: 0, input: 0, tools: 0, items: 0 };
+  let lastReqBytes = { total: 0, utf8Bytes: 0, mediaChars: 0, instructions: 0, input: 0, tools: 0, items: 0 };
   let lastInputComposition: ReturnType<typeof summarizeInputComposition> | undefined;
   let lastFingerprint: string[] = [];
   let lastFingerprintNote = "fp=없음";
@@ -1554,6 +1565,18 @@ export const runOpenAiCodex = async (
    */
   let turnCompacted = 0;
   let lastInstrNote = "instr=?";
+
+  const pressureInvocation = Symbol("codex-pressure");
+  let pressureAnchor: PressureAnchor | undefined;
+  let replySnapshot: PressureSnapshot | undefined;
+  let replyReasoningIncluded: string | null = null;
+  let replyCanAnchor = true;
+  let overflowRescueUsed = false;
+  let contextRescueSucceeded = false;
+  // Retain this old-only set through the first exposure of the entire new batch.
+  let rescueCandidates = oldToolOutputCandidates(inputArray, true);
+  let pendingAppend: { eligible: ReadonlySet<ResponseInputItem>; legacyChars: number } | undefined;
+
 
   // 요청별 벽시계 분해(`_request-timing.ts`) — 턴 끝 한 줄에 합계와 긴 요청 셋을 싣는다.
   // ★루프 **밖**에 둔다: 턴이 실패·취소로 끝나도(바깥 catch) 지금까지의 분해와 «어디서 멈췄나» 를 남기려고.
@@ -1575,6 +1598,9 @@ export const runOpenAiCodex = async (
     // ★창(window)으로 본다 — 이어갈 때 `iterationBase` 만 옮기고 `iteration` 은 계속 는다.
     //  (0 으로 되돌리면 iteration 0 전용 입력 상한 가드가 다시 켜져 부작용 중복을 부른다.)
     while (withinWindow(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)) {
+      replySnapshot = undefined;
+      replyReasoningIncluded = null;
+      replyCanAnchor = true;
       readyAt = Date.now();
       setupDoneAt ??= readyAt;
       requestOpen = true;
@@ -1591,6 +1617,26 @@ export const runOpenAiCodex = async (
       // 막아 루프 폭주를 차단한다. reason(TurnTimeoutError)을 throw → 바깥 catch(§4.4)가
       // sideEffectExecuted 따라 안전 처리. 어댑터 *내부* abort 전파(facade 분기 아님).
       if (input.abortSignal?.aborted) throw input.abortSignal.reason;
+
+      const background = isCheckinGuardedThread(input.threadKey);
+      // 누적 슬롯은 창 이동과 무관하다. 마지막 슬롯(T-1)은 요청 조립 전에
+      // tools:[] 보고로 예약하고, T부터는 새 요청을 시작하지 않는다.
+      if (background && shouldStopContinuing(iteration, CODEX_MAX_TOTAL_ITERATIONS)) break;
+      if (background && shouldStopContinuing(iteration + 1, CODEX_MAX_TOTAL_ITERATIONS) && !finalFlushRequested) {
+        finalFlushRequested = true;
+        flushWillContinue = false;
+        inputArray.push({
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: capFlushPrompt({
+            willContinue: false,
+            userTextEcho: `사용자가 이렇게 물었습니다: "${input.text.slice(0, 200)}".`,
+            ranListMsg: executedToolNames.size > 0 ? ` 이번 턴에 이미 실행한 도구: ${[...executedToolNames].join(", ")}.` : "",
+          }).text }],
+        });
+      }
+      // 경계 응답 뒤의 다음 슬롯이 최종 보고 전용이면 정상 계속할 수 없다.
+      const canContinue = willAutoContinue(background, iteration + 2, CODEX_MAX_TOTAL_ITERATIONS);
 
       // P1a mid-turn steering (ADR `2026-07-16-midturn-steering.md` §codex, Phase P1a).
       // 다음 모델 fetch 진입 직전에 대기 steering 메시지를 pull-all(drain)해 **사용자 메시지
@@ -1714,7 +1760,29 @@ export const runOpenAiCodex = async (
       // reader.read() 가 reject → parseCodexSse throw → 아래 catch 가 IdleTimeoutError 로.
       // codex 는 resume 없음 → 매 iteration 전체 input 재전송. 단일 stringify 로 sizing +
       // fetch body 둘 다 사용(이중 직렬화 회피). 스톨 재개 시 같은 body 를 재전송한다.
-      let bodyJson = JSON.stringify(body); // 끊김 복구(이어 쓰기)만 다시 만든다 — 그 밖의 재전송은 같은 body.
+      let bodyJson = JSON.stringify(body);
+      if (pendingAppend !== undefined) {
+        const snapshot = pressureSnapshot(bodyJson, pressureInvocation, attemptedRequests + 1);
+        const limit = loadModelInputLimits().get(`codex:${model}`);
+        const matchedCeiling = currentPressureCeiling(model, limit);
+        const matched = matchedCeiling === undefined ? undefined : matchedPressureChars(pressureAnchor, snapshot);
+        if (matched === undefined) pressureAnchor = undefined;
+        const force = matched === undefined || matchedCeiling === undefined
+          ? pendingAppend.legacyChars > requestCeilingChars(model, input.threadKey, limit)
+          : matched > matchedCeiling;
+        // General batch and pressure gates share exactly one compactor call for this append.
+        const compacted = compactOldToolOutputs(inputArray, {
+          eligible: pendingAppend.eligible, ...(force ? { batchChars: 0 } : {}),
+        });
+        pendingAppend = undefined;
+        if (compacted > 0) {
+          turnCompacted += compacted;
+          console.log(`[codex-compact] text=${compacted} gate=${matched === undefined ? "legacy" : "matched"} — prefix rewritten thread=${input.threadKey}`);
+          pressureAnchor = undefined;
+          body.input = requestInput();
+          bodyJson = JSON.stringify(body);
+        }
+      } // 끊김 복구(이어 쓰기)만 다시 만든다 — 그 밖의 재전송은 같은 body.
       /**
        * 보내는 본문의 크기·구성 계측 — **실제로 보낸 마지막 본문** 기준이어야 한다. 이어 쓰기가 본문을 다시 만들면 다시 잰다
        * (2026-10-10 아스트라 검토: 옛 본문 크기가 남아 성공 응답의 토큰과 짝지어져 토큰 밀도 → 이력 예산을 낮게 잡았다).
@@ -1725,6 +1793,7 @@ export const runOpenAiCodex = async (
           : undefined;
         lastReqBytes = {
           total: bodyJson.length,
+          utf8Bytes: Buffer.byteLength(bodyJson, "utf8"),
           mediaChars: mediaCharsOf(body.input),
           instructions: String(body.instructions ?? "").length,
           input: JSON.stringify(body.input ?? []).length,
@@ -1850,6 +1919,32 @@ export const runOpenAiCodex = async (
       // (fetch) 단위 + 도구 실행 전 done()(finally) 이라 긴 도구 오살 0. per-iteration idleAc
       // 발화는 turn/매니저 예산(input.abortSignal)과 별개라 재개에 예산이 남는다. 모델 폴백 아님.
       let sseResult: CodexSseResult;
+      // Function/namespace tools only execute locally after a completed response.
+      // Unknown/provider tool kinds are not assumed safe, even with no SSE event.
+      const hasProviderTools = (): boolean => (Array.isArray(body.tools) ? body.tools : [])
+        .some((t: { type?: string }) => t.type !== "function" && t.type !== "namespace");
+      const rescueContextLimit = (): boolean => {
+        pressureAnchor = undefined;
+        replySnapshot = undefined;
+        replyCanAnchor = false;
+        if (overflowRescueUsed || input.abortSignal?.aborted || attemptToolDeltaOut ||
+            (streamsToScreen && (attemptText !== "" || carriedText !== ""))) return false;
+        overflowRescueUsed = true;
+        const beforeChars = bodyJson.length;
+        const beforeBytes = Buffer.byteLength(bodyJson, "utf8");
+        const compacted = compactOldToolOutputs(inputArray, { batchChars: 0, includeRestored: true, eligible: rescueCandidates });
+        turnCompacted += compacted;
+        body.input = requestInput();
+        bodyJson = JSON.stringify(body);
+        measureRequest();
+        if (!(bodyJson.length < beforeChars || Buffer.byteLength(bodyJson, "utf8") < beforeBytes)) return false;
+        contextRescueSucceeded = true;
+        // Replay prohibition is state, not a replacement failure cause. Even Read-only
+        // turns must not restart through another account/model after rewriting input.
+        if (input.replay !== undefined) input.replay.blockedReason ??= "codex context rescue already rewrote this turn";
+        console.log(`[codex-context-rescue] prefix rewritten outputs=${compacted} thread=${input.threadKey}`);
+        return true;
+      };
       let stallAttempt = 0;
       /**
        * 백엔드 보고 실패로 **이 요청**의 같은 body 를 재전송한 횟수.
@@ -1917,10 +2012,15 @@ export const runOpenAiCodex = async (
         // 4xx(429 제외)는 진짜 에러 → 즉시 throw. cause 보존(throw fe — 원본 그대로).
         // abort 된 fetch 는 transient 아님(IdleTimeoutError) → retry 대상 아님(throw).
         let res: Response;
+        let lastErrorBody: string | undefined;
         let attempt = 0;
         while (true) {
+          // sleep resolves on abort; never send one more request after cancellation.
+          if (effectiveAc.signal.aborted) throw effectiveAc.signal.reason;
           try {
             attemptedRequests += 1;
+            replySnapshot = pressureSnapshot(bodyJson, pressureInvocation, attemptedRequests);
+            replyReasoningIncluded = null;
             res = await fetch(`${CODEX_BASE_URL}/responses`, {
               method: "POST",
               headers,
@@ -1931,6 +2031,7 @@ export const runOpenAiCodex = async (
             // 유휴(1층)·턴(2층) abort 면 retry 금지(즉시 해당 에러 승격) — first 타임아웃이
             // 연결 스톨을 잡는 경로, 턴 백스톱은 전체 중단. 그 외 전송 실패만 기존 retry.
             const reason = effectiveAc.signal.reason;
+            if (input.abortSignal?.aborted) throw input.abortSignal.reason ?? fe;
             if (
               effectiveAc.signal.aborted &&
               (reason instanceof IdleTimeoutError ||
@@ -1945,12 +2046,22 @@ export const runOpenAiCodex = async (
             }
             throw fe;
           }
+          // Parse each 4xx body once, before folding fallback or the generic retry ladder.
+          const errorBody = lastErrorBody = !res.ok && res.status >= 400 && res.status < 500
+            ? await res.text().catch(() => "") : undefined;
+          if (errorBody !== undefined && hasExplicitContextLimit(errorBody)) {
+            if (rescueContextLimit()) continue;
+            throw new CodexContextLimitError();
+          }
           // ★접기 안전망 (적대 검토 10-19) — 접힌 요청이 400 이면(공급자가 묶음·검색 항목 모양을 거절) 이 턴은 접기를 끄고 본문을 다시 만들어
           //  **같은 재시도 루프로** 다시 보낸다(재전송의 5xx·네트워크 오류도 재시도가 흡수한다 · 크기 측정도 다시). 안 그러면 기본 켜짐인 접기
           //  하나 때문에 매 턴 다른 어댑터로 넘어간다. 마무리 요청(`tools: []`)은 이미 흔적이 없어 다시 보내도 같은 본문이라 제외.
-          if (!res.ok && res.status === 400 && toolFolding.searchTool && !finalFlushRequested && !foldFallbackUsed) {
+          if (!res.ok && res.status === 400 && toolFolding.searchTool && !finalFlushRequested && !foldFallbackUsed && !contextRescueSucceeded) {
             foldFallbackUsed = true; // 턴당 한 번 — 조건이 어떻게 바뀌어도 이 갈래가 요청 루프를 붙잡지 않게
-            const detail = await res.text().catch(() => "");
+            const detail = errorBody ?? await res.text().catch(() => "");
+            pressureAnchor = undefined;
+            replySnapshot = undefined;
+            replyCanAnchor = false;
             console.warn(`[codex-tool-search] 접힌 요청 거절(400) — 이 턴은 접기를 끄고 다시 보냄: ${detail.slice(0, 200)} threadKey=${input.threadKey}`);
             toolFolding = foldCodexTools(foldEntries, false);
             responsesTools = buildResponsesTools();
@@ -1973,12 +2084,13 @@ export const runOpenAiCodex = async (
         }
         if (!res.ok) {
           throw new Error(
-            `Codex backend request failed: ${res.status} ${describeFailureBody(await res.text().catch(() => ""))}`,
+            `Codex backend request failed: ${res.status} ${describeFailureBody(lastErrorBody ?? await res.text().catch(() => ""))}`,
           );
         }
         if (res.body === null) {
           throw new Error("Codex backend response.body is null — no SSE stream.");
         }
+        replyReasoningIncluded = res.headers.get("x-reasoning-included");
         headersAt = Date.now();
 
         // externalTools 스트리밍(2026-07-26) — index → "이 index 가 externalTools 이름과
@@ -1986,6 +2098,7 @@ export const runOpenAiCodex = async (
         // 이후 arguments.delta 조각은 이 캐시로 필터(파서는 이름 모름, 필터는 어댑터 몫).
         // 매 재시도(stall-resume)마다 새 parseCodexSse 호출 = index 재출발이라 로컬 재선언.
         const toolDeltaIsExternal = new Map<number, boolean>();
+        if (hasProviderTools()) nativeStreamAccepted = true;
         // 이 시도가 흘린 텍스트만 담는다 — 위 선언의 «시도마다 초기화» 참조.
         // 끊김 뒤 이어 쓰는 시도면 앞에 흘린 글을 안고 시작한다 — 끝내 실패하면 삼킴 안내가 앞부분까지 싣는다(화면 스트림이 꺼진 턴의 유일한 재료).
         streamedInFlight = carriedText;
@@ -2004,6 +2117,7 @@ export const runOpenAiCodex = async (
             firstEventAt ??= iterLastChunkAt;
           },
           (delta, commentary) => {
+            if (streamsToScreen && delta !== "") responseEmitted = true;
             attemptText += delta;
             if (commentary === true) attemptSawCommentary = true;
             else attemptAnswer += delta;
@@ -2025,6 +2139,7 @@ export const runOpenAiCodex = async (
                 }
                 if (toolDeltaIsExternal.get(info.index) !== true) return; // 내장 도구 조각은 무시.
                 attemptToolDeltaOut = true;
+                responseEmitted = true;
                 try {
                   bus.publish({
                     type: "llm.tool_call_delta",
@@ -2128,6 +2243,7 @@ export const runOpenAiCodex = async (
           }
           if (sseResult.failure !== undefined) {
             const f = sseResult.failure;
+            if (f.code === "context_length_exceeded") throw new CodexContextLimitError();
             // 사용자에게 갈 판 — 백엔드 원문(raw)은 빼고 사유만.
             const userWhy =
               `${f.source}${f.code !== undefined ? `/${f.code}` : ""}` +
@@ -2179,10 +2295,26 @@ export const runOpenAiCodex = async (
         // 둘 다 비매칭 — I-3/TT-I3). reason 은 linkAbort 가 effectiveAc 로 보존.
         // sideEffectExecuted 시 throw 대신 fallback 텍스트는 함수 바깥 catch (§4.4)에서.
         const reason = effectiveAc.signal.reason;
+        if (e instanceof CodexContextLimitError) {
+          if (!effectiveAc.signal.aborted && rescueContextLimit()) continue;
+          throw e;
+        }
+        pressureAnchor = undefined;
+        replySnapshot = undefined;
+        replyCanAnchor = false;
+        // Rescue blocks whole-turn replay, not a bounded retry of this step.
+        // No partial response or provider execution may be replayed. Keeping the
+        // existing ladders below also keeps their attempt/time budgets unchanged.
+        if (contextRescueSucceeded &&
+            (attemptText !== "" || attemptToolDeltaOut || hasProviderTools())) {
+          if (effectiveAc.signal.aborted && (reason instanceof IdleTimeoutError || reason instanceof TurnTimeoutError)) throw reason;
+          throw e;
+        }
         // ★백엔드 보고 실패 — HTTP 5xx 와 같은 부류라 **같은 body 로 재전송**한다.
         //  종전엔 이 실패가 "모델 빈 응답" 경로로 흘러 nudge 3회(17.8초)를 태우고 턴이
-        //  죽었다(실측: 사용자가 하던 작업이 중간에 멈춤). 재전송은 부작용이 없다 —
-        //  도구는 이미 로컬 실행됐고 inputArray 에 결과가 있어 "다음 스텝 재요청"일 뿐.
+        //  죽었다(실측: 사용자가 하던 작업이 중간에 멈춤). 이전 로컬 도구 결과는 inputArray 에
+        //  있어 다시 dispatch하지 않는다. 단 같은 body라도 provider 실행/응답 방출까지
+        //  안전하다는 뜻은 아니다 — 복구 후 재시도는 위의 별도 안전 경계를 통과해야 한다.
         //  전송 재시도와 같은 cap·같은 백오프를 쓴다(무한루프 0).
         if (e instanceof CodexBackendFailureError) {
           // ★재전송은 **조건 없이 사다리 끝까지** (2026-08-13, 사용자: "모델 돌리는 거 빼는
@@ -2204,7 +2336,7 @@ export const runOpenAiCodex = async (
                 `${wait}ms 뒤 같은 요청 재전송 — ${e.why} thread=${input.threadKey}`,
             );
             await sleep(wait, effectiveAc.signal); // /stop·턴 타임아웃이면 즉시 깬다.
-            if (effectiveAc.signal.aborted) throw e;
+            if (effectiveAc.signal.aborted) throw effectiveAc.signal.reason ?? e;
             continue; // 같은 body 로 재전송.
           }
           // 재시도 소진 → **그냥 throw**. 부작용 유무 판단은 함수 바깥 catch(§4.4)가
@@ -2468,44 +2600,6 @@ export const runOpenAiCodex = async (
       // 시점(재시도 루프 아님, 여기 도달 = SSE 완전 소비·결과 확정)에서, 이번 iteration
       // 의 toolCalls 보다 앞선 seq 를 받게 도구 발행 루프 진입 전에 닫는다.
       closeTextSegment();
-      // llm.activity — 모델이 호출하려는 도구당 1 activity (실행 성공/실패 무관,
-      // 의도 시점이 곧 "무엇을 하려는 중"). callTool 실행 루프와 별개. final-flush(tools:[])
-      // turn 은 toolCalls 가 비어 자연히 0 publish.
-      // 실행시간(#3) — callId → 그 도구의 activity seq. 아래 callTool 병렬 실행이 완료 시
-      // phase:"end"+durationMs 를 같은 seq 로 발행(대시보드가 시작 스텝에 실행시간 주석).
-      const callIdToSeq = new Map<string, number>();
-      for (const tc of toolCalls) {
-        const seq = activitySeq++;
-        if (tc.callId) callIdToSeq.set(tc.callId, seq);
-        // detail — function_call arguments(partialJson) 에서 중립 인자 요약(축3 사이드바).
-        bus.publish({
-          type: "llm.activity",
-          ts: Date.now(),
-          payload: {
-            channel: input.channel,
-            threadKey: input.threadKey,
-            adapter: "codex",
-            model,
-            seq,
-            kind: "tool",
-            label: tc.name || "tool",
-            detail: buildActivityDetailFromJson(tc.partialJson),
-            ...(() => {
-              const diff = buildActivityDiffFromJson(
-                tc.name || "tool",
-                tc.partialJson,
-                input.cwd,
-              );
-              return diff !== undefined ? { diff } : {};
-            })(),
-            // 읽은 파일(Read) — ★기준은 file-ops 가 실제로 경로를 푼 `discoveryCwd`(= input.cwd ?? home)다. `input.cwd` 는 메인 대화에서 비어 있다.
-            ...(() => {
-              const file = buildActivityFileFromJson(tc.name || "tool", tc.partialJson, discoveryCwd);
-              return file !== undefined ? { file } : {};
-            })(),
-          } satisfies RegionAActivityPayload,
-        });
-      }
       // 정상 완료 출력은 추론·메시지 phase·도구 호출 순서까지 보존한다.
       // 암호문은 이 실행의 inputArray에만 두며 공용 이력/로그에는 쓰지 않는다.
       const replayOutput = compatibleReplayOutput(sseResult);
@@ -2544,9 +2638,9 @@ export const runOpenAiCodex = async (
       // 않고(bridge.callTool 미호출) 수집만 한 뒤 루프를 그대로 종료한다 —
       // toolCalls.length===0 자연종료 분기와 나란한 별도 조기종료 경로. 위에서 이미 이번
       // iteration 의 텍스트(도구 호출 *전* assistant 텍스트, 있으면)를 finalText 에 누적했다 —
-      // 스파이크 §4 계약("text 는 도구 호출 전 텍스트만") 충족. function_call item 은 이미 위
-      // (activity 루프)에서 의도 기록됐고, 아래(실행 루프) function_call push 는 이 break 로
-      // 도달하지 않으므로 자연히 스킵(inputArray 는 이 호출 반환 후 폐기 — 다음 라운드 재구성은
+      // 스파이크 §4 계약("text 는 도구 호출 전 텍스트만") 충족. 아래 실행 루프의 function_call
+      // push 와 시작 활동은 이 break 로 도달하지 않으므로 스킵(inputArray 는 이 호출 반환 후
+      // 폐기 — 다음 라운드 재구성은
       // 게이트웨이/§3 관할, 이 어댑터는 관여 안 함).
       if (externalToolNames.size > 0) {
         const externalMatched = toolCalls.filter((tc) => externalToolNames.has(tc.name));
@@ -2784,11 +2878,7 @@ export const runOpenAiCodex = async (
             //  false 라 빈-응답 마무리 뒤의 이어가기가 **조용히 사라진다** — 계약을
             //  바꿨으면 그 계약을 세우는 자리를 전수로 본다([[feedback_scope_of_a_fix]]).
             //  이 경로의 넛지는 «빈 응답» 전용이라 문구는 그대로 둔다(«최종» 을 안 시킨다).
-            flushWillContinue = willAutoContinue(
-              isCheckinGuardedThread(input.threadKey),
-              iteration,
-              CODEX_MAX_TOTAL_ITERATIONS,
-            );
+            flushWillContinue = canContinue;
             inputArray.push({
               type: "message",
               role: "user",
@@ -2822,13 +2912,29 @@ export const runOpenAiCodex = async (
       // 루프 진입이 보장돼야 한다. flush turn 응답은 위 `if (finalFlushRequested) break`
       // 가 종료를 보장 → 무한 루프 0.
       if (isWindowEnd(iteration, iterationBase, CODEX_MAX_TOOL_ITERATIONS_HARD)) {
+        if (canContinue) {
+          // 이 응답의 batch는 종전처럼 미실행 폐기한다. inputArray에는 실제 실행한
+          // call/output/reasoning만 남기며, 폐기한 제안의 재제안·실행은 보장하지 않는다.
+          // 중간 정리를 위한 tools:[] 모델 왕복 없이 다음 누적 슬롯부터 새 창으로 간다.
+          iteration += 1;
+          iterationBase = iteration;
+          lastCheckpointIteration = iteration;
+          autoContinues += 1;
+          finalFlushRequested = false;
+          postFlushRetryUsed = false;
+          inputArray.push({
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "작업이 아직 끝나지 않았으면 **이어서 계속 진행하세요** — 처음부터 다시 하지 말고 남은 것부터. 정말 다 끝났으면 그렇다고만 답하세요." }],
+          });
+          console.warn(
+            `[codex-tool-cap-continue] 중간 정리 없이 **자동 이어가기** ${String(autoContinues)}회째 — ` +
+              `thread=${input.threadKey} model=${model} 누적 iteration=${String(iteration)}/백스톱 ${String(CODEX_MAX_TOTAL_ITERATIONS)}.`,
+          );
+          continue;
+        }
         finalFlushRequested = true;
-        // ★**여기서 한 번만 정한다** — 아래 이어가기 분기가 이 값을 그대로 쓴다.
-        flushWillContinue = willAutoContinue(
-          isCheckinGuardedThread(input.threadKey),
-          iteration,
-          CODEX_MAX_TOTAL_ITERATIONS,
-        );
+        flushWillContinue = false;
         // ★로그를 남긴다 (2026-08-14). 종전엔 이 백스톱이 **아무 줄도 안 찍고** 발동했다 —
         //  모델은 사용자에게 "도구 호출 한도에 도달했습니다" 라고 말하는데(이 nudge 문구를
         //  그대로 옮겨 적는다) 로그엔 그 사건이 없어서, "자꾸 한도에 걸린다"는 신고를
@@ -2922,6 +3028,9 @@ export const runOpenAiCodex = async (
       // 위에서 임시로 붙인 텍스트 한 항목만 정상 완료 출력으로 교체한다.
       // 중간 체크포인트 메시지는 지우지 않으며, 기존 이력 프리픽스도 그대로다.
       if (replayOutput !== undefined) inputArray.splice(replayStart, continuationText !== "" ? 1 : 0, ...replayOutput);
+      pressureAnchor = replyCanAnchor && replayOutput !== undefined
+        ? committedPressureAnchor(replySnapshot, sseResult, replyReasoningIncluded, requestInput())
+        : undefined;
       // function_call item 순서대로 누적 — assistant 가 보낸 호출 의도 보존 (다음 turn 필수).
       for (const tc of replayOutput === undefined ? toolCalls : []) {
         inputArray.push({
@@ -2933,12 +3042,49 @@ export const runOpenAiCodex = async (
           ...(tc.namespace !== undefined ? { namespace: tc.namespace } : {}),
         });
       }
+      // 실행 진입한 호출만 seq 를 받는다. 경계에서 버린 batch/외부 반환에는 시작 활동이 없다.
+      const callIdToSeq = new Map<string, number>();
       const toolOutputs = await Promise.all(
         toolCalls.map(
           // ★`name` 은 **필수다** (2026-09-21 적대 검토 F3) — 선택이면 `name:` 한 줄을 지워도
           //  회귀가 전부 초록이었다(라벨이 «어느 도구인가» 를 잃는다). 타입이 막게 한다.
           async (tc): Promise<{ callId: string; name: string; output: string; media: ResponseMediaItem[]; savedScreens: string[] }> => {
+            // 앞선 콜백의 동기 start 구독자가 취소했으면 나머지는 실행 진입하지 않는다.
+            if (input.abortSignal?.aborted) throw input.abortSignal.reason;
+            toolHandlingStarted = true; // Before activity/hooks, not after callTool succeeds.
+            // hook 거절·인자 파싱 실패도 실행 시도다 — 기존 end 와 같은 seq 로 짝짓는다.
+            const seq = activitySeq++;
+            if (tc.callId) callIdToSeq.set(tc.callId, seq);
+            bus.publish({
+              type: "llm.activity",
+              ts: Date.now(),
+              payload: {
+                channel: input.channel,
+                threadKey: input.threadKey,
+                adapter: "codex",
+                model,
+                seq,
+                kind: "tool",
+                label: tc.name || "tool",
+                detail: buildActivityDetailFromJson(tc.partialJson),
+                ...(() => {
+                  const diff = buildActivityDiffFromJson(
+                    tc.name || "tool",
+                    tc.partialJson,
+                    input.cwd,
+                  );
+                  return diff !== undefined ? { diff } : {};
+                })(),
+                // file-ops 가 실제로 경로를 푸는 discoveryCwd 를 그대로 쓴다.
+                ...(() => {
+                  const file = buildActivityFileFromJson(tc.name || "tool", tc.partialJson, discoveryCwd);
+                  return file !== undefined ? { file } : {};
+                })(),
+              } satisfies RegionAActivityPayload,
+            });
             let output: string;
+            let readObservation: import("../types.js").ActivityRead | undefined;
+            let readText: string | undefined;
             const toolMedia: ResponseMediaItem[] = [];
             const savedScreens: string[] = [];
             let toolErr = false; // 리치 출력 프리뷰 isError 표기용.
@@ -3028,6 +3174,10 @@ export const runOpenAiCodex = async (
                 //  function_call_output 은 문자열 전용이라 이미지를 실을 수 없어, 도구 결과
                 //  옆에 input_image 를 나란히 push 해야 모델이 실제로 본다.
                 const split = splitMcpToolContent(result);
+                if (bridge === fileOpsBridge && tc.name === "Read") {
+                  readObservation = readObservationFromContent(result);
+                  if (readObservation !== undefined) readText = split.text;
+                }
                 output = split.text;
                 for (const m of split.media) {
                   if (m.savedScreen !== undefined) savedScreens.push(m.savedScreen);
@@ -3036,7 +3186,7 @@ export const runOpenAiCodex = async (
                     image_url: `data:${m.mimeType};base64,${m.data}`,
                   });
                 }
-                if (output === "") output = emptyToolText(result, toolMedia.length);
+                if (output === "") output = emptyToolText(bridge === fileOpsBridge && tc.name === "Read" ? withoutReadObservation(result) : result, toolMedia.length);
               }
             } catch (e) {
               output = `Error: ${e instanceof Error ? e.message : String(e)}`;
@@ -3065,7 +3215,7 @@ export const runOpenAiCodex = async (
             // 같은 seq → 대시보드가 시작 스텝에 실행시간 주석. best-effort(원칙 3).
             const endSeq = tc.callId ? callIdToSeq.get(tc.callId) : undefined;
             if (endSeq !== undefined) {
-              const outPreview = buildActivityOutput(tc.name || "tool", output, toolErr);
+              const outPreview = buildActivityOutput(tc.name || "tool", readText ?? output, toolErr, readObservation, readObservation !== undefined);
               try {
                 bus.publish({
                   type: "llm.activity",
@@ -3096,7 +3246,15 @@ export const runOpenAiCodex = async (
       // ★이 스텝의 도구 결과를 요청에 싣는다 — **압축·cap·미디어 순서가 한 함수 안에**
       //  있다(`appendToolResultsToInput`). 종전엔 이 셋이 여기 인라인이라, 순서를 바꾸는
       //  편집을 회귀가 볼 수 없었다(검사가 루프를 자기가 다시 지어야 했다).
+      const oldEligible = oldToolOutputCandidates(inputArray);
+      rescueCandidates = oldToolOutputCandidates(inputArray, true);
+      pendingAppend = {
+        eligible: oldEligible,
+        legacyChars: Math.max(0, lastReqBytes.total - lastReqBytes.mediaChars) +
+          incomingToolResultChars(toolOutputs),
+      };
       turnCompacted += appendToolResultsToInput(inputArray, toolOutputs, {
+        deferTextCompaction: true,
         // 그림·PDF base64 는 빼고 잰다 — 상한이 토큰 기준(창×95%×비율)인데 base64 는 글자만 많고 토큰은 거의 안 든다.
         requestChars: lastReqBytes.total - lastReqBytes.mediaChars,
         // 턴 안 상한도 토큰을 안다 — 창 × 95% × 이 대화의 글자당 토큰(설정·실측 상한과 작은 쪽). 이력 상한과 같은 비율을 본다.
@@ -3186,7 +3344,7 @@ export const runOpenAiCodex = async (
       return c === undefined || c === null ? m : `${m} (cause: ${c instanceof Error ? c.message : String(c)})`;
     })();
     const accountLevel = isRateLimited(failText) || isAuthRejected(failText);
-    if (sideEffectExecuted && accountLevel) {
+    if ((sideEffectExecuted || contextRescueSucceeded) && accountLevel) {
       // 화면에 흘러간 조각은 턴 뷰 세그먼트로 남긴다(안 닫으면 이 어댑터 호출과 함께 버려진다).
       closeTextSegment();
       console.error(
@@ -3196,7 +3354,15 @@ export const runOpenAiCodex = async (
       );
       rethrow(e);
     }
-    if (sideEffectExecuted) {
+    // Successful rescue forbids a whole-turn replay independently of the next
+    // failure cause. Do not swallow that failure in the partial-result path.
+    if (contextRescueSucceeded) rethrow(e);
+    // Only a proven pre-dispatch initial rejection may select another candidate.
+    // A successful rescue, hooks, emitted response or accepted native-capable
+    // stream is not a zero-effect turn, regardless of successful tool counts.
+    if (e instanceof CodexContextLimitError && !toolHandlingStarted &&
+        !responseEmitted && !nativeStreamAccepted && canReplay(input.replay)) rethrow(e);
+    if (sideEffectExecuted || e instanceof CodexContextLimitError) {
       hostComposedEnd = true;
       const ranList =
         executedToolNames.size > 0

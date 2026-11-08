@@ -99,6 +99,7 @@ const addScheduleTool = (turnSession: TurnSession) => tool(
     prompt: z.string().min(1).max(4096),
     dest_channel: z.string().min(1).max(64),
     dest_target: z.string().max(256).optional(),
+    report_default: z.enum(["deliver", "omit"]).optional().describe("보고 정책 — 생략 또는 deliver는 기존처럼 결과를 전달합니다. omit는 사용자가 선택한 확인용 실행에서만, 정상 확인 후 새 소식이 없으면 메시지·대체 안내 없이 기록만 남길 수 있게 합니다. 요청한 알람·최종 결과를 임의로 omit로 바꾸지 마세요. 중요한 변화·오류·승인/결정 요청은 report_to_user 또는 prompt_options로 전달합니다. 실행·사용량·이력·타이머 정산은 생략하지 않습니다."),
     keep_runs: z
       .number()
       .int()
@@ -110,6 +111,9 @@ const addScheduleTool = (turnSession: TurnSession) => tool(
   },
   async (args) => {
     const triggerType = args.trigger_type ?? "cron";
+    if (args.report_default === "omit" && args.prompt.startsWith("!say ")) {
+      return okJson({ ok: false, error: "verbatim_requires_delivery", detail: "!say는 명시 전송 계약이라 omit와 함께 쓸 수 없습니다." });
+    }
     const tz = args.timezone ?? "Asia/Seoul";
 
     // ★발송 채널을 **등록 시점에** 검증한다 (2026-07-31 전체검토 P1). 종전엔
@@ -191,6 +195,7 @@ const addScheduleTool = (turnSession: TurnSession) => tool(
       keepRuns: args.keep_runs ?? null,
       runAt,
       originThreadKey: origin,
+      reportDefault: args.report_default,
     });
     console.log(`[scheduler:${row.id}] '${row.label}' 등록 — ${triggerType}${runAt !== null ? ` ${new Date(runAt).toISOString()}` : ""} · 처리: ${origin ?? `전용 세션 scheduler:${row.id}`} · 결과 → ${row.destChannel}:${row.destTarget ?? "-"}`);
     // plugin lifecycle 에 추가 알림 — cron/reboot/once 분기는 plugin index.ts 에서.
@@ -202,6 +207,7 @@ const addScheduleTool = (turnSession: TurnSession) => tool(
     return okJson({
       ok: true,
       id: row.id,
+      report_default: row.reportDefault,
       trigger_type: triggerType,
       next_run: nextRunIso,
       runs_in: origin !== null ? "this_conversation" : "own_session",
@@ -238,6 +244,7 @@ const listSchedulesTool = tool(
         last_status: r.lastStatus,
         last_error: r.lastError,
         keep_runs: r.keepRuns,
+        report_default: r.reportDefault,
         next_run: nextRun,
         kind: isTimer(r) ? "timer" : "schedule",
         runs_in: r.originThreadKey ?? `own_session scheduler:${r.id}`,
@@ -261,6 +268,7 @@ const updateScheduleTool = (turnSession: TurnSession) => tool(
     dest_channel: z.string().min(1).max(64).optional(),
     dest_target: z.string().max(256).optional(),
     enabled: z.boolean().optional(),
+    report_default: z.enum(["deliver", "omit"]).optional().describe("보고 정책 — 생략 또는 deliver는 기존처럼 결과를 전달합니다. omit는 사용자가 선택한 확인용 실행에서만, 정상 확인 후 새 소식이 없으면 메시지·대체 안내 없이 기록만 남길 수 있게 합니다. 요청한 알람·최종 결과를 임의로 omit로 바꾸지 마세요. 중요한 변화·오류·승인/결정 요청은 report_to_user 또는 prompt_options로 전달합니다. 실행·사용량·이력·타이머 정산은 생략하지 않습니다."),
     keep_runs: z
       .number()
       .int()
@@ -278,6 +286,10 @@ const updateScheduleTool = (turnSession: TurnSession) => tool(
         error: "not_found",
         detail: `no schedule id=${args.id}`,
       });
+    }
+
+    if ((args.report_default ?? existing.reportDefault) === "omit" && (args.prompt ?? existing.prompt).startsWith("!say ")) {
+      return okJson({ ok: false, error: "verbatim_requires_delivery", detail: "!say는 명시 전송 계약이라 omit와 함께 쓸 수 없습니다." });
     }
 
     // once 타이머는 시각·종류를 안 바꾼다 — 바꿀 일이면 지우고 새로 건다(울리면 지워지는 물건이라 고칠 일이 드물다).
@@ -301,6 +313,7 @@ const updateScheduleTool = (turnSession: TurnSession) => tool(
     const effectiveTz = args.timezone ?? existing.timezone;
 
     const patch: Parameters<typeof updateSchedule>[1] = {};
+    if (args.report_default !== undefined) patch.reportDefault = args.report_default;
     if (args.label !== undefined) patch.label = args.label;
     if (args.timezone !== undefined) patch.timezone = args.timezone;
     if (args.prompt !== undefined) patch.prompt = args.prompt;
@@ -356,6 +369,7 @@ const updateScheduleTool = (turnSession: TurnSession) => tool(
     return okJson({
       ok: true,
       id: updated.id,
+      report_default: updated.reportDefault,
       trigger_type: updated.triggerType,
       enabled: updated.enabled,
       next_run: nextRunIso,

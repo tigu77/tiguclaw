@@ -234,8 +234,8 @@ export const SYSTEM_PROMPT_HASH = createHash("sha256")
  */
 export const extractToolResults = (
   msg: unknown,
-): Array<{ toolUseId: string; text: string; isError: boolean }> => {
-  const out: Array<{ toolUseId: string; text: string; isError: boolean }> = [];
+): Array<{ toolUseId: string; text: string; isError: boolean; nonText?: true }> => {
+  const out: Array<{ toolUseId: string; text: string; isError: boolean; nonText?: true }> = [];
   const message = (msg as { message?: unknown }).message;
   const content = (message as { content?: unknown } | undefined)?.content;
   if (!Array.isArray(content)) return out;
@@ -279,7 +279,7 @@ export const extractToolResults = (
         .filter((n): n is string => typeof n === "string" && n !== "");
       if (refs.length > 0) text = [text, refs.join("\n")].filter((t) => t !== "").join("\n");
     }
-    out.push({ toolUseId, text, isError });
+    out.push({ toolUseId, text, isError, ...(Array.isArray(c) && c.some(b => b && typeof b === "object" && b.type === "image") ? { nonText: true as const } : {}) });
   }
   return out;
 };
@@ -2302,14 +2302,14 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         pendingTaskOutput.size > 0 ||
         pendingKillShellCalls.size > 0
       ) {
-        for (const { toolUseId, text, isError } of extractToolResults(msg)) {
+        for (const { toolUseId, text, isError, nonText } of extractToolResults(msg)) {
           // 실행시간(#3) — 이 tool_result 에 대응하는 top-level 도구가 있으면 phase:"end"
           // +durationMs 로 발행(같은 seq → 대시보드가 시작 스텝에 실행시간 주석). best-effort.
           const timing = toolTiming.get(toolUseId);
           if (timing !== undefined) {
             toolTiming.delete(toolUseId);
             timing.stopSlow?.(); // 결과 도착 = 더 감시할 이유 없음(타이머 누수 0).
-            const output = buildActivityOutput(timing.label, text, isError);
+            const output = buildActivityOutput(timing.label, text, isError, timing.label === "Read" ? { kind: nonText ? "non-text" : "unknown" } : undefined);
             try {
               bus.publish({
                 type: "llm.activity",

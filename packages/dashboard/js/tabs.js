@@ -424,6 +424,7 @@
         setOldestCursor([], null); // 두 축 함께 리셋(안 하면 옛 세션 id 가 샌다).
         reachedOldest = false;
         loadingOlder = false;
+        setHistoryOlderPaused(false);
       };
 
       /**
@@ -480,7 +481,7 @@
           if (myToken !== switchToken) return;
           const entries = Array.isArray(data.entries) ? data.entries : [];
           const activities = Array.isArray(data.activities) ? data.activities : [];
-          if (entries.length === 0 && activities.length === 0) return; // 빈(새) 세션 — finally 가 ready 로 닫는다.
+          if (entries.length === 0 && activities.length === 0) { reachedOldest = true; return; } // 빈(새) 세션.
           // ★진행 중 턴 seamless 재개(멀티세션 도구폭주 픽스) — 이 스레드에 활성 턴(activeTurns)
           // 이 있으면, 이력 활동의 마지막 seq-run(=진행 중 턴)을 정적 hist-turn 이 아니라 라이브
           // 경로(renderActivity)로 재구성한다. 그래야 cardByThread 가 세팅돼 뒤이어 SSE 로
@@ -492,11 +493,15 @@
           for (const a of liveResume) { try { renderActivity(a, fmtTime(a.ts)); } catch { /* best-effort 재개 */ } }
           setOldestCursor(entries, activities.length > 0 ? activities[0].ts : null);
           if (entries.length < HISTORY_PAGE) reachedOldest = true;
+          if (!reachedOldest && activities.length === 0 && entries.every((e) => e.role === "assistant" && isRecordOnlyMessage(e))) {
+            await loadOlderHistory(HISTORY_FETCH_BUDGET - 1);
+            if (!sameLoadToken(myToken)) return;
+          }
           refreshChatEmpty();
           scrollChatToNewest();
           if (currentView === "overview") setTimeout(showOverview, 0);
         } catch (err) {
-          setHistoryLoadState("error");
+          if (sameLoadToken(myToken)) setHistoryLoadState("error");
           console.warn("thread history load failed:", err && err.message ? err.message : err);
         } finally {
           endHistoryLoad(); // 조기 return(토큰 무효·!ok·빈 세션) 포함 — 보류분 유실 0.

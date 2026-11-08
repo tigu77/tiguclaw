@@ -28,6 +28,7 @@ import type { EventBus } from "../../../src/core/eventbus.js";
 import type { WatchRow } from "../../../src/store/watches.js";
 import type { TriggerRun } from "../../../src/core/llm-runtime/types.js";
 import { dispatch } from "./dispatcher.js";
+import { finishTriggerOutput } from "../../../src/core/entry/reply-command.js";
 import { translate } from "../../../src/core/i18n.js";
 
 export interface WatcherDeps {
@@ -50,6 +51,9 @@ export interface WatcherDeps {
     originThreadKey: string | null;
   }) => Promise<{
     text: string;
+    /** 실제 차례의 정책. mock·옛 실행기가 생략하면 기본 전달. */
+    reportDefault?: "omit";
+    reportOmitted?: true;
     /**
      * 실행하지 않았다(모델 호출 0) — 기록·배달하지 않는다. `deleted`·`disabled` = 줄에서 기다리는 사이 감시가 지워지거나 꺼짐(스케줄
      *  `SKIPPED_IN_QUEUE` 와 같은 판단) · `moved` = 그새 처리 자리가 바뀜 · `origin-gone` = 만든 대화가 사라짐(★전용 세션으로 몰래 돌리지 않는다 — 오류로 남긴다) ·
@@ -57,7 +61,7 @@ export interface WatcherDeps {
      */
     skipped?: "deleted" | "disabled" | "moved" | "origin-gone" | "not-run";
     /** 만든 대화 안에서 돌았다 — 답은 그 턴이 이미 목적지로 보냈다(여기서 또 보내면 두 번). `failed` = 그 턴이 실패 안내로 끝남. */
-    inOrigin?: { replied: number; failed?: string; dest?: { channel: string; target: string | null } };
+    inOrigin?: { replied: number; reportOmitted?: true; failed?: string; dest?: { channel: string; target: string | null } };
   }>;
   /** recordFiring 주입 — spike 에서 mock 가능. */
   recordFiring: (
@@ -342,36 +346,30 @@ const fireWatch = async (
       }
       console.log(`${tag} 끝 — 만든 대화(${row.originThreadKey})에서 처리 · 답 ${replied}자 → ${used.channel}:${used.target ?? "-"} · ${secs()}`);
       deps.recordFiring(row.id, { ok: true, path: eventPath, event });
-      bus.publish({ type: "file-watch.fired", ts: Date.now(), payload: { watchId: row.id, path: eventPath, event, ok: true } });
+      bus.publish({ type: "file-watch.fired", ts: Date.now(), payload: { watchId: row.id, path: eventPath, event, ok: true, ...(result.inOrigin.reportOmitted === true ? { reportOmitted: true } : {}) } });
       return;
     }
-    // 결과를 목적지로 — 빈 결과면 보낼 것이 없다. 배달 실패는 생성 실패와 갈라 적는다(스케줄러와 같은 모양).
-    if (result.text.trim() !== "") {
-      try {
-        await (deps.dispatch ?? dispatch)({
-          watchId: row.id,
-          destChannel: row.destChannel,
-          destTarget: row.destTarget,
-          text: result.text,
-          bus,
-        });
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        console.error(
-          `[file-watch:${row.id}] '${row.label}' → ${row.destChannel}:${row.destTarget} DISPATCH FAILED (내용 생성됨·전달 실패): ${reason}`,
-        );
-        console.error(`${tag} 끝 — 결과 ${result.text.length}자 생성 · 배달 실패 · ${secs()}`);
-        deps.recordFiring(row.id, { ok: false, path: eventPath, event, error: `dispatch: ${reason}` });
-        bus.publish({
-          type: "file-watch.error",
-          ts: Date.now(),
-          payload: { watchId: row.id, phase: "dispatch", path: eventPath, event, destChannel: row.destChannel, error: reason },
-        });
-        return;
-      }
+    // 공통 게이트는 실제 차례의 정책과 증명만 소비한다. 원문/실행 기록은 바꾸지 않는다.
+    let reportOmitted = false;
+    try {
+      reportOmitted = await finishTriggerOutput({
+        reportDefault: result.reportDefault, out: result,
+        channel: "file-watch", threadKey: `file-watch:${row.id}`, kind: "watch", bus,
+        deliver: async () => {
+          if (result.text.trim() !== "") await (deps.dispatch ?? dispatch)({
+            watchId: row.id, destChannel: row.destChannel, destTarget: row.destTarget, text: result.text, bus,
+          });
+        },
+      }) === "omitted";
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`${tag} 끝 — 결과 ${result.text.length}자 생성 · 배달/마감 실패 · ${secs()}: ${reason}`);
+      deps.recordFiring(row.id, { ok: false, path: eventPath, event, error: `dispatch: ${reason}` });
+      bus.publish({ type: "file-watch.error", ts: Date.now(), payload: { watchId: row.id, phase: "dispatch", path: eventPath, event, destChannel: row.destChannel, error: reason } });
+      return;
     }
     console.log(
-      result.text.trim() === ""
+      reportOmitted ? `${tag} 끝 — 사용자 보고 생략(기록 보존) · ${secs()}` : result.text.trim() === ""
         ? `${tag} 끝 — 빈 결과(보내지 않음) · ${secs()}`
         : `${tag} 끝 — 결과 ${result.text.length}자 → ${row.destChannel}:${row.destTarget ?? "-"} 배달 · ${secs()}`,
     );
@@ -384,6 +382,7 @@ const fireWatch = async (
         path: eventPath,
         event,
         ok: true,
+        ...(reportOmitted ? { reportOmitted: true } : {}),
       },
     });
   } catch (e) {

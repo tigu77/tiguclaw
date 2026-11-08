@@ -265,6 +265,10 @@
       const internalTextAsStep = (p) => ({ ...p, kind: "note", label: i18n("chat.internalNote"), detail: String(p.text || "") });
       /** «내부 처리» 통지인가(2026-11-02, notify-owner-report-contract §11·§12 — 보고를 생략한 알림 턴의 마감 행. 화면엔 짧은 상태 줄로 보이고, 진행 턴 이어받기가 «끝난 턴» 증거로 쓴다). 라이브 payload 는 `audience`, 이력 행은 `data.audience` — 두 모양을 이 한 함수로 본다(문구로 판정하지 않는다 · 서버 `chat-log.ts` `isInternalChatEntry` 와 같은 필드). */
       const isInternalMessage = (m) => !!m && (m.audience === "internal" || (!!m.data && typeof m.data === "object" && m.data.audience === "internal"));
+      // 트리거 opt-in 보고 생략의 마감. 일반 worker 내부 통지는 종전 상태 줄을 유지한다.
+      // 문구/빈 본문으로 추측하지 않고 서버의 내부+recordOnly 명시 표식을 함께 확인한다.
+      const isRecordOnlyMessage = (m) => isInternalMessage(m) &&
+        (m.recordOnly === true || (!!m.data && typeof m.data === "object" && m.data.recordOnly === true));
       const currentLocale = () =>
         (window.__TIGU_I18N__ && window.__TIGU_I18N__.locale) || "ko";
 

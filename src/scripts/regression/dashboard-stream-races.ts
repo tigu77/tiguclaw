@@ -263,6 +263,7 @@ const sseRaces = async (): Promise<Assertion[]> => {
   class FakeDate extends Date { static override now(): number { return browserNow; } }
   const turn = { active: new Set<string>(), clearPending: new Set<string>(), calls: [] as string[] };
   const drawn = { messages: [] as number[], activities: [] as number[] };
+  const historyPaused = { value: true };
   const vtItems: Array<{ node: El }> = [];
   const ctx = vm.createContext({
     console: { warn() {}, debug() {}, log() {} },
@@ -321,6 +322,8 @@ const sseRaces = async (): Promise<Assertion[]> => {
     vtClear() {},
     cardByThread: new Map(),
     setOldestCursor() {},
+    // history-render.js는 이 SSE 대역에 싣지 않는다. 탭 리셋의 실제 경계 호출을 기록한다.
+    setHistoryOlderPaused: (paused: boolean) => { historyPaused.value = paused; },
     buildHistoryDiv: (e: { ts: number }) => {
       const d = new El();
       d.className = "ev local channel-chat";
@@ -365,8 +368,8 @@ const sseRaces = async (): Promise<Assertion[]> => {
   (ctx as { activeThreadKey: string }).activeThreadKey = "A";
   out.push(assert(
     "★이력 창에 보류된 A 세션 메시지가 탭을 B 로 옮긴 뒤 B 리스트에 흘러들지 않는다",
-    leaked === 0,
-    { B에붙은수: leaked },
+    leaked === 0 && historyPaused.value === false,
+    { B에붙은수: leaked, 이전탭이력일시중단: historyPaused.value },
   ));
 
   // ⑤ agent_no_tools — replay(같은 이벤트 두 번)는 한 줄, 그 줄의 시각은 이벤트 시각.

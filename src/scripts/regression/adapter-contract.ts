@@ -13,23 +13,18 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, assertIsolated, spawnWithin, type Assertion, type RegressionCheck } from "./_framework.js";
+import { contractDiagnostic, decodeContractChild } from "./_adapter-contract-result.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CHILD = path.join(HERE, "_adapter-contract-child.ts");
 const ADAPTERS = ["codex", "claude", "openai"] as const;
 type U = { inputTokens?: number; outputTokens?: number; cachedTokens?: number; inputTokensTotal?: number; outputTokensTotal?: number; cachedTokensTotal?: number; iterations?: number };
-type J = { usage?: U; outcome?: string; name?: string; text?: string; events?: string[]; message?: string; remoteCalls?: Array<{ text: string; hdr: string }>; cli?: { configHasSecret: boolean; blocksCliAuth: boolean } };
+type J = { diagnostic?: string; usage?: U; outcome?: string; name?: string; text?: string; events?: string[]; message?: string; remoteCalls?: Array<{ text: string; hdr: string }>; cli?: { configHasSecret: boolean; blocksCliAuth: boolean } };
 
 const child = async (adapter: string, scenario: string, via: "adapter" | "facade"): Promise<J> => {
   const argv = ["--import", "tsx", CHILD, adapter, scenario, ...(via === "facade" ? ["facade"] : [])];
   const r = await spawnWithin(60_000, `contract(${adapter},${scenario},${via})`, argv, { stdio: ["ignore", "pipe", "pipe"], env: process.env });
-  if (r.timedOut) return { outcome: "timeout" };
-  const line = r.out.trim().split("\n").filter((l) => l.startsWith("{")).pop();
-  try {
-    return line === undefined ? { outcome: "no-output", message: r.err.slice(-200) } : (JSON.parse(line) as J);
-  } catch {
-    return { outcome: "bad-json" };
-  }
+  return decodeContractChild(r) as J;
 };
 
 /** 결과 한 칸 — 사람이 읽는 요약(어긋난 어댑터가 바로 보이게). */
@@ -84,7 +79,7 @@ export const check: RegressionCheck = {
         const row = Object.fromEntries(ADAPTERS.map((a) => [a, res.get(`${c.scenario}|${a}|${via}`) ?? {}]));
         out.push(assert(`${c.title} — ${via === "facade" ? "facade" : "어댑터"} · 세 어댑터`,
           ADAPTERS.every((a) => c.ok(row[a]!, via)),
-          ADAPTERS.map((a) => `${a}=${cell(row[a]!)}`).join(" · ")));
+          ADAPTERS.map((a) => `${a}=${contractDiagnostic(cell(row[a]!))}${row[a]!.diagnostic === undefined ? "" : ` child=${row[a]!.diagnostic}`}`).join(" · ")));
       }
     }
     return out;

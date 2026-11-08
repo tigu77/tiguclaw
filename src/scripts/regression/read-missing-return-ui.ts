@@ -1,6 +1,5 @@
 /** Actual Read UI function VM checks; no product runtime, browser, home, or DB boot.
- * This standard wrapper is for later suite discovery; while incident hold applies,
- * run only the independent child directly, not this wrapper or the full suite.
+ * Use the suite's tsx loader so the child also runs on the supported Node 20 baseline.
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +10,7 @@ export const check: RegressionCheck = {
   guards: "Completed Read without output must explain missing historical content; pending must not. Main/history/worker/agent completion, delayed output replacement, keyboard parity and durationless running-marker cleanup.",
   run: async () => {
     const child = await spawnWithin(30_000, "read-missing-return-ui-vm", [
-      "--experimental-strip-types",
+      "--import", "tsx",
       path.join(path.dirname(fileURLToPath(import.meta.url)), "_read-missing-return-ui-child.ts"),
     ], { cwd: process.cwd(), env: { ...process.env, TIGUCLAW_DISABLE_ENV_FILE: "1" } });
     let result: { ok?: boolean; checks?: Array<{ name: string; ok: boolean; error?: string }>; mutation?: { baseline?: string; missingGuardRestoredInMemory?: string; restoreOriginal?: string } } = {};

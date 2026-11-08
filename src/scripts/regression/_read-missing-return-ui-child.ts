@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /** Source-only VM regression. Never import a product module, boot a dashboard,
  *  load env files, inspect homes/DBs, or install a network/process fixture.
- * Run: node --experimental-strip-types src/scripts/regression/_read-missing-return-ui-child.ts
+ * Run: node --import tsx src/scripts/regression/_read-missing-return-ui-child.ts
  * Mutation lives in VM source strings only; product/helper files are never written.
  */
 import assert from "node:assert/strict";

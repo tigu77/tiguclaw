@@ -24,6 +24,8 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
   };
   const daemonUrl = new URL("../../../bin/daemon.mjs", import.meta.url).href;
   const d: any = await import(daemonUrl);
+  const identity = await import(new URL("../../../bin/runtime-identity.mjs", import.meta.url).href);
+  const contract = await import(new URL("../../../bin/update-marker.mjs", import.meta.url).href);
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "tigu-win-update-"));
   try {
     // repoRoot 는 `.env` 없는 임시 폴더 — 개발 레포의 `.env` 를 읽으면 개발 기계와 공개 CI 에서 결과가 갈린다.
@@ -109,7 +111,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     const source = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
     const body = source.slice(source.indexOf("const runUpdate = (c) => {"), source.indexOf("\n/**\n * @param {Ctx} c\n * @param {string} cmd", source.indexOf("const runUpdate = (c) => {")));
     type Scenario = "success" | "npm-fail" | "dirty" | "lock-only" | "rollback-dirty" | "corrupt-env" | "pull-fail";
-    type SimOpts = { notify?: boolean; handoff?: string; reportFrom?: string; resetFails?: boolean; stopFails?: boolean; startFails?: "exit" | "throw"; revivedDuringCi?: boolean; platform?: "win32" | "darwin" | "linux";
+    type SimOpts = { legacyComplete?: boolean; privateDirect?: boolean; wrongRevision?: boolean; staleAfterResume?: boolean; notify?: boolean; handoff?: string; reportFrom?: string; resetFails?: boolean; stopFails?: boolean; startFails?: "exit" | "throw"; revivedDuringCi?: boolean; platform?: "win32" | "darwin" | "linux";
       // ★2026-10-29 — 포트와 무관한 존재 판정 · 의존성 트리 옮겨 두기. `deps` 를 주면 이 케이스만의 레포에 진짜 `node_modules` 를 만든다
       //  (tree = 폴더 · link = 다른 폴더를 가리키는 링크). fs 는 진짜이고, 실패만 골라 주입한다.
       presence?: "running" | "stopped" | "unknown"; portClosed?: boolean; registered?: boolean; deps?: "tree" | "link"; leftovers?: string[];
@@ -139,9 +141,12 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const nm = path.join(repoRoot, "node_modules");
       const short = (p: string) => path.basename(p).replace(/-\d+$/, "-N");
       const marker = path.join(h, ".update-failed");
+      if(opts.legacyComplete || opts.privateDirect) fs.writeFileSync(path.join(h,opts.legacyComplete?".update-complete":".update-pending"),JSON.stringify({mode:"direct",state:"ready",notify:{channel:"legacy-destination",target:"original-target"}}));
+      const markerObservations: {legacy:boolean;pending:any}[]=[];
+      const observeMarker=()=>{let pending;try{pending=JSON.parse(fs.readFileSync(path.join(h,".update-pending"),"utf8"));}catch{}markerObservations.push({legacy:fs.existsSync(path.join(h,".update-complete")),pending});};
       const calls: string[] = []; let rev = 0, status = 0, ci = 0, build = 0; let lockDirty = scenario === "lock-only";
       // 데몬이 떠 있나 — 멈추면 내려가고, `revivedDuringCi` 면 설치 도중 무언가가 다시 띄운다(2026-10-19 윈도우돌쇠 실측).
-      let running = true;
+      let running = true; let launched = false; let generation = "old"; let processStartedAt = Date.now() - 1000;
       // «업데이트 중» 표식 — 종료 처리기는 모아 뒀다가 끝에 부른다(진짜 프로세스 종료를 흉내).
       const lockFile = path.join(h, ".update-in-progress"); const exitHandlers: (() => void)[] = [];
       const lockState = () => (fs.existsSync(lockFile) ? "lock" : "no-lock");
@@ -150,8 +155,8 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
         env: { HTTP_BRIDGE_TOKEN: "opaque-fixture-secret", ...(opts.notify ? { TIGUCLAW_UPDATE_NOTIFY_CHANNEL: "fixture" } : {}),
           ...(opts.handoff ? { TIGUCLAW_UPDATE_PREV_SHA: opts.handoff } : {}), ...(opts.reportFrom !== undefined ? { TIGUCLAW_UPDATE_REPORT_FROM: opts.reportFrom } : {}) } };
       const spawnSync = (cmd: string, args: string[]) => {
-        calls.push([cmd, ...args].join(" ")); let stdout = "", stderr = "", code = 0;
-        if (cmd === "git" && args[0] === "rev-parse") stdout = ++rev === 1 ? "1111111" : "2222222";
+        observeMarker(); calls.push([cmd, ...args].join(" ")); let stdout = "", stderr = "", code = 0;
+        if (cmd === "git" && args[0] === "rev-parse") stdout = ++rev === 1 ? "1111111" : "2".repeat(40);
         if (cmd === "git" && args[0] === "checkout" && args.includes("package-lock.json")) lockDirty = false;
         if (cmd === "git" && args[0] === "pull" && scenario === "pull-fail") { code = 1; stderr = "fixture: could not resolve host"; }
         if (cmd === "git" && args[0] === "reset" && opts.resetFails) { code = 1; stderr = "fixture: reset refused"; }
@@ -163,7 +168,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
         }
         if (cmd === "npm" && args[0] === "ci") {
           calls.push(`CI:${lockState()}`);
-          if (opts.revivedDuringCi === true) running = true;
+          if (opts.revivedDuringCi === true) { running = true; generation = "intermediate"; processStartedAt = Date.now() - 1; }
           ci++;
           const fails = opts.ciFail !== undefined ? opts.ciFail(ci) : scenario !== "success" && scenario !== "lock-only" && ci === 1;
           // 의존성 케이스: npm 은 그 자리에 트리를 만든다 — 실패면 반쯤(현장 모양: 일부만 남음), 성공이면 새 트리.
@@ -198,12 +203,12 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       // ★`lstatSync`·`readdirSync`·`renameSync`·`unlinkSync`·`sleepSync` 를 **반드시** 넘긴다 — 안 넘기면 본문의 try/catch 가 ReferenceError 를
       //  삼켜 «node_modules 없음» 으로 조용히 통과한다(2026-10-29 실측: 넘기기 전에도 47건이 초록이었다).
       const names = ["process", "console", "path", "existsSync", "mkdirSync", "openSync", "writeSync", "writeFileSync", "spawnSync", "isDaemonRunning", "isRegistered", "handlers", "warnWinServiceToken", "saveWinServiceEnv", "redactUpdateLog", "rmSync", "updateLockPath",
-        "lstatSync", "readdirSync", "renameSync", "unlinkSync", "sleepSync"];
+        "lstatSync", "readdirSync", "renameSync", "unlinkSync", "sleepSync", "healthSaysOurs", "listeningOnBridge", "expectFreshLaunch", "waitForListening", "reportLaunch", "UPDATE_PENDING_MARKER", "updateBootMatches", "updateMarkerMatches", "instanceIdFor", "readFileSync"];
       // 마커가 재가동 **전에** 있었나 — 다시 뜬 데몬이 부팅 때 읽어 통지한다.
       const startMark = (what: string) => () => calls.push(`${what}:${fs.existsSync(marker) ? "marker" : "no-marker"}`, `${what}@${lockState()}`);
       const presenceFake = opts.presence === undefined ? {} : { presence: () => { calls.push("PRESENCE"); return { state: opts.presence, pids: opts.presence === "running" ? ["777"] : [], why: "fixture: process list query failed" }; } };
       // 재가동 실패 — 진짜 start 는 `reportLaunch` 로 exitCode 1 을 세우거나(launch 확인 실패) `execFileSync` 가 던진다(launchctl·systemctl).
-      const launch = (what: string) => () => { startMark(what)(); if (opts.startFails === "exit") processFake.exitCode = 1; if (opts.startFails === "throw") throw new Error("fixture: launchctl load failed"); };
+      const launch = (what: string) => () => { observeMarker(); startMark(what)(); running = true; launched = true; generation = "fresh"; processStartedAt = opts.staleAfterResume ? 1 : Date.now(); if (opts.startFails === "exit") processFake.exitCode = 1; if (opts.startFails === "throw") throw new Error("fixture: launchctl load failed"); };
       const ops = { stop: () => { calls.push("STOP"); if (opts.stopFails !== true) running = false; return opts.stopFails === true ? false : true; }, reenable: () => calls.push("REENABLE"), start: launch("START"), restart: launch("RESTART") };
       // 진짜 표: 표에 적힌 이름마다 가짜를 넣되 정지·기동은 위 기록기로, 존재 판정만 진짜 본문(스캔 결과 주입)으로.
       const realTable = () => {
@@ -213,11 +218,20 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
         return new Function(...handlerNames, handlersSrc + "; return handlers;")(...handlerNames.map((n) => byName[n] ?? (() => calls.push(`UNEXPECTED:${n}`))));
       };
       const table = opts.scan !== undefined ? realTable() : ((t: unknown) => ({ win32: t, darwin: t, linux: t }))({ ...ops, ...presenceFake });
+      const one = (name: string) => source.slice(source.indexOf(`const ${name} = (`), source.indexOf("\n};", source.indexOf(`const ${name} = (`)) + 3);
+      const health = () => ({ ok: running && (launched || opts.portClosed !== true), why: "fixture health", instanceId: identity.instanceIdFor({home:context.homeAbs,repoRoot:context.repoRoot,runtime:context.runtime}), revision: (opts.wrongRevision && launched ? "3" : "2").repeat(40), bootId: ({old:"11111111-1111-4111-8111-111111111111",intermediate:"22222222-2222-4222-8222-222222222222",fresh:"33333333-3333-4333-8333-333333333333"} as Record<string,string>)[generation], startedAt: processStartedAt });
+      const probe = () => ({ pids: running && opts.portClosed !== true ? ["777"] : [] });
+      const capture = new Function("healthSaysOurs", one("expectFreshLaunch") + ";return expectFreshLaunch;")(health);
+      const wait = new Function("healthSaysOurs", "sleepSync", "updateBootMatches", one("waitForListening") + ";return waitForListening;")(health, () => {}, contract.updateBootMatches);
+      const report = new Function("process", "console", "winPort", one("reportLaunch") + ";return reportLaunch;")(processFake, fakeConsole, () => "7021");
       const invoke = new Function(...names, body + "; return runUpdate;")(...[
         processFake, fakeConsole, path, fs.existsSync, fs.mkdirSync, (p: string, flags: string) => { const fd = fs.openSync(p, flags); fds.push(fd); return fd; }, fs.writeSync, fs.writeFileSync, spawnSync, () => running && opts.portClosed !== true, () => opts.registered !== false,
         table, () => {}, () => calls.push("SAVE_ENV"), (text: string) => d.redactUpdateLog(text, processFake.env),
         rmW, d.updateLockPath,
-        fs.lstatSync, fs.readdirSync, renameW, unlinkW, () => {},
+        fs.lstatSync, fs.readdirSync, renameW, unlinkW, () => {}, health, probe,
+        (ctx: unknown, old: string[]) => { calls.push(`CAPTURE:${build}:${generation}`); return capture(ctx, old); },
+        (ctx: unknown, p: unknown) => wait(ctx, p, 0), report,
+        contract.UPDATE_PENDING_MARKER, contract.updateBootMatches, contract.updateMarkerMatches, identity.instanceIdFor, fs.readFileSync,
       ]);
       try { invoke(context); } finally { for (const fd of fds) fs.closeSync(fd); }
       const lockAfterRun = lockState(); for (const fn of exitHandlers) fn(); const lockAfterExit = lockState();
@@ -228,8 +242,35 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const entries = repoRoot === fakeRepo ? [] : fs.readdirSync(repoRoot).filter((x) => x.startsWith(".node_modules")).map((x) => ({ name: x.replace(/-\d+$/, "-N"), marker: markerIn(path.join(repoRoot, x)) }));
       const depsNow = repoRoot === fakeRepo ? "(n/a)" : read(path.join(nm, "sdk", "marker.txt"));
       const sharedNow = opts.deps === "link" ? { marker: read(path.join(shared, "sdk", "marker.txt")), files: fs.readdirSync(shared).join(",") } : undefined;
-      return { calls, messages, exitCode: processFake.exitCode, log: fs.readFileSync(path.join(h, "logs", log), "utf8"), home: h, marker: mk, lockAfterRun, lockAfterExit, depsNow, entries, sharedNow, ci, build };
+      return { markerObservations, completion: JSON.parse(read(path.join(h,".update-pending")) === "(none)" ? "null" : read(path.join(h,".update-pending"))), calls, messages, exitCode: processFake.exitCode, log: fs.readFileSync(path.join(h, "logs", log), "utf8"), home: h, marker: mk, lockAfterRun, lockAfterExit, depsNow, entries, sharedNow, ci, build };
     };
+    test("actual CLI completion: private pending before boot, exact final boot and destination; legacy never exposed", () => {
+      for(const seed of [{legacyComplete:true},{privateDirect:true}]) {
+        const r=simulate("success",seed);
+        assert.equal(r.exitCode,0);assert.equal(r.completion?.state,"confirmed");
+        assert(contract.updateMarkerMatches(r.completion,r.completion.confirmed));
+        assert.equal(r.completion.notify.target,"original-target");
+        assert(r.markerObservations.every(o=>!o.legacy));
+        assert(r.markerObservations.some(o=>o.pending?.expected===null&&o.pending?.state==="pending"));
+        assert(r.markerObservations.some(o=>o.pending?.expected?.revision==="2".repeat(40)&&o.pending?.state==="pending"));
+        assert(!fs.existsSync(path.join(r.home,".update-complete")));
+      }
+      return "real runUpdate + synthetic fs; legacy/direct preclaim, final exact boot";
+    });
+    test("actual CLI wrong revision / launch failure: success0, backup kept, original failure destination", () => {
+      for(const fault of [{wrongRevision:true},{startFails:"exit" as const},{staleAfterResume:true}]) {
+        const r=simulate("success",{legacyComplete:true,deps:"tree",...fault});
+        assert.equal(r.exitCode,1);assert.equal(r.completion?.state,"failed");
+        assert.equal(r.marker?.notify.target,"original-target");assert.equal(r.marker?.stage,"restart");
+        assert(r.entries.some(e=>e.marker==="old-tree"));
+        assert(!r.messages.some(m=>m.includes("✅ update complete")));
+        assert(!contract.updateMarkerMatches(r.completion,r.completion.confirmed));
+      }
+      const rollback=simulate("npm-fail",{legacyComplete:true});
+      assert.equal(rollback.marker?.notify.target,"original-target");
+      assert(!contract.updateMarkerMatches(rollback.completion,rollback.completion?.confirmed));
+      return "revision/cutoff/start rejection + rollback, original destination";
+    });
     const has = (calls: string[], re: RegExp) => calls.some((x) => re.test(x));
     test("멈춘 뒤 실패(npm): stderr·단계 로그 보존·비밀 제거 · 되돌리고 «rolled-back» 마커를 재가동 **전에** 쓴다", () => {
       const r = simulate("npm-fail", { notify: true }); assert.equal(r.exitCode, 1); assert(r.log.includes("fixture npm EACCES")); assert(!r.log.includes("opaque-fixture-secret"));
@@ -252,11 +293,11 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     test("성공: lock 정리→pull→stop→npm→build→start, 완료 마커", () => {
       const r = simulate("success", { notify: true }); assert.equal(r.exitCode, 0); assert(r.calls.includes("npm run build:prod")); assert(has(r.calls, /^START/));
       assert(r.calls.indexOf("git pull --ff-only") < r.calls.indexOf("STOP"));
-      assert(fs.existsSync(path.join(r.home, ".update-complete")));
+      assert(fs.existsSync(path.join(r.home, ".update-pending")));
     });
     test("★완료 표시의 «무엇에서» 는 호출자가 준 실행 빌드 — 롤백·되돌리기 앵커는 여전히 pull 전 HEAD (v0.79.1 잔여 P2)", () => {
       // 받을 커밋 없이 빌드만 뒤처져 위임되면 pull 전 HEAD == 새 HEAD 라 완료 로그·마커가 «B → B» 였다(Windows 실측 «0c555dd → 0c555dd»).
-      const done = (r: { home: string }) => JSON.parse(fs.readFileSync(path.join(r.home, ".update-complete"), "utf8")) as { from: string; to: string };
+      const done = (r: { home: string }) => JSON.parse(fs.readFileSync(path.join(r.home, ".update-pending"), "utf8")) as { from: string; to: string };
       const ok = simulate("success", { notify: true, handoff: "1111111", reportFrom: "0abcdef9" });
       assert.equal(ok.exitCode, 0, ok.messages.join(" | "));
       assert.equal(done(ok).from, "0abcdef", JSON.stringify(done(ok)));
@@ -517,7 +558,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const all = (["success", "npm-fail", "dirty", "lock-only", "rollback-dirty", "pull-fail"] as Scenario[]).map((sc) => simulate(sc, { notify: true, handoff: "0000000" }));
       assert(all.every((r) => !r.calls.includes("SAVE_ENV")), "runUpdate 가 저장했다");
       // 저장은 사람이 셸에서 부르는 install 만 — start(업데이트 뒤 재가동이 부른다)는 안 한다.
-      const installSrc = source.slice(source.indexOf("const winInstall = (c) => {"), source.indexOf("const winInstall = (c) => {") + 200);
+      const installSrc = source.slice(source.indexOf("const winInstall = (c) => {"), source.indexOf("\n};\n", source.indexOf("const winInstall = (c) => {")));
       const startSrc = source.slice(source.indexOf("const winStart = (c) => {"), source.indexOf("\n};\n", source.indexOf("const winStart = (c) => {")));
       assert(/winEnsureTask\(c, \{ capture: true \}\)/.test(installSrc), "install 이 붙잡지 않는다");
       assert(/winEnsureTask\(c\)/.test(startSrc) && !/capture/.test(startSrc), "start 가 붙잡는다");
@@ -575,16 +616,29 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const prevCode = process.exitCode;
       process.exitCode = undefined;
       const start = new Function("isDaemonRunning", "winPort", "winEnsureTask", "winTaskName", "winLaunchSupervisor", "winPs", "winEnableStartScript",
-        "reportLaunch", "waitForListening", "listeningOnBridge", "path", "console", "winLaunchLegacyStartup", startSrc + "; return winStart;")(
+        "reportLaunch", "waitForListening", "listeningOnBridge", "path", "console", "winLaunchLegacyStartup", "expectFreshLaunch", "daemonPresence", startSrc + "; return winStart;")(
         () => o.running === true, () => 7021, () => { ev.push("ensure"); return o.mode; }, () => "task", () => ev.push("launch"),
         (x: string) => { ev.push(x); return { status: o.enableFails === true ? 1 : 0, stdout: "", stderr: "" }; }, () => "ENABLE_START",
         () => ev.push("report"), () => true, () => true, path, { log: () => {}, warn: () => ev.push("warn"), error: () => ev.push("error") },
-        () => ev.push("launch-legacy"));
+        () => ev.push("launch-legacy"), () => {}, () => ({state:o.running?"running":"absent"}));
       start(c);
       const code = process.exitCode;
       process.exitCode = prevCode;
       return { ev, code };
     };
+    test("★최종 빌드 뒤 cutoff: 중간 세대 배제·fresh 실패면 백업 보존과 완료 요약 실패", () => {
+      const bad = simulate("success", { deps: "tree", revivedDuringCi: true, staleAfterResume: true });
+      assert.equal(bad.exitCode, 1);
+      assert(bad.calls.includes("CAPTURE:1:intermediate"), bad.calls.join(" | "));
+      assert(bad.calls.indexOf("CAPTURE:1:intermediate") > bad.calls.indexOf("npm run build:prod"));
+      assert(bad.entries.some(e => e.marker === "old-tree"), JSON.stringify(bad.entries));
+      assert(!bad.messages.some(m => m.includes("✅ update complete")));
+      const good = simulate("success", { deps: "tree", revivedDuringCi: true });
+      assert.equal(good.exitCode, 0);
+      assert(good.calls.includes("CAPTURE:1:intermediate"));
+      assert(good.messages.some(m => m.includes("✅ update complete")));
+      return "real resume + wait/report; same build, stale vs fresh generation";
+    });
     test("★start: 이미 돌면 아무것도 안 한다(등록·기동 0) · 예약작업=켜고 띄움 · 폴백·지금만=직접 기동 · 지금만은 실패 코드 없이 경고 · 등록 불가=실패", () => {
       const running = runStart({ running: true, mode: true });
       assert.deepEqual(running.ev, []); assert.equal(running.code, undefined);

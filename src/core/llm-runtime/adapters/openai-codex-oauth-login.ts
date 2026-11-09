@@ -13,7 +13,7 @@
  *  폰에서 열었다면 콜백의 `localhost` 는 폰이라 자동 경로는 **원리적으로** 안 온다 — 그때
  *  사용자가 빠져나갈 길이 이것뿐이다.
  */
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type RequestListener, type ServerResponse } from "node:http";
 import {
   createAuthorizationFlow,
   exchangeAuthorizationCode,
@@ -22,6 +22,46 @@ import {
 
 export const CODEX_CALLBACK_PORT = 1455;
 export const CODEX_CALLBACK_PATH = "/auth/callback";
+
+/** Both consumers preserve the registered localhost redirect without wildcard binding. */
+export const listenCodexCallback = async (
+  listener: RequestListener,
+): Promise<{ close: () => void }> => {
+  const servers: Server[] = [];
+  const close = (): void => { for (const server of servers) server.close(); };
+  try {
+    for (const host of ["127.0.0.1", "::1"]) {
+      const server = createServer(listener);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (error: Error): void => { reject(error); };
+          server.once("error", onError);
+          server.listen({ port: CODEX_CALLBACK_PORT, host, ipv6Only: host === "::1" }, () => {
+            server.removeListener("error", onError);
+            resolve();
+          });
+        });
+        servers.push(server);
+      } catch (error) {
+        server.close();
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EAFNOSUPPORT" && code !== "EADDRNOTAVAIL" && code !== "EPROTONOSUPPORT") throw error;
+      }
+    }
+    if (servers.length === 0) throw new Error("No loopback address family available");
+    return { close };
+  } catch (error) {
+    close();
+    throw error;
+  }
+};
+
+/** Terminal callback boundary; never expose codes/state or reject while reporting a failure. */
+export const respondToCodexCallbackFailure = (res: ServerResponse): void => {
+  try {
+    if (!res.headersSent && !res.writableEnded && !res.destroyed) res.writeHead(500).end("Internal server error");
+  } catch { /* disconnected response */ }
+};
 
 /** 로그인 창을 열어두는 시간 — 넘으면 콜백 서버를 닫는다(포트를 물고 있지 않게). */
 const SESSION_TTL_MS = 10 * 60 * 1000;
@@ -88,7 +128,8 @@ interface PendingLogin {
   verifier: string;
   url: string;
   startedAt: number;
-  server: Server | null;
+  server: { close: () => void } | null;
+  inFlight: boolean;
   timer: NodeJS.Timeout;
   done: boolean;
 }
@@ -119,14 +160,17 @@ export const beginCodexLogin = async (): Promise<{ url: string; autoCallback: bo
     server: null,
     timer: setTimeout(closePending, SESSION_TTL_MS),
     done: false,
+    inFlight: false,
   };
   pending = session;
 
   let autoCallback = false;
   try {
-    const server = createServer((req, res) => {
+    const server = await listenCodexCallback((req, res) => {
       void (async () => {
-        const url = new URL(req.url ?? "/", `http://localhost:${CODEX_CALLBACK_PORT}`);
+        let url: URL;
+        try { url = new URL(req.url ?? "/", `http://localhost:${CODEX_CALLBACK_PORT}`); }
+        catch { res.writeHead(400).end("Invalid request URL"); return; }
         // ★들어온 것을 전부 남긴다 — "첫 요청이 뭐였나" 를 다음엔 추론하지 않는다.
         console.log(
           `[codex-login] ← ${req.method ?? "?"} ${url.pathname}` +
@@ -136,10 +180,23 @@ export const beginCodexLogin = async (): Promise<{ url: string; autoCallback: bo
           res.writeHead(404).end("Not found");
           return;
         }
+        if (url.searchParams.get("state") !== session.state) {
+          res.writeHead(400).end("State mismatch (CSRF guard)");
+          return;
+        }
+        if (session.inFlight || session.done || pending !== session) {
+          res.writeHead(409).end("Sign-in already processing");
+          return;
+        }
+        if (url.searchParams.has("error")) {
+          res.writeHead(400).end("Sign-in not completed");
+          closePending();
+          return;
+        }
         const code = url.searchParams.get("code");
         if (code === null || code === "") {
           res.writeHead(400).end("Missing code");
-          return; // 중단하지 않는다 — 프리페치·재시도 하나로 흐름이 죽으면 안 된다.
+          return; // unrelated requests must not consume the pending flow.
         }
         res
           .writeHead(200, { "Content-Type": "text/html; charset=utf-8" })
@@ -148,6 +205,7 @@ export const beginCodexLogin = async (): Promise<{ url: string; autoCallback: bo
               '<body style="font:16px/1.6 system-ui;margin:12vh auto;max-width:30rem;padding:0 1.5rem">' +
               "<h1>✅ Signed in</h1><p>Go back to the dashboard — the status will switch to signed in shortly.</p>",
           );
+        session.inFlight = true;
         try {
           await completeCodexLogin({
             code,
@@ -160,24 +218,17 @@ export const beginCodexLogin = async (): Promise<{ url: string; autoCallback: bo
         } catch (e) {
           console.warn(`[codex-login] 콜백 처리 실패: ${e instanceof Error ? e.message : String(e)}`);
         } finally {
-          closePending();
+          if (pending === session) closePending();
         }
-      })();
+      })().catch(() => respondToCodexCallbackFailure(res));
     });
-    await new Promise<void>((resolve) => {
-      server.once("error", (err) => {
-        // 포트 점유(공식 CLI 로그인·이전 codex-auth) — 자동만 포기한다.
-        console.warn(`[codex-login] 콜백 서버를 못 띄웠습니다(${String(err)}) — 붙여넣기로 마칩니다.`);
-        resolve();
-      });
-      server.listen(CODEX_CALLBACK_PORT, () => {
-        session.server = server;
-        autoCallback = true;
-        resolve();
-      });
-    });
-  } catch {
-    /* 자동 경로 실패 = 붙여넣기로 진행 */
+    if (pending === session) {
+      session.server = server;
+      autoCallback = true;
+    } else server.close();
+  } catch (error) {
+    const reason = (error as NodeJS.ErrnoException).code === "EADDRINUSE" ? "port already in use" : "listener unavailable";
+    console.warn(`[codex-login] Callback ${reason} — finish by pasting the redirect URL.`);
   }
   return { url: flow.url, autoCallback };
 };
@@ -194,6 +245,11 @@ export const finishCodexLogin = async (
   if (parsed === null) {
     return { ok: false, message: "No code found — after signing in, paste the full address bar URL." };
   }
+  if (parsed.state !== null && parsed.state !== session.state) {
+    return { ok: false, message: "State mismatch (CSRF guard)" };
+  }
+  if (session.inFlight || session.done) return { ok: false, message: "Sign-in already processing." };
+  session.inFlight = true;
   try {
     const r = await completeCodexLogin({
       code: parsed.code,
@@ -202,7 +258,7 @@ export const finishCodexLogin = async (
       verifier: session.verifier,
     });
     session.done = true;
-    closePending();
+    if (pending === session) closePending();
     return {
       ok: true,
       message:
@@ -210,6 +266,7 @@ export const finishCodexLogin = async (
         (r.clearedCooldowns > 0 ? ` Also cleared ${r.clearedCooldowns} codex cooldown(s).` : ""),
     };
   } catch (e) {
+    session.inFlight = false;
     return { ok: false, message: e instanceof Error ? e.message : String(e) };
   }
 };

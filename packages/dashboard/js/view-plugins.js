@@ -182,8 +182,8 @@ function formatUsageLine(usage, now) {
         //   돌고 있는 렌더가 이미 «확인하는 중» 을 그린다.
         try {
           const r = await fetch(
-            "/api/auth-usage?provider=" + encodeURIComponent(provider) + (force ? "&force=1" : ""),
-            { cache: "no-store" },
+            "/api/auth-usage?provider=" + encodeURIComponent(provider),
+            { method: force ? "POST" : "GET", cache: "no-store" },
           );
           const d = await r.json();
           usageState.set(provider, d && d.usage !== undefined ? d.usage : null);

@@ -28,7 +28,7 @@
   },
   "homepage": "https://github.com/tigu77/tiguclaw#readme",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc",

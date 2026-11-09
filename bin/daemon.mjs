@@ -1,4 +1,6 @@
 // @ts-check
+import { instanceIdFor } from "./runtime-identity.mjs";
+import { UPDATE_PENDING_MARKER, updateBootMatches, updateMarkerMatches } from "./update-marker.mjs";
 // bin/daemon.mjs
 /**
  * daemon — tiguclaw 데몬 관리 CLI (크로스플랫폼: macOS / Linux / Windows).
@@ -425,6 +427,7 @@ const runtimeMode = () =>
  * @property {string} homeAbs
  * @property {string} logsDir
  * @property {string} label
+ * @property {{notBefore: number, oldBootIds: string[], instanceId?: string, revision?: string}} [launchExpectation]
  * @property {NodeJS.ProcessEnv} [launchEnv] 붙잡은 Windows 값을 채우기 전의 실행 환경(감독자가 기동마다 다시 계산).
  * @property {string} [winEnvError] Windows 저장본을 못 읽은 사유 — 있으면 라벨·포트가 틀릴 수 있다.
  */
@@ -507,6 +510,14 @@ const execStrings = (c) =>
  * @param {Ctx} c
  * @returns {string}
  */
+/** XML text, not shell quoting. @param {string} value */
+const xmlText = (value) => {
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/u.test(value) || /[\uD800-\uDFFF]/u.test(value)) throw new Error("Unsupported XML control character in service value");
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&apos;").replace(/\r/g, "&#13;");
+};
+
+/** @param {Ctx} c */
 const buildLaunchdPlist = (c) => {
   const nodeBinDir = path.dirname(c.nodePath);
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -514,18 +525,18 @@ const buildLaunchdPlist = (c) => {
 <!-- tiguclaw LaunchAgent — daemon.ts 가 런타임 생성(하드코딩 경로 0). -->
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>${c.label}</string>
+  <key>Label</key><string>${xmlText(c.label)}</string>
   <key>ProgramArguments</key>
   <array>
 ${execStrings(c)
-  .map((s) => `    <string>${s}</string>`)
+  .map((s) => `    <string>${xmlText(s)}</string>`)
   .join("\n")}
   </array>
-  <key>WorkingDirectory</key><string>${c.repoRoot}</string>
+  <key>WorkingDirectory</key><string>${xmlText(c.repoRoot)}</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>TIGUCLAW_HOME</key><string>${c.homeRaw}</string>
-    <key>TIGUCLAW_RUNTIME</key><string>${c.runtime}</string>
+    <key>TIGUCLAW_HOME</key><string>${xmlText(c.homeRaw)}</string>
+    <key>TIGUCLAW_RUNTIME</key><string>${xmlText(c.runtime)}</string>
     <!-- ★node 가 사는 폴더를 앞에 세운다 — **세 플랫폼 전부**에 있어야 한다 (2026-09-09,
          적대 검토 P4). 종전엔 이 plist 에만 있었고 systemd·윈도우엔 없었다. 그런데
          self-update 는 npm 을 **맨 이름**으로 부르고, 전용 Node 를 쓰는 설치본에서 npm 은
@@ -535,13 +546,13 @@ ${execStrings(c)
          전부**가 그 갈래가 됐다.
          ★백틱을 쓰지 마라 — 이 주석은 템플릿 리터럴 안이라 백틱 하나가 문자열을 끊는다
          (실제로 그렇게 한 번 깼다). -->
-    <key>PATH</key><string>${nodeBinDir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PATH</key><string>${xmlText(nodeBinDir + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>2</integer>
-  <key>StandardOutPath</key><string>${path.join(c.logsDir, "launchd.out.log")}</string>
-  <key>StandardErrorPath</key><string>${path.join(c.logsDir, "launchd.err.log")}</string>
+  <key>StandardOutPath</key><string>${xmlText(path.join(c.logsDir, "launchd.out.log"))}</string>
+  <key>StandardErrorPath</key><string>${xmlText(path.join(c.logsDir, "launchd.err.log"))}</string>
 </dict>
 </plist>
 `;
@@ -559,6 +570,8 @@ const launchdDomain = () => `gui/${process.getuid?.() ?? 0}`;
 
 /** @param {Ctx} c */
 const darwinInstall = (c) => {
+  const baseline = healthSaysOurs(c);
+  const oldBootIds = baseline.ok && baseline.bootId ? [baseline.bootId] : [];
   const plist = buildLaunchdPlist(c);
   mkdirSync(c.logsDir, { recursive: true });
   const plistPath = launchdPlistPath(c);
@@ -597,6 +610,7 @@ const darwinInstall = (c) => {
       sleepSync(300);
     }
   }
+  expectFreshLaunch(c, oldBootIds);
   try {
     execFileSync("launchctl", ["bootstrap", domain, plistPath], {
       stdio: "inherit",
@@ -635,7 +649,10 @@ const darwinUninstall = (c) => {
 
 /** @param {Ctx} c */
 const darwinRestart = (c) => {
+  const baseline = healthSaysOurs(c);
+  const oldBootIds = baseline.ok && baseline.bootId ? [baseline.bootId] : [];
   const domain = launchdDomain();
+  expectFreshLaunch(c, oldBootIds);
   execFileSync("launchctl", ["kickstart", "-k", `${domain}/${c.label}`], {
     stdio: "inherit",
   });
@@ -676,6 +693,10 @@ const darwinStop = (c) => {
 // start = plist 재작성 없이 재적재(재실행). 등록 파일은 이미 디스크에 있어야 한다.
 /** @param {Ctx} c */
 const darwinStart = (c) => {
+  if (!c.launchExpectation && isDaemonRunning(c)) {
+    console.log("daemon start: already running (health verified) — nothing to do");
+    return;
+  }
   const domain = launchdDomain();
   const plistPath = launchdPlistPath(c);
   if (!existsSync(plistPath)) {
@@ -685,6 +706,7 @@ const darwinStart = (c) => {
     process.exitCode = 1;
     return;
   }
+  if (!c.launchExpectation) expectFreshLaunch(c);
   try {
     execFileSync("launchctl", ["bootstrap", domain, plistPath], {
       stdio: "inherit",
@@ -739,26 +761,35 @@ const systemdUnitPath = (c) =>
  * @param {Ctx} c
  * @returns {string}
  */
-const buildSystemdUnit = (c) =>
-  `[Unit]
-Description=tiguclaw always-on AI assistant daemon (${c.label})
+const buildSystemdUnit = (c) => {
+  const plain = (/** @type {string} */ value) => {
+    if (/[\u0000-\u001f\u007f-\u009f]/u.test(value)) throw new Error("Unsupported control character in systemd service value");
+    return value.replace(/%/g, "%%");
+  };
+  const quoted = (/** @type {string} */ value, exec = false) => {
+    const escaped = plain(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return '"' + (exec ? escaped.replace(/\$/g, "$$$$") : escaped) + '"';
+  };
+  if (/[\\\s]$/u.test(c.repoRoot)) throw new Error("Unsupported systemd WorkingDirectory: trailing backslash/whitespace");
+  return `[Unit]
+Description=tiguclaw always-on AI assistant daemon (${plain(c.label)})
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${execStrings(c).join(" ")}
-WorkingDirectory=${c.repoRoot}
-Environment="TIGUCLAW_HOME=${c.homeRaw}"
-Environment="TIGUCLAW_RUNTIME=${c.runtime}"
-Environment="PATH=${path.dirname(c.nodePath)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+ExecStart=${execStrings(c).map(s => quoted(s, true)).join(" ")}
+WorkingDirectory=${plain(c.repoRoot)}
+Environment=${quoted("TIGUCLAW_HOME=" + c.homeRaw)}
+Environment=${quoted("TIGUCLAW_RUNTIME=" + c.runtime)}
+Environment=${quoted("PATH=" + path.dirname(c.nodePath) + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")}
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=default.target
 `;
-
+};
 /**
  * @param {string[]} args
  * @param {boolean} [inherit]
@@ -771,6 +802,8 @@ const systemctlUser = (args, inherit = true) => {
 
 /** @param {Ctx} c */
 const linuxInstall = (c) => {
+  const baseline = healthSaysOurs(c);
+  const oldBootIds = baseline.ok && baseline.bootId ? [baseline.bootId] : [];
   mkdirSync(c.logsDir, { recursive: true });
   const unitPath = systemdUnitPath(c);
   mkdirSync(path.dirname(unitPath), { recursive: true });
@@ -778,6 +811,7 @@ const linuxInstall = (c) => {
   console.log(`Created: ${unitPath}`);
 
   systemctlUser(["daemon-reload"]);
+  expectFreshLaunch(c, oldBootIds);
   systemctlUser(["enable", "--now", c.label]);
   console.log(`Registered the systemd user service (Restart=always). TIGUCLAW_HOME=${c.homeRaw}`);
   const user = os.userInfo().username;
@@ -812,6 +846,9 @@ const linuxUninstall = (c) => {
 
 /** @param {Ctx} c */
 const linuxRestart = (c) => {
+  const baseline = healthSaysOurs(c);
+  const oldBootIds = baseline.ok && baseline.bootId ? [baseline.bootId] : [];
+  expectFreshLaunch(c, oldBootIds);
   systemctlUser(["restart", c.label]);
   reportLaunch(
     c,
@@ -838,6 +875,11 @@ const linuxStop = (c) => {
 // start = 재실행. 유닛은 이미 디스크에 있어야 한다.
 /** @param {Ctx} c */
 const linuxStart = (c) => {
+  if (!c.launchExpectation && isDaemonRunning(c)) {
+    console.log("daemon start: already running (health verified) — nothing to do");
+    return;
+  }
+  if (!c.launchExpectation) expectFreshLaunch(c);
   systemctlUser(["start", c.label]);
   reportLaunch(
     c,
@@ -906,45 +948,45 @@ const sleepSync = (ms) => {
 };
 
 /**
- * 포트가 LISTEN 할 때까지 기다린다. 뜨면 PID 목록, 시한 내 못 뜨면 빈 배열.
+ * HTTP 200 + bounded JSON + instance identity. This identifies a local instance, not an authentication boundary.
+ * 1 MiB permits existing active-run/thread arrays (tested with 500 of each); larger replies fail closed.
+ * Freshness is checked separately by waitForListening against the launch cutoff and prior boot IDs.
+ * A legacy ok-only reply is not sufficient evidence; PID lookup is independent observation.
  * @param {Ctx} c
- * @param {(c: Ctx) => string[]} probe
- * @param {number} timeoutMs
- * @returns {string[]}
- */
-/**
- * 포트를 잡은 게 **우리 데몬인지** 확인한다 — `/health` 는 인증 밖이라 빌트인 http 로 물어본다.
- *
- * ★적대 검토 P7: 포트 LISTEN 만으로는 "우리 데몬" 이 아니다. 실증 — 아무 http 서버가 그
- *  포트를 잡아도 `waitForListening` 이 성공으로 읽었다(mac/linux 는 `netstat -an` 이라 PID 도
- *  없다). 증거 등급을 정해 둔 주석이 정작 mac/linux 에선 성립하지 않았다.
- * ★한계는 정직하게 적는다: **옛 데몬도 `/health` 에 답한다.** 그래서 이건 "엉뚱한 프로세스"
- *  만 걸러내고, 재시작의 "죽어가는 소켓" 은 아래 `settleMs` 가 맡는다.
- * ★왜 아니었는지도 돌려준다 (2026-10-29) — 실패 보고가 «안 열렸다» 하나뿐이라 «열렸는데 health 가 아니다» 를 가를 수 없었다.
- * @param {Ctx} c
- * @returns {{ ok: boolean, why: string }}
+ * @returns {{ ok: boolean, why: string, absent?: boolean, instanceId?: string, bootId?: string, startedAt?: number, revision?: string }}
  */
 const healthSaysOurs = (c) => {
   const port = winPort(c);
-  const r = spawnSync(
-    process.execPath,
-    [
-      "-e",
-      `const http=require("http");const q=http.get({host:"127.0.0.1",port:${port},path:"/health",timeout:1500},(s)=>{let b="";s.on("data",(d)=>{b+=d});s.on("end",()=>{process.stdout.write(b.slice(0,200));process.stderr.write("HTTP "+s.statusCode)})});q.on("error",(e)=>{process.stderr.write("no answer ("+(e.code||e.message)+")");process.exit(1)});q.on("timeout",()=>{process.stderr.write("no answer within 1.5s");q.destroy();process.exit(1)});`,
-    ],
-    { encoding: "utf8" },
-  );
+  const r = spawnSync(process.execPath, ["-e",
+    `const http=require("http");const q=http.get({host:"127.0.0.1",port:${JSON.stringify(port)},path:"/health",timeout:1500},s=>{let size=0;const chunks=[];s.on("data",d=>{size+=d.length;if(size>1048576){process.stderr.write("health body exceeds 1 MiB");process.exit(1)}chunks.push(d)});s.on("error",()=>process.exit(1));s.on("end",()=>{process.stderr.write("HTTP "+s.statusCode);if(s.statusCode!==200)process.exit(1);process.stdout.write(Buffer.concat(chunks))})});q.on("error",e=>{process.stderr.write("no answer ("+(e.code||e.message)+")");process.exit(e.code==="ECONNREFUSED"?3:1)});q.on("timeout",()=>{process.stderr.write("no answer within 1.5s");process.exit(1)});`,
+  ], { encoding: "utf8", timeout: 2500, maxBuffer: 1048576 });
   const said = (r.stderr ?? "").trim().slice(0, 120);
-  if (r.status === 0 && /"ok"\s*:\s*true/.test(r.stdout ?? "")) return { ok: true, why: "" };
-  if (r.status === 0) return { ok: false, why: `${said || "answered"} without "ok": true` };
-  return { ok: false, why: said || r.error?.message || `health check exited with ${r.status}` };
+  if (r.status !== 0) return { ok: false, absent: r.status === 3, why: said || r.error?.message || `health check exited with ${r.status}` };
+  let body;
+  try { body = JSON.parse(r.stdout); } catch { return { ok: false, why: "invalid health JSON" }; }
+  if (!body || body.ok !== true || typeof body.instanceId !== "string" || !/^[a-f0-9]{64}$/.test(body.instanceId) ||
+      typeof body.bootId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(body.bootId) ||
+      !Number.isSafeInteger(body.startedAt) || body.startedAt <= 0 || body.startedAt > Date.now()) {
+    return { ok: false, why: "invalid or legacy health identity" };
+  }
+  if (body.instanceId !== instanceIdFor({ home: c.homeAbs, repoRoot: c.repoRoot, runtime: c.runtime })) {
+    return { ok: false, why: "health belongs to another instance" };
+  }
+  return { ok: true, why: "", instanceId: body.instanceId, bootId: body.bootId, startedAt: body.startedAt, revision: body.revision };
+};
+
+/** @param {Ctx} c @param {string[]} [oldBootIds] */
+const expectFreshLaunch = (c, oldBootIds = []) => {
+  if (c.launchExpectation?.revision) return c.launchExpectation; // update producer owns this cutoff through final confirmation
+  const previous = healthSaysOurs(c);
+  return c.launchExpectation = { notBefore: Date.now(), oldBootIds: [...oldBootIds, ...(previous.ok && previous.bootId ? [previous.bootId] : [])] };
 };
 
 /**
- * 기동 확인 대기의 관측 — 성공이면 `pids` 가 차 있다. 실패 보고가 **무엇을 봤는지** 말하게 모아 둔다.
+ * 기동 확인 대기의 관측 — 성공은 verified, PID 목록은 독립 관측이라 비어 있을 수 있다.
  * @typedef {{ pids: string[], health: { ok: boolean, why: string } | null }} LaunchSeen 조회가 성공한 한 회
  * @typedef {{ pids: string[], last: LaunchSeen | { error: string } | null, lastKnown: LaunchSeen | null,
- *   everSeen: boolean, probeFailures: number, waitedMs: number }} LaunchWait
+ *   everSeen: boolean, probeFailures: number, waitedMs: number, verified: boolean, healthWhy: string, confirmed?: ReturnType<typeof healthSaysOurs> }} LaunchWait
  */
 
 /**
@@ -961,24 +1003,38 @@ const waitForListening = (c, probe, timeoutMs = 20000, settleMs = 0) => {
   const startedAt = Date.now();
   const until = startedAt + timeoutMs;
   /** @type {LaunchWait} */
-  const w = { pids: [], last: null, lastKnown: null, everSeen: false, probeFailures: 0, waitedMs: 0 };
+  const w = { pids: [], last: null, lastKnown: null, everSeen: false, probeFailures: 0, waitedMs: 0, verified: false, healthWhy: "not checked" };
   for (;;) {
     const p = probe(c);
+    const health = healthSaysOurs(c);
+    const expectation = c.launchExpectation;
+    if (health.ok && expectation && (health.startedAt === undefined || health.startedAt < expectation.notBefore ||
+        !health.bootId || expectation.oldBootIds.includes(health.bootId))) {
+      health.ok = false;
+      health.why = "health is not a fresh process after the launch cutoff";
+    }
+    if (health.ok && expectation?.revision && !updateBootMatches(expectation, health)) {
+      health.ok = false;
+      health.why = "health does not match the expected update boot/revision";
+    }
+    w.healthWhy = health.why;
     // ★조회 실패는 «안 열림» 이 아니다 (2026-10-29) — 실패한 회는 따로 세고, 마지막으로 **확정한** 상태를 덮지 않는다.
     if (p.error !== undefined) {
       w.probeFailures += 1;
       w.last = { error: p.error };
     } else {
-      // 포트가 잡혔으면 **우리 것인지** 한 번 더 묻는다(엉뚱한 프로세스 배제). 성공 조건은 종전 그대로 — 포트 PID 그리고 health.
-      const seen = { pids: p.pids, health: p.pids.length > 0 ? healthSaysOurs(c) : null };
+      // Preserve PID evidence for diagnostics; it neither gates nor replaces verified health.
+      const seen = { pids: p.pids, health };
       w.last = seen;
       w.lastKnown = seen;
       if (p.pids.length > 0) w.everSeen = true;
-      if (seen.health?.ok === true) {
-        w.pids = p.pids;
-        w.waitedMs = Date.now() - startedAt;
-        return w;
-      }
+    }
+    if (health.ok) {
+      w.verified = true;
+      w.confirmed = health;
+      w.pids = p.error === undefined ? p.pids : [];
+      w.waitedMs = Date.now() - startedAt;
+      return w;
     }
     if (Date.now() >= until) {
       w.waitedMs = Date.now() - startedAt;
@@ -998,8 +1054,8 @@ const waitForListening = (c, probe, timeoutMs = 20000, settleMs = 0) => {
  * @param {string} hint
  */
 const reportLaunch = (c, w, verb, hint) => {
-  if (w.pids.length > 0) {
-    console.log(w.pids[0] === "listening" ? `✅ ${verb}` : `✅ ${verb} (pid ${w.pids.join(", ")})`);
+  if (w.verified) {
+    console.log(w.pids.length === 0 || w.pids[0] === "listening" ? `✅ ${verb} (health verified; PID unavailable)` : `✅ ${verb} (pid ${w.pids.join(", ")})`);
     return;
   }
   const port = winPort(c);
@@ -1032,7 +1088,7 @@ const reportLaunch = (c, w, verb, hint) => {
       `🔴 Could not confirm the daemon after ${noun} — ${seenText(w.last)} within ${secs}s. ` +
       `Another program may hold the port, or the daemon is still starting.`;
   }
-  console.error(`${msg}\n${hint}`);
+  console.error(`${msg}\nHealth: ${w.healthWhy}\n${hint}`);
   process.exitCode = 1;
 };
 
@@ -1050,7 +1106,7 @@ export const winLegacyVbsPath = (c) => path.join(c.homeAbs, "win-launch.vbs");
 const listeningOnBridge = (c) => {
   const port = winPort(c); // .env 우선 — 플랫폼 무관 동일 규칙.
   const r = spawnSync("netstat", process.platform === "win32" ? ["-ano"] : ["-an"], {
-    encoding: "utf8",
+    encoding: "utf8", timeout: 2500,
   });
   if (r.error !== undefined) return { pids: [], error: `netstat could not run (${r.error.message})` };
   if (r.status !== 0) return { pids: [], error: `netstat exited with ${r.status}` };
@@ -1851,8 +1907,11 @@ const winEnsureTask = (c, opts = {}) => {
 
 /** @param {Ctx} c */
 const winInstall = (c) => {
+  const baseline = healthSaysOurs(c);
+  const oldBootIds = baseline.ok && baseline.bootId ? [baseline.bootId] : [];
   mkdirSync(c.logsDir, { recursive: true });
   const mode = winEnsureTask(c, { capture: true });
+  expectFreshLaunch(c, oldBootIds);
   if (mode === "now-only") {
     console.error(`🔴 Autostart registration failed (${winTaskName(c)}) — starting it now, but it will not start by itself at logon.`);
     console.error("   Neither a scheduled task nor the Startup folder can be used — check with your administrator, or use WSL2.");
@@ -2017,6 +2076,8 @@ const winStopTask = (c) => {
 
 /** @param {Ctx} c */
 const winRestart = (c) => {
+  const baseline = healthSaysOurs(c);
+  const oldBootIds = baseline.ok && baseline.bootId ? [baseline.bootId] : [];
   const survived = winStopTask(c);
   if (survived.unconfirmed !== undefined) {
     console.error(
@@ -2035,6 +2096,7 @@ const winRestart = (c) => {
     return;
   }
   // Enable 이 먼저다 — winStopTask 가 비활성화했으므로 그대로 Start 하면 안 뜬다.
+  expectFreshLaunch(c, oldBootIds);
   const r = winPs(
     winEnableStartScript(c),
   );
@@ -2122,10 +2184,17 @@ const winReenable = (c) => {
 // start = 재실행(숨김 VBS). Run 키·VBS 는 이미 있어야 한다.
 /** @param {Ctx} c */
 const winStart = (c) => {
-  // ★이미 돌고 있으면 아무것도 안 한다 (2026-10-18 재검토) — 맥(`launchctl bootstrap` 이 실패)과 같은 계약. 업데이트·롤백은
-  //  늘 stop 뒤에 start 를 부르므로 등록 수렴은 잃지 않는다. 종전엔 등록을 다시 하며 감독자가 하나 더 떴다.
-  if (isDaemonRunning(c)) {
-    console.log(`daemon start: already running (port ${winPort(c)}) — nothing to do. To restart it: restart`);
+  const presence = daemonPresence(c);
+  if (presence.state === "unknown") {
+    console.error(`daemon start: cannot establish absence (${presence.why}) — not changing registration or starting another supervisor`);
+    process.exitCode = 1;
+    return;
+  }
+  if (presence.state === "running") {
+    if (c.launchExpectation) {
+      // An old process is not fresh success, but also not permission to duplicate it.
+      reportLaunch(c, waitForListening(c, listeningOnBridge), "started", "Stop the existing instance before retrying.");
+    } else console.log("daemon start: already running (observed instance process or verified health) — nothing to do");
     return;
   }
   // ★**start 가 등록을 수렴시킨다** (2026-08-22). `runUpdate` 는 install 을 다시 돌리지
@@ -2137,6 +2206,7 @@ const winStart = (c) => {
   //  다시 등록해 **정의점 하나**로 수렴시킨다(설정을 하나씩 비교하지 않는다 — 그건 손으로
   //  관리하는 목록이라 반드시 늙는다).
   const mode = winEnsureTask(c);
+  if (!c.launchExpectation) expectFreshLaunch(c);
   if (mode === false) {
     console.error(
       `daemon start: autostart registration failed (${winTaskName(c)}) — run \`tiguclaw install\` to repair it.`,
@@ -2604,28 +2674,21 @@ const handlers = {
  * @returns {boolean}
  */
 const isDaemonRunning = (c) => {
-  try {
-    if (process.platform === "darwin") {
-      const r = spawnSync(
-        "launchctl",
-        ["print", `${launchdDomain()}/${c.label}`],
-        { encoding: "utf8" },
-      );
-      return r.status === 0 && /\bpid\s*=/.test(r.stdout ?? "");
-    }
-    if (process.platform === "linux") {
-      const r = spawnSync("systemctl", ["--user", "is-active", c.label], {
-        encoding: "utf8",
-      });
-      return (r.stdout ?? "").trim() === "active";
-    }
-    if (process.platform === "win32") {
-      return winListeningPids(c).length > 0;
-    }
-  } catch {
-    /* 감지 실패 — 무시 */
-  }
-  return false;
+  if (process.platform !== "win32") return healthSaysOurs(c).ok;
+  const presence = daemonPresence(c);
+  if (presence.state === "unknown") throw new Error(`daemon presence unknown: ${presence.why}`);
+  return presence.state === "running";
+};
+
+/** General start observation is deliberately weaker than fresh launch success.
+ * @param {Ctx} c @returns {{state: "running" | "absent" | "unknown", why?: string}} */
+const daemonPresence = (c) => {
+  const health = healthSaysOurs(c);
+  if (health.ok) return { state: "running" };
+  const owned = winPresence(c);
+  if (owned.state === "unknown") return { state: "unknown", why: owned.why };
+  if (owned.state === "running") return { state: "running" };
+  return health.absent ? { state: "absent" } : { state: "unknown", why: health.why };
 };
 
 /**
@@ -2691,12 +2754,33 @@ export const activeUpdateLock = (c, now = Date.now(), bootedAt = now - os.uptime
 
 /** @param {Ctx} c */
 const runUpdate = (c) => {
+  const legacyComplete = path.join(c.homeAbs, ".update-complete");
+  const pendingPath = path.join(c.homeAbs, UPDATE_PENDING_MARKER);
+  if (existsSync(legacyComplete)) {
+    // Quarantine before any intermediate generation can start. Never republish.
+    if (existsSync(pendingPath)) {
+      renameSync(legacyComplete, pendingPath + ".legacy");
+      throw new Error("both legacy and pending markers existed; legacy quarantined, update not started");
+    }
+    renameSync(legacyComplete, pendingPath);
+  }
+  /** @type {{channel?: string, target?: string | null} | undefined} */
+  let inheritedNotify;
+  if (existsSync(pendingPath)) {
+    const inherited = JSON.parse(readFileSync(pendingPath, "utf8"));
+    inheritedNotify = inherited.notify;
+    // Claim direct-ready before work: its earlier cutoff must not authorize an
+    // intermediate boot. Final-build expectation is installed just before start.
+    const staged = pendingPath + ".next";
+    writeFileSync(staged, JSON.stringify({ ...inherited, mode: "cli", state: "pending", expected: null }));
+    renameSync(staged, pendingPath);
+  }
   const isWin = process.platform === "win32";
 
   // notify 없는 dashboard 위임도 stdio가 버려진다. 모든 실행에 진단 로그를 남긴다.
   // 자식 출력은 최대 32MB를 받아 비밀을 지운 뒤 저장한다. 터미널에는 단계 종료 때도 출력한다.
   // 로그를 열 수 없으면 변경 전에 실패한다. notify는 통지 마커만 결정한다.
-  const delegated = !!process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL;
+  const delegated = !!process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL || !!inheritedNotify?.channel;
   // 대시보드는 notify 없이 위임한다. 로그 수명은 알림 목적지와 무관하다.
   /** @type {number | null} */
   let logFd = null;
@@ -2758,8 +2842,8 @@ const runUpdate = (c) => {
             from: prevSha?.slice(0, 7) ?? null,
             ts: Date.now(),
             notify: {
-              channel: process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL,
-              target: process.env.TIGUCLAW_UPDATE_NOTIFY_TARGET || null,
+              channel: process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL || inheritedNotify?.channel,
+              target: process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL ? process.env.TIGUCLAW_UPDATE_NOTIFY_TARGET || null : inheritedNotify?.target ?? null,
             },
           },
           null,
@@ -2996,11 +3080,14 @@ const runUpdate = (c) => {
     abortBeforeStop("stop", `could not check whether the daemon is running: ${presence.why}`, { restart: false, revert: true });
     return;
   }
-  const portOpen = isDaemonRunning(c);
+  const updateBaseline = healthSaysOurs(c);
+  const updateOldBootIds = updateBaseline.ok && updateBaseline.bootId ? [updateBaseline.bootId] : [];
+  const portObservation = listeningOnBridge(c);
+  const portOpen = updateBaseline.ok || portObservation.pids.length > 0;
   if (!portOpen && presence?.state === "running") {
     console.log(`   The bridge port is closed, but this instance's processes are running (PID ${presence.pids.join(", ")}) — stopping them before installing.`);
   }
-  const wasRunning = portOpen || presence?.state === "running";
+  const wasRunning = portOpen || presence?.state === "running" || portObservation.error !== undefined;
 
   /**
    * 멈춰 둔 데몬을 다시 띄운다 — **그 사이 다시 떠 있으면 재시작**(2026-10-19 윈도우돌쇠 실측). 설치 도중 감독자가 되살아나 데몬이 빌드 전에
@@ -3008,6 +3095,8 @@ const runUpdate = (c) => {
    *  누가 되살렸는지와 무관하게 다시 띄워야 지금 디스크의 판이 올라온다(성공·롤백 둘 다 같다).
    */
   const resumeDaemon = () => {
+    // Capture after the final build/rollback restoration, before releasing the supervisor.
+    if (!c.launchExpectation?.revision) expectFreshLaunch(c, updateOldBootIds);
     rmSync(updateLockPath(c), { force: true }); // 표식을 지워야 감독자가 데몬을 띄운다
     if (isDaemonRunning(c)) {
       console.warn("   ⚠ The daemon came back while the update was running (before the new build) — restarting it so the current build loads.");
@@ -3015,6 +3104,9 @@ const runUpdate = (c) => {
     } else {
       table?.start?.(c);
     }
+    const final = waitForListening(c, listeningOnBridge);
+    reportLaunch(c, final, "resumed", "Check daemon logs before retrying the update.");
+    return final;
   };
 
   /**
@@ -3196,35 +3288,31 @@ const runUpdate = (c) => {
   }
 
   // ── 단계 7b: 완료 통지 마커 (위임 경로) ─────────────────────────────────────
-  // telegram /update 가 이 CLI 를 detached 로 띄웠을 때(Windows+built), 재시작 데몬이 부팅 시
-  //   소비해 "✅ 업데이트 완료" 를 요청자에게 통지하도록 마커를 쓴다. notify 좌표는 데몬이
-  //   env 2키로 전달. 파일명 ".update-complete" 는 self-update.ts:28 UPDATE_COMPLETE_MARKER 와
-  //   동기(dep-free 라 import 불가 → 리터럴). build 성공 후·start 전에만 쓰므로 실패/rollback
-  //   경로는 여기 도달 못 함 = 오탐 0. env 없으면(터미널 직접 실행) 안 씀.
+  // 위임 알림이나 self-update intent는 private pending에만 둔다. 빌드 성공은 통지 성공이 아니다.
+  // 최종 fresh 확인과 동일 boot/revision을 확정한 뒤에만 새 부팅 소비자가 성공을 알린다.
+  // 지연된 legacy 소비자가 가로채지 못하도록 .update-complete로 다시 공개하지 않는다.
+  c.launchExpectation = { ...expectFreshLaunch(c, updateOldBootIds), instanceId: instanceIdFor({ home: c.homeAbs, repoRoot: c.repoRoot, runtime: c.runtime }), revision: newSha };
   const notifyChannel = process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL;
-  if (notifyChannel) {
-    try {
-      writeFileSync(
-        path.join(c.homeAbs, ".update-complete"),
-        `${JSON.stringify(
-          {
-            from: reportFrom.slice(0, 7),
-            to: newSha.slice(0, 7),
-            changedFiles: 0,
-            ts: Date.now(),
-            notify: {
-              channel: notifyChannel,
-              target: process.env.TIGUCLAW_UPDATE_NOTIFY_TARGET || null,
-            },
-          },
-          null,
-          2,
-        )}\n`,
-      );
-    } catch {
-      /* 통지 마커 best-effort — 업데이트는 계속 */
+  let pending = null;
+  if (notifyChannel || existsSync(pendingPath)) {
+    /** @type {{notify?: {channel?: string, target?: string | null}}} */
+    let inherited = {};
+    try { inherited = JSON.parse(readFileSync(pendingPath, "utf8")); } catch { /* absent */ }
+    pending = {
+      from: reportFrom.slice(0, 7), to: newSha.slice(0, 7), changedFiles: 0, ts: Date.now(),
+      mode: "cli", state: "pending", expected: c.launchExpectation,
+      notify: notifyChannel ? { channel: notifyChannel, target: process.env.TIGUCLAW_UPDATE_NOTIFY_TARGET || null } : inherited.notify,
+    };
+    // Must exist before boot; failure here cannot promise a completion later.
+    try { writeFileSync(pendingPath, JSON.stringify(pending)); }
+    catch (e) {
+      writeFailedMarker("completion-marker", String(e), "needs-check");
+      process.exitCode = 1;
+      console.error(`update: completion rendezvous unavailable; not launching: ${String(e)}`);
+      return;
     }
   }
+  let finalLaunch;
 
   // ── 단계 8: 재가동 ──────────────────────────────────────────────────────────
   // ★멈춰 둔 사이 **다시 떠 있으면 재시작한다** (2026-10-19 윈도우돌쇠 실측). 5에서 멈췄는데 설치(npm ci) 도중 감독자가 되살아나
@@ -3234,7 +3322,7 @@ const runUpdate = (c) => {
   if (wasRunning) {
     // ★던져도 재가동 실패로 다룬다 (2026-10-30) — 종전엔 예외가 아래 판정·백업 안내를 건너뛰고 그대로 올라갔다.
     try {
-      resumeDaemon(); // 5에서 멈췄으니 start — 그 사이 다시 떴으면 restart(위 주석).
+      finalLaunch = resumeDaemon(); // 5에서 멈췄으니 start — 그 사이 다시 떴으면 restart(위 주석).
     } catch (e) {
       console.error(`🔴 the restart command failed: ${e instanceof Error ? e.message : String(e)}`);
       process.exitCode = 1;
@@ -3245,7 +3333,23 @@ const runUpdate = (c) => {
     console.log("   The daemon was not running — start it with 'tiguclaw start'.");
   }
   // ★재가동 실패 판정은 여기 한 곳 — 8b(백업)와 9(요약)가 같이 쓴다. `start` 는 실패하면 exitCode 1 을 세운다(`reportLaunch`).
-  const restartFailed = process.exitCode === 1;
+  const restartFailed = process.exitCode === 1 || (wasRunning && !finalLaunch?.verified);
+  if (restartFailed) {
+    process.exitCode = 1;
+    writeFailedMarker("restart", "final fresh boot/revision was not confirmed", "needs-check");
+  }
+  if (pending) {
+    try {
+      const original = JSON.stringify(pending);
+      const confirmed = { ...pending, state: restartFailed ? "failed" : "confirmed", confirmed: finalLaunch?.confirmed };
+      if (!restartFailed && !updateMarkerMatches(confirmed, finalLaunch?.confirmed)) confirmed.state = "failed";
+      if (readFileSync(pendingPath, "utf8") === original) {
+        const staged = pendingPath + ".next";
+        writeFileSync(staged, JSON.stringify(confirmed));
+        renameSync(staged, pendingPath);
+      }
+    } catch (e) { console.error(`update: completion confirmation could not be saved: ${String(e)}`); }
+  }
   // ── 단계 8b: 옮겨 둔 옛 트리를 버린다 — 재가동 **뒤**(정지 시간에 넣지 않는다). 새 데몬은 새 트리를 쓴다.
   //  ★재가동이 실패했으면 버리지 않는다 (2026-10-30) — 원인을 아직 모르는 채 업데이트 전 의존성을 지우지 않는다. 그 트리는 **의존성뿐**이고
   //   이전 판(코드·lock·빌드)과 짝이라 지금 코드와 맞지 않는다 — 되돌릴 수 있다고 말하지 않고, 어디 있는지만 말한다.
@@ -3368,7 +3472,15 @@ export const runDaemonCommand = (cmd) => {
 
   // EPERM 복구 안내(D5): install 중 데몬이 살아 있으면 네이티브 모듈(better_sqlite3.node)이
   //   락돼 `npm ci` 가 EPERM 날 수 있다. 자동 stop/npm 은 안 함 — 순서만 안내(소프트 강제).
-  if (cmd === "install" && isDaemonRunning(c)) {
+  if (cmd === "install" && process.platform === "win32") {
+    const presence = daemonPresence(c);
+    if (presence.state !== "absent") {
+      console.warn(`daemon install: ${presence.state === "running" ? "already running — stop it before changing registration" : "presence unknown — not changing registration"}`);
+      if (presence.state === "unknown") process.exitCode = 1;
+      return;
+    }
+  }
+  if (cmd === "install" && process.platform !== "win32" && isDaemonRunning(c)) {
     console.warn(
       "# ⚠ The daemon is running. If you need to reinstall dependencies (npm ci), avoid EPERM (file locks)",
     );

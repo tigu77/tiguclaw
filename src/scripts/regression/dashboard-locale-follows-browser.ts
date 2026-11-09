@@ -94,8 +94,8 @@ export const check: RegressionCheck = {
           /catalogForClient\(localeForViewer\(viewerLanguage\.getStore\(\)\)\)/.test(dash) &&
             /\.\.\.viewerLanguageHeader\(\),\s*\n\s*Authorization/.test(dash) &&
             /viewerLanguage\.run\(lang, handle\)/.test(dash) &&
-            /const viewerLang = new URL\(req\.url \?\? "\/", "http:\/\/x"\)\.pathname\.startsWith\("\/auth-"\) \? req\.headers\["accept-language"\] : undefined;/.test(bridge) &&
-            /withViewerLanguage\(viewerLang, \(\) => this\.handleRequest\(req, res\)\)/.test(bridge),
+            /const viewerLang = url\.pathname\.startsWith\("\/auth-"\) \? req\.headers\["accept-language"\] : undefined;/.test(bridge) &&
+            /withViewerLanguage\(viewerLang, \(\) => this\.handleRequest\(req, res, url\)\)/.test(bridge),
           `화면=${/catalogForClient\(localeForViewer/.test(dash)} · 프록시=${/viewerLanguageHeader\(\)/.test(dash)} · 브리지(인증 화면만)=${/withViewerLanguage\(viewerLang/.test(bridge)}`,
         ),
       ];

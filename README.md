@@ -7,7 +7,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/tigu77/tiguclaw/ci.yml?branch=main&label=CI)](https://github.com/tigu77/tiguclaw/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/tigu77/tiguclaw)](https://github.com/tigu77/tiguclaw/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-green)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-green)](https://nodejs.org)
 [![GitHub stars](https://img.shields.io/github/stars/tigu77/tiguclaw?style=social)](https://github.com/tigu77/tiguclaw/stargazers)
 
 **The more agents you add, the more you have to manage.**
@@ -64,12 +64,13 @@ But the goal finishing without you is the default.
 
 ## Quick start
 
-You need **git**, **one LLM provider** (below), and optionally a **Telegram bot**. Node 20+ too —
-but if you don't have it, the installer offers to fetch one just for tiguclaw.
+You need **git**, **one LLM provider** (below), and optionally a **Telegram bot**. Node 22+ too —
+but if you don't have it, the installer offers to fetch one just for tiguclaw. This is a minimum version,
+not a guarantee that native SQLite binaries support every newer Node major and platform.
 
 > ⚠️ Please read [`docs/security.en.md`](docs/security.en.md) first — the assistant can reach *your*
-> shell and files (the same self-selecting model as Claude Code), and **asks for your OK before
-> anything destructive or irreversible**.
+> shell and files (the same self-selecting model as Claude Code). **It is instructed to ask for your OK before
+> destructive or irreversible work; this is not a guarantee of a mechanical gate for every dangerous command or an OS sandbox.**
 
 ```bash
 # macOS · Linux
@@ -83,7 +84,7 @@ irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
 
 Download, install, and the setup wizard, in one go. Default location is `tiguclaw/` under your home —
 override with `TIGUCLAW_DIR`. **git** has to be there already on macOS/Linux; on Windows, if it's missing, the
-installer can set up an app-only Git with your consent (SHA-256 verified, system `PATH` untouched). If **Node 20+** isn't, the installer
+installer can set up an app-only Git with your consent (SHA-256 verified, system `PATH` untouched). If **Node 22+** isn't, the installer
 asks before fetching one into `<install dir>/.node` — for tiguclaw only: no admin rights, nothing
 added to your system `PATH`, and it goes away when you delete the folder. If something is already
 installed at the target path it stops and tells you rather than overwriting (on Windows, re-running over a
@@ -122,6 +123,8 @@ If 17010 is taken, change `DASHBOARD_PORT` in `.env`.
 > token is injected server-side and never reaches the page, so **reaching this port is the permission**.
 > To use it from your phone, don't open the port; tunnel over a private network (e.g. `tailscale serve 17010`).
 > `DASHBOARD_HOST=0.0.0.0` only if you know the trade.
+> A private network or tunnel does not replace user authentication. Before exposing the port, restrict
+> who can reach it with ACLs or an authentication proxy. **Host allowlists and CSRF checks are not login authentication.**
 >
 > If you reach it remotely by **name** (e.g. MagicDNS `*.ts.net`), add that name to
 > `DASHBOARD_ALLOWED_HOSTS` in `.env` — that's the DNS-rebinding guard. **Reaching it by IP needs

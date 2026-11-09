@@ -302,16 +302,16 @@
         <button class="bg-fbtn active" type="button" data-scope="session" aria-pressed="true" data-i18n="bg.scope.session">현재 세션</button>
         <button class="bg-fbtn" type="button" data-scope="all" aria-pressed="false" data-i18n="bg.scope.all">전체 세션</button>
       </div>
-      <!-- 한 번 타이머(2026-10-20) — 이 대화가 건 것만(스코프 토글을 따른다). 없으면 숨는다. bg-timers.js 소관. -->
-      <div class="bg-timers" id="bg-timers" hidden>
-        <div class="bg-group-head bg-timers-head" id="bg-timers-head" role="button" tabindex="0" aria-expanded="true" aria-controls="bg-timers-list">
-          <span class="bg-group-chevron" aria-hidden="true">▾</span>
-          <span class="bg-group-label" data-i18n="bg.timers.head">⏱ 타이머</span>
-          <span class="bg-group-label" id="bg-timers-count"></span>
-        </div>
-        <div class="bg-group-body bg-timers-list" id="bg-timers-list"></div>
-      </div>
       <div id="bg-scroll" class="bg-scroll" tabindex="0">
+        <!-- 한 번 타이머(2026-10-20) — 이 대화가 건 것만(스코프 토글을 따른다). 없으면 숨는다. bg-timers.js 소관. -->
+        <div class="bg-timers" id="bg-timers" hidden>
+          <div class="bg-group-head bg-timers-head" id="bg-timers-head" role="button" tabindex="0" aria-expanded="true" aria-controls="bg-timers-list">
+            <span class="bg-group-chevron" aria-hidden="true">▾</span>
+            <span class="bg-group-label" data-i18n="bg.timers.head">⏱ 타이머</span>
+            <span class="bg-group-label" id="bg-timers-count"></span>
+          </div>
+          <div class="bg-group-body bg-timers-list" id="bg-timers-list"></div>
+        </div>
         <!-- 예약 대기는 실행 중 작업과 별도 집계. 꺼진 예약의 native details는 갱신해도 유지한다. -->
         <div id="bg-schedules" hidden>
           <div class="bg-group-head" id="bg-schedules-head" role="button" tabindex="0" aria-expanded="true" aria-controls="bg-schedules-body">

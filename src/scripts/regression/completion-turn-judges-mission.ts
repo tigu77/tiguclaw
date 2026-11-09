@@ -75,6 +75,13 @@ export const check: RegressionCheck = {
           ok.prompt.includes("길면 다시 맡긴 뒤") && ok.prompt.includes("결정·승인이 필요한 차이") && ok.prompt.includes("같은 이유로 또 멈췄으면"),
         ok.prompt.slice(-700),
       ),
+      // 문구 계약만 확인한다. 실제 회사 사건의 원인이나 모델 행동 개선 증거가 아니다.
+      assert(
+        "★재위임의 한 줄 안내가 이미 약속한 전달 가능한 산출물을 막지 않는다(상시 중간보고 의무 아님)",
+        ok.prompt.includes("사용자에게 이미 약속했고 지금 전달할 수 있는 산출물이 있으면 함께 전달하세요") &&
+          ok.prompt.includes("그 밖에는 이 턴은 무엇을 왜 다시 하는지만 한 줄 알리고 끝내세요"),
+        ok.prompt.slice(-2000),
+      ),
       assert("메인이 답하면 raw 안전망은 안 뜬다", ok.raws.length === 0, ok.raws),
     );
 

@@ -50,6 +50,7 @@ const EXPECTED: Record<string, Grade> = {
   "POST /set-theme": "write",
   "POST /set-profile-color": "write",
   "GET /auth-usage": "write",
+  "POST /auth-usage": "write",
   "POST /transcribe": "write",
   "POST /cancel-worker": "write",
   "POST /kill-shell": "write",
@@ -71,6 +72,12 @@ const sourceGrades = (src: string): Map<string, string> => {
   const table = start < 0 ? "" : src.slice(start, src.indexOf("\n    if (", start));
   const re = /pathname === "([^"]+)" && method === "([A-Z]+)"\s*(?:\/\/[^\n]*\s*)*\?\s*"(read|write|admin)"/g;
   for (const m of table.matchAll(re)) out.set(`${m[2]} ${m[1]}`, m[3]!);
+  // 같은 write 게이트의 GET/POST 병렬 조건을 양쪽 모두 검사한다. 기존 GET 보호도 유지한다.
+  const paired = /pathname === "([^"]+)" && \(method === "([A-Z]+)" \|\| method === "([A-Z]+)"\)\s*(?:\/\/[^\n]*\s*)*\?\s*"(read|write|admin)"/g;
+  for (const m of table.matchAll(paired)) {
+    out.set(`${m[2]} ${m[1]}`, m[4]!);
+    out.set(`${m[3]} ${m[1]}`, m[4]!);
+  }
   return out;
 };
 

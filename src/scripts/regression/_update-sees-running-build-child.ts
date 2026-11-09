@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { getPaths } from "../../core/paths.js";
-import { BUILD_COMMIT_FILE, UPDATE_COMPLETE_MARKER, runSelfUpdate } from "../../core/self-update.js";
+import { BUILD_COMMIT_FILE, UPDATE_PENDING_MARKER, runSelfUpdate } from "../../core/self-update.js";
 import { translate } from "../../core/i18n.js";
 
 const NO_SUPERVISOR_KEY = "srv.update.err.staleNoSupervisor";
@@ -76,7 +76,7 @@ try {
     else writeFileSync(path.join(dist, BUILD_COMMIT_FILE), `${sha}\n`);
   };
   const lines = (f: string): string[] => (existsSync(f) ? readFileSync(f, "utf8").trim().split("\n").filter(Boolean) : []);
-  const marker = path.join(getPaths().home, UPDATE_COMPLETE_MARKER);
+  const marker = path.join(getPaths().home, UPDATE_PENDING_MARKER);
 
   type Spec = {
     name: string;
@@ -213,6 +213,9 @@ try {
       filter: (s) => s !== path.join(REPO, "src", "scripts"),
     });
     mkdirSync(path.join(art, "plugins"), { recursive: true });
+    mkdirSync(path.join(art, "bin"), { recursive: true });
+    for (const helper of ["runtime-identity.mjs", "update-marker.mjs"]) copyFileSync(path.join(REPO,"bin",helper),path.join(art,"bin",helper));
+    writeFileSync(path.join(art,"package.json"), JSON.stringify({type:"module"}));
     writeFileSync(path.join(art, "SYSTEM.md"), "\n");
     cpSync(path.join(REPO, "locales"), path.join(art, "locales"), { recursive: true });
     writeFileSync(path.join(dir, "tsconfig.build.json"), "{}\n");

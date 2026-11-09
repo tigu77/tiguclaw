@@ -191,7 +191,7 @@ class HttpBridge implements Channel, Observer {
     } else {
       this.ephemeralToken = crypto.randomBytes(16).toString("hex");
       console.error(
-        `HTTP_BRIDGE_TOKEN not set, using ephemeral token: ${this.ephemeralToken}`,
+        "HTTP_BRIDGE_TOKEN not set; using process-local temporary authentication. Configure the same explicit token for the dashboard via onboard; use doctor to check setup.",
       );
     }
     // 빈 값(`KEY=`)도 기본값으로 — `?? ` 면 parseInt("") = NaN 으로 listen 이 던졌다(2026-10-16 재검토 P3).
@@ -285,13 +285,19 @@ class HttpBridge implements Channel, Observer {
       // 구독 인증 화면(`/auth-*`)만 보는 사람의 브라우저 언어로 처리한다 — 설정에 언어가 없을 때 버튼·안내가 화면과 같은 언어가 되게.
       // ★요청 **전체**를 감싸지 않는다(2026-10-07 적대 검토 P1): AsyncLocalStorage 는 그 안에서 만든 이벤트 구독·타이머·cron 이
       //  영구히 물려받아, 대시보드 대화 턴 하나가 뒤의 텔레그램 알림·스케줄 발화 언어를 바꿨다. 대화 턴은 설정 → OS 언어를 따른다.
-      const viewerLang = new URL(req.url ?? "/", "http://x").pathname.startsWith("/auth-") ? req.headers["accept-language"] : undefined;
-      void withViewerLanguage(viewerLang, () => this.handleRequest(req, res)).catch((e: unknown) => {
-        console.error(
-          `http-bridge: 요청 처리 실패 ${req.method ?? "?"} ${req.url ?? "?"} — ` +
-            `${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`,
-        );
-        respondToRequestFailure(res, e); // 판정은 `http-body.ts` 한 곳(검사도 그걸 지난다).
+      void (async () => {
+        let url: URL;
+        try {
+          url = new URL(req.url ?? "/", `http://localhost:${this.port}`);
+        } catch {
+          writeJson(res, 400, { error: "invalid request URL" });
+          return;
+        }
+        const viewerLang = url.pathname.startsWith("/auth-") ? req.headers["accept-language"] : undefined;
+        await withViewerLanguage(viewerLang, () => this.handleRequest(req, res, url));
+      })().catch((e: unknown) => {
+        console.error(`http-bridge: request failed (${e instanceof Error ? e.name : "unknown"})`);
+        respondToRequestFailure(res, e);
       });
     });
 
@@ -333,8 +339,8 @@ class HttpBridge implements Channel, Observer {
   private async handleRequest(
     req: http.IncomingMessage,
     res: http.ServerResponse,
+    url: URL,
   ): Promise<void> {
-    const url = new URL(req.url ?? "/", `http://localhost:${this.port}`);
     const pathname = url.pathname;
     const method = req.method ?? "GET";
 
@@ -484,7 +490,7 @@ class HttpBridge implements Channel, Observer {
                 ? "write" // 설정 파일을 쓴다 — set-default-profile 과 같은 등급.
               : pathname === "/auth-providers" && method === "GET"
                 ? "read"
-              : pathname === "/auth-usage" && method === "GET"
+              : pathname === "/auth-usage" && (method === "GET" || method === "POST")
                 // ★**`read` 가 아니다** (2026-09-09, 적대 검토 P6). 이름은 조회지만 실제로
                 //  일어나는 일은 OAuth 토큰 **refresh + 홈 `.env` 쓰기**(codex), `claude`
                 //  하위 프로세스 spawn, 외부 호출, 캐시 파일 쓰기다. 하필 `routes-auth.ts`
@@ -837,7 +843,7 @@ class HttpBridge implements Channel, Observer {
       await handleAuthProviders(this.routeCtx(req, res, url));
       return;
     }
-    if (pathname === "/auth-usage" && method === "GET") {
+    if (pathname === "/auth-usage" && (method === "GET" || method === "POST")) {
       await handleAuthUsage(this.routeCtx(req, res, url));
       return;
     }

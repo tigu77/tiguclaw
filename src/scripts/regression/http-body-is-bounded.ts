@@ -300,15 +300,15 @@ export const check: RegressionCheck = {
     //  그 함수를 아무도 안 부르면 유출은 그대로다(«검사는 있는데 안 도는» 그 모양).
     {
       const { readFileSync } = await import("node:fs");
-      const CATCH_WIRED = /handleRequest\(req, res\)\)?\s*\.catch\(/;
+      const CATCH_WIRED = /await withViewerLanguage\(viewerLang, \(\) => this\.handleRequest\(req, res, url\)\);\s*}\)\(\)\.catch\(/;
       const src = readFileSync(
         new URL("../../../plugins/http-bridge/index.ts", import.meta.url),
         "utf8",
       );
       out.push(
         assert(
-          "★요청 처리의 rejection 이 **최상위에서 닫힌다**(`handleRequest(...).catch` + 공통 판정)",
-          // 보는 사람의 언어 문맥으로 감싸도(`withViewerLanguage(…, () => this.handleRequest(req, res))`, 2026-10-06) 같은 promise 다.
+          "★요청 처리의 rejection 이 **최상위에서 닫힌다**(URL·handleRequest를 감싼 요청 catch + 공통 판정)",
+          // URL 생성부터 언어 문맥·dispatch까지 같은 요청 promise 안에서 닫힌다.
           CATCH_WIRED.test(src) &&
             /respondToRequestFailure\(res, e\)/.test(src),
           `catch 배선=${CATCH_WIRED.test(src)} · 공통 판정=${/respondToRequestFailure/.test(src)}`,

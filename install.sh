@@ -13,7 +13,7 @@ set -eu
 
 REPO_URL="https://github.com/tigu77/tiguclaw.git"
 DIR="${TIGUCLAW_DIR:-$HOME/tiguclaw}"
-MIN_NODE=20
+MIN_NODE=22
 # 자동 설치할 때 고를 LTS 계열 — 네이티브 미리빌드가 LTS 를 따라간다(README 와 같은 근거).
 LTS_MAJOR="${TIGUCLAW_NODE_MAJOR:-22}"
 NEED_NODE=0
@@ -30,6 +30,9 @@ say ""
 
 # ── 전제 ────────────────────────────────────────────────────────────────────
 command -v git >/dev/null 2>&1 || die "git is not installed. Please install it first."
+if ! git --version; then
+  die "Git exists but could not run. Check Git installation or macOS Command Line Tools, then retry."
+fi
 
 # ── 이미 있으면 덮지 않는다 — 업데이트는 update 의 일이다 ────────────────────
 if [ -e "$DIR" ]; then
@@ -49,7 +52,7 @@ fi
 
 # ★**Node 가 없으면 여기서 멈추지 않는다** (2026-09-09 정태님: *"일반 사용자들도 설치하기
 #  시작했거든"*). 이 제품의 정체성은 «당신의 상시 AI 비서» 이고 그 대상은 개발자가 아니다.
-#  «먼저 Node 20 이상을 설치하세요» 는 거기서 벽이다.
+#  «먼저 Node 22 이상을 설치하세요» 는 거기서 벽이다.
 #
 # ★그래도 **시스템은 안 건드린다.** `brew install node`·`apt install`·`winget install` 은
 #  전역 변경이고 관리자 권한이 필요할 수 있으며, 무엇보다 **지울 때 같이 안 지워진다.**
@@ -219,8 +222,9 @@ say "→ Installing dependencies… (building native modules can take 1–2 minu
 #  better_sqlite3.node 가 안 생긴다 → 데몬이 부팅마다 죽는다. 전역 정책은 안 건드리고
 #  이 호출에만 붙인다(사용자가 설치를 직접 시작했고, 이 제품은 네이티브 없이는 못 뜬다).
 if ! npm ci --no-audit --no-fund --ignore-scripts=false; then
-  die "Dependency install failed.
-   You may need build tools — Linux: build-essential + python3 / macOS: xcode-select --install
+  die "Dependency install failed at npm ci (Node $(node -v), npm $(npm -v)).
+   Read the error above: engines, network/proxy/certificate, and native-build failures have different causes.
+   Only for a native compiler error, check build tools (Linux: build-essential + python3; macOS: Command Line Tools).
    Then retry:  $RETRY_CD && $NPM_SHOW ci --ignore-scripts=false"
 fi
 

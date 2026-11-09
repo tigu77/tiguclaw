@@ -46,6 +46,11 @@ export const check: RegressionCheck = {
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
     const b = await boot();
+    const scroll = b.dash.document.getElementById("bg-scroll")!;
+    out.push(assert("타이머·반복 예약·작업·셸 모두 공통 스크롤 안에 쌓인다",
+      [b.box, ...["bg-schedules", "bg-jobs-body", "bg-shells-body"].map((id) => b.dash.document.getElementById(id))]
+        .every((el) => el !== null && scroll.contains(el)),
+      { timerParent: b.box.parentElement?.id }));
     out.push(assert("기본 펼침 · 현재 범위 2개 · 머리줄은 키보드/ARIA로 목록과 연결",
       b.expanded() && b.count() === "· 2개" && !b.box.hidden && b.list.children.length === 2 &&
       b.head.getAttribute("role") === "button" && b.head.getAttribute("tabindex") === "0" && b.head.getAttribute("aria-controls") === b.list.id &&

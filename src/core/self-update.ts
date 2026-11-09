@@ -17,15 +17,17 @@
  * 실패는 전부 `SelfUpdateResult` 상태 객체로 수렴. 깨진 코드(typecheck 실패)는 절대 재시작
  * 트리거 안 함(먹통 = respawn 루프 방지) — 대신 작업트리를 `git reset --hard` 로 롤백한다.
  */
-import { execFile, spawn } from "node:child_process";
+import { execFileSync, execFile, spawn } from "node:child_process";
 import { telegramTargetFor } from "../store/sessions.js";
-import { promises as fs, existsSync, readFileSync } from "node:fs";
+import { promises as fs, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { appRoot, sourceRoot, getPaths } from "./paths.js";
 import { ensureRipgrep } from "./ripgrep.js";
 import { keepAliveServiceOwnsProcess } from "./restart.js";
 import { redactSecrets } from "./outbound-sanitize.js";
 import { translate } from "./i18n.js";
+const { getProcessIdentity, setBootRevision } = await import(new URL("../../bin/runtime-identity.mjs", import.meta.url).href);
+export const { UPDATE_PENDING_MARKER } = await import(new URL("../../bin/update-marker.mjs", import.meta.url).href);
 
 /** 마커파일 — 부팅 시 1회 소비되는 "업데이트 완료" 통지 좌표 (architect §4). */
 export const UPDATE_COMPLETE_MARKER = ".update-complete";
@@ -59,6 +61,16 @@ export const readBuildCommit = (dir: string): string | null => {
  */
 const BOOT_RUNNING_BUILD: string | null | undefined =
   appRoot() !== sourceRoot() ? readBuildCommit(appRoot()) : undefined;
+// Source also freezes its revision once at module load, not after an update pull.
+const BOOT_RUNNING_REVISION = BOOT_RUNNING_BUILD !== undefined ? BOOT_RUNNING_BUILD : (() => {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: sourceRoot(), encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return /^[a-f0-9]{40}([a-f0-9]{24})?$/.test(sha) ? sha : null;
+  } catch { return null; }
+})();
+setBootRevision(BOOT_RUNNING_REVISION);
+export const getUpdateBoot = () => getProcessIdentity({ home: getPaths().home, repoRoot: sourceRoot(), runtime: process.env.TIGUCLAW_RUNTIME ?? "built" });
+
 
 /**
  * 실패 통지 문장 — 마커의 `outcome`(CLI 가 **실제로 한 일**)대로 말한다 (2026-10-05 적대 검토).
@@ -892,12 +904,15 @@ export const runSelfUpdate = async (
 
     // ── 단계 7: 완료 마커 작성 (부팅 통지용, best-effort) ───────────────────────
     try {
-      const marker = path.join(getPaths().home, UPDATE_COMPLETE_MARKER);
+      const marker = path.join(getPaths().home, UPDATE_PENDING_MARKER);
       const payload = {
         from: reportFrom,
         to: newSha,
         changedFiles: changed.length,
         ts: Date.now(),
+        mode: "direct",
+        state: "ready",
+        expected: { instanceId: getUpdateBoot().instanceId, notBefore: Date.now(), oldBootIds: [getUpdateBoot().bootId], revision: newSha },
         ...(deps.notify !== undefined ? { notify: deps.notify } : {}),
       };
       await fs.writeFile(marker, `${JSON.stringify(payload, null, 2)}\n`);
@@ -915,6 +930,15 @@ export const runSelfUpdate = async (
     // win32=detached daemon.ts restart). 새 코드는 디스크에 이미 반영(pull 완료).
     // unref() 로 이 타이머가 정상 종료를 안 붙잡는다.
     const restart = resolveRestart(deps);
+    const markRestartFailed = () => {
+      try {
+        const marker = path.join(getPaths().home, UPDATE_PENDING_MARKER);
+        const data = JSON.parse(readFileSync(marker, "utf8"));
+        if (data.mode === "direct" && data.expected?.oldBootIds?.includes(getUpdateBoot().bootId)) {
+          writeFileSync(marker, JSON.stringify({ ...data, state: "failed" }));
+        }
+      } catch { /* failure remains unconfirmed */ }
+    };
     try {
       setTimeout(() => {
         try {
@@ -925,6 +949,7 @@ export const runSelfUpdate = async (
           //  (마커는 다음 부팅에만 소비된다). 사용자 신고 "업데이트해도 시작이 안 되고" 의
           //  절반이 이 형태였다.
           if (restart() === false) {
+            markRestartFailed();
             console.error(
               "self-update: 재시작이 중단됐습니다 — 새 코드는 받았지만 **옛 코드로 계속 돕니다**.",
             );
@@ -946,6 +971,7 @@ export const runSelfUpdate = async (
             }
           }
         } catch (e) {
+          markRestartFailed();
           console.error(
             `self-update: 재시작 트리거 실패: ${
               e instanceof Error ? e.message : String(e)
@@ -956,6 +982,7 @@ export const runSelfUpdate = async (
       triggeredRestart = true;
     } catch (e) {
       // setTimeout 자체 실패는 사실상 불가 — 방어적 처리.
+      markRestartFailed();
       return {
         status: "failed",
         from: reportFrom,

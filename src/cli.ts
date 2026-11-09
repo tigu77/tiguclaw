@@ -176,8 +176,15 @@ const onboard = async (): Promise<number> => {
     return 1;
   }
 
-  console.log("\n[4/5] Installing the global command (npm link → `tiguclaw` from anywhere)…");
+  console.log("\n[4/5] Installing the optional global command (npm link)…");
   const existingTiguclaw = resolveCmd("tiguclaw");
+  const quote = (value: string): string => process.platform === "win32"
+    ? "'" + value.replace(/'/g, "''") + "'"
+    : "'" + value.replace(/'/g, "'\\''") + "'";
+  const localNpm = process.platform === "win32"
+    ? `Set-Location -LiteralPath ${quote(process.cwd())}; $env:PATH = ${quote(path.dirname(process.execPath))} + [IO.Path]::PathSeparator + $env:PATH; npm`
+    : `cd ${quote(process.cwd())} && PATH=${quote(path.dirname(process.execPath))}:"$PATH" npm`;
+  let commandAvailable = false;
   if (existingTiguclaw !== null && !globalTiguclawIsOurs()) {
     // 다른 tiguclaw 가 이미 전역에 있음 — 덮어쓰지 않고 보존(예: 레거시 설치본).
     console.warn(
@@ -189,15 +196,18 @@ const onboard = async (): Promise<number> => {
   } else {
     const linked = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["link"], { stdio: "inherit", shell: true });
     if ((linked.status ?? 1) === 0) {
-      console.log(
-        "   ✓ From any folder you can now run: tiguclaw status | restart | logs | doctor",
-      );
+      commandAvailable = resolveCmd("tiguclaw") !== null && globalTiguclawIsOurs();
+      console.log(commandAvailable
+        ? "   ✓ Command found on this shell's PATH: tiguclaw status | restart | logs | doctor"
+        : `   npm link succeeded, but this install's command is not on PATH. Use: ${localNpm} run daemon:status`);
     } else {
       console.warn(
-        "   ⚠ Skipped npm link (permissions or similar) — run `npm link` yourself to get the global `tiguclaw` command.",
+        `   ⚠ npm link failed (${linked.error?.message ?? linked.status ?? "unknown"}); see the error above. Check permissions, npm global prefix/PATH, or managed policy. Local command: ${localNpm} run daemon:status`,
       );
     }
   }
+
+  const manageLine = commandAvailable ? "   Manage: tiguclaw status / restart / logs / uninstall\n" : `   Manage from this install: ${localNpm} run daemon:status (or daemon:restart / daemon:logs / daemon:uninstall)\n`;
 
   // ★완료 판정 — 서비스가 실제로 응답하는가 + doctor 의 «막는 문제»(종료 코드 1)가 없는가. 경고(⚠️)는 막지 않는다(doctor 가 이미
   //  둘을 가른다). 종전엔 doctor 결과를 버리고 무조건 «완료» 를 찍었다 — 서비스가 안 떴어도 완료였다.
@@ -213,9 +223,9 @@ const onboard = async (): Promise<number> => {
   console.log(`   daemon ${ready.daemon ? "✅" : "❌ not answering"} · dashboard ${!dashboardOn ? "(turned off)" : ready.dashboard ? "✅" : "❌ not answering"}`);
   const doctorRc = runNpm("doctor");
   if (!ready.daemon || !ready.dashboard || doctorRc !== 0) {
-    console.error("\n⚠️  Setup is not finished — fix the problems above, then run `tiguclaw onboard` again (your settings are kept).");
+    console.error(`\n⚠️  Setup is not finished — fix the problems above, then retry: ${localNpm} run onboard (your settings are kept).`);
     if (!ready.daemon || !ready.dashboard) {
-      console.error("   The service was registered but did not answer in time — check `tiguclaw status` and `tiguclaw logs`.");
+      console.error(`   The service was registered but did not answer in time — check: ${localNpm} run daemon:status (or daemon:logs).`);
     }
     return 1;
   }
@@ -223,7 +233,7 @@ const onboard = async (): Promise<number> => {
   console.log("   Installation/service readiness checked; a real model reply has not been tested.");
   if (!dashboardOn) {
     console.log("\n✅ Ready! The dashboard module is turned off — talk to the assistant on your other channels, or turn the dashboard back on in settings.");
-    console.log("   Manage: tiguclaw status / restart / logs / uninstall\n");
+    console.log(manageLine);
     return 0;
   }
   console.log("\n✅ Ready! Open the dashboard and say hello:");
@@ -239,7 +249,7 @@ const onboard = async (): Promise<number> => {
   if (envKeyFromBody(envBody, "TELEGRAM_BOT_TOKEN") !== undefined) {
     console.log("   Telegram is set up too — you can also message your bot (only the owner ID is allowed).");
   }
-  console.log("   Manage: tiguclaw status / restart / logs / uninstall\n");
+  console.log(manageLine);
   return 0;
 };
 

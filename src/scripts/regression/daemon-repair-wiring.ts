@@ -37,7 +37,7 @@ export const check: RegressionCheck = {
       const fake = path.join(tmp, "repo");
       mkdirSync(path.join(fake, "bin"), { recursive: true });
       // `bin/windows-tools.mjs` 는 daemon.mjs·tiguclaw.mjs 가 정적으로 import 한다 — 빠지면 두 진입점이 ERR_MODULE_NOT_FOUND 로 죽는다.
-      for (const f of ["package.json", "bin/daemon.mjs", "bin/tiguclaw.mjs", "bin/windows-tools.mjs"]) copyFileSync(path.join(REPO, f), path.join(fake, f));
+      for (const f of ["package.json", "bin/daemon.mjs", "bin/tiguclaw.mjs", "bin/windows-tools.mjs", "bin/runtime-identity.mjs", "bin/update-marker.mjs"]) copyFileSync(path.join(REPO, f), path.join(fake, f));
       // `tiguclaw` 가 lifecycle 이 아니라고 보면 tsx 로 `src/cli.ts` 를 띄운다 — 그 자리에 «불렸다» 고만 말하는 가짜를 둔다(설치 부트스트랩도 안 돈다).
       mkdirSync(path.join(fake, "node_modules", "tsx", "dist"), { recursive: true });
       writeFileSync(path.join(fake, "node_modules", "tsx", "dist", "cli.mjs"), `console.log("TSX-FALLBACK " + process.argv.slice(2).join(" "));\n`);

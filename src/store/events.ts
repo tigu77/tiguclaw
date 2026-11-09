@@ -176,10 +176,13 @@ export const pruneEvents = (keepLast: number): number => {
   return removed;
 };
 
-/** 감사·대시보드 조회 — 최신 먼저. type/sinceTs/limit 필터. */
+/** 감사·대시보드 조회 — 최신 id 먼저. 모든 범위 조건은 LIMIT 전에 적용한다. */
 export const listEvents = (opts?: {
   types?: string[];
   sinceTs?: number;
+  untilTs?: number;
+  /** 미지정 = 전체, 빈 배열 = 일치 없음. 조상별 포함 상한은 호출부가 계산한다. */
+  threadScopes?: ReadonlyArray<{ threadKey: string; untilTs?: number }>;
   limit?: number;
 }): PersistedEvent[] => {
   const where: string[] = [];
@@ -191,6 +194,23 @@ export const listEvents = (opts?: {
   if (opts?.sinceTs !== undefined) {
     where.push(`ts >= ?`);
     params.push(opts.sinceTs);
+  }
+  if (opts?.untilTs !== undefined) {
+    where.push(`ts <= ?`);
+    params.push(opts.untilTs);
+  }
+  if (opts?.threadScopes !== undefined) {
+    // CASE evaluation protects JSON functions even for malformed payloads; only text keys match.
+    const threadKey = `CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload, '$.threadKey') = 'text' THEN json_extract(payload, '$.threadKey') END END`;
+    const scopes = opts.threadScopes.map((scope) => {
+      params.push(scope.threadKey);
+      if (scope.untilTs !== undefined) {
+        params.push(scope.untilTs);
+        return `(${threadKey} = ? AND ts <= ?)`;
+      }
+      return `(${threadKey} = ?)`;
+    });
+    where.push(scopes.length > 0 ? `(${scopes.join(" OR ")})` : "0");
   }
   const limit = opts?.limit !== undefined && opts.limit > 0 ? opts.limit : 100;
   const sql =

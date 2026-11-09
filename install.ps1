@@ -14,7 +14,7 @@ $ErrorActionPreference = 'Stop'
 
 $RepoUrl  = 'https://github.com/tigu77/tiguclaw.git'
 $Dir      = if ($env:TIGUCLAW_DIR) { $env:TIGUCLAW_DIR } else { Join-Path $env:USERPROFILE 'tiguclaw' }
-$MinNode  = 20
+$MinNode  = 22
 # 자동 설치할 때 고를 LTS 계열 — 네이티브 미리빌드가 LTS 를 따라간다(sh 판과 같은 값).
 $LtsMajor = if ($env:TIGUCLAW_NODE_MAJOR) { $env:TIGUCLAW_NODE_MAJOR } else { '22' }
 
@@ -115,6 +115,8 @@ if (!$GitCmd) {
   $GitCmd = Get-Command git.exe -ErrorAction Stop
 }
 $GitExe = $GitCmd.Source
+& $GitExe --version
+if ($LASTEXITCODE -ne 0) { Die "Git exists but could not run. Check the Git installation and error above, then retry." }
 if ($ExistingInstall) {
   $origin = & $GitExe -C $Dir remote get-url origin
   if ($LASTEXITCODE -ne 0 -or $origin -notmatch '^(https://github\.com/tigu77/tiguclaw(?:\.git)?|git@github\.com:tigu77/tiguclaw(?:\.git)?)$') {
@@ -288,9 +290,9 @@ Write-Host "-> Installing dependencies... (building native modules can take 1-2 
 & $Npm ci --no-audit --no-fund --ignore-scripts=false
 if ($LASTEXITCODE -ne 0) {
   Die @"
-Dependency install failed.
-   You may need the C++ build tools:
-     winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools"
+Dependency install failed at npm ci (Node $(node -v), npm $(& $Npm -v)).
+   Read the error above: engines, network/proxy/certificate, and native-build failures have different causes.
+   Only for a native compiler error, check Visual Studio C++ build tools.
    Then retry:  $RetryBase ci --ignore-scripts=false
 "@
 }

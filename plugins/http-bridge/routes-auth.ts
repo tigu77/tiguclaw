@@ -57,14 +57,19 @@ export const handleAuthProviders = async (ctx: RouteCtx): Promise<void> => {
  *
  * ★상세를 여는 것이 곧 «지금 알고 싶다» 이므로 여기선 기다려도 된다 — 누른 사람이 그
  *  숫자를 보려고 기다리는 것이다. 목록(위)이 기다리던 것과는 성질이 다르다.
- * ★`?force=1` — 사용자가 **새로고침을 눌렀을 때**. 캐시가 «화면 한 번 여는 동안의 중복
+ * ★POST — 사용자가 **새로고침을 눌렀을 때**. 캐시가 «화면 한 번 여는 동안의 중복
  *  호출을 접는 것» 이라면, 다시 누른 것은 정의상 그 중복이 아니다.
  * ★모르는 provider·조회 실패는 **200 + usage:null**(«모름»)이다. 없는 숫자를 0으로
  *  뭉개지 않고, 화면은 빈 자리를 «모름» 으로 읽는다.
  */
 export const handleAuthUsage = async (ctx: RouteCtx): Promise<void> => {
+  if (ctx.req.method === "GET" && ctx.url.searchParams.getAll("force").includes("1")) {
+    ctx.res.setHeader("Allow", "POST");
+    writeJson(ctx.res, 405, { error: "Use POST to refresh usage" });
+    return;
+  }
   const provider = (ctx.url.searchParams.get("provider") ?? "").trim();
-  const force = ctx.url.searchParams.get("force") === "1";
+  const force = ctx.req.method === "POST";
   const p = provider === "" ? undefined : getAuthProvider(provider);
   if (p === undefined || p.getUsage === undefined) {
     writeJson(ctx.res, 200, { ok: true, provider, usage: null });

@@ -25,7 +25,7 @@
  */
 import { homeEnvPath } from "../core/load-env.js"; // ★가장 먼저 — <home>/.env(레포 폴백) 로드.
 import { credentialFollowAvailable } from "../core/credential-env.js";
-import { createServer } from "node:http";
+import type { RequestListener } from "node:http";
 import { createInterface } from "node:readline";
 import { createAuthorizationFlow } from "../core/llm-runtime/adapters/openai-codex-oauth.js";
 import { canOpenBrowser, openInBrowser } from "../core/onboard-ready.js";
@@ -37,6 +37,8 @@ import {
   CODEX_CALLBACK_PATH as CALLBACK_PATH,
   parseRedirectInput,
   completeCodexLogin,
+  listenCodexCallback,
+  respondToCodexCallbackFailure,
 } from "../core/llm-runtime/adapters/openai-codex-oauth-login.js";
 
 export { parseRedirectInput };
@@ -84,16 +86,17 @@ const main = async (): Promise<void> => {
   );
 
   let settled = false;
+  let inFlight = false;
 
   await new Promise<void>((resolve, reject) => {
     const rl = createInterface({ input: process.stdin });
-    const server = createServer();
+    let server: { close: () => void } | undefined;
     let nudge: NodeJS.Timeout | undefined;
 
     const cleanup = (): void => {
       if (nudge !== undefined) clearTimeout(nudge);
       rl.close();
-      server.close();
+      server?.close();
     };
     const fail = (e: unknown): void => {
       if (settled) return;
@@ -107,14 +110,18 @@ const main = async (): Promise<void> => {
       code: string,
       state: string | null,
     ): Promise<void> => {
-      if (settled) return;
+      if (settled || inFlight) return;
+      if (state !== null && state !== flow.state) {
+        console.warn("[codex-auth] State mismatch (CSRF guard) — still waiting.");
+        return;
+      }
+      inFlight = true;
       const r = await completeCodexLogin({
         code,
         state,
         expectedState: flow.state,
         verifier: flow.pkce.verifier,
       });
-      settled = true;
       cleanup();
       // ★쿨다운 해제는 코어가 했다 — 쿨다운은 DB 가 진실이라(`remainingForKey`) 돌고 있는 데몬에도
       //  바로 먹고, 토큰은 데몬이 다음 턴에 `.env` 변경을 보고 따라간다(`credential-env.ts`). 재시작 불필요.
@@ -129,14 +136,16 @@ const main = async (): Promise<void> => {
       console.log(`   Saved to: ${homeEnvPath()}`);
       console.log(`   access_token expires in ~${r.expiresInSec}s`);
       console.log(`   refresh_token kept (automatic refresh is on)`);
+      settled = true;
       resolve();
     };
 
     // ── 자동 경로 — 브라우저 콜백 ──────────────────────────────────────────
-    server.on("request", (req, res) => {
+    const callback: RequestListener = (req, res) => {
       void (async () => {
-        const raw = req.url ?? "";
-        const url = new URL(raw, `http://localhost:${PORT}`);
+        let url: URL;
+        try { url = new URL(req.url ?? "/", `http://localhost:${PORT}`); }
+        catch { res.writeHead(400).end("Invalid request URL"); return; }
         const match = url.pathname === CALLBACK_PATH;
         // ★들어온 것을 전부 남긴다 — "첫 요청이 뭐였나" 를 다음엔 추론하지 않는다.
         console.log(
@@ -146,6 +155,14 @@ const main = async (): Promise<void> => {
         );
         if (!match) {
           res.writeHead(404).end("Not found");
+          return;
+        }
+        if (url.searchParams.get("state") !== flow.state) {
+          res.writeHead(400).end("State mismatch (CSRF guard)");
+          return;
+        }
+        if (settled || inFlight) {
+          res.writeHead(409).end("Sign-in already processing");
           return;
         }
         const error = url.searchParams.get("error");
@@ -175,9 +192,14 @@ const main = async (): Promise<void> => {
         } catch (e) {
           fail(e);
         }
-      })();
-    });
-    server.on("error", (err) => {
+      })().catch(() => respondToCodexCallbackFailure(res));
+    };
+    // Finish binding both families before opening the browser; a racing manual finish closes them.
+    void listenCodexCallback(callback).then((listeners) => {
+      server = listeners;
+      if (settled) listeners.close();
+      else if (autoOpen) openInBrowser(flow.url);
+    }).catch((err: unknown) => {
       const msg = String(err);
       if (msg.includes("EADDRINUSE")) {
         console.error(
@@ -187,8 +209,6 @@ const main = async (): Promise<void> => {
       }
       fail(err);
     });
-    // 콜백을 받을 준비가 된 뒤에 연다 — 먼저 열면 빠른 로그인의 콜백이 아직 없는 포트에 닿는다.
-    server.listen(PORT, () => { if (autoOpen) openInBrowser(flow.url); });
 
     // ── 수동 경로 — 주소창 붙여넣기 ────────────────────────────────────────
     rl.on("line", (line) => {

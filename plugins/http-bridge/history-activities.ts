@@ -55,9 +55,6 @@ export const historyActivities = (
 ): HistoryActivity[] => {
   if (entries.length === 0) return [];
   const sinceTs = entries[0].ts; // ASC — oldest.
-  const newestTs = upperBounded
-    ? entries[entries.length - 1].ts
-    : Number.POSITIVE_INFINITY;
   try {
     // 가지면 조상 대화의 도구 스텝도 **갈라진 시각까지** 이 대화 것으로 그린다(화면 메시지 범위와 같은 사슬 — `chatScreenSegments`).
     const scope = new Map<string, number>();
@@ -66,7 +63,16 @@ export const historyActivities = (
       for (const a of lineageChain(SESSION_STORAGE_CHANNEL, scopeThreadKey)) scope.set(a.key, a.forkedAt);
     }
     // ★발행 순서로 훑는다 — `listEvents` 는 id DESC 다. 끝 이벤트의 출력을 **그 실행의** 시작 스텝에 붙이려면 순서가 필요하다.
-    const raw = listEvents({ types: ["llm.activity"], sinceTs, limit: 3000 }).reverse();
+    const raw = listEvents({
+      types: ["llm.activity"], sinceTs, limit: 3000,
+      ...(upperBounded ? { untilTs: entries[entries.length - 1].ts } : {}),
+      ...(scope.size > 0 ? {
+        threadScopes: [...scope].map(([threadKey, untilTs]) => ({
+          threadKey,
+          ...(Number.isFinite(untilTs) ? { untilTs } : {}),
+        })),
+      } : {}),
+    }).reverse();
     // end 이벤트의 output 은 같은 **실행 구간**의 같은 seq 시작 스텝에 붙인다(라이브의 phase:end→스텝 주석과 동형). durationMs 는 이력 불필요.
     // ★`seq` 는 run() 지역 카운터라(`types.ts` RegionAActivityPayload.seq) 턴마다 0부터 다시 센다 (2026-10-26 라이브).
     //  종전엔 `대화|어댑터|seq` 전역 맵이라 seq 0 스텝 30개가 전부 가장 오래된 seq 0 출력을 달고 나왔고, 텍스트 세그먼트에도 붙었다.
@@ -83,7 +89,6 @@ export const historyActivities = (
       return r;
     };
     for (const e of raw) {
-      if (e.ts > newestTs) continue;
       let p: {
         threadKey?: unknown;
         adapter?: unknown;
@@ -121,12 +126,8 @@ export const historyActivities = (
       // 멀티세션 탭(ADR 2026-07-15) — 요청 threadKey 로 스코프해 entries 와 동일 계약 유지
       //  (안 하면 타 스레드 도구 스텝이 세션 이력에 샘 = 크로스세션 누수). 미지정=현행(전 스레드).
       //  가지면 조상의 스텝은 갈라진 시각까지만, 그리고 **이 대화의 키로** 그린다(메시지와 같은 키여야 인터리브된다).
-      let tk = rawTk;
-      if (scope.size > 0) {
-        const until = scope.get(rawTk);
-        if (until === undefined || e.ts > until) continue;
-        tk = scopeThreadKey!;
-      }
+      // 범위 판정은 LIMIT 전 SQL에서 끝났다. 여기서는 표시 키만 요청 가지로 바꾼다.
+      const tk = scope.size > 0 ? scopeThreadKey! : rawTk;
       // ★실제 응답 모델을 이력 투영에 포함 (2026-07-27). 종전엔 여기서 버려져, 라이브 SSE 에는
       //  모델이 보이는데 **새로고침하면 사라지고** 전체활동 뷰엔 아예 안 나왔다(같은 데이터인데
       //  경로에 따라 달라지는 것 = 관측을 믿을 수 없게 만든다). 없으면 키 자체를 생략(거짓값 금지).

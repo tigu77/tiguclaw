@@ -52,6 +52,7 @@ export const check: RegressionCheck = {
       // ★임시 레포 안으로 복사해 돌린다 — repoRoot 를 자기 위치에서 뽑으므로, 진짜 경로로 부르면 실제 dist 를 건드린다.
       mkdirSync(path.join(tmp, "bin"));
       copyFileSync(path.join(REPO, "bin", "copy-dist-assets.mjs"), path.join(tmp, "bin", "copy-dist-assets.mjs"));
+      for (const helper of ["runtime-identity.mjs", "update-marker.mjs"]) copyFileSync(path.join(REPO,"bin",helper),path.join(tmp,"bin",helper));
       const copy = (args: string[], env?: NodeJS.ProcessEnv): number => {
         try {
           execFileSync(process.execPath, [path.join(tmp, "bin", "copy-dist-assets.mjs"), ...args], { cwd: tmp, stdio: "pipe", env: env ?? process.env });
@@ -81,6 +82,11 @@ export const check: RegressionCheck = {
       const rcCopy = copy([]);
       out.push(assert("★복사(무인자)가 끝까지 되면 dist 에 HEAD 를 적고, self-update 가 그 이름·형식으로 읽는다", rcCopy === 0 && stamp(dist) === head, `rc=${rcCopy} 읽음=${stamp(dist)} HEAD=${head}`));
 
+      const srcContract = await import(new URL("../../../bin/update-marker.mjs", import.meta.url).href);
+      const builtContract = await import(new URL(`file://${path.join(dist,"bin/update-marker.mjs")}`).href);
+      const boot = {instanceId:"a".repeat(64),bootId:"11111111-1111-4111-8111-111111111111",startedAt:Date.now(),revision:head};
+      const marker = {mode:"cli",state:"confirmed",expected:{instanceId:boot.instanceId,notBefore:boot.startedAt,oldBootIds:[],revision:head},confirmed:boot};
+      out.push(assert("source/built copied success contract both execute; wrong revision rejected",srcContract.updateMarkerMatches(marker,boot)&&builtContract.updateMarkerMatches(marker,boot)&&!builtContract.updateMarkerMatches(marker,{...boot,revision:"0".repeat(40)}), {sourceExports:Object.keys(srcContract),builtExports:Object.keys(builtContract),revision:head}));
       const staging = path.join(tmp, ".dist-staging-x");
       mkdirSync(staging);
       writeFileSync(path.join(dist, BUILD_COMMIT_FILE), `${"b".repeat(40)}\n`);

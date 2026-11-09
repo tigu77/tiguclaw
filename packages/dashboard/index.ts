@@ -326,11 +326,15 @@ const readBody = async (req: http.IncomingMessage): Promise<string> => {
 
 const server = http.createServer((req, res) => {
   const lang = req.headers["accept-language"];
-  const handle = (): void => void (async () => {
-    const url = new URL(
-      req.url ?? "/",
-      `http://localhost:${DASHBOARD_PORT}`,
-    );
+  const handle = async (): Promise<void> => {
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", `http://localhost:${DASHBOARD_PORT}`);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "invalid request URL" }));
+      return;
+    }
     const pathname = url.pathname;
     const method = req.method ?? "GET";
 
@@ -1040,9 +1044,14 @@ const server = http.createServer((req, res) => {
       return;
     }
     // 한도 조회는 **상세를 열 때** provider 하나만 — 목록이 느린 조회를 안 기다린다.
-    // `?provider=&force=` 를 그대로 나른다(브리지가 판정한다 — 여기선 안 고른다).
-    if (pathname === "/api/auth-usage" && method === "GET") {
-      await proxyJson(res, "/auth-usage" + (url.search === "" ? "" : url.search));
+    // 명시 강제 갱신은 기존 Host/CSRF 보호를 통과한 POST만 나른다.
+    if (pathname === "/api/auth-usage" && (method === "GET" || method === "POST")) {
+      if (method === "GET" && url.searchParams.getAll("force").includes("1")) {
+        res.writeHead(405, { "Allow": "POST", "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: "Use POST to refresh usage" }));
+        return;
+      }
+      await proxyJson(res, "/auth-usage" + url.search, { method });
       return;
     }
     if (
@@ -1328,9 +1337,18 @@ const server = http.createServer((req, res) => {
 
     res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: "not found" }));
-  })();
-  if (typeof lang === "string" && lang.trim() !== "") viewerLanguage.run(lang, handle);
-  else handle();
+  };
+  void (async () => {
+    if (typeof lang === "string" && lang.trim() !== "") await viewerLanguage.run(lang, handle);
+    else await handle();
+  })().catch(() => {
+    // URL parsing alone is 400; dispatch/decode failures are internal errors.
+    try {
+      if (res.headersSent || res.writableEnded || res.destroyed) return;
+      res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "internal server error" }));
+    } catch { /* disconnected response — never reject again */ }
+  });
 });
 
 // 포트를 못 열면 이유와 고칠 길을 한 줄로 남기고 끝낸다 — 데몬(plugins/dashboard)이 이 줄을 받아 자기 점검으로 사용자에게 알린다.

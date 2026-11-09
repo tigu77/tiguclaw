@@ -23,7 +23,8 @@ const VERSION: string = (() => {
 import { getInflightTurns } from "../../src/core/inflight-turns.js";
 import { listProjectRuns } from "../../src/core/entry/project-command.js";
 import { writeJson } from "../../src/core/net/write-json.js";
-import { appRoot } from "../../src/core/paths.js";
+import { appRoot, resolveHome, sourceRoot } from "../../src/core/paths.js";
+import { getProcessIdentity } from "../../bin/runtime-identity.mjs";
 
 import {
   ATTACH_MAX_COUNT,
@@ -41,6 +42,7 @@ export const handleHealth = async (ctx: RouteCtx): Promise<void> => {
   const inflight = getInflightTurns();
   writeJson(res, 200, {
     ok: true,
+    ...getProcessIdentity({ home: resolveHome(), repoRoot: sourceRoot(), runtime: process.env.TIGUCLAW_RUNTIME ?? "built" }),
     version: VERSION,
     // ★프로세스 가동시간 — "이게 **새 프로세스인가**" 의 유일한 답 (2026-08-21 검토 F5).
     //  업데이트 후 복귀 판정에 쓴다. version 으로는 안 된다(sync 는 대개 버전을 안 올린다).

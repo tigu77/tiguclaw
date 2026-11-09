@@ -155,13 +155,14 @@ import {
 import {
   runSelfUpdate,
   setSelfUpdateRestart,
-  UPDATE_COMPLETE_MARKER,
+  getUpdateBoot,
   UPDATE_FAILED_MARKER,
   updateFailedText,
   formatSelfUpdateResult,
   type SelfUpdateNotifyDest,
 } from "./core/self-update.js";
 import { deliverOutbound } from "./core/outbound.js";
+const { consumeUpdateMarker } = await import(new URL("../bin/update-marker.mjs", import.meta.url).href);
 import { replyQuoteRefOf, withReplyQuote } from "./core/reply-quote.js";
 import {
   stopReplyIdleWithJobs,
@@ -2009,10 +2010,11 @@ await recoverInterruptedJobs();
 const updateFailedNotified = await (async (): Promise<boolean> => {
   const markerPath = path.join(getPaths().home, UPDATE_FAILED_MARKER);
   let raw: string;
+  let observedFailure = false;
   try {
     raw = await fsp.readFile(markerPath, "utf8");
-  } catch {
-    return false; // 마커 없음 = 실패 아님.
+  } catch (e) {
+    return observedFailure || (e as NodeJS.ErrnoException).code !== "ENOENT"; // 마커 없음 = 실패 아님.
   }
   try {
     const data = JSON.parse(raw) as {
@@ -2051,55 +2053,31 @@ const updateFailedNotified = await (async (): Promise<boolean> => {
 // raw 아웃바운드가 도달. best-effort — 마커 깨졌거나 발송 실패해도 부팅을 막지 않고 마커는
 // 삭제한다(재통지 루프 0). dest 는 마커에 적재된 notify 좌표(요청 슬래시/도구의 channel·target).
 const updateNotified = await (async (): Promise<boolean> => {
-  const markerPath = path.join(getPaths().home, UPDATE_COMPLETE_MARKER);
-  let raw: string;
-  try {
-    raw = await fsp.readFile(markerPath, "utf8");
-  } catch {
-    return false; // 마커 없음 = 일반 부팅 — 아래 일반 재시작 통지가 담당.
-  }
-  // 본문 파싱·통지 실패와 무관하게 마커는 반드시 삭제(1회성 보장).
-  const unlinkMarker = async (): Promise<void> => {
+  const result = await consumeUpdateMarker({
+    boot: getUpdateBoot(),
+    failed: updateFailedNotified,
+    read: async (name: string) => {
+      try { return await fsp.readFile(path.join(getPaths().home, name), "utf8"); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; throw e; }
+    },
+    remove: async (name: string, raw: string) => {
+      const file = path.join(getPaths().home, name);
+      if (await fsp.readFile(file, "utf8") === raw) await fsp.unlink(file);
+    },
+  });
+  if (result.data) {
     try {
-      await fsp.unlink(markerPath);
-    } catch {
-      /* 이미 없음/권한 — 무시 */
-    }
-  };
-  try {
-    const data = JSON.parse(raw) as {
-      notify?: { channel?: string; target?: string | null };
-    };
-    // ★사용자에게 커밋 해시·파일 수를 보이지 않는다 (2026-07-27) — 알아도 할 게 없는
-    //  내부 좌표다. 진단이 필요하면 로그·`/status` 가 있다.
-    // ★마커의 from/to 로 "받은 게 있었나"를 판정하지 말 것 (2026-07-28). 마커의 존재
-    //  자체가 이미 "받았다"를 뜻한다 — 받을 게 없으면 self-update.ts 의 up-to-date 가
-    //  early return 해 마커를 안 쓴다(요청자에겐 그 자리에서 동기 응답). 게다가
-    //  win32+built 는 pull 을 마친 뒤 CLI 에 위임하므로 CLI 가 뜨는 prevSha 는 이미 새
-    //  커밋 = from===to 가 항상 참 → 그걸로 분기하면 윈도우의 정상 업데이트가 전부
-    //  "이미 최신" 으로 오보된다(실측). 조건 없이 완료로 보고한다.
-    const text = translate("srv.update.complete");
-    // 단일 통로 — 라우팅·발송·관측(대시보드 표시)을 deliverOutbound 가 담당(채널 미지정=cli).
-    // 세션 귀속 = 기본 세션(업데이트 통지는 세션 없는 시스템 발화 → 새 세션 생성 대신
-    // dashboard:default 메인 채팅에 표시). 배달은 요청자 좌표(notify) 그대로.
-    await deliverOutbound({
-      channel: data.notify?.channel ?? "cli",
-      target: data.notify?.target ?? null,
-      text,
-      bus,
-      observeThreadKey: DEFAULT_SESSION_ID,
-    });
-  } catch (e) {
-    console.error(
-      `self-update: 부팅 완료 통지 실패(마커는 삭제): ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    );
-  } finally {
-    await unlinkMarker();
+      await deliverOutbound({
+        channel: result.data.notify?.channel ?? "cli",
+        target: result.data.notify?.target ?? null,
+        text: translate("srv.update.complete"),
+        bus,
+        observeThreadKey: DEFAULT_SESSION_ID,
+      });
+    } catch (e) { console.error(`self-update: completion delivery failed: ${String(e)}`); }
   }
-  // 마커가 있었으면(=업데이트 부팅) 통지 담당은 여기 — 아래 일반 재시작 통지는 생략.
-  return true;
+  // Invalid/legacy/pending/failed is handled, NOT a general Restart complete.
+  return result.handled;
 })();
 
 // 매 부팅 재시작 통지 — 업데이트 통지가 없었던 부팅(=일반 /restart · 크래시 · launchd

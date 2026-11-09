@@ -7,7 +7,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/tigu77/tiguclaw/ci.yml?branch=main&label=CI)](https://github.com/tigu77/tiguclaw/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/tigu77/tiguclaw)](https://github.com/tigu77/tiguclaw/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-green)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-green)](https://nodejs.org)
 [![GitHub stars](https://img.shields.io/github/stars/tigu77/tiguclaw?style=social)](https://github.com/tigu77/tiguclaw/stargazers)
 
 **에이전트를 늘릴수록 관리할 것도 같이 늘어납니다.**
@@ -66,12 +66,13 @@ tiguclaw 은 그 반대로 갑니다. 나는 **비서 한 명**과 이야기하�
 
 ## 빠른 시작
 
-**git**, **LLM provider 하나**(아래), 그리고 (선택) **텔레그램 봇** 이 필요합니다. Node 20 이상도
-필요하지만, 없으면 설치기가 tiguclaw 전용으로 받아 줍니다.
+**git**, **LLM provider 하나**(아래), 그리고 (선택) **텔레그램 봇** 이 필요합니다. Node 22 이상도
+필요하지만, 없으면 설치기가 tiguclaw 전용으로 받아 줍니다. 이는 최소 버전 요구이며,
+더 최신 Node의 모든 native SQLite 바이너리·플랫폼 지원까지 보장하는 뜻은 아닙니다.
 
 > ⚠️ 먼저 [`docs/security.ko.md`](docs/security.ko.md) 를 읽어주세요 — 비서는 *내* 컴퓨터의 쉘·파일에
-> 접근할 수 있고(Claude Code 와 같은 자기-선택 모델), **파괴적이거나 되돌릴 수 없는 작업 전에는
-> 반드시 승인을 받습니다**.
+> 접근할 수 있습니다(Claude Code 와 같은 자기-선택 모델). **파괴적이거나 되돌릴 수 없는 작업 전에는
+> 승인을 요청하도록 지시되어 있지만, 모든 위험 명령의 기계적 차단이나 OS 샌드박스를 보장하지는 않습니다.**
 
 ```bash
 # macOS · Linux
@@ -85,7 +86,7 @@ irm https://raw.githubusercontent.com/tigu77/tiguclaw/main/install.ps1 | iex
 
 받고, 설치하고, 설정 마법사까지 이어집니다. 기본 위치는 홈 아래 `tiguclaw/` — 바꾸려면
 `TIGUCLAW_DIR` 를 지정하세요. macOS·Linux 에서는 **git** 이 미리 있어야 합니다. Windows 에서는 git 이 없으면 동의를
-받아 앱 전용 Git 을 준비합니다(SHA-256 확인, 시스템 `PATH` 는 그대로). **Node 20 이상**이 없으면 설치기가
+받아 앱 전용 Git 을 준비합니다(SHA-256 확인, 시스템 `PATH` 는 그대로). **Node 22 이상**이 없으면 설치기가
 물어본 뒤 `<설치폴더>/.node` 에 받습니다 — tiguclaw 전용이라 관리자 권한이 필요 없고, 시스템
 `PATH` 를 건드리지 않으며, 설치 폴더를 지우면 같이 사라집니다. 대상 경로에 이미 설치돼 있으면
 덮지 않고 알려줍니다(Windows 에서는 멈춰 있는 tiguclaw 설치 위에 다시 실행하면 기존 설정을 그대로
@@ -123,6 +124,8 @@ node bin/tiguclaw.mjs onboard   # 의존성 설치까지 알아서 — 이 한 �
 > 없습니다 — bridge 토큰은 서버 쪽에서 주입돼 페이지엔 안 닿으니, **이 포트에 닿는 것 자체가
 > 곧 권한입니다.** 폰에서 쓰고 싶으면 포트를 열지 말고 사설 네트워크로 터널링하세요(예:
 > `tailscale serve 17010`). `DASHBOARD_HOST=0.0.0.0` 은 그 대가를 알 때만.
+> 사설 네트워크나 터널도 사용자 인증을 대신하지 않습니다. 원격 노출 전 해당 포트에 닿을
+> 주체를 ACL 또는 인증 프록시로 제한하세요. **Host 허용 목록과 CSRF 검사는 로그인 인증이 아닙니다.**
 >
 > 원격을 **이름**(예: MagicDNS `*.ts.net`)으로 여실 거면 그 이름을 `.env` 의
 > `DASHBOARD_ALLOWED_HOSTS` 에 적어주세요 — DNS 리바인딩 방어 때문입니다. **IP 로

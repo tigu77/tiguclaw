@@ -67,8 +67,8 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★새로고침(`force`)이 라우트까지 닿는다 — 캐시의 일은 재렌더를 접는 것이라, 사용자가 다시 누른 것은 정의상 그 중복이 아니다",
-        /force/.test(one) && /force=1/.test(view),
-        JSON.stringify({ 라우트: /force/.test(one), 화면: /force=1/.test(view) }),
+        /ctx\.req\.method === "POST"/.test(one) && /method: force \? "POST" : "GET"/.test(view),
+        JSON.stringify({ 라우트: /ctx\.req\.method === "POST"/.test(one), 화면: /method: force \? "POST" : "GET"/.test(view) }),
       ),
     );
 

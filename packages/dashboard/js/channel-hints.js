@@ -487,6 +487,7 @@
             return;
           }
           if (card && !card.interrupted && card.replyBubble && vtIndex.has(card.group)) {
+            confirmTurnGroupTs(card, ev.ts);
             setChatBody(card.replyMsg, payload.text, true);     // 평문 델타 → 마크다운 전체본 1회.
             card.replyMsg.classList.remove("streaming");        // 타이핑 커서 off.
             if (turnId) card.group.dataset.turn = turnId;
@@ -544,6 +545,7 @@
         if (!isOut) interruptOpenTurn(thread);
         const group = isOut ? completeTurnGroup(thread) : null;
         if (group) {
+          confirmTurnGroupTs(cardByThread.get(thread), ev.ts);
           group.appendChild(div); // 그룹 내 스텝 카드 다음 = 답변 말풍선(서브트리 변형 → RO 반영).
           scheduleRelayout();
         } else {

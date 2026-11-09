@@ -57,7 +57,7 @@ export const check: RegressionCheck = {
       const items = Array.from({ length: 20 }, () => ({ h: 100, node: {} }));
       const win = { children: [] as unknown[], firstChild: null, removeChild: () => {}, insertBefore: () => {}, style: { transform: "" } };
       const ctx = vm.createContext({
-        stickBottom: true, vtJumpTop: false, perfNow: () => 1000, userIntentUntil: intentActive ? 1400 : 0,
+        stickBottom: true, vtJumpTop: false, vtReorderAnchor: null, perfNow: () => 1000, userIntentUntil: intentActive ? 1400 : 0,
         pageScroll: () => false, getClientH: () => 500, getScrollTop: () => 1494, getScrollH: () => 2000,
         vtItems: items, slotH: (it: { h: number }) => it.h, vtSizer: { style: { height: "" } }, vtWindow: win,
         VT_BUFFER: 600, setScrollTop: (v: number) => { sets.push(v); }, scheduleRelayout: () => {}, updateChatJump: () => {},

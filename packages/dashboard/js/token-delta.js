@@ -51,6 +51,7 @@
             cardByThread.set(thread, card);
             vtAppend(card.group);
           }
+          confirmTurnGroupTs(card, p.ts);
           card.attemptEnded = false; // 새 내용 = 지금 시도의 카드
           const txt = String(p.text || "");
           if (!card.replyBubble && txt !== "") ensureReplyBubble(card, ts); // 델타 없는 세그먼트 = 버블 신설.

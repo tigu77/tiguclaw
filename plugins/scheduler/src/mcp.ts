@@ -379,14 +379,42 @@ const updateScheduleTool = (turnSession: TurnSession) => tool(
 
 const deleteScheduleTool = tool(
   "delete_schedule",
-  "schedule 영구 삭제. 존재하지 않는 id 도 멱등 (deleted:false).",
-  { id: z.number().int().min(1) },
+  "schedule 영구 삭제. 기존 id(단건) 또는 ids(1~100개 양의 안전 정수 배열) 중 정확히 하나를 줍니다. " +
+    "중복은 첫 등장 순서로 한 번만 처리하고, 없는 ID는 멱등(deleted:false)입니다. " +
+    "삭제할 대상 목록을 먼저 보여주고 묶음에 대한 사용자 승인을 받은 뒤 실행하세요(기존 명시 승인은 다시 묻지 않습니다). " +
+    "복수 응답은 건별 ok/deleted/error를 보존합니다. 부분 성공은 되돌리지 않으며, 오류 항목에 deleted가 없으면 삭제·연관 정리 상태 미확정이므로 재시도 전 목록·실행 상태를 확인하세요.",
+  {
+    id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional().describe("단건 ID. ids와 함께 줄 수 없습니다."),
+    ids: z.array(z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)).min(1).max(100).optional().describe("복수 ID. 최대 100개(중복 포함), id와 함께 줄 수 없습니다."),
+  },
   async (args) => {
-    const existed = getSchedule(args.id) !== undefined;
-    const deleted = deleteSchedule(args.id);
+    // SDK가 배열 전체의 값/상한을 검사한 뒤, 모호한 선택을 부작용 전에 거절한다.
+    if ((args.id === undefined) === (args.ids === undefined)) {
+      return okJson({ ok: false, error: "invalid_arguments", detail: "id 또는 ids 중 정확히 하나를 주세요." });
+    }
+    if (args.ids !== undefined) {
+      const results: Array<{ id: number; ok: boolean; deleted?: boolean; error?: string }> = [];
+      for (const id of new Set(args.ids)) {
+        let deleted: boolean | undefined;
+        try {
+          const existed = getSchedule(id) !== undefined;
+          // 원 store가 발화 기록도 정리한다. throw 시 삭제 여부를 false로 추정하지 않는다.
+          deleted = deleteSchedule(id);
+          if (existed) lifecycle.onScheduleDeleted?.(id);
+          results.push({ id, ok: true, deleted });
+        } catch (e) {
+          results.push({ id, ok: false, ...(deleted !== undefined ? { deleted } : {}), error: e instanceof Error ? e.message : String(e) });
+        }
+      }
+      return okJson({ ok: results.every((r) => r.ok), deleted: results.filter((r) => r.deleted === true).length, results });
+    }
+    // 단건 응답과 hook의 기존 log-and-return 계약은 그대로 둔다.
+    const id = args.id!;
+    const existed = getSchedule(id) !== undefined;
+    const deleted = deleteSchedule(id);
     if (existed) {
       try {
-        lifecycle.onScheduleDeleted?.(args.id);
+        lifecycle.onScheduleDeleted?.(id);
       } catch (e) {
         console.error("scheduler: onScheduleDeleted hook threw", e);
       }

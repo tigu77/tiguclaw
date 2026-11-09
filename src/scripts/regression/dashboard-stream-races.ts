@@ -313,6 +313,9 @@ const sseRaces = async (): Promise<Assertion[]> => {
     vtItems,
     vtAppend: (n: El) => { vtItems.push({ node: n }); },
     vtOwns: () => false,
+    // 정렬·그룹 경계 본체는 chat-optimistic-order가 실행한다. 이 fixture는 SSE/탭 경합만 격리.
+    vtReposition() {},
+    interruptOpenTurn() {},
     setChatBody: (n: El, t: string) => { n.textContent = t; },
     localChatCount: 0,
     refreshChatEmpty() {},

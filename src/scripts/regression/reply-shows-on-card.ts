@@ -447,6 +447,7 @@ const promoteRun = async (): Promise<Assertion[]> => {
     annotateToolDuration() {}, renderActivity() {},
     renderChannelMessage: (ev: { ts: number }) => { drawnLive.push(ev.ts); },
     vtItems, vtAppend: (n: El) => { vtItems.push({ node: n }); }, vtOwns: () => false,
+    interruptOpenTurn() {}, vtReposition() {}, // 정렬/경계는 chat-optimistic-order가 실함수 실행.
     setChatBody: (n: El, t: string) => { n.textContent = t; },
     localChatCount: 0, refreshChatEmpty() {}, scrollChatToNewest() {}, assistantName: "tiguclaw",
     vtClear() {}, cardByThread: new Map(), setOldestCursor() {},

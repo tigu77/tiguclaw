@@ -293,6 +293,12 @@
                 const xb = el.querySelector(".queued-cancel"); if (xb) xb.remove();
                 el.dataset.ts = String(ev.ts);
                 delete el.dataset.clock; // 이제 서버 시계 — 순서 판정에 다시 든다(virtualization vtNewestTs).
+                // 입력 전 서버 활동이 더 왔으면 그 진행 경계만 닫는다. 늦은 에코가 이미
+                // 확정된 텍스트나 이 입력 뒤 시작한 새 그룹을 재차 끊어 지우지 않는다.
+                const card = isActiveThread(tk) ? cardByThread.get(tk) : null;
+                const groupTs = card ? vtTsOf(card.group) : null;
+                if (card && !card.sawTextSegment && !card.closedByText && groupTs !== null && groupTs <= ev.ts) interruptOpenTurn(tk);
+                vtReposition(el);
                 // ★확정 카드의 답글 표시는 **서버 값이 정본**이다 (2026-10-23 출시 후 결함, Codex 발견). 낙관 카드는 보내는 순간의
                 //  `{ text, ts }` 만 알아(원문 행 id·완료 턴 id 없음) 같은 시각 메시지가 둘이면 원문을 못 골랐고, 새로고침하면 서버 값으로
                 //  다시 그려져 멀쩡했다 — 정하는 곳이 둘(화면·서버)이던 이음매다. 서버가 확인한 값이 있으면 그걸로 바꾸고, 없으면 보낸 순간의 것을 둔다.
@@ -384,7 +390,7 @@
           cancelErrClear(dp.threadKey); // 델타 = 응답 스트리밍 중(폴백 진행) → 유예 클리어 취소.
           // 델타는 휘발성(최종 out 은 chat_log 보존) — active 세션만 스트림 렌더.
           if (!isActiveThread(dp.threadKey)) return;
-          renderDelta(dp, ts);
+          renderDelta({ ...dp, ts: ev.ts }, ts);
           return;
         }
         if (ev.type === "prompt.options") {

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Dashboard messages sent in quick succession keep their input boundary while replies stream. Pending bubbles no longer sort by the browser clock; server echoes and the first saved reply content reconcile the existing virtual-list item without replacing reply targets. Conversation history and server queues are unchanged.
+- `delete_schedule` and `delete_watch` accept an `ids` array (up to 100 IDs) as an alternative to the existing single `id`. They validate the whole input before deletion, deduplicate IDs, and retain per-ID successes, missing items, and errors if only part of a batch succeeds. Existing approval requirements and single-ID responses are unchanged; partial changes are not rolled back.
 - Codex tool activity now starts when execution is actually entered, not when a call is proposed, and failed or cancelled executions close with the same sequence number. Calls discarded at a limit boundary are not left marked as running.
 - Codex background work that can continue now moves directly into the next window without an intermediate checkpoint request. The final cumulative report slot, main-conversation final reports, executed-tool history, and cancellation behavior are preserved.
 - Codex history-pressure decisions conditionally use validated usage and a complete replay boundary from the same response. Missing signals fall back to the previous decision path, while recent results and the first exposure of new tool results remain protected. Efficiency gains at the real endpoint have not yet been measured.

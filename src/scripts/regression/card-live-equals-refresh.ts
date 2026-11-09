@@ -90,6 +90,7 @@ const harness = () => {
     handleWorkerActivity: () => false, activityByStep: new Map(), stepKey: (x: string, y: unknown) => `${x}|${String(y)}`,
     annotateToolDuration() {}, renderActivity() {},
     vtItems, vtAppend: (n: MElement) => { vtItems.push({ node: n }); }, vtOwns: () => false, vtIndex: new Map(),
+    vtReposition() {}, // 실제 목록 재배치는 chat-optimistic-order, 여기선 echo 필드/이력 parity.
     setChatBody: (n: MElement, t: string) => { n.textContent = String(t ?? ""); },
     localChatCount: 0, refreshChatEmpty() {}, scrollChatToNewest() {}, assistantName: "tiguclaw",
     vtClear() {}, cardByThread: new Map(), setOldestCursor() {}, interruptOpenTurn() {}, completeTurnGroup: () => null, scheduleRelayout() {},

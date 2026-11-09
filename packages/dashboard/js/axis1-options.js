@@ -332,6 +332,7 @@
             (div.firstChild || div).appendChild(x);
           }
         }
+        interruptOpenTurn(activeThreadKey); // 표시 탭의 입력 경계 — 숨은 queueKey 의 에코가 다시 끊지 않는다.
         vtAppend(div);
         pendingQueued.push(entry);
         localChatCount += 1;

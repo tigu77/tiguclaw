@@ -154,6 +154,7 @@
       vtContainerRO.observe(stream);
 
       let vtRaf = 0;
+      let vtReorderAnchor = null; // 확정 좌표 승격 전 앵커 — 다음 relayout 에서 한 번 소비.
       const scheduleRelayout = () => {
         if (vtRaf) return;
         vtRaf = requestAnimationFrame(() => { vtRaf = 0; relayout(); });
@@ -181,8 +182,10 @@
         const pin = pinsBottom();      // 바닥 고정 — 사용자 제스처 중엔 실제 위치를 따른다(위 pinsBottom).
         // 앵커(프리펜드/측정 점프 방지) — top 재계산 *전* OLD top 으로 현재 뷰 상단 아이템의 화면
         // 오프셋을 기록해야 위쪽 높이 변화를 실제로 보정한다. (재계산 후 잡으면 off 가 상쇄돼 no-op.)
-        let anchor = null;
-        if (!pin && !vtJumpTop && clientH > 0) {
+        let anchor = vtReorderAnchor;
+        vtReorderAnchor = null;
+        if (anchor && !vtIndex.has(anchor.it.node)) anchor = null;
+        if (!anchor && !pin && !vtJumpTop && clientH > 0) {
           const st = getScrollTop();
           for (const it of vtItems) {
             if (it.top + slotH(it) > st) { anchor = { it: it, off: it.top - st }; break; }
@@ -347,7 +350,7 @@
         const it = vtMakeItem(node);
         const ts = vtTsOf(node);
         let idx = vtItems.length;
-        if (ts !== null && Number.isFinite(ts)) {
+        if (node.dataset.clock !== "local" && ts !== null && Number.isFinite(ts)) {
           while (idx > 0) {
             const prev = vtTsOf(vtItems[idx - 1].node);
             if (prev === null || !Number.isFinite(prev) || prev <= ts) break;
@@ -379,6 +382,41 @@
         vtRecomputeDividers();
         vtCap();
         scheduleRelayout();
+      };
+
+      // 임시 좌표→서버 확정: DOM 재생성/append 가 아니라 소유한 동일 item 의 위치만 갱신.
+      // 신규 server append 의 local 경계는 유지한다. 여기서만 미확정 local·divider 를 비교에서 뺀다.
+      const vtReposition = (node) => {
+        const it = vtIndex.get(node);
+        const ts = vtTsOf(node);
+        if (!it || node.dataset.clock === "local" || ts === null || !Number.isFinite(ts)) return;
+        if (!vtReorderAnchor && !pageScroll() && !pinsBottom() && !vtJumpTop && getClientH() > 0) {
+          const st = getScrollTop();
+          for (const item of vtItems) {
+            if (item.top + slotH(item) > st) { vtReorderAnchor = { it: item, off: item.top - st }; break; }
+          }
+        }
+        vtItems.splice(vtItems.indexOf(it), 1);
+        let idx = vtItems.length;
+        while (idx > 0) {
+          const prevItem = vtItems[idx - 1];
+          if (prevItem.isDivider || prevItem.node.dataset.clock === "local") { idx--; continue; }
+          const prev = vtTsOf(prevItem.node);
+          if (prev === null || !Number.isFinite(prev) || prev <= ts) break;
+          idx--;
+        }
+        vtItems.splice(idx, 0, it);
+        vtRecomputeDividers();
+        scheduleRelayout();
+      };
+
+      // delta 는 휘발성: 첫 영속 text/최종 out 에서만 이력과 같은 정렬 좌표로 확정한다.
+      // 자식 말풍선의 답글·저장 좌표는 이 그룹 키와 별개다. 도구 그룹은 첫 활동 키 그대로.
+      const confirmTurnGroupTs = (card, ts) => {
+        if (card.el || card.sortTsConfirmed || typeof ts !== "number" || !Number.isFinite(ts)) return;
+        card.group.dataset.ts = String(ts);
+        card.sortTsConfirmed = true;
+        vtReposition(card.group);
       };
 
       // 과거 배치(오래된→최신)를 앞(위)에 붙임. 늘어난 위 높이만큼 scrollTop 을 먼저 밀어 점프 방지
@@ -414,6 +452,7 @@
       };
 
       const vtClear = () => {
+        vtReorderAnchor = null;
         for (const it of vtItems) {
           vtObserver.unobserve(it.node);
           if (it.node.parentNode) it.node.parentNode.removeChild(it.node);
@@ -1475,6 +1514,7 @@
         applyFilter(group);
         return {
           group, el: null, body: null, countEl: null, lastEl: null,
+          sortTsConfirmed: false, // 첫 영속 content 를 받을 때까지만 delta 시각은 임시.
           setOpen: () => {}, lastSeq: -1, count: 0, closed: false,
           costEl: null, replyCostEl: null, // 비용 표시 자리(카드 헤더 없음 → 버블 헤더 사용).
           modelEl: null, replyModelEl: null, modelSeen: "", // 모델 표시도 동일(버블 헤더 사용).

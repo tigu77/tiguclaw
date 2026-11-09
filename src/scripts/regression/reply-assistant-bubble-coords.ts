@@ -62,6 +62,7 @@ const screen = (tk: string) => {
     vtAppend: (n: any) => { vtItems.push({ node: n }); vtIndex.set(n, vtItems.length - 1); },
     vtPrependOlder: (ns: any[]) => { vtItems.unshift(...ns.map((n) => ({ node: n }))); vtIndex.clear(); vtItems.forEach((it, i) => vtIndex.set(it.node, i)); },
     vtOwns: () => false,
+    vtReposition() {}, // 목록 재배치는 chat-optimistic-order에서 실함수로 검사. 여기선 답글 좌표/선택 identity.
     setChatBody: (n: any, t: string) => { n.textContent = String(t ?? ""); },
     localChatCount: 0, refreshChatEmpty() {}, scrollChatToNewest() {}, assistantName: "tiguclaw",
     vtClear() {}, cardByThread: new Map(), setOldestCursor() {}, scheduleRelayout() {},
@@ -85,6 +86,7 @@ const screen = (tk: string) => {
   const virt = src("packages/dashboard/js/virtualization.js");
   run(section(src("packages/dashboard/js/chat-core.js"), "      const renderedMsgKeys = new Set();", "      /**\n       * 빈 채팅 자리에"));
   run(section(virt, "      const vtTsOf =", "      // 하단 재-pin"));
+  run(section(virt, "      const confirmTurnGroupTs =", "      // 과거 배치"));
   run(section(virt, "      const vtCursorFromNodes = (nodes) => {", "      const vtCap = () => {"));
   run(section(virt, "      const agentOfThread = (thread) => {", "      // delta-only 턴"));
   run(section(virt, "      const createDeltaGroup = (p, ts, adapter, thread) => {", "      // 진행(타이핑) 버블을"));

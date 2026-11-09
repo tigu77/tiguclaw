@@ -120,8 +120,7 @@ export const check: RegressionCheck = {
       );
 
       // ── ② 게이트가 인스턴스화까지 하는가 ──
-      // ★`src/scripts/verify-*` 는 **배포본에 없다**(manifest EXCLUDE). dev 에서만 돌고,
-      //  건너뛰는 사실을 증거란에 남긴다(조용한 면제 금지).
+      // Standalone plugin verifier is required in private and public source trees.
       const gatePath = path.join(REPO, "src/scripts/verify-plugins-load.ts");
       const fsmod = await import("node:fs");
       const gate = fsmod.existsSync(gatePath)
@@ -130,11 +129,11 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "★★게이트가 **인스턴스화까지** 한다(import 만 하면 `export default class` 위반이 8/8 초록으로 통과한다 — 실제로 그랬다)",
-          gate === null ||
+          gate !== null &&
             (/new \(mod\.default as new \(\) => unknown\)\(\)/.test(gate) &&
               /typeof mod\.default !== "function"/.test(gate)),
           gate === null
-            ? "dev 전용 스크립트 없음(배포본) — 대상 없음"
+            ? "required plugin verifier missing"
             : `생성=${/new \(mod\.default/.test(gate)} · 타입확인=${/typeof mod\.default !== "function"/.test(gate)}`,
         ),
       );

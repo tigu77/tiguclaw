@@ -21,57 +21,64 @@
  * `package.json` 의 `tiguclaw.entry`/`mcp`. 파일명을 추측하지 않는다 — 2026-08-17 에
  * 이름을 손으로 열거해서 4개 플러그인을 한 번도 안 보면서 "전부 OK" 라고 말한 적이 있다.
  *
- * 등급: **동작 검사**(자식 프로세스 1회 — dynamic import 로 파싱+모듈 평가 강제).
+ * 등급: **동작 검사**(실제 플러그인 및 무해 fixture의 import/생성, 공개·개발 동일).
  */
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const SCRIPT = path.join(REPO, "src", "scripts", "verify-plugins-load.ts");
+const SCRIPT = path.join(REPO, "src/scripts/verify-plugins-load.ts");
 
 export const check: RegressionCheck = {
   name: "plugins-actually-load",
-  guards:
-    "플러그인의 구문·import·모듈 초기화 실패가 타입체크를 통과해 배포되고 부팅 때만 조용히 죽던 것(v0.3.1 scheduler → cron 전부 미발화) + 그걸 잡는 verify:plugins 가 릴리스 때만 돌아 평소엔 아무도 안 부르던 것",
+  guards: "플러그인의 import·생성 실패가 부팅 때만 드러나던 것 + 공개/개발 모두 verifier 부재·0개·부분 엔트리 누락을 성공으로 보지 않는다",
   run: async (): Promise<Assertion[]> => {
+    const out: Assertion[] = [];
+    const pkg = JSON.parse(readFileSync(path.join(REPO, "package.json"), "utf8"));
+    out.push(assert("verify:plugins command names the shipped standalone verifier", pkg.scripts?.["verify:plugins"] === "tsx src/scripts/verify-plugins-load.ts", undefined));
     if (!existsSync(SCRIPT)) {
-      return [
-        assert(
-          "verify 스크립트 부재 시 통과(배포본 — 스크럽됨, 오탐 0)",
-          true,
-          "★확인 못 함 — '이상 없음' 아님",
-        ),
-      ];
+      out.push(assert("required plugin verifier exists", false, SCRIPT));
+      return out;
     }
-    const r = spawnSync(process.execPath, ["--import", "tsx", SCRIPT], {
-      cwd: REPO,
-      encoding: "utf8",
-      timeout: 180_000,
-    });
-    const outText = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-    // 빈손 통과 금지 — 스크립트가 플러그인을 **하나도 안 봤는데** exit 0 이면 그건 초록이
-    // 아니라 미검사다(2026-08-17 에 실제로 그런 상태였다).
-    const loaded = (outText.match(/🟢|OK/g) ?? []).length;
-    const failed = r.status !== 0;
-    const firstErr = outText
-      .split("\n")
-      .filter((l) => l.includes("🔴") || /실패|Error/.test(l))
-      .slice(0, 2)
-      .join(" / ");
-    return [
-      assert(
-        "플러그인 로드 프로브가 실제로 돌았다(빈손 통과 금지)",
-        loaded > 0 || failed,
-        loaded > 0 ? `${loaded}건 확인` : `★출력 없음: ${outText.slice(-160)}`,
-      ),
-      assert(
-        "★모든 플러그인 엔트리포인트가 import 된다(부팅 때만 드러나는 로드 실패 0)",
-        !failed,
-        failed ? `★${firstErr || outText.slice(-200)}` : "전부 로드",
-      ),
-    ];
+    const r = spawnSync(process.execPath, ["--import", "tsx", SCRIPT], { cwd: REPO, encoding: "utf8", timeout: 180_000 });
+    const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    const summary = /플러그인 (\d+)개 \/ 엔트리 (\d+)개 전부 로드 OK/.exec(output);
+    out.push(assert("all plugin entries import and instantiate; nonempty coverage required", !r.error && r.signal === null && r.status === 0 && Number(summary?.[1]) > 0 && Number(summary?.[2]) > 0 && !output.includes("🔴"), { status: r.status, error: r.error?.message, output: output.slice(-600) }));
+
+    // Only inert modules are evaluated; no plugin starts or external channels.
+    const root = await mkdtemp(path.join(os.tmpdir(), "tigu-plugin-gate-"));
+    try {
+      const fixtures: Array<{ name: string; files: Record<string, string>; expected: number }> = [
+        { name: "empty", files: {}, expected: 1 },
+        { name: "missing-entry", files: { "missing/package.json": '{"tiguclaw":{"entry":"index.ts"}}' }, expected: 1 },
+        { name: "partial", files: { "good/package.json": '{"tiguclaw":{"entry":"src/index.ts","mcp":"missing.ts"}}', "good/src/index.ts": "export default class {}" }, expected: 1 },
+        { name: "bad-default", files: { "bad/package.json": '{"tiguclaw":{"entry":"src/index.ts"}}', "bad/src/index.ts": "export default {}" }, expected: 1 },
+        { name: "throws", files: { "bad/package.json": '{"tiguclaw":{"entry":"src/index.ts"}}', "bad/src/index.ts": "export default class { constructor() { throw Error('fixture') } }" }, expected: 1 },
+        { name: "late-throws", files: { "good/package.json": '{"tiguclaw":{"entry":"index.ts","mcp":"mcp.ts"}}', "good/index.ts": "export default class {}", "good/mcp.ts": "export default class { constructor() { throw Error('second entry fixture') } }" }, expected: 1 },
+        { name: "source", files: { "good/package.json": '{"tiguclaw":{"entry":"src/index.ts"}}', "good/src/index.ts": "export default class {}" }, expected: 0 },
+        { name: "built", files: { "good/package.json": '{"type":"module","tiguclaw":{"entry":"index.ts"}}', "good/index.js": "export default class {}" }, expected: 0 },
+      ];
+      for (const fixture of fixtures) {
+        const dir = path.join(root, fixture.name);
+        await mkdir(dir, { recursive: true });
+        await writeFile(path.join(dir, "package.json"), '{"type":"module"}');
+        for (const [file, content] of Object.entries(fixture.files)) {
+          const target = path.join(dir, file);
+          await mkdir(path.dirname(target), { recursive: true });
+          await writeFile(target, content);
+        }
+        const result = spawnSync(process.execPath, ["--import", "tsx", SCRIPT, dir], { cwd: REPO, encoding: "utf8", timeout: 30_000 });
+        const text = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+        out.push(assert(`plugin verifier fixture ${fixture.name}`, !result.error && result.signal === null && result.status === fixture.expected && (fixture.expected === 0 ? /플러그인 1개 \/ 엔트리 1개 전부 로드 OK/.test(text) : text.includes("🔴") && !text.includes("전부 로드 OK")), { status: result.status, error: result.error?.message, output: text.slice(-800) }));
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+    return out;
   },
 };

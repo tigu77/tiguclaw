@@ -6,6 +6,36 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import ts from "typescript";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+// Windows already supplies PowerShell/.NET. No Python/Bash install or silent skip.
+const powershell = (script: string, input?: string) => spawnSync("powershell.exe", [
+  "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
+], { input, encoding: "utf8", timeout: 15_000 });
+const completed = (result: ReturnType<typeof spawnSync>, status: number) =>
+  !result.error && result.signal === null && result.status === status;
+const psPlist = `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$xml = [Xml.XmlDocument]::new()
+$xml.PreserveWhitespace = $true
+$xml.XmlResolver = $null
+$xml.LoadXml([Console]::In.ReadToEnd())
+function Read-Dict($element) {
+  $result = @{}
+  $nodes = @($element.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+  for ($i = 0; $i -lt $nodes.Count; $i += 2) {
+    $value = $nodes[$i + 1]
+    switch ($value.Name) {
+      'array' { $result[$nodes[$i].InnerText] = @($value.SelectNodes('string') | ForEach-Object { $_.InnerText }) }
+      'dict' { $result[$nodes[$i].InnerText] = Read-Dict $value }
+      default { $result[$nodes[$i].InnerText] = $value.InnerText }
+    }
+  }
+  return $result
+}
+Read-Dict ($xml.DocumentElement.SelectSingleNode('dict')) | ConvertTo-Json -Depth 8 -Compress
+`;
+
 
 const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
@@ -23,9 +53,9 @@ const run = async (): Promise<Assertion[]> => {
     for (const runtime of ["source", "built"]) {
       const c = { ...context, runtime, homeRaw: context.homeRaw + "\r\n\t" };
       const xml = render(c);
-      const parsed = spawnSync("/usr/bin/python3", ["-c", "import sys,plistlib,json; print(json.dumps(plistlib.loads(sys.stdin.buffer.read())))"], { input: xml, encoding: "utf8" });
-      let value: any; try { value = JSON.parse(parsed.stdout); } catch { value = null; }
-      out.push(assert(`plist standard-parser roundtrip ${runtime}`, parsed.status === 0 && value?.Label === c.label && JSON.stringify(value?.ProgramArguments) === JSON.stringify(strings(c)) && value?.WorkingDirectory === c.repoRoot && value?.EnvironmentVariables.TIGUCLAW_HOME === c.homeRaw && value?.EnvironmentVariables.TIGUCLAW_RUNTIME === runtime && value?.EnvironmentVariables.PATH === path.dirname(c.nodePath) + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" && value?.StandardOutPath === path.join(c.logsDir, "launchd.out.log") && value?.StandardErrorPath === path.join(c.logsDir, "launchd.err.log"), parsed.stderr));
+      const parsed = process.platform === "win32" ? powershell(psPlist, xml) : spawnSync("/usr/bin/python3", ["-c", "import sys,plistlib,json; print(json.dumps(plistlib.loads(sys.stdin.buffer.read())))"], { input: xml, encoding: "utf8", timeout: 15_000 });
+      let value: any; try { value = JSON.parse(parsed.stdout.replace(/^\uFEFF/, "")); } catch { value = null; }
+      out.push(assert(`plist standard-parser roundtrip ${runtime}`, completed(parsed, 0) && value?.Label === c.label && JSON.stringify(value?.ProgramArguments) === JSON.stringify(strings(c)) && value?.WorkingDirectory === c.repoRoot && value?.EnvironmentVariables.TIGUCLAW_HOME === c.homeRaw && value?.EnvironmentVariables.TIGUCLAW_RUNTIME === runtime && value?.EnvironmentVariables.PATH === path.dirname(c.nodePath) + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" && value?.StandardOutPath === path.join(c.logsDir, "launchd.out.log") && value?.StandardErrorPath === path.join(c.logsDir, "launchd.err.log"), { stderr: parsed.stderr, error: parsed.error?.message, status: parsed.status, signal: parsed.signal }));
     }
     let refused = false; try { render({ ...context, label: "bad\0" }); } catch { refused = true; }
     out.push(assert("plist rejects forbidden XML before writing", refused, undefined));
@@ -138,17 +168,33 @@ const run = async (): Promise<Assertion[]> => {
   const overlayCi = path.join(ROOT, "_workspace/public-overlay/.github/workflows/ci.yml");
   const ci = await readFile(existsSync(overlayCi) ? overlayCi : path.join(ROOT, ".github/workflows/ci.yml"), "utf8");
   out.push(assert("minimum 22 manifests/installers/current CI; ABI dependency unchanged", pkg.engines.node === ">=22" && lock.packages[""].engines.node === ">=22" && shell.includes("MIN_NODE=22") && /\$MinNode\s*=\s*22/.test(ps) && /node-version: ['\"]?22/.test(ci) && lock.packages["node_modules/better-sqlite3"].version === "12.9.0", undefined));
-  // The actual shell preflight with synthetic commands; never reaches clone/install.
-  const preflight = shell.slice(shell.indexOf("command -v git"), shell.indexOf("# ── 이미 있으면"));
-  for (const code of [0, 1]) {
-    const script = `die(){ printf '%s\\n' "$*"; exit 42; }; git(){ return ${code}; }; ${preflight}\nprintf reached`;
-    const result = spawnSync("/bin/sh", ["-c", script], { encoding: "utf8" });
-    out.push(assert(`git --version preflight exit ${code}`, code === 0 ? result.status === 0 && result.stdout.includes("reached") : result.status === 42 && !result.stdout.includes("reached") && result.stdout.includes("Git exists"), result.stdout));
+  for (const [name, result] of [
+    ["missing runner", spawnSync(path.join(ROOT, "__missing_installer_runner__"), [], { encoding: "utf8", timeout: 100 })],
+    ["runner timeout", spawnSync(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { encoding: "utf8", timeout: 100 })],
+  ] as const) {
+    out.push(assert(`process failure is not normal installer rejection: ${name}`, !!result.error && !completed(result, 0) && !completed(result, 1) && !completed(result, 42), { error: result.error?.message, status: result.status, signal: result.signal }));
   }
-  const nodeCheck = shell.slice(shell.indexOf("node_ok() {"), shell.indexOf("\n# 공식 배포본"));
+  // Execute only actual installer branches with inert Git/Node; never clone/install.
+  const windows = process.platform === "win32";
+  const preflight = windows
+    ? ps.slice(ps.indexOf("& $GitExe --version"), ps.indexOf("if ($ExistingInstall)"))
+    : shell.slice(shell.indexOf("command -v git"), shell.indexOf("# ── 이미 있으면"));
+  out.push(assert("installer Git branch extracted", preflight.includes(windows ? "$LASTEXITCODE" : "git --version") && preflight.includes("Git exists"), undefined));
+  for (const code of [0, 1]) {
+    const result = windows
+      ? powershell(`$ErrorActionPreference = 'Stop'; function Die($m) { Write-Output $m; exit 42 }; function Git-Fixture { $global:LASTEXITCODE = ${code} }; $GitExe = 'Git-Fixture'; ${preflight}\nWrite-Output 'reached'`)
+      : spawnSync("/bin/sh", ["-c", `die(){ echo "$*"; exit 42; }; git(){ return ${code}; }; ${preflight}\necho reached`], { encoding: "utf8", timeout: 15_000 });
+    out.push(assert(`git --version preflight exit ${code}`, completed(result, code === 0 ? 0 : 42) && (code === 0 ? result.stdout.includes("reached") : !result.stdout.includes("reached") && result.stdout.includes("Git exists")), { stdout: result.stdout, stderr: result.stderr, error: result.error?.message, status: result.status, signal: result.signal }));
+  }
+  const nodeCheck = windows
+    ? ps.slice(ps.indexOf("function Test-NodeOk {"), ps.indexOf("\nfunction Install-PrivateNode"))
+    : shell.slice(shell.indexOf("node_ok() {"), shell.indexOf("\n# 공식 배포본"));
+  out.push(assert("installer Node branch extracted", nodeCheck.includes(windows ? "$maj -ge $MinNode" : '"$MIN_NODE"'), undefined));
   for (const major of [20, 22]) {
-    const result = spawnSync("/bin/sh", ["-c", `MIN_NODE=22; node(){ printf '${major}'; }; npm(){ :; }; ${nodeCheck}\nnode_ok`], { encoding: "utf8" });
-    out.push(assert(`actual installer Node ${major} branch`, (result.status === 0) === (major === 22), undefined));
+    const result = windows
+      ? powershell(`$ErrorActionPreference = 'Stop'; $MinNode = 22; function node.exe { 'v${major}.0.0' }; function npm.cmd { }; ${nodeCheck}\nif (Test-NodeOk) { exit 0 } else { exit 1 }`)
+      : spawnSync("/bin/sh", ["-c", `MIN_NODE=22; node(){ printf '${major}'; }; npm(){ :; }; ${nodeCheck}\nnode_ok`], { encoding: "utf8", timeout: 15_000 });
+    out.push(assert(`actual installer Node ${major} branch`, completed(result, major === 22 ? 0 : 1), { stdout: result.stdout, stderr: result.stderr, error: result.error?.message, status: result.status, signal: result.signal }));
   }
   const cli = await readFile(path.join(ROOT, "src/cli.ts"), "utf8");
   const linkSection = cli.slice(cli.indexOf('  console.log("\\n[4/5]'), cli.indexOf("  // ★완료 판정"));

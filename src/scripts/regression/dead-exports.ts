@@ -72,7 +72,9 @@ const repoRoot = (): string => fileURLToPath(new URL("../../../", import.meta.ur
  */
 const devToolingPresent = (root: string): boolean => {
   try {
-    return readdirSync(join(root, "src/scripts")).some((f) => f.startsWith("verify-"));
+    // The one public standalone verifier does not restore the private tooling consumers.
+    return readdirSync(join(root, "src/scripts")).some((f) =>
+      f.startsWith("verify-") && f !== "verify-plugins-load.ts");
   } catch {
     return false;
   }

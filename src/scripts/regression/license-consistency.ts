@@ -62,10 +62,15 @@ export const check: RegressionCheck = {
       // ★«못 읽음» 과 «깨끗함» 을 가른다 (2026-09-01 4라운드 F5). `?? {}` 로 두면
       //  package.json 을 못 읽었을 때 «dev 스크립트 0개» 라고 **보고한다** — 형제 커밋이
       //  PII 게이트에서 방금 고친 바로 그 병(0건을 스캔하고도 초록)을 새 코드에서 되풀이했다.
+      // Only the shipped standalone plugin gate is retained; no other verify:* exception.
+      const verifier = await read("../verify-plugins-load.ts");
+      const retainedPluginGate = pkg?.scripts?.["verify:plugins"] === "tsx src/scripts/verify-plugins-load.ts" &&
+        verifier !== null && verifier.trim().length > 0;
       const devScripts =
         pkg === null
           ? null
-          : Object.keys(pkg.scripts ?? {}).filter((k) => /^(e2e:|verify:|probe:|bench)/.test(k));
+          : Object.keys(pkg.scripts ?? {}).filter((k) => /^(e2e:|verify:|probe:|bench)/.test(k) &&
+            !(k === "verify:plugins" && retainedPluginGate));
       return [
         assert(
           `★배포된 package.json 의 license 가 ${SPDX} 다 — npm·GitHub·의존성 스캐너가 보는 건 전문이 아니라 이 필드다`,

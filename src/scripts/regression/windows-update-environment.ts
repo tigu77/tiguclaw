@@ -612,20 +612,27 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     // ★winStart 를 실제 본문으로 — 모드별로 무엇을 하나(재검토 G1·G2: now-only 갈래를 무력화해도 정규식 검사는 초록이었다).
     const startSrc = source.slice(source.indexOf("const winStart = (c) => {"), source.indexOf("\n};\n", source.indexOf("const winStart = (c) => {")) + 3);
     const runStart = (o: { running?: boolean; mode?: unknown; enableFails?: boolean }) => {
-      const ev: string[] = [];
+      const ev: string[] = []; let waits = 0;
       const prevCode = process.exitCode;
       process.exitCode = undefined;
       const start = new Function("isDaemonRunning", "winPort", "winEnsureTask", "winTaskName", "winLaunchSupervisor", "winPs", "winEnableStartScript",
         "reportLaunch", "waitForListening", "listeningOnBridge", "path", "console", "winLaunchLegacyStartup", "expectFreshLaunch", "daemonPresence", startSrc + "; return winStart;")(
         () => o.running === true, () => 7021, () => { ev.push("ensure"); return o.mode; }, () => "task", () => ev.push("launch"),
         (x: string) => { ev.push(x); return { status: o.enableFails === true ? 1 : 0, stdout: "", stderr: "" }; }, () => "ENABLE_START",
-        () => ev.push("report"), () => true, () => true, path, { log: () => {}, warn: () => ev.push("warn"), error: () => ev.push("error") },
+        () => ev.push("report"), () => { waits++; return true; }, () => true, path, { log: () => {}, warn: () => ev.push("warn"), error: () => ev.push("error") },
         () => ev.push("launch-legacy"), () => {}, () => ({state:o.running?"running":"absent"}));
       start(c);
       const code = process.exitCode;
       process.exitCode = prevCode;
-      return { ev, code };
+      return { ev, code, waits };
     };
+    test("★start: 예약작업 활성화 실패는 실제 실패 주입으로 검출하고 완료 보고하지 않는다", () => {
+      const failed = runStart({ mode: true, enableFails: true });
+      assert.deepEqual(failed.ev, ["ensure", "ENABLE_START", "error"]);
+      assert.equal(failed.code, 1);
+      assert.equal(failed.waits, 0);
+      return "enable failure: error + exit1, no launch/wait/report";
+    });
     test("★최종 빌드 뒤 cutoff: 중간 세대 배제·fresh 실패면 백업 보존과 완료 요약 실패", () => {
       const bad = simulate("success", { deps: "tree", revivedDuringCi: true, staleAfterResume: true });
       assert.equal(bad.exitCode, 1);
@@ -643,7 +650,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const running = runStart({ running: true, mode: true });
       assert.deepEqual(running.ev, []); assert.equal(running.code, undefined);
       const task = runStart({ mode: true });
-      assert.deepEqual(task.ev, ["ensure", "ENABLE_START", "report"]); assert.equal(task.code, undefined);
+      assert.deepEqual(task.ev, ["ensure", "ENABLE_START", "report"]); assert.equal(task.code, undefined); assert.equal(task.waits, 1);
       const fb = runStart({ mode: "fallback" });
       assert.deepEqual(fb.ev, ["ensure", "launch", "report"]);
       const now = runStart({ mode: "now-only" });

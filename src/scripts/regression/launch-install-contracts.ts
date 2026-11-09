@@ -12,6 +12,13 @@ const powershell = (script: string, input?: string) => spawnSync("powershell.exe
 ], { input, encoding: "utf8", timeout: 15_000 });
 const completed = (result: ReturnType<typeof spawnSync>, status: number) =>
   !result.error && result.signal === null && result.status === status;
+// Search the terminator only after the opening marker; missing/empty ranges must fail closed.
+const section = (source: string, startMarker: string, endMarker: string): string => {
+  const start = source.indexOf(startMarker);
+  const end = start < 0 ? -1 : source.indexOf(endMarker, start + startMarker.length);
+  if (start < 0 || end < 0 || !source.slice(start, end).trim()) throw Error(`missing or empty section: ${startMarker}`);
+  return source.slice(start, end);
+};
 const psPlist = `
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -39,6 +46,16 @@ Read-Dict ($xml.DocumentElement.SelectSingleNode('dict')) | ConvertTo-Json -Dept
 
 const run = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
+  out.push(assert("section ignores earlier terminator and retains actual branch", section("END before START body END", "START", "END") === "START body ", undefined));
+  for (const [name, text, start, end] of [
+    ["missing start", "body END", "START", "END"], ["missing end", "START body", "START", "END"],
+    ["reversed", "END START body", "START", "END"], ["empty", "END", "", "END"],
+    ["whitespace", "  END", " ", "END"],
+  ]) {
+    let rejected = false;
+    try { section(text, start, end); } catch { rejected = true; }
+    out.push(assert(`section rejects ${name}`, rejected, undefined));
+  }
   const source = await readFile(path.join(ROOT, "bin/daemon.mjs"), "utf8");
   const ast = ts.createSourceFile("daemon.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const declarations = new Map<string, string>();
@@ -176,9 +193,11 @@ const run = async (): Promise<Assertion[]> => {
   }
   // Execute only actual installer branches with inert Git/Node; never clone/install.
   const windows = process.platform === "win32";
-  const preflight = windows
-    ? ps.slice(ps.indexOf("& $GitExe --version"), ps.indexOf("if ($ExistingInstall)"))
-    : shell.slice(shell.indexOf("command -v git"), shell.indexOf("# ── 이미 있으면"));
+  // Validate both source ranges even when only the host's shell can execute.
+  const psPreflight = section(ps, "& $GitExe --version", "if ($ExistingInstall)");
+  const shPreflight = section(shell, "command -v git", "# ── 이미 있으면");
+  out.push(assert("both installer Git ranges retain rejection and continuation", psPreflight.includes("$LASTEXITCODE") && psPreflight.includes("Git exists") && shPreflight.includes("git --version") && shPreflight.includes("Git exists"), undefined));
+  const preflight = windows ? psPreflight : shPreflight;
   out.push(assert("installer Git branch extracted", preflight.includes(windows ? "$LASTEXITCODE" : "git --version") && preflight.includes("Git exists"), undefined));
   for (const code of [0, 1]) {
     const result = windows
@@ -187,8 +206,8 @@ const run = async (): Promise<Assertion[]> => {
     out.push(assert(`git --version preflight exit ${code}`, completed(result, code === 0 ? 0 : 42) && (code === 0 ? result.stdout.includes("reached") : !result.stdout.includes("reached") && result.stdout.includes("Git exists")), { stdout: result.stdout, stderr: result.stderr, error: result.error?.message, status: result.status, signal: result.signal }));
   }
   const nodeCheck = windows
-    ? ps.slice(ps.indexOf("function Test-NodeOk {"), ps.indexOf("\nfunction Install-PrivateNode"))
-    : shell.slice(shell.indexOf("node_ok() {"), shell.indexOf("\n# 공식 배포본"));
+    ? section(ps, "function Test-NodeOk {", "\nfunction Install-PrivateNode")
+    : section(shell, "node_ok() {", "\n# 공식 배포본");
   out.push(assert("installer Node branch extracted", nodeCheck.includes(windows ? "$maj -ge $MinNode" : '"$MIN_NODE"'), undefined));
   for (const major of [20, 22]) {
     const result = windows
@@ -197,7 +216,7 @@ const run = async (): Promise<Assertion[]> => {
     out.push(assert(`actual installer Node ${major} branch`, completed(result, major === 22 ? 0 : 1), { stdout: result.stdout, stderr: result.stderr, error: result.error?.message, status: result.status, signal: result.signal }));
   }
   const cli = await readFile(path.join(ROOT, "src/cli.ts"), "utf8");
-  const linkSection = cli.slice(cli.indexOf('  console.log("\\n[4/5]'), cli.indexOf("  // ★완료 판정"));
+  const linkSection = section(cli, '  console.log("\\n[4/5]', "  // ★완료 판정");
   const linkJs = ts.transpileModule(linkSection, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   for (const fixture of [{ name: "linked but absent PATH", status: 0, exposed: false }, { name: "linked and exposed", status: 0, exposed: true }, { name: "permission failure", status: 1, exposed: false, error: "EACCES fixture" }, { name: "network failure", status: 1, exposed: false, error: "certificate fixture" }]) {
     const lines: string[] = []; let finds = 0;

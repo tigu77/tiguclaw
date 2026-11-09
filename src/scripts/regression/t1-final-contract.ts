@@ -35,15 +35,18 @@ const run = async (): Promise<Assertion[]> => {
   const block = index.slice(index.indexOf("const updateNotified = await"), index.indexOf("// 매 부팅 재시작 통지"));
   const js = ts.transpileModule(block,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
   const AsyncFunction = Object.getPrototypeOf(async()=>{}).constructor;
-  let helper:any;
-  try { helper = await import(pathToFileURL(path.join(ROOT,"bin/update-marker.mjs")).href); } catch { /* baseline uses its real consumer, not an import failure proof */ }
-  for(const failed of [false,true]) {
+  const helper = await import(pathToFileURL(path.join(ROOT,"bin/update-marker.mjs")).href);
+  // Inject each path API into real producer/consumer code, not only into a path equality test.
+  const fixturePaths = [path.posix, path.win32];
+  for(const fixturePath of fixturePaths) for(const failed of [false,true]) {
     let sent=0;
-    const files = new Map([["/fixture/home/.update-complete",JSON.stringify({notify:{channel:"telegram",target:"original"},to:"1234567"})]]);
-    const deps = {path,getPaths:()=>({home:c.homeAbs}),UPDATE_COMPLETE_MARKER:".update-complete",UPDATE_PENDING_MARKER:".update-pending",UPDATE_FAILED_MARKER:".update-failed",updateFailedNotified:failed,
-      fsp:{readFile:async(p:string)=>{if(!files.has(p))throw Error("ENOENT");return files.get(p);},unlink:async(p:string)=>{files.delete(p);}},
-      consumeUpdateMarker:helper?.consumeUpdateMarker, getUpdateBoot:()=>({}), translate:()=>"SUCCESS",deliverOutbound:async()=>{sent++;},bus:{},DEFAULT_SESSION_ID:"default",console:{error(){},warn(){},log(){}}};
-    try { const handled=await new AsyncFunction(...Object.keys(deps), js+";return updateNotified;")(...Object.values(deps)); out.push(assert(`actual boot consumer refuses legacy completion (failure=${failed}) and handles context`,handled===true&&sent===0,{handled,sent})); }
+    const legacyFile = fixturePath.join(c.homeAbs, ".update-complete");
+    const files = new Map([[legacyFile,JSON.stringify({notify:{channel:"telegram",target:"original"},to:"1234567"})]]);
+    const reads: string[] = [];
+    const deps = {path:fixturePath,getPaths:()=>({home:c.homeAbs}),UPDATE_COMPLETE_MARKER:".update-complete",UPDATE_PENDING_MARKER:".update-pending",UPDATE_FAILED_MARKER:".update-failed",updateFailedNotified:failed,
+      fsp:{readFile:async(p:string)=>{reads.push(p);if(!files.has(p))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(p);},unlink:async(p:string)=>{files.delete(p);}},
+      consumeUpdateMarker:helper.consumeUpdateMarker, getUpdateBoot:()=>({}), translate:()=>"SUCCESS",deliverOutbound:async()=>{sent++;},bus:{},DEFAULT_SESSION_ID:"default",console:{error(){},warn(){},log(){}}};
+    try { const handled=await new AsyncFunction(...Object.keys(deps), js+";return updateNotified;")(...Object.values(deps)); out.push(assert(`actual boot consumer ${fixturePath.sep} refuses legacy completion (failure=${failed}) and handles context`,handled===true&&sent===0&&reads.includes(legacyFile)&&files.has(legacyFile),{handled,sent,reads})); }
     catch(e){out.push(assert("actual boot consumer execution",false,String(e)));}
   }
   if (helper) {
@@ -72,37 +75,43 @@ const run = async (): Promise<Assertion[]> => {
     const timeout=await consume(pending);out.push(assert("pending never consumed; bounded timeout blocks restart fallback",timeout.result.handled&&!timeout.result.data&&timeout.removed===0&&timeout.clock===helper.UPDATE_CONFIRM_WAIT_MS,timeout));
     const ok=await consume(pending,confirmed);out.push(assert("same CLI confirmed boot only, one delivery claim, original destination",ok.polls===1&&ok.removed===1&&ok.result.data?.notify?.target==="original-target",ok.result));
     const failed=await consume(confirmed,undefined,true);out.push(assert("failure wins simultaneous completion",!failed.result.data&&failed.removed===0,failed.result));
-    for (const failure of [false,true]) {
-      const files=new Map([["/fixture/home/.update-pending",JSON.stringify(confirmed)]]); const deliveries:any[]=[];
-      const deps={path,getPaths:()=>({home:"/fixture/home"}),getUpdateBoot:()=>boot,updateFailedNotified:failure,consumeUpdateMarker:helper.consumeUpdateMarker,
-        fsp:{readFile:async(n:string)=>{if(!files.has(n))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(n);},unlink:async(n:string)=>{files.delete(n);}},
+    for (const fixturePath of fixturePaths) for (const failure of [false,true]) {
+      const pendingFile=fixturePath.join(c.homeAbs,".update-pending");
+      const files=new Map([[pendingFile,JSON.stringify(confirmed)]]); const deliveries:any[]=[];
+      const reads:string[]=[],removed:string[]=[];
+      const deps={path:fixturePath,getPaths:()=>({home:c.homeAbs}),getUpdateBoot:()=>boot,updateFailedNotified:failure,consumeUpdateMarker:helper.consumeUpdateMarker,
+        fsp:{readFile:async(n:string)=>{reads.push(n);if(!files.has(n))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(n);},unlink:async(n:string)=>{removed.push(n);files.delete(n);}},
         deliverOutbound:async(d:any)=>{deliveries.push(d);},translate:()=>"verified-success",bus:{},DEFAULT_SESSION_ID:"fixture",console:{error(){}}};
       const handled=await new AsyncFunction(...Object.keys(deps),js+";return updateNotified;")(...Object.values(deps));
-      out.push(assert(`actual index boot consumer verified success/failure arbitration ${failure}`,handled&&deliveries.length===(failure?0:1)&&(failure||deliveries[0].target==="original-target"),deliveries));
+      out.push(assert(`actual index boot consumer ${fixturePath.sep} verified success/failure arbitration ${failure}`,handled&&reads.includes(pendingFile)&&deliveries.length===(failure?0:1)&&(failure||deliveries[0].target==="original-target")&&removed.length===(failure?0:1)&&files.has(pendingFile)===failure,{deliveries,reads,removed}));
     }
-    {
-      const files=new Map([["/fixture/home/.update-pending",JSON.stringify(confirmed)],["/fixture/home/.update-failed","{broken"]]);let sent=0;
+    for (const fixturePath of fixturePaths) {
+      const pendingFile=fixturePath.join(c.homeAbs,".update-pending"),failedFile=fixturePath.join(c.homeAbs,".update-failed");
+      const files=new Map([[pendingFile,JSON.stringify(confirmed)],[failedFile,"{broken"]]);let sent=0;
+      const reads:string[]=[],removed:string[]=[];
       const failureBlock=index.slice(index.indexOf("const updateFailedNotified ="),index.indexOf("const updateNotified ="));
       const failureJs=ts.transpileModule(failureBlock,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
-      const deps={path,getPaths:()=>({home:"/fixture/home"}),getUpdateBoot:()=>boot,consumeUpdateMarker:helper.consumeUpdateMarker,UPDATE_FAILED_MARKER:".update-failed",
-        fsp:{readFile:async(n:string)=>{if(!files.has(n))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(n);},unlink:async(n:string)=>{files.delete(n);}},
+      const deps={path:fixturePath,getPaths:()=>({home:c.homeAbs}),getUpdateBoot:()=>boot,consumeUpdateMarker:helper.consumeUpdateMarker,UPDATE_FAILED_MARKER:".update-failed",
+        fsp:{readFile:async(n:string)=>{reads.push(n);if(!files.has(n))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(n);},unlink:async(n:string)=>{removed.push(n);files.delete(n);}},
         deliverOutbound:async()=>{sent++;},translate:()=>"success",updateFailedText:()=>"failure",bus:{},DEFAULT_SESSION_ID:"fixture",console:{error(){}}};
       const handled=await new AsyncFunction(...Object.keys(deps),failureJs+js+";return updateNotified;")(...Object.values(deps));
-      out.push(assert("actual malformed failure consumed first still blocks completion and general restart",handled&&sent===0,{handled,sent}));
+      out.push(assert(`actual malformed failure ${fixturePath.sep} consumed first still blocks completion and general restart`,handled&&sent===0&&reads.includes(failedFile)&&reads.includes(pendingFile)&&removed.length===1&&removed[0]===failedFile&&files.has(pendingFile),{handled,sent,reads,removed}));
     }
     const self=await readFile(path.join(ROOT,"src/core/self-update.ts"),"utf8");
     const a=self.indexOf("    // ── 단계 7: 완료 마커");const b=self.indexOf("    // ── 단계 9:",a);
     const producer=ts.transpileModule(self.slice(a,b),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
-    for(const fail of [false,true]) {
+    for(const fixturePath of fixturePaths) for(const fail of [false,true]) {
+      const pendingFile=fixturePath.join(c.homeAbs,".update-pending");
       const files=new Map<string,string>();let callback:()=>void=()=>{};
+      const writes:string[]=[],reads:string[]=[];let restarted=0;
       const oldBoot={...boot,bootId:expected.oldBootIds[0],startedAt:boot.startedAt-1000};
-      const deps={path,getPaths:()=>({home:"/fixture/home"}),UPDATE_PENDING_MARKER:".update-pending",getUpdateBoot:()=>oldBoot,
-        fs:{mkdir:async()=>{},writeFile:async(n:string,s:string)=>{files.set(n,s);}},readFileSync:(n:string)=>files.get(n),writeFileSync:(n:string,s:string)=>files.set(n,s),
-        reportFrom:"old",newSha:boot.revision,changed:["fixture"],notify:pending.notify,deps:{notify:pending.notify},resolveRestart:()=>()=>!fail,restartDelayMs:1,console:{error(){}},setTimeout:(f:()=>void)=>{callback=f;return {unref(){}};}};
+      const deps={path:fixturePath,getPaths:()=>({home:c.homeAbs}),UPDATE_PENDING_MARKER:".update-pending",getUpdateBoot:()=>oldBoot,
+        fs:{mkdir:async()=>{},writeFile:async(n:string,s:string)=>{writes.push(n);files.set(n,s);}},readFileSync:(n:string)=>{reads.push(n);return files.get(n);},writeFileSync:(n:string,s:string)=>{writes.push(n);files.set(n,s);},
+        reportFrom:"old",newSha:boot.revision,changed:["fixture"],notify:pending.notify,deps:{notify:pending.notify},resolveRestart:()=>()=>{restarted++;return !fail;},restartDelayMs:1,console:{error(){}},setTimeout:(f:()=>void)=>{callback=f;return {unref(){}};}};
       await new AsyncFunction(...Object.keys(deps),"let triggeredRestart=false;"+producer)(...Object.values(deps));callback();
-      const marker=JSON.parse(files.get("/fixture/home/.update-pending")??"null");
+      const marker=JSON.parse(files.get(pendingFile)??"null");
       const fresh={...boot,startedAt:Date.now()};
-      out.push(assert(`actual self-update compiled producer ${fail?"restart refusal":"ready"}`,marker?.mode==="direct"&&marker.state===(fail?"failed":"ready")&&marker.notify.target==="original-target"&&helper.updateMarkerMatches(marker,fresh)===!fail&&!files.has("/fixture/home/.update-complete"),marker));
+      out.push(assert(`actual self-update compiled producer ${fixturePath.sep} ${fail?"restart refusal":"ready"}`,marker?.mode==="direct"&&marker.state===(fail?"failed":"ready")&&marker.notify.target==="original-target"&&helper.updateMarkerMatches(marker,fresh)===!fail&&restarted===1&&writes.length===(fail?2:1)&&writes.every(n=>n===pendingFile)&&reads.length===(fail?1:0)&&!files.has(fixturePath.join(c.homeAbs,".update-complete")),{marker,writes,reads,restarted}));
     }
     const identity=await import(pathToFileURL(path.join(ROOT,"bin/runtime-identity.mjs")).href);
     // Separate module globals already initialized by the runner: check fixed snapshot,

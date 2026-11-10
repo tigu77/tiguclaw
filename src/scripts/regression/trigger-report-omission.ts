@@ -7,10 +7,14 @@ export const check: RegressionCheck = {
   guards: "선택된 정상 확인의 새 소식 없음 보고만 생략하고 기본 전달·실행 기록·worker 상태 줄을 보존한다",
   run: async (): Promise<Assertion[]> => {
     assertIsolated();
-    const r = await spawnWithin(45_000, "trigger-report-omission", ["--import", fileURLToPath(new URL("../../../node_modules/tsx/dist/loader.mjs", import.meta.url)), fileURLToPath(new URL("./_trigger-report-omission-child.ts", import.meta.url))]);
+    const r = await spawnWithin(45_000, "trigger-report-omission", ["--import", new URL("../../../node_modules/tsx/dist/loader.mjs", import.meta.url).href, fileURLToPath(new URL("./_trigger-report-omission-child.ts", import.meta.url))]);
     const last = r.out.trim().split("\n").at(-1) ?? "";
     if (r.code !== 0 || r.timedOut) return [assert("격리 트리거 보고 검사 완료", false, { ...r, out: r.out.slice(-5000) })];
-    try { return JSON.parse(last) as Assertion[]; }
-    catch { return [assert("트리거 보고 검사 JSON", false, { last, err: r.err })]; }
+    try {
+      const results = JSON.parse(last) as Assertion[];
+      return Array.isArray(results) && results.length > 0
+        ? results
+        : [assert("트리거 보고 검사 단언이 비어 있지 않음", false, { last })];
+    } catch { return [assert("트리거 보고 검사 JSON", false, { last, err: r.err })]; }
   },
 };

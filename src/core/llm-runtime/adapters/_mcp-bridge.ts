@@ -47,6 +47,10 @@ const MCP_CALL_TIMEOUT_MS = ((): number => {
 const MCP_BRIDGE_TRACE = process.env.MCP_BRIDGE_TRACE === "1";
 let bridgeReqSeq = 0;
 
+type CancellableBridge = MCPServer & {
+  callToolWithSignal: (toolName: string, args: Record<string, unknown> | null, signal?: AbortSignal) => Promise<CallToolResultContent>;
+};
+
 export const adaptClaudeMcpServer = async (
   config: McpSdkServerConfigWithInstance,
   name: string,
@@ -60,7 +64,8 @@ export const adaptClaudeMcpServer = async (
    *  이 된다. 그런 브리지는 자기 안쪽 경계에 맞춰 여기로 넉넉한 값을 넘긴다.
    */
   callTimeoutMs?: number,
-): Promise<MCPServer> => {
+  signal?: AbortSignal,
+): Promise<CancellableBridge> => {
   // ★`Infinity` 를 **폴백으로 떨어뜨리면 안 된다** (2026-08-22 상한 무한화). 종전 가드는
   //  `Number.isFinite` 라 무한 천장이 들어오면 조용히 `MCP_CALL_TIMEOUT_MS`(11분)로 내려갔다.
   //  그러면 잡 상한이 무한인데 **바깥 MCP 천장이 11분** = 가장 바깥이 가장 조이는 배치가 되어
@@ -105,6 +110,52 @@ export const adaptClaudeMcpServer = async (
     await connecting;
   };
 
+  const callToolWithSignal = async (
+    toolName: string,
+    args: Record<string, unknown> | null,
+    callSignal?: AbortSignal,
+  ): Promise<CallToolResultContent> => {
+    callSignal?.throwIfAborted();
+    await ensureConnected();
+    callSignal?.throwIfAborted();
+    if (!MCP_BRIDGE_TRACE) {
+      const res = await client.callTool(
+        { name: toolName, arguments: args ?? {} },
+        undefined,
+        { timeout: callTimeout, ...(callSignal === undefined ? {} : { signal: callSignal }) },
+      );
+      return res.content as CallToolResultContent;
+    }
+    // 트레이스 경로: SEND/RECV 를 요청ID·동시성과 함께 찍는다. p 에 settle 로거를
+    // 별도로 붙여, 호출측(codex 8분 race)이 abandon 해도 *실제* settle 시각을
+    // 잡는다 — never-resolve 면 RECV 가 영영 안 찍혀 그게 곧 hung 요청의 증거.
+    const reqId = ++bridgeReqSeq;
+    inFlight += 1;
+    const t0 = Date.now();
+    console.log(`[mcp-bridge] SEND #${reqId} ${name}.${toolName} inflight=${inFlight}`);
+    const p = client.callTool(
+      { name: toolName, arguments: args ?? {} },
+      undefined,
+      { timeout: callTimeout, ...(callSignal === undefined ? {} : { signal: callSignal }) },
+    );
+    p.then(
+      () => {
+        inFlight -= 1;
+        console.log(
+          `[mcp-bridge] RECV #${reqId} ${name}.${toolName} ok ${Date.now() - t0}ms inflight=${inFlight}`,
+        );
+      },
+      (e: unknown) => {
+        inFlight -= 1;
+        console.log(
+          `[mcp-bridge] RECV #${reqId} ${name}.${toolName} ERR ${Date.now() - t0}ms ${e instanceof Error ? e.message : String(e)} inflight=${inFlight}`,
+        );
+      },
+    );
+    const res = await p;
+    return res.content as CallToolResultContent;
+  };
+
   return {
     // ★목록 캐시 끔(2026-10-26) — @openai/agents 는 `cacheToolsList` 인 서버의 목록을 **프로세스 전역**에 서버 이름 키로 둔다
     //  (agents-core `mcp.js` `getMcpToolsFromServer` · `mcpToolCache.js`). 이 브리지는 턴마다 새로 만들고 같은 이름이라도 턴 종류에
@@ -130,48 +181,8 @@ export const adaptClaudeMcpServer = async (
       const res = await client.listTools();
       return res.tools as unknown as MCPTool[];
     },
-    async callTool(
-      toolName: string,
-      args: Record<string, unknown> | null,
-    ): Promise<CallToolResultContent> {
-      await ensureConnected();
-      if (!MCP_BRIDGE_TRACE) {
-        const res = await client.callTool(
-          { name: toolName, arguments: args ?? {} },
-          undefined,
-          { timeout: callTimeout },
-        );
-        return res.content as CallToolResultContent;
-      }
-      // 트레이스 경로: SEND/RECV 를 요청ID·동시성과 함께 찍는다. p 에 settle 로거를
-      // 별도로 붙여, 호출측(codex 8분 race)이 abandon 해도 *실제* settle 시각을
-      // 잡는다 — never-resolve 면 RECV 가 영영 안 찍혀 그게 곧 hung 요청의 증거.
-      const reqId = ++bridgeReqSeq;
-      inFlight += 1;
-      const t0 = Date.now();
-      console.log(`[mcp-bridge] SEND #${reqId} ${name}.${toolName} inflight=${inFlight}`);
-      const p = client.callTool(
-        { name: toolName, arguments: args ?? {} },
-        undefined,
-        { timeout: callTimeout },
-      );
-      p.then(
-        () => {
-          inFlight -= 1;
-          console.log(
-            `[mcp-bridge] RECV #${reqId} ${name}.${toolName} ok ${Date.now() - t0}ms inflight=${inFlight}`,
-          );
-        },
-        (e: unknown) => {
-          inFlight -= 1;
-          console.log(
-            `[mcp-bridge] RECV #${reqId} ${name}.${toolName} ERR ${Date.now() - t0}ms ${e instanceof Error ? e.message : String(e)} inflight=${inFlight}`,
-          );
-        },
-      );
-      const res = await p;
-      return res.content as CallToolResultContent;
-    },
+    callTool: (toolName, args) => callToolWithSignal(toolName, args, signal),
+    callToolWithSignal,
     async invalidateToolsCache() {
       // 본 bridge 는 cache 미사용 — listTools 매 호출 client 위임.
     },
@@ -196,10 +207,11 @@ export const adaptClaudeMcpServer = async (
 //  이름은 호출부마다 다를 수 있어도 계약을 어기는 건 인스턴스이기 때문이다.
 //  `close()` 는 진짜로 닫고 기억도 지운다: 인스턴스 수명 = 턴 수명이므로, 턴이 끝날 때
 //  닫히는 게 맞다(닫고 나면 다음에 다시 만든다).
-const BRIDGE_BY_INSTANCE = new WeakMap<object, Promise<MCPServer>>();
+const BRIDGE_BY_INSTANCE = new WeakMap<object, Promise<CancellableBridge>>();
 
 /**
- * `adaptClaudeMcpServer` 와 같지만, **같은 인스턴스면 같은 브리지**를 돌려준다.
+ * `adaptClaudeMcpServer` 와 같지만, **같은 인스턴스면 같은 transport**를 쓴다.
+ * 신호 없는 호출은 같은 브리지, 신호 있는 호출은 호출자별 façade를 돌려준다.
  *
  * 한 인스턴스를 여러 곳에서 어댑팅할 수 있는 경로(플러그인 `extraMcpServers` +
  * `find_capabilities`)에 쓴다. 호출부가 하나뿐인 서버(`createMemoryMcpServer()` 등)는
@@ -209,14 +221,20 @@ export const adaptSharedClaudeMcpServer = async (
   config: McpSdkServerConfigWithInstance,
   name: string,
   callTimeoutMs?: number,
+  signal?: AbortSignal,
 ): Promise<MCPServer> => {
+  // transport 수명만 캐시한다. 취소는 호출자별 façade의 closure에 두어 동시 소유자를 섞지 않는다.
+  const scoped = (bridge: CancellableBridge): MCPServer => signal === undefined ? bridge : {
+    ...bridge,
+    callTool: (toolName, args) => bridge.callToolWithSignal(toolName, args, signal),
+  };
   const key = config.instance as unknown as object;
   const cached = BRIDGE_BY_INSTANCE.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) return scoped(await cached);
 
   const created = adaptClaudeMcpServer(config, name, callTimeoutMs)
     .then(
-      (inner): MCPServer => ({
+      (inner): CancellableBridge => ({
         cacheToolsList: inner.cacheToolsList,
         get name() {
           return inner.name;
@@ -229,6 +247,7 @@ export const adaptSharedClaudeMcpServer = async (
         },
         listTools: () => inner.listTools(),
         callTool: (toolName, args) => inner.callTool(toolName, args),
+        callToolWithSignal: (toolName, args, callSignal) => inner.callToolWithSignal(toolName, args, callSignal),
         invalidateToolsCache: () => inner.invalidateToolsCache(),
       }),
     )
@@ -238,5 +257,5 @@ export const adaptSharedClaudeMcpServer = async (
       throw e;
     });
   BRIDGE_BY_INSTANCE.set(key, created);
-  return created;
+  return scoped(await created);
 };

@@ -371,6 +371,7 @@ export interface ControlBackend {
   /** 이벤트를 순서대로 쏜다. ★«오류 없음» 이 «했다» 가 아니다 — 권한은 위에서 본다. */
   post(
     events: readonly import("./control.js").LowEvent[],
+    signal?: AbortSignal,
   ): Promise<
     | {
         ok: true;

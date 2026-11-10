@@ -14,6 +14,8 @@
  *
  * 출력: 마지막 줄에 JSON `{"outcome","text","hasPartial","hasNotice"}`.
  */
+import { partialReportOf } from "../../core/llm-runtime/partial-failure.js";
+import { createReplayGuard, canReplay } from "../../core/llm-runtime/replay-safety.js";
 import { fakeNetwork } from "./_framework.js";
 import { registerAuthProvider } from "../../core/llm-runtime/auth-registry.js";
 import { initStore } from "../../store/sessions.js";
@@ -101,7 +103,10 @@ const run = async (): Promise<void> => {
     "../../core/llm-runtime/adapters/openai-codex-oauth.js"
   );
 
+  const { presentFailure } = await import("../../core/llm-runtime/swallowed-failure.js");
+  const replay = createReplayGuard();
   const input = {
+    replay,
     text: "회귀 검사용 요청",
     threadKey: "worker:regr-partial",
     channel: "cli",
@@ -122,9 +127,14 @@ const run = async (): Promise<void> => {
     console.log(
       JSON.stringify({
         outcome: "threw",
-        text: e instanceof Error ? e.message.slice(0, 200) : String(e),
-        hasPartial: false,
-        hasNotice: false,
+        text: partialReportOf(e) ?? "",
+        error: String(e),
+        hasPartial: (partialReportOf(e) ?? "").includes(MARKER),
+        hasNotice: presentFailure(e, String(e)).includes(MARKER) && /Something went wrong while handling|couldn.t process the request/.test(presentFailure(e, String(e))),
+        display: presentFailure(e, String(e)),
+        replayBlocked: !canReplay(replay),
+        calls: call,
+        dispatches: replay.unsafeCount,
       }),
     );
   }

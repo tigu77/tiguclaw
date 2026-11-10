@@ -19,7 +19,7 @@ import { readSourceSync, stripComments } from "./_wiring.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CHILD = path.join(HERE, "_codex-html-failure-child.ts");
-type J = { outcome?: string; text?: string; calls?: number; advice?: { checkOrAskAgain?: string } };
+type J = { outcome?: string; text?: string; calls?: number; blocked?: boolean; dispatches?: number; advice?: { checkOrAskAgain?: string } };
 const child = async (scenario: string): Promise<J> => {
   const r = await spawnWithin(60_000, `codex-html-failure(${scenario})`, ["--import", "tsx", CHILD, scenario], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -80,8 +80,8 @@ export const check: RegressionCheck = {
       ),
       assert(
         "★② 도구 뒤 520 — 안내에 마크업·CSS 0 · 상태와 제목은 남는다 · 재개 권유 대신 결과 확인 안내",
-        se.outcome === "returned" && !MARKUP.test(se.text ?? "") && (se.text ?? "").includes("520") &&
-          (se.text ?? "").includes(TITLE) && (se.text ?? "").includes(advice) && !resumeAsk.test(se.text ?? ""),
+        se.outcome === "threw" && se.blocked === true && se.dispatches === 1 && !MARKUP.test(se.text ?? "") && (se.text ?? "").includes("520") &&
+          (se.text ?? "").includes(TITLE) && advice !== "(없음)" && !resumeAsk.test(se.text ?? ""),
         { outcome: se.outcome, tail: (se.text ?? "").slice(-300) },
       ),
       assert(
@@ -92,7 +92,7 @@ export const check: RegressionCheck = {
       ),
       assert(
         "② 도구 뒤 스트림 안 실패 사유가 HTML 이어도 안내에 원문이 안 실린다",
-        sh.outcome === "returned" && !MARKUP.test(sh.text ?? "") && (sh.text ?? "").includes(TITLE),
+        sh.outcome === "threw" && sh.blocked === true && sh.dispatches === 1 && !MARKUP.test(sh.text ?? "") && (sh.text ?? "").includes(TITLE),
         { outcome: sh.outcome, tail: (sh.text ?? "").slice(-300) },
       ),
       assert(

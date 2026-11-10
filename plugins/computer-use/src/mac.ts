@@ -238,6 +238,7 @@ const jxa = (
   script: string,
   env: Record<string, string> = {},
   timeoutMs: number = CHILD_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<
   | { ok: true; out: string }
   // ★`out` 은 **실패해도 싣는다** (2026-09-19, 계약 3) — 죽은 자식이 어디까지 갔는지는
@@ -246,11 +247,16 @@ const jxa = (
   | { ok: false; reason: "timeout" | "failed"; detail: string; out: string }
 > =>
   new Promise((resolve) => {
-    execFile(
+    if (signal?.aborted) return resolve({ ok: false, reason: "failed", detail: "조작 취소 — 입력 전", out: "" });
+    // abort 옵션은 callback을 close보다 먼저 호출할 수 있다. kill만 요청하고 기존 callback(종료)을 기다린다.
+    const cancel = () => { child.kill("SIGKILL"); };
+    const child = execFile(
       "/usr/bin/osascript",
       ["-l", "JavaScript", "-e", script],
       { timeout: timeoutMs, killSignal: "SIGKILL", env: { ...process.env, ...env } },
       (err, so, se) => {
+        signal?.removeEventListener("abort", cancel);
+        if (signal?.aborted) return resolve({ ok: false, reason: "failed", detail: "조작 취소 — 잔여 입력 중단(이미 보낸 입력은 되돌리지 않음)", out: String(so) });
         if (err === null) return resolve({ ok: true, out: String(so).trim() });
         const killed = (err as { killed?: boolean }).killed === true;
         const why = String(se).trim() !== "" ? String(se).trim() : err.message;
@@ -262,6 +268,8 @@ const jxa = (
         });
       },
     );
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
   });
 
 /**
@@ -509,6 +517,7 @@ export const POST_SCRIPT = [
 
 export const post = async (
   events: readonly LowEvent[],
+  signal?: AbortSignal,
 ): Promise<
   | {
       ok: true;
@@ -531,7 +540,7 @@ export const post = async (
   const r = await jxa(POST_SCRIPT, {
     TIGUCLAW_EVENTS: JSON.stringify(events),
     TIGUCLAW_DRY: "0",
-  }, postTimeoutMs(events, CHILD_TIMEOUT_MS));
+  }, postTimeoutMs(events, CHILD_TIMEOUT_MS), signal);
   if (!r.ok) return { ...r, stdout: r.out };
   try {
     // ★**마지막 줄이 최종 산출**이다 — 앞의 줄들은 진행(`mark`)이다.

@@ -23,16 +23,18 @@ const { markToolDispatch } = await import("../../core/llm-runtime/replay-safety.
 const { ToolHangError } = await import("../../core/llm-runtime/tool-watchdog.js");
 const { saveCooldown, getCooldownRow } = await import("../../store/cooldowns.js");
 
+const { replayBlockOf } = await import("../../core/llm-runtime/partial-failure.js");
+
 type Spec = { adapter: "claude"; provider: string; model: string };
 const spec = (provider: string, model = "m"): Spec => ({ adapter: "claude", provider, model });
 const limitErr = (sec: number): Error => new Error(`429 usage_limit_reached {"resets_in_seconds": ${sec}}`);
 
 type Behavior = (provider: string, replay: unknown) => never | { text: string };
-const run = async (chain: Spec[][], behave: Behavior, text = "x"): Promise<{ t0: number; resumeAt?: number; partial?: string; attempts: string[]; msg: string }> => {
+const run = async (chain: Spec[][], behave: Behavior, text = "x"): Promise<{ t0: number; resumeAt?: number; partial?: string; attempts: string[]; msg: string; replay?: string }> => {
   clearCooldowns();
   return runWith(chain, behave, text);
 };
-const runWith = async (chain: Spec[][], behave: Behavior, text = "x"): Promise<{ t0: number; resumeAt?: number; partial?: string; attempts: string[]; msg: string }> => {
+const runWith = async (chain: Spec[][], behave: Behavior, text = "x"): Promise<{ t0: number; resumeAt?: number; partial?: string; attempts: string[]; msg: string; replay?: string }> => {
   const attempts: string[] = [];
   const restore = __setAdapterForTest(async (_a: string, i: { provider?: string; replay?: unknown }) => {
     attempts.push(i.provider ?? "?");
@@ -45,7 +47,7 @@ const runWith = async (chain: Spec[][], behave: Behavior, text = "x"): Promise<{
   } catch (e) {
     const resumeAt = resumeAtOf(e);
     const partial = partialReasonOf(e);
-    return { t0, attempts, msg: e instanceof Error ? e.message.slice(0, 160) : String(e), ...(resumeAt !== undefined ? { resumeAt } : {}), ...(partial !== undefined ? { partial } : {}) };
+    return { t0, attempts, replay: replayBlockOf(e), msg: e instanceof Error ? e.message.slice(0, 160) : String(e), ...(resumeAt !== undefined ? { resumeAt } : {}), ...(partial !== undefined ? { partial } : {}) };
   } finally {
     restore();
   }
@@ -129,7 +131,7 @@ const out: Record<string, unknown> = {};
     }
     return { text: "B" };
   });
-  out.toolNameNotLimit = { rel: rel(r), msgHasTool: r.msg.includes("quota_rate_limit") };
+  out.toolNameNotLimit = { rel: rel(r), msgHasTool: r.replay?.includes("quota_rate_limit") === true, rawMessage: r.msg, attempts: r.attempts };
 }
 // ⑪ 401 + 그 도구 이름 → 재개 없음.
 {

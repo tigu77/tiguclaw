@@ -32,6 +32,7 @@ import { readSourceSync } from "./_wiring.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { REGION_A_SYSTEM_PROMPT } from "../../core/llm-runtime/adapters/_shared-sysprompt.js";
+import { scopeConstitution } from "../../core/constitution-scope.js";
 import { discoverAgents, formatAgentIndex } from "../../core/llm-runtime/capabilities/agent-registry.js";
 import { discoverSkills, formatSkillIndex } from "../../core/llm-runtime/capabilities/skill-registry.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -238,25 +239,35 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★②-c 넛지가 **팀 규모 → 매니저 소환** 라우팅을 말하는가. 가격표를 뺀 자리를 채우는
-    //  것이 이 문장이다 — 없으면 "기본은 직접" 만 남아 팬아웃 자체가 사라진다.
-    // ★파일이 아니라 **조립본**을 본다(F1) — 주석 한 줄로 빼도 파일 바이트엔 남는다.
+    // ★②-c **메인 칸이 매 턴 받는 조립본**이 팀 규모 → 매니저 라우팅을 말하는가. 가격표를 뺀 자리를
+    //  채우는 것이 이 문장이다 — 없으면 "기본은 직접" 만 남아 팬아웃 자체가 사라진다.
+    // ★파일이 아니라 **조립본**을 본다(F1). ★2026-11-10 개정: 이 라우팅은 `run_in_background` 를 쓰는데 그 도구는
+    //  메인 전용이다. 모든 칸에 가는 공유 넛지에 두면 매니저·서브가 없는 도구를 지시받으므로, 실제로 매 턴 그것을
+    //  싣는 자리 = 메인 칸 헌법(`scopeConstitution(…, "main")`)을 보고, 공유 넛지·다른 칸엔 없음을 함께 본다.
     const nudge = nudgeText();
+    const roleView = (k: "main" | "manager" | "subagent"): string => {
+      const s = scopeConstitution(read("SYSTEM.md"), k);
+      return `${nudge}\n${s.body}\n${s.roleExtra}`;
+    };
+    const mainView = roleView("main");
+    const ROUTE = /2명 이상 필요하면 매니저에게 통째로 넘겨라\*\*\(`run_in_background`\)/;
     out.push(
       assert(
-        "★매 턴 넛지가 '팀 규모면 매니저 소환'을 말한다(전경에서 여러 명을 지휘하지 않는다)",
-        /매니저\(`run_in_background`\)를 소환/.test(nudge),
-        /매니저\(`run_in_background`\)를 소환/.test(nudge) ? "라우팅 문장 있음" : "★라우팅 문장 없음",
+        "★메인 칸 매 턴 조립본이 '2명 이상이면 매니저(run_in_background)'를 말하고, 공유 넛지·매니저·서브 칸은 그 도구를 지시받지 않는다",
+        ROUTE.test(mainView) && !nudge.includes("run_in_background") &&
+          !ROUTE.test(roleView("manager")) && !ROUTE.test(roleView("subagent")),
+        { 메인: ROUTE.test(mainView), 공유넛지: nudge.includes("run_in_background"), 매니저: ROUTE.test(roleView("manager")), 서브: ROUTE.test(roleView("subagent")) },
       ),
     );
 
-    // ★③ **매 턴 실리는 자리**가 "기본은 직접"을 말하는가.
+    // ★③ **매 턴 실리는 자리**가 "기본은 직접"을 말하는가 — 조건 정의와 **같은 문단**(정본 한 곳)에서.
     //  여기가 실제로 행동을 정한다 — 스킬은 호출돼야 읽히지만 이건 항상 읽힌다.
+    const gatePara = mainView.split("\n").find((l) => l.includes("먼저 갈래를 정하라")) ?? "";
     out.push(
       assert(
-        "★매 턴 넛지가 기본값을 '직접'으로 말한다",
-        /기본은 \*\*직접\*\*/.test(nudge),
-        /기본은 \*\*직접\*\*/.test(nudge) ? "확인" : "★넛지가 기본값을 말하지 않는다",
+        "★메인 칸 매 턴 조립본이 기본값을 '직접'으로, 조건(독립·비중첩 3개 이상)과 같은 문단에서 말한다",
+        /\(기본은 직접\)/.test(gatePara) && gatePara.includes("독립·비중첩") && gatePara.includes("3개 이상"),
+        gatePara === "" ? "★갈래 문단 없음" : "기본값·조건 한 문단",
       ),
     );
     // 애매할 때 **내려간다**(팀→1명→직접)는 방향 — 조건의 일부이므로 정본(헌법)에서 본다.
@@ -272,9 +283,9 @@ export const check: RegressionCheck = {
     //  미아가 되어(모델이 헌법을 안 찾는다) 넛지의 기본값만 남는다.
     out.push(
       assert(
-        "★매 턴 넛지가 조건의 정본(SYSTEM.md)을 가리킨다",
-        /SYSTEM\.md §1 이 정본/.test(nudge),
-        /SYSTEM\.md §1 이 정본/.test(nudge) ? "정본 포인터 있음" : "★포인터 없음",
+        "★매 턴 넛지가 위임 갈래 판단의 정본(SYSTEM.md)을 가리킨다",
+        /SYSTEM\.md[^\n]*정본[^\n]*위임 갈래[^\n]*거기 한 곳에/.test(nudge),
+        /위임 갈래[^\n]*거기 한 곳에/.test(nudge) ? "정본 포인터 있음" : "★포인터 없음",
       ),
     );
 

@@ -882,7 +882,9 @@ export const runOpenAi = async (
       }
     }
     for (const [name, server] of Object.entries(input.extraMcpServers ?? {})) {
-      const bridge = await adaptSharedClaudeMcpServer(server, name);
+      // ★이 턴의 취소 신호를 플러그인 도구 요청까지 잇는다(codex 와 같은 호출) — 없으면 /stop 뒤에도 진행 중인
+      //  플러그인 도구(computer-use 입력 등)가 끝까지 돈다. SDK 의 4번째 인자는 아래 훅 래퍼를 지나며 버려지므로 여기서 묶는다.
+      const bridge = await adaptSharedClaudeMcpServer(server, name, undefined, input.abortSignal);
       const claim = claimToolNames(
         // 코어가 잡은 이름 집합을 `ToolClaimMap` 면으로 넘긴다(값은 안 쓴다 — 존재만 본다).
         { has: (n) => taken.has(n), set: (n) => taken.add(n) },

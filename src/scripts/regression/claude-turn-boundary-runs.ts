@@ -9,6 +9,7 @@
  *  - 백그라운드 알림 턴: result → task_notification → system/init → assistant(우리 uuid 없음) → result
  *  - 마지막 result 가 에러면 CLI 가 종료 코드 1 → SDK 가 iterator 에서 throw
  */
+import type { SDKSessionWritesLostMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createSteeringChannel } from "../../core/steering.js";
 import {
   runClaude,
@@ -48,8 +49,9 @@ const notice = (): Frame => ({ type: "system", subtype: "task_notification", sta
  * `pullSteer()` 는 우리가 steer 에 단 uuid 를 돌려준다(없으면 undefined).
  */
 const fakeQuery =
-  (script: (io: { pullSteer: () => Promise<string | undefined> }) => AsyncGenerator<Frame>) =>
+  (script: (io: { pullSteer: () => Promise<string | undefined> }) => AsyncGenerator<Frame>, onQuery: () => void) =>
   ((args: { prompt: unknown }) => {
+    onQuery();
     const prompt = args.prompt as AsyncIterable<UserMsg> | string;
     const it = typeof prompt === "string" ? undefined : prompt[Symbol.asyncIterator]();
     const pullSteer = async (): Promise<string | undefined> => {
@@ -67,7 +69,8 @@ const fakeQuery =
 const runWith = async (
   steers: string[],
   script: Parameters<typeof fakeQuery>[0],
-): Promise<{ text?: string; lastMessageUuid?: string; error?: string }> => {
+): Promise<{ text?: string; lastMessageUuid?: string; error?: string; queryCalls: number }> => {
+  let queryCalls = 0;
   const steering = createSteeringChannel();
   for (const raw of steers) steering.push({ text: raw, raw, ts: Date.now() });
   try {
@@ -75,15 +78,15 @@ const runWith = async (
     const r = await within(
       10_000,
       "가짜 SDK 턴",
-      withFakeClaudeQuery(fakeQuery(script), () =>
+      withFakeClaudeQuery(fakeQuery(script, () => { queryCalls += 1; }), () =>
         runClaude({ text: "첫 질문", threadKey: `regr:turn-boundary:${Math.random()}`, channel: "cli", steering } as never),
       ),
     );
-    if ("timedOut" in r) return { error: r.timedOut };
+    if ("timedOut" in r) return { error: r.timedOut, queryCalls };
     const v = r.value as { text?: string; lastMessageUuid?: string };
-    return { text: v.text, ...(v.lastMessageUuid !== undefined ? { lastMessageUuid: v.lastMessageUuid } : {}) };
+    return { text: v.text, ...(v.lastMessageUuid !== undefined ? { lastMessageUuid: v.lastMessageUuid } : {}), queryCalls };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
+    return { error: e instanceof Error ? e.message : String(e), queryCalls };
   }
 };
 
@@ -102,6 +105,48 @@ const run = async (): Promise<Assertion[]> => {
 const runScenarios = async (): Promise<Assertion[]> => {
   const out: Assertion[] = [];
   const note = STEER_TURN_FAILED_NOTE;
+
+  // SDK 0.3.317+: 디스크/할당량으로 저장을 잃었다는 통지. 답변·사용자 입력 턴이 아니다.
+  // 기존 llm.sdk_message 관측과 별개로, 통지를 전/후에 끼워도 현재 답·스티어 답은 보존한다.
+  // 저장 복구나 이후 resume 완전성을 보장하는 검사는 아니다(실제 파일 유실을 만들지 않는다).
+  for (const error_code of ["ENOSPC", "EDQUOT"] as const) {
+    for (const lost of [["transcript"], ["global_config"], ["transcript", "global_config"]] as const) {
+      const loss = (): SDKSessionWritesLostMessage => ({
+        type: "system", subtype: "session_writes_lost", error_code,
+        lost: [...lost], uuid: "00000000-0000-4000-8000-000000000001", session_id: "sess-fake",
+        ...(lost.some((kind) => kind === "transcript") ? { transcript_session_ids: ["sess-fake"] } : {}),
+      });
+      const answer = await runWith([], async function* () {
+        yield init();
+        yield loss();
+        yield say("A1");
+        yield done("A1");
+        yield loss();
+      });
+      out.push({
+        name: `저장 실패 ${error_code}/${lost.join("+")}: 통지는 답을 오염·실패·재시작시키지 않는다`,
+        ok: answer.text === "A1" && answer.error === undefined && answer.queryCalls === 1,
+        got: JSON.stringify(answer),
+      });
+      const steered = await runWith(["두 번째"], async function* ({ pullSteer }) {
+        yield init();
+        yield say("A1");
+        const u = await pullSteer();
+        yield done("A1");
+        yield loss();
+        yield init();
+        yield say("B2", u !== undefined ? [u] : []);
+        yield loss();
+        yield done("B2");
+        yield loss();
+      });
+      out.push({
+        name: `저장 실패 ${error_code}/${lost.join("+")}: 결과 사이 통지가 있어도 우리 스티어 답은 이어 붙인다`,
+        ok: steered.text === "A1\n\nB2" && steered.error === undefined && steered.queryCalls === 1,
+        got: JSON.stringify(steered),
+      });
+    }
+  }
 
   // ① 줄 선 두 번째 메시지의 턴 → 이어 붙인다 (09-28 실사고: 이게 버려졌다)
   const queued = await runWith(["두 번째"], async function* ({ pullSteer }) {

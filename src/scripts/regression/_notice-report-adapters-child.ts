@@ -193,7 +193,8 @@ if (adapter === "claude") {
 }
 
 const { rememberPendingOptions, pendingOptionsLine } = await import("../../core/pending-options.js");
-type Out = { scenario: Scenario; exposed: boolean; omitted: boolean; text: string; textAud: string[]; deltaAud: string[]; calls: number; err?: string; askedLeft?: boolean; renders?: number };
+const { presentFailure } = await import("../../core/llm-runtime/swallowed-failure.js");
+type Out = { scenario: Scenario; exposed: boolean; omitted: boolean; text: string; textAud: string[]; deltaAud: string[]; calls: number; err?: string; display?: string; askedLeft?: boolean; renders?: number };
 const out: Out[] = [];
 for (const s of scenarios) {
   scenario = s;
@@ -209,10 +210,12 @@ for (const s of scenarios) {
   if (OPT[s] !== undefined) input.presentOptions = presentOptions;
   let r: { text?: string; reportOmitted?: true } = {};
   let err: string | undefined;
+  let display: string | undefined;
   try {
     r = await run(input);
   } catch (e) {
     err = (e instanceof Error ? e.message : String(e)).slice(0, 300);
+    display = presentFailure(e, err);
   }
   await new Promise((res) => setTimeout(res, 200)); // 델타 코얼레스 타이머가 비울 틈
   // 한 번짜리 줄이 아직 남았나(꺼내 보면 지워진다 — 다음 장면에 안 남게).
@@ -221,7 +224,7 @@ for (const s of scenarios) {
     ...(askedLeft !== undefined ? { askedLeft } : {}),
     ...(OPT[s] !== undefined ? { renders } : {}),
     scenario: s, exposed, omitted: r.reportOmitted === true, text: String(r.text ?? "").slice(0, 120),
-    textAud: [...textAud], deltaAud: [...new Set(deltaAud)], calls: calls - before, ...(err !== undefined ? { err } : {}),
+    textAud: [...textAud], deltaAud: [...new Set(deltaAud)], calls: calls - before, ...(err !== undefined ? { err, display } : {}),
   });
 }
 console.log(JSON.stringify(out));

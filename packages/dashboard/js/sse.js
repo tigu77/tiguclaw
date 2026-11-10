@@ -293,11 +293,11 @@
                 const xb = el.querySelector(".queued-cancel"); if (xb) xb.remove();
                 el.dataset.ts = String(ev.ts);
                 delete el.dataset.clock; // 이제 서버 시계 — 순서 판정에 다시 든다(virtualization vtNewestTs).
-                // 입력 전 서버 활동이 더 왔으면 그 진행 경계만 닫는다. 늦은 에코가 이미
-                // 확정된 텍스트나 이 입력 뒤 시작한 새 그룹을 재차 끊어 지우지 않는다.
+                // 입력 전 진행 경계만 닫는다. text 뒤 도구가 다시 연 그룹도 steering
+                // 대상이지만, 확정 text로 닫혔거나 입력 뒤 시작한 그룹은 보존한다.
                 const card = isActiveThread(tk) ? cardByThread.get(tk) : null;
                 const groupTs = card ? vtTsOf(card.group) : null;
-                if (card && !card.sawTextSegment && !card.closedByText && groupTs !== null && groupTs <= ev.ts) interruptOpenTurn(tk);
+                if (card && !card.closedByText && groupTs !== null && groupTs <= ev.ts) interruptOpenTurn(tk);
                 vtReposition(el);
                 // ★확정 카드의 답글 표시는 **서버 값이 정본**이다 (2026-10-23 출시 후 결함, Codex 발견). 낙관 카드는 보내는 순간의
                 //  `{ text, ts }` 만 알아(원문 행 id·완료 턴 id 없음) 같은 시각 메시지가 둘이면 원문을 못 골랐고, 새로고침하면 서버 값으로

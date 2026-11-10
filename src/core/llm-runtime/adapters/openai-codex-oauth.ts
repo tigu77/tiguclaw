@@ -1,3 +1,4 @@
+import { failureNoticeOf, partialReportOf, withFailureNotice, withPartialReport } from "../partial-failure.js";
 /**
  * 영역 A 세 번째 어댑터 — OpenAI Codex backend (ChatGPT OAuth).
  *
@@ -1133,7 +1134,7 @@ export const runOpenAiCodex = async (
     for (const [name, server] of Object.entries(
       reaches("plugins", turnKind) ? (input.extraMcpServers ?? {}) : {},
     )) {
-      const extraBridge = await adaptSharedClaudeMcpServer(server, name);
+      const extraBridge = await adaptSharedClaudeMcpServer(server, name, undefined, input.abortSignal);
       allBridges.push(extraBridge);
       const extraToolsRaw = await extraBridge.listTools();
       // ★**먼저 잡은 쪽이 갖는다** (2026-08-28 정태님 지적). 플러그인은 코어보다 나중에
@@ -1465,9 +1466,8 @@ export const runOpenAiCodex = async (
   // memory(add/update/delete_memory), todo(update_todos), spawn_agent(agents),
   // skills(invoke_skill), extraMcpServers(plugin 예: scheduler add_schedule) — 은
   // 부작용을 낸다. 하나라도 실행되면 풀 폴백(claude) 재실행이 턴을 처음부터 다시 돌려
-  // 중복 부작용을 낸다. 따라서 부작용 도구가 한 번이라도 실행됐으면 최종 빈 텍스트여도
-  // throw 금지(중복 회피) — 대신 정직한 fallback 텍스트 반환. 부작용 0(순수 읽기/빈 턴)
-  // 일 때만 throw 해 안전하게 풀 폴백 유도.
+  // 중복 부작용을 낸다. 실행 뒤 실패·최종 빈 보고는 실패로 던지되 replay guard로
+  // 전체 턴 재실행을 막는다. 실패 상태와 재실행 가능성을 성공 텍스트 하나로 합치지 않는다.
   let sideEffectExecuted = false;
   // Monotone turn-local evidence, not successful tool counts: hooks and failed
   // dispatches may already have effects. Native execution can precede its event.
@@ -2222,9 +2222,7 @@ export const runOpenAiCodex = async (
           // ★백엔드가 사유를 말했으면 **그걸 쓴다** — 먹지 않는다.
           //  종전 흐름: 사유 폐기 → 빈 텍스트 → "모델이 침묵" 오진 → nudge 3회(17.8초)
           //  → "최종 응답 텍스트 비어있음" 이라는 틀린 에러.
-          //  이제: 사유를 그대로 올린다. 부작용 도구가 이미 돌았으면 throw 하지 않는다
-          //  (폴백 모델이 턴을 재실행해 memory/todo/schedule 을 중복 실행하는 것 방지 —
-          //   기존 sideEffectExecuted 가드와 같은 이유·같은 기준).
+          //  사유는 그대로 올리고 실행 증거가 있으면 논리 턴 replay guard가 재실행을 막는다.
           // ★히스토그램을 실패 판정보다 **먼저** 찍는다. 종전엔 아래 throw 가 이 블록보다
           //  앞서서, 정작 실패한 스트림(= 히스토그램이 필요한 유일한 경우)에서는 한 줄도
           //  안 남았다 — 성공적으로 끝난 스트림에서만 찍히는 진단이었다.
@@ -2283,7 +2281,11 @@ export const runOpenAiCodex = async (
               //  그때는 정직하게 실패로 올린다 — 잘린 답을 성공으로 확정하지도, 두 번 쓰지도 않는다.
               //  ★글을 **화면에 흘리지 않는 턴**(매니저·에이전트 — deltaStream 꺼짐)은 받은 글이 이 응답 안에만 있어
               //   다시 보내도 두 번 쓰이지 않는다 — 거기선 글이 있어도 재전송한다(2026-10-10 재검토).
-              const deterministic = f.source === "response.incomplete";
+              const deterministic = f.source === "response.incomplete" ||
+                [f.code, f.errorType].some(code => /^(?:content_filter|content_policy_violation|policy_violation|safety_violation|invalid_request_error|invalid_parameter|unsupported_parameter|invalid_tool_schema)$/.test(code ?? ""));
+              if (deterministic && input.replay !== undefined) {
+                input.replay.blockedReason ??= "codex deterministic rejection";
+              }
               const streamed = sseResult.text !== "" && streamsToScreen;
               throw new CodexBackendFailureError(why, userWhy, !deterministic && !streamed, deterministic);
             }
@@ -3271,7 +3273,14 @@ export const runOpenAiCodex = async (
     const rethrow = (err: unknown): never => {
       const n = steeringLedger.giveBack();
       if (n > 0) console.warn(`[steer] ${input.threadKey} 실패한 턴이 꺼낸 끼워넣기 ${n}건을 채널에 되돌림 — 다음 후보나 새 턴이 받는다`);
-      throw err;
+      const partial = partialReportOf(err) ?? composeSwallowedFailure(finalText, closeTextSegment() ?? streamedInFlight, "").shown;
+      if ((sideEffectExecuted || toolHandlingStarted || nativeStreamAccepted || responseEmitted || executedToolNames.size > 0 || partial !== "") && input.replay !== undefined && !input.replay.unsafe) {
+        input.replay.blockedReason ??= "codex failed after execution or partial output";
+      }
+      if (err instanceof CodexBackendFailureError && failureNoticeOf(err) === undefined) {
+        withFailureNotice(err, `${translate("srv.codex.backendFailed", { why: err.userWhy })}\n\n${codexFailureAdvice(err)}`);
+      }
+      throw withPartialReport(err, partial);
     };
     // ★실패·취소로 끝난 턴도 분해를 남긴다 (2026-10-03, 회사돌쇠 후속 보고) — 지금까지 끝난 요청 + 끝나지 않은 요청이
     //  어디서 멈췄나(조립 · 헤더 대기 · 첫출력 대기 · 출력 중). 성공 턴만 찍으면 가장 궁금한 턴이 안 보인다.
@@ -3313,9 +3322,8 @@ export const runOpenAiCodex = async (
     //  단락하므로 **다음 spec(claude)이 턴 전체를 재실행** → 일정·메모가 **한 번 더** 등록.
     //  사용자에겐 정상 응답으로 보인다.
     //
-    //  → 이름 목록을 늘리는 대신 조건을 뒤집는다: **부작용이 났으면 throw 하지 않는다.**
-    //   에러 종류는 *문구를 고르는 데*만 쓴다. 취소류(Turn/Worker/User)는 위에서 이미
-    //   단락했으므로 여기 안 온다.
+    //  → 실패는 원본 그대로 throw하고, 실행 증거는 replay guard로 분리한다.
+    //   부분 보고도 오류 문자열에 섞지 않고 별도 메타데이터로 보존한다.
     // ★취소류는 **부작용과 무관하게** 그대로 올린다 (2026-07-31 검토, 재현됨).
     //  바로 위 주석이 "취소류는 이미 단락됐으니 여기 안 온다" 고 단언했는데 **거짓이었다** —
     //  단락되는 건 TurnTimeoutError 하나뿐이고, UserCancelled/WorkerCancelled/WorkerTimeout
@@ -3441,10 +3449,11 @@ export const runOpenAiCodex = async (
           `req=${lastReqBytes.total.toLocaleString()}(i${lastReqBytes.instructions.toLocaleString()}/n${lastReqBytes.input.toLocaleString()}/t${lastReqBytes.tools.toLocaleString()}) ` +
           `sseEnd=${[...sseEndTally.entries()].map(([k, v]) => `${k}×${v}`).join(",") || "없음"}`,
       );
-      deltaStream.push(view.deltaText);
-      deltaStream.flush();
-      closeTextSegment(); // 안내도 세그먼트로 — 턴 뷰에서 도구 뒤에 실제로 보이게.
-      finalText = view.saved;
+      // Failure is never a successful RegionASdkOutput. Keep partial evidence and
+      // original classification separate; the logical-turn guard blocks replay.
+      const failure = withPartialReport(e, view.shown);
+      withFailureNotice(failure, notice);
+      rethrow(failure);
     } else {
       rethrow(e); // 부작용 없음 → 정직 throw (풀 폴백으로 안전 재실행 / 정직 에러).
     }
@@ -3531,6 +3540,7 @@ export const runOpenAiCodex = async (
         ` inputChars=${input.text.length}` +
         ` userText=${JSON.stringify(input.text.slice(0, 80))}`,
     );
+    if ((sideEffectExecuted || toolHandlingStarted || nativeStreamAccepted || responseEmitted || executedToolNames.size > 0) && input.replay !== undefined) input.replay.blockedReason ??= "codex empty report after tools";
     if (!sideEffectExecuted) {
       throw new Error(
         `codex: the final response text was empty (no side-effecting tool ran) — falling back to the next model${describeOversizeSuspicion(input.text.length)}`,
@@ -3542,8 +3552,7 @@ export const runOpenAiCodex = async (
       executedToolNames.size > 0
         ? `\n\n${translate("srv.codex.toolsRan", { tools: [...executedToolNames].join(", ") })}`
         : "";
-    finalText = `${translate("srv.codex.noSummary")}${ranList}\n\n${translate("srv.codex.checkOrAskAgain")}`;
-    hostComposedEnd = true;
+    throw new Error(`${translate("srv.codex.noSummary")}${ranList}\n\n${translate("srv.codex.checkOrAskAgain")}`);
   }
 
   return {

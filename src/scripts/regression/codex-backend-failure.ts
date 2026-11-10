@@ -18,6 +18,9 @@
  *   response.failed  → { type, response: { error: { code, message } } }
  *   response.incomplete → { type, response: { incomplete_details: { reason } } }
  */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnProbe } from "./_probe-helpers.js";
 import { readFile } from "node:fs/promises";
 import { sourceHas } from "./_wiring.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -28,6 +31,13 @@ export const check: RegressionCheck = {
     "백엔드가 200 스트림 안에서 보고한 실패(error/response.failed)를 파서가 버려 '모델이 빈 응답' 으로 오진하던 것",
   run: async (): Promise<Assertion[]> => {
     const out: Assertion[] = [];
+    const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+    for (const source of ["error", "response.failed"]) for (const code of ["policy_violation", "invalid_request_error", "type:invalid_request_error"]) {
+      const r = spawnProbe(repo, [path.join(repo, "src/scripts/regression/_codex-policy-failure-child.ts"), source, code], { cwd: repo, env: { ...process.env }, encoding: "utf8", timeout: 30_000 });
+      const line = `${r.stdout ?? ""}`.split("\n").filter(l => l.startsWith("{")).pop();
+      const j = line === undefined ? {} : JSON.parse(line);
+      out.push(assert(`${source}/${code}: structured rejection throws once, forbids whole-turn replay`, r.status === 0 && j.outcome === "threw" && j.calls === 1 && j.blocked === true, { ...j, exit: r.status, stderr: `${r.stderr ?? ""}`.slice(-200) }));
+    }
 
     // ①+② 파서 — 공식 3종 터미널 이벤트를 **전부** 읽고 사유를 보존한다.
     const parser = await sourceHas(

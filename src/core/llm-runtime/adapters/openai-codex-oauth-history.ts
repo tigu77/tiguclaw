@@ -207,6 +207,7 @@ export interface CodexSseResult {
   failure?: {
     source: string;
     code?: string;
+    errorType?: string;
     message?: string;
     param?: string;
     /**
@@ -619,13 +620,14 @@ export const parseCodexSse = async (
           //  따라간다. 터미널 이벤트에만 적용 — payload 가 작고 실패 전용이라 오추출 위험 낮음.
           const digFailure = (
             root: unknown,
-          ): { code?: string; message?: string; param?: string } => {
-            const found: { code?: string; message?: string; param?: string } = {};
+          ): { code?: string; errorType?: string; message?: string; param?: string } => {
+            const found: { code?: string; errorType?: string; message?: string; param?: string } = {};
             const visit = (o: unknown, depth: number): void => {
               if (depth > 3 || o === null || typeof o !== "object") return;
               for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
                 if (typeof v === "string") {
                   if (k === "code" && found.code === undefined) found.code = v;
+                  else if (k === "type" && depth > 0 && found.errorType === undefined) found.errorType = v;
                   else if (k === "reason" && found.code === undefined) found.code = v;
                   else if (k === "message" && found.message === undefined) found.message = v;
                   else if (k === "param" && found.param === undefined) found.param = v;
@@ -647,7 +649,7 @@ export const parseCodexSse = async (
           //  정작 사유를 버린다. **내용이 있는 쪽으로 승격**한다.
           const hasDetail = (
             f: CodexSseResult["failure"],
-          ): boolean => f !== undefined && (f.code !== undefined || f.message !== undefined);
+          ): boolean => f !== undefined && (f.code !== undefined || f.errorType !== undefined || f.message !== undefined);
           if (!hasDetail(failure)) {
             const terminal =
               event.type === "error" ||

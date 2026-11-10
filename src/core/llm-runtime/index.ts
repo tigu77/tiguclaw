@@ -1,3 +1,4 @@
+import { markReplayBlocked } from "./partial-failure.js";
 /**
  * 영역 A facade — 모델 풀 + 응답 후 통합 처리 (V5 / 2026-05-24 provider:model 통일).
  *
@@ -1841,10 +1842,9 @@ const runPool = async (
       if (externallyAborted) throw e;
       // 부작용 이후 폴백 금지 — 후처리(쿨다운·안내·turn_error)를 **지나고 나서** 단락한다.
       if (replayBlocked) {
-        // 사유는 **여기서** 붙인다 — 위 분류기들이 우리가 쓴 글자를 읽지 않게(레드팀 P2).
-        if (blockedReason !== undefined && e instanceof Error) {
-          e.message = `${e.message}\n${blockedReason}`;
-        }
+        // Keep the cause intact for downstream workers as well as this facade.
+        // Replay prohibition is separately available to displays and failure consumers.
+        if (blockedReason !== undefined) markReplayBlocked(e, blockedReason);
         if (kind === "limit") markResumable(e, blockedReason);
         throw e;
       }

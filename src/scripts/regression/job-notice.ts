@@ -1,7 +1,7 @@
 /**
  * 회귀: **작업자가 소환자만 풀 수 있는 것을 `notify_owner` 로 한 줄 알리고 계속 일한다** (2026-10-25,
- * [설계](../../../docs/decisions/2026-10-23-notify-owner-design.md) §14 · 사용자 승인 «notice_id 추가, 작업당 최대 3회·본문 300자,
- * 셸 실행은 유지하고 대기만 깨우는 설계»).
+ * [설계](../../../docs/decisions/2026-10-23-notify-owner-design.md) §14 · notice_id·작업당 최대 3회·비차단 배달.
+ * 2026-11-10 결정: 업무상 글자 수 제한 없이 필요한 상황·개입을 전달한다).
  *
  * 사고(10-23 운영 인스턴스 실사례): 매니저가 «스튜디오 플레이어가 잠금을 쥐고 있다» 는 걸 **알고 있었는데** 알릴 통로가 없어
  * 2시간 20분을 기다렸다. 이 검사가 지키는 것(§14 번호):
@@ -67,7 +67,7 @@ export const check: RegressionCheck = {
     out.push(assert(
       "① 소환자=세션 — 합성 턴 1 · synthetic · worker-notice · 본문에 원문·job_id·notice_id · ★영원히 안 끝나는 메인 핸들러로도 도구가 즉시 반환 · 차례가 오면 꺼낸다(모델 턴 진행)",
       s.turns === 1 && s.synthetic === true && s.origin === "worker-notice" && s.hasText && s.hasIds && s.ms < 500 &&
-        String(s.ret).includes("대화의 비서에게") && String(s.ret).includes("답을 기다리지 말고") && s.took === "(없음)" && s.inboxAfter === 0 &&
+        String(s.ret).includes("대화의 비서에게") && String(s.ret).includes("개입이 필요한 부분은 보류") && String(s.ret).includes("독립 작업만") && s.took === "(없음)" && s.inboxAfter === 0 &&
         show(s.events) === show(["sent", "taken/turn"]),
       show(s),
     ));
@@ -141,10 +141,10 @@ export const check: RegressionCheck = {
     // ⑤ ⑥
     const l = d.limits as R;
     out.push(assert(
-      "⑤ 중복·상한·길이 — 같은 글(공백만 다름) 2회째는 배달 0·상한 미소모 · 다른 글 4번째는 cap · 300자 통과·301자·빈 글 거절(잘라 보내지 않음) · ★글자는 코드 포인트(이모지 300개 통과·301개 거절)",
+      "⑤ 중복·횟수 상한·비공백 — 중복 배달 0·상한 미소모 · 다른 글 4번째는 cap · 빈 글 거절 · 300/301자 및 긴 이모지 본문 손실 없는 전달",
       l.turns === 3 && l.notices === 3 && String(l.a2).startsWith("이미") && String(l.d).includes("상한") && show(l.events) === show(["sent", "duplicate", "sent", "sent", "cap"]) &&
-        String(l.ok300).startsWith("알림 n1") && String(l.bad301).includes("301자") && String(l.empty).startsWith("빈 알림") && show(l.lenEvents) === show(["sent", "rejected", "rejected"]) &&
-        String(l.emoji300).startsWith("알림 n1") && l.emojiKept === 1 && String(l.emoji301).includes("301자"),
+        String(l.ok300).startsWith("알림 n1") && String(l.ok301).startsWith("알림 n2") && String(l.empty).startsWith("빈 알림") && show(l.lenEvents) === show(["sent", "sent", "rejected"]) &&
+        String(l.long).startsWith("알림 n1") && l.longChars > 8192 && l.longKept && l.longDelivered,
       show(l),
     ));
     const e = d.exposure as R;
@@ -154,7 +154,8 @@ export const check: RegressionCheck = {
     const adapters = ["claude", "codex", "openai"].map((n) => {
       const [w0, s0, w, m, w2, s1, w3, s2] = runsOf(n);
       const ok = (t: R | undefined, role: string, on: boolean, has: boolean): boolean =>
-        t?.on === on && t?.has === has && t?.role === role && t?.calls >= 1 && t?.err === undefined;
+        t?.on === on && t?.has === has && t?.role === role && t?.calls >= 1 && t?.err === undefined &&
+        t?.contract?.old === 0 && t?.contract?.current === (has ? 1 : 0);
       return [n,
         ok(w0, "manager", false, false) && ok(s0, "sub", false, false) &&
         ok(w, "manager", true, true) && ok(m, "main", true, false) && ok(w2, "manager", true, true) && ok(s1, "sub", true, true) &&
@@ -164,6 +165,63 @@ export const check: RegressionCheck = {
       "⑥ 노출 — 메인·엔드포인트 턴엔 없다 · 실행 중인 매니저·서브 턴엔 있다(도구 하나, 설명 = 내보낸 정본) · 끝난 잡엔 없다 · 설명 600자 이내 · ★세 어댑터의 실제 모델 요청: ★★설정 키 없음(기본 꺼짐)이면 매니저·서브 턴에 없다 → 켜면 재시작 없이 매니저·서브에 싣고 메인엔 안 싣는다 → 다시 끄면 없다(한 프로세스 · 모두 모델까지 간다 · 양성 대조: 매니저=agents/spawn_agent · 메인=workers · 서브=둘 다 없음) · steer_worker(메인·매니저 둘 다) 에 notice_id",
       e.main && e.endpoint && e.manager && e.sub && e.ended && e.descIsExport && e.descLen > 0 && e.descLen <= 600 && e.mainSteerHasNoticeId && e.mgrSteerHasNoticeId && adapters.every(([, ok]) => ok),
       show({ e, adapters, adapterRuns: Object.fromEntries(["claude", "codex", "openai"].map((n) => [n, runsOf(n).map((t) => ({ which: t.which, has: t.has, role: t.role, calls: t.calls, err: t.err }))])) }),
+    ));
+    const actualContracts = ["claude", "codex", "openai"].flatMap((n) => runsOf(n).filter((t) => t.has).map((t) => ({ adapter: n, which: t.which, ...t.contract })));
+    const validSchema = (schema: R | undefined): boolean => {
+      const props = schema?.properties as R | undefined;
+      return schema?.type === "object" && show(Object.keys(props ?? {}).sort()) === show(["intervention", "situation"]) &&
+        show([...(schema.required ?? [])].sort()) === show(["intervention", "situation"]) &&
+        ["situation", "intervention"].every((key) => props?.[key]?.type === "string" && props[key].minLength === 1 && props[key].pattern === "\\S" && props[key].maxLength === undefined);
+    };
+    out.push(assert(
+      "⑥ 실제 모델 요청 계약 — 세 어댑터 모두 신이름 정확히 1·구이름0, situation/intervention만 필수 비공백 문자열, message 별칭0, 설명 정본 동일",
+      actualContracts.length === 9 && actualContracts.every((c) => c.current === 1 && c.old === 0 && c.descriptionMatches === true && validSchema(c.schema) && !/300자|1,?000자|자 이내/.test(String(c.description)) &&
+        ["상위 결정·조치", "중대 사고·위험한 오정보", "유효한 승인 안에서 스스로 해결", "진행·완료·단순 준수 신고", "개입이 필요한 부분은 보류", "독립 작업만", "반복 조회하거나 별도 대기층을 만들지"].every((part) => String(c.description).includes(part))),
+      actualContracts,
+    ));
+    const ih = d.interventionHandler as R;
+    out.push(assert(
+      "⑥b 실제 handler 입구 — 구 message/누락/공백/비문자 거절·기록/턴0, schema도 거절·두 필드 정상값 통과",
+      show(ih.names) === show(["request_owner_intervention"]) && ih.schemaValid === true &&
+        ih.schemaInvalid?.length === 9 && ih.schemaInvalid.every((x: unknown) => x === true) &&
+        ih.invalid?.length === 9 && ih.invalid.every((r: R) => r.isError === true && String(r.text).includes("비공백")) &&
+        ih.afterInvalid?.notices === 0 && ih.afterInvalid?.turns === 0,
+      ih,
+    ));
+    out.push(assert(
+      "⑥b 실제 MCP→신규 handler→코어→세션 전달: 300자 초과 본문 무손실·공백 중복·3회·등록 뒤 설정 끄기",
+      ih.schemaLong && validSchema(ih.bridgeSchema) && String(ih.okLong).startsWith("알림 n1") && ih.chars > 3000 && ih.kept && ih.eventKept && ih.delivered && String(ih.duplicate).startsWith("이미") &&
+        ih.count === 3 && String(ih.cap).includes("상한") && String(ih.disabled).includes("꺼져") && ih.disabledFactory === true &&
+        show(ih.events) === show(["sent", "duplicate", "sent", "sent", "cap", "rejected"]),
+      ih,
+    ));
+    out.push(assert(
+      "⑥b 성공뿐 아니라 중복·거절·상한·꺼짐도 개입 부분 보류/독립일만 계속, 전체 막힘 종료와 반복조회/새대기층 금지 안내",
+      ih.guidance?.length === 13 && ih.guidance.every((s: string) => s.includes("개입이 필요한 부분은 보류") && s.includes("독립 작업만") && s.includes("전체 작업이 막혔다면") && s.includes("반복 조회하거나 별도 대기층을 만들지")),
+      ih.guidance,
+    ));
+    const flow = d.interventionFlow as R;
+    out.push(assert(
+      "⑥c 합성 흐름 fixture — 미답 동안 개입 부분 보류/독립 계산·running 유지, 실제 수신 한번소비 및 notice_id+delivered 뒤에만 답 확정·재개",
+      flow.before?.blocked === 0 && flow.before?.independent === 6 && flow.before?.pending === true && flow.before?.running === "running" && flow.before?.independentRunning === "running" && flow.before?.turns === 1 &&
+        flow.consumedOnce === true && flow.expected.length > 1000 && String(flow.received).includes(flow.expected) &&
+        flow.delivered === true && flow.answered === true && flow.after?.blocked === 1 && flow.after?.independent === 6 && flow.independentRunning === "running",
+      flow,
+    ));
+    out.push(assert(
+      "⑥c 수신면 session/manager/join은 개입 부분 보류·독립일 안내, manager 상위도 신규 도구·단순 신고 제외, report_to_user 기존 정책 보존",
+      [flow.sessionGuide, flow.managerGuide, flow.joinGuide].every((s: string) => s.includes("보류하고 독립 작업만")) &&
+        String(flow.managerGuide).includes("request_owner_intervention(situation, intervention)") && String(flow.managerGuide).includes("단순 준수 신고에는 쓰지") &&
+        String(flow.sessionGuide).includes("이 턴의 글은 기본적으로 사용자에게 가지 않습니다(내부 기록)") && String(flow.sessionGuide).includes("report_to_user 를 부르고 보고를 쓰세요"),
+      flow,
+    ));
+    out.push(assert(
+      "⑥c 사고 겹침 대조 — 하위→매니저는 사용자 전달 완료 아님·동일 수신자 중복과 필요한 상위전달 구분, 전달불가 긴급건은 신속 반환(즉시 보장 아님)·비긴급 최종기록",
+      String(flow.managerGuide).includes("하위→당신 전달은 메인·사용자 전달 완료가 아닙니다") &&
+        [flow.managerGuide, flow.joinGuide, j.text].every((s: string) => s.includes("같은 수신자에게 같은 내용을 반복하지 않되, 아직 알아야 할 상위에는 전달") && s.includes("당신도 작업자이고")) &&
+        [...ih.guidance, String(flow.managerGuide), String(flow.joinGuide), String(j.text)].every((s: string) => s.includes("피해를 키우는 부분만 중단하고 결과로 신속히 반환") &&
+          s.includes("즉시 전달 보장 아님") && s.includes("긴 독립 작업으로 보고를 미루지") && s.includes("즉시 개입이 필요 없으면 최종 결과")),
+      { managerGuide: flow.managerGuide, returnGuidance: ih.guidance },
     ));
     // find_capabilities — 그 매니저 턴에 claude 어댑터가 **실제로 만든** 인스턴스(활성 이름 그대로)를 질의 없음·질의 두 번 부른다.
     //  보류 때 카탈로그 항목을 뺐다 — 서버 도구 설명에서 요약을 다시 만드는 경로(`coreOnlyHits`)가 실제로 이 도구를 활성으로 내는지.
@@ -228,7 +286,7 @@ export const check: RegressionCheck = {
     const pdx = d.progressDetail as R[];
     out.push(assert(
       "⑨ 상세 우회도 차단 — 요약기 미등록/실패/정상 × bare/MCP 이름표: 기계 본문과 모델 입력에 notify_owner 원문 없음 · 일반 진행/다른 도구 상세/오류 사실은 유지",
-      pdx?.length === 9 && pdx.every((x) => x.delivered === true && x.sent.length === 1 && String(x.sent[0]).startsWith("⏳") &&
+      pdx?.length === 15 && pdx.every((x) => x.delivered === true && x.sent.length === 1 && String(x.sent[0]).startsWith("⏳") &&
         !String(x.sent[0]).includes(x.text) && !String(x.sent[0]).includes("⛔") && !String(x.promptText).includes(x.text) &&
         /오류로 끝났습니다|ended in an error/.test(x.sent[0]) &&
         (x.mode === "summary" ? String(x.sent[0]).includes("일반 진행 요약 유지") && String(x.promptText).includes("path=notify_owner-contract.md") :
@@ -238,7 +296,7 @@ export const check: RegressionCheck = {
     ));
     out.push(assert(
       "⑨ 상세 경계는 파생 보고만 변경 — 원본 이벤트와 recent 스냅샷(detail/오류/key/다른 도구) 불변 · 내부 원문/배달/미답 보존 · 자동 표시나 가짜 답 없음",
-      pdx?.length === 9 && pdx.every((x) => x.detail === `message=${x.text}` && x.raw === x.detail &&
+      pdx?.length === 15 && pdx.every((x) => x.detail === `message=${x.text}` && x.raw === x.detail &&
         x.recentUnchanged === true && x.recentDetail === x.detail && x.recentError === true && x.recentKey === "#11" && x.otherDetail === "path=notify_owner-contract.md" &&
         x.noticeText === x.text && x.unanswered === true && x.shown === false && x.internal === true),
       pdx?.map((x) => ({ label: x.label, mode: x.mode, raw: x.raw, recentDetail: x.recentDetail, recentUnchanged: x.recentUnchanged, text: x.noticeText, internal: x.internal, unanswered: x.unanswered, shown: x.shown })),
@@ -312,20 +370,20 @@ export const check: RegressionCheck = {
       { toggles, hydDone },
     ));
     const lastSteps: R[] = [];
-    for (const label of ["notify_owner", "mcp__notify-owner__notify_owner"]) {
+    for (const label of ["notify_owner", "mcp__notify-owner__notify_owner", "request_owner_intervention", "mcp__notify-owner__request_owner_intervention"]) {
       const id = `activity-${label}`;
       const detail = "message=상세에서만 확인할 내부 알림";
       const activity = { type: "llm.activity", ts: Date.now(), payload: { jobId: id, threadKey: `worker:${id}`, kind: "tool", label, detail, seq: 1 } };
       dash.run(`renderEvent(${JSON.stringify(activity)})`);
       // 새로고침/재연결에서 같은 activity 재생도 같은 표시 경로를 탄다.
       dash.run(`renderEvent(${JSON.stringify(activity)})`);
-      lastSteps.push(dash.run(`(() => { const e = jobCards.get(${JSON.stringify(id)}); return { last: e.lastStep, displayed: e.lastStepEl.textContent, timeline: e.stepsEl.textContent, count: e.stepCount }; })()`) as R);
+      lastSteps.push({ label, ...(dash.run(`(() => { const e = jobCards.get(${JSON.stringify(id)}); return { last: e.lastStep, displayed: e.lastStepEl.textContent, timeline: e.stepsEl.textContent, count: e.stepCount }; })()`) as R) });
     }
     dash.run(`renderEvent(${JSON.stringify({ type: "llm.activity", ts: Date.now(), payload: { jobId: "activity-read", threadKey: "worker:activity-read", kind: "tool", label: "Read", detail: "path=notify_owner-contract.md", seq: 1 } })})`);
     const otherStep = dash.run(`jobCards.get("activity-read").lastStep`) as string;
     out.push(assert(
-      "⑩ lastStep 우회도 차단 — bare/MCP notify_owner 상세만 상시 표시 제외 · 원본 타임라인/재생 중복 방지/일반 활동과 다른 도구 상세 보존",
-      lastSteps.length === 2 && lastSteps.every((x) => x.last === x.displayed && !x.last.includes("상세에서만") && x.last.includes("notify_owner") && x.timeline.includes("message=상세에서만 확인할 내부 알림") && x.count === 1) &&
+      "⑩ lastStep 우회도 차단 — 신·구 bare/MCP 도구 상세만 상시 표시 제외 · 원본 타임라인/재생 중복 방지/일반 활동과 다른 도구 상세 보존",
+      lastSteps.length === 4 && lastSteps.every((x) => x.last === x.displayed && !x.last.includes("상세에서만") && x.last.includes(x.label) && x.timeline.includes("message=상세에서만 확인할 내부 알림") && x.count === 1) &&
         otherStep.includes("path=notify_owner-contract.md"),
       { lastSteps, otherStep },
     ));

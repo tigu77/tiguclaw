@@ -7,7 +7,7 @@ import { assert as record, i18nForContext, type RegressionCheck } from "./_frame
 
 export const check: RegressionCheck = {
   name: "bg-reservations-panel",
-  guards: "예약 한 줄 상세·반복/꺼짐·focus·필터·경합 보존",
+  guards: "예약 날짜/주기·내용 행 분리·상세·반복/꺼짐·focus·필터·경합 보존",
   async run() {
     const clock = makeClock();
     const dom = bootDashboard({ html: bgPanelHtml(), clock, i18n: i18nForContext, allIds: true, upTo: "chat-search.js", extra: { EventSource: class { onmessage = null; onerror = null; onopen = null; addEventListener() {} close() {} } },
@@ -50,6 +50,18 @@ export const check: RegressionCheck = {
     assert.equal(rows('[data-schedule-id="25"]').length, 0, "발송 목적지를 실행세션으로 쓰지 않는다");
     const timerRow = timers()[0];
     const timerLabel = label(timerRow);
+    // 날짜/주기와 내용은 가로 경쟁하지 않고 같은 copy 열 안의 독립 행이다.
+    for (const row of [timerRow, rows('[data-schedule-id="21"]')[0]]) {
+      const info = row.querySelector(".bg-timer-info")!;
+      const when = row.querySelector(".bg-timer-when, .bg-schedule-when")!;
+      assert.ok(when.parentNode === info, "날짜/주기는 내용과 같은 가용 폭을 쓴다");
+      assert.equal(info.children[0], when, "첫 행 날짜/주기");
+      assert.equal(info.children[1], label(row), "둘째 행 예약내용");
+      assert.equal(info.children[2], row.querySelector(".bg-timer-session"), "대화 표시는 별도 작은 행");
+    }
+    assertIncludes(rows('[data-schedule-id="21"]')[0].querySelector(".bg-schedule-when")!.textContent, current.cronExpr);
+    assert.equal(timerRow.children[timerRow.children.length - 1].className, "bg-timer-stop", "멈추기는 오른쪽 독립 열");
+
     assert.equal(timerLabel.tagName, "BUTTON", "키보드 Enter/Space와 mobile tap native control");
     assert.equal(timerLabel.textContent, timer.label, "전체 label은 textContent이고 잘라 저장하지 않는다");
     assert.equal(timerLabel.getAttribute("aria-label"), timer.label);
@@ -207,8 +219,8 @@ export const check: RegressionCheck = {
     const css = readFileSync(new URL("../../../packages/dashboard/app.css", import.meta.url), "utf8");
     assert.ok(/\.bg-timer-label\s*\{[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/.test(css));
     assert.ok(/\.bg-timer-label\s*\{[^}]*min-width:0/.test(css));
-    assert.ok(/\.bg-timer-info\s*\{[^}]*display:flex/.test(css));
+    assert.ok(/\.bg-timer-info\s*\{[^}]*display:flex[^}]*flex-direction:column/.test(css));
     assert.equal(clock.errors.length, 0, JSON.stringify(clock.errors));
-    return [record("실제 예약 JS/패널 계약", true, "safe label 상세·첫 tap/hover/키보드·focus/summary/open 보존, 반복/꺼짐/필터/원시 좌표/이동, 실행중 집계 불변, stale/resync. 실제 pointer geometry는 별도 QA")];
+    return [record("실제 예약 JS/패널 계약", true, "날짜/주기 첫행·내용 둘째행·대화 별도·Stop 오른쪽, safe label 상세·첫 tap/hover/키보드·focus/summary/open 보존, 반복/꺼짐/필터/원시 좌표/이동, 실행중 집계 불변, stale/resync. 실제 pointer geometry는 별도 QA")];
   },
 };

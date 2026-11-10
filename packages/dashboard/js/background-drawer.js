@@ -1995,7 +1995,7 @@
         {
           const lbl = skill ? i18n("bg.step.skillBadge", { name: skill.name }) : (p.label || p.kind || i18n("bg.activity"));
           // 내부 알림 원문은 상세 타임라인에만 둔다. 다른 도구의 현재 활동 상세는 그대로 표시한다.
-          const showDetail = !skill && p.detail && !/^(?:mcp__.+__)?notify_owner$/.test(p.label || "");
+          const showDetail = !skill && p.detail && !/^(?:mcp__.+__)?(?:notify_owner|request_owner_intervention)$/.test(p.label || "");
           entry.lastStep = showDetail ? lbl + " · " + p.detail : lbl;
           if (entry.lastStepEl) entry.lastStepEl.textContent = entry.lastStep;
         }

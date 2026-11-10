@@ -950,7 +950,7 @@ export const createSpawnAgentMcpServer = (
             entries.push({
               jobId: id,
               label: job.label,
-              status: `🔴 실패${job.result !== undefined ? "(마무리 단계 — 본 보고는 아래)" : ""} — ${job.error ?? "(원인 미상)"}${jobLimitResumeLine(job)}`,
+              status: `🔴 실패${job.result !== undefined ? "(실패 전 보고는 아래)" : ""} — ${job.error ?? "(원인 미상)"}${jobLimitResumeLine(job)}`,
               body: job.result ?? "",
             });
           }
@@ -1080,9 +1080,9 @@ export const createSpawnAgentMcpServer = (
             `범위를 넘었습니다 — '${job.label}' 결과는 ${page.total.toLocaleString()}자입니다(offset 0~${page.total - 1}).`,
           );
         }
-        // 실패에 원결과가 있으면 마무리 단계 실패다 — 상태를 머리에 밝힌다(본 보고를 «성공 결과» 로 읽지 않게, 2026-10-31).
+        // 실패 전 보고는 미완일 수 있다 — 상태를 머리에 밝혀 성공 결과와 구분한다.
         const failedHead =
-          job.status === "failed" ? `실패(마무리 단계) · 원인: ${job.error ?? "(원인 미상)"}\n아래는 마무리 전에 완성된 본 보고입니다.\n` : "";
+          job.status === "failed" ? `실패(보고 보존) · 원인: ${job.error ?? "(원인 미상)"}\n아래는 실패 전 보고이며 전체 작업 완료를 뜻하지 않습니다.\n` : "";
         return okText(
           failedHead +
           `${job.label} (${args.job_id}) · 전체 ${page.total.toLocaleString()}자${cappedNote(job.resultCapped)} · ` +

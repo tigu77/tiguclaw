@@ -15,6 +15,22 @@
  * ["검사가 껄끄러우면 코드가 잘못 놓인 것" — 이 레포가 /logs 규칙에서 이미 배운 것]
  */
 
+import { redactSecrets } from "../outbound-sanitize.js";
+import { failureNoticeOf, partialReportOf, replayBlockOf } from "./partial-failure.js";
+
+/** The failure reply consumer: retain evidence/guidance without changing the thrown cause. */
+export const presentFailure = (error: unknown, formattedCause: string): string => {
+  const partial = partialReportOf(error);
+  const notice = failureNoticeOf(error);
+  const replay = replayBlockOf(error);
+  return redactSecrets([
+    partial ? `[Incomplete partial report]\n${partial}` : undefined,
+    formattedCause,
+    notice,
+    replay,
+  ].filter((part): part is string => part !== undefined && part !== "").join("\n\n"));
+};
+
 export interface SwallowedFailureView {
   /** 그때까지 사용자가 **본** 텍스트(화면 기준). 로그의 판정 수치로도 쓴다. */
   readonly shown: string;

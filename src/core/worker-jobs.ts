@@ -34,6 +34,8 @@
  * MVP = 메모리 레지스트리(영속 0, W-I7 재시작 정직). scheduler `inFlight` Set 동형.
  */
 import { formatResetAt, isRateLimited, parseCooldownMs } from "./llm-runtime/rate-limit.js";
+import { redactSecrets } from "./outbound-sanitize.js";
+import { failureNoticeOf, partialReportOf, replayBlockOf } from "./llm-runtime/partial-failure.js";
 import { resumeAtOf } from "./llm-runtime/resume-signal.js";
 import { noteLimitStop, RESUME_MARGIN_MS, resumeNoteLine, type ResumeNote } from "./limit-resume.js";
 import { bumpRevision, stampFor, RUNNING_WORK } from "./resource-revision.js";
@@ -62,7 +64,7 @@ import { createSteeringChannel, isJobSide } from "./steering.js";
 import { beginInterruptedNotice, beginNoticeSending, settleFirstNotice } from "./job-report-delivery.js";
 import type { SteeringChannel, SteeringInput } from "./steering.js";
 import {
-  KEEP_WORKING, NOTICE_CAP_PER_JOB, NOTICE_MAX_CHARS, checkNotice, hasNotices, isNoticeJoining, managerNoticeText,
+  KEEP_WORKING, NOTICE_CAP_PER_JOB, checkNotice, hasNotices, isNoticeJoining, managerNoticeText,
   putNotice, sessionNoticeText, takeNotice, takeNotices,
   type InboxItem, type JobNotice, type NoticeRoute,
 } from "./job-notice.js";
@@ -312,6 +314,12 @@ export type WorkerOutcome =
        *  원오류(`error`)에는 본 보고·꼬리표를 섞지 않는다 — 분류(`failureKind`)는 원오류만 읽어야 한다.
        */
       completedReport?: string;
+      /** Incomplete output before failure, not a final successful report. */
+      partialReport?: string;
+      /** Display guidance, separate from the raw failure and incomplete output. */
+      failureNotice?: string;
+      /** Specific unsafe-tool replay reason, never part of the raw failure. */
+      replayBlock?: string;
     };
 
 /**
@@ -321,7 +329,17 @@ export type WorkerOutcome =
 export const failureOutcome = (e: unknown): WorkerOutcome => {
   if (!(e instanceof Error)) return { error: String(e) };
   const resumeAtMs = resumeAtOf(e);
-  return { error: e.message, errorName: e.name, ...(resumeAtMs !== undefined ? { resumeAtMs } : {}) };
+  const partialReport = partialReportOf(e);
+  const failureNotice = failureNoticeOf(e);
+  const replayBlock = replayBlockOf(e);
+  return { error: e.message, errorName: e.name, ...(partialReport !== undefined ? { partialReport } : {}), ...(failureNotice !== undefined ? { failureNotice } : {}), ...(replayBlock !== undefined ? { replayBlock } : {}), ...(resumeAtMs !== undefined ? { resumeAtMs } : {}) };
+};
+
+/** Persist/display evidence separately from the cause; resultText is not success. */
+const failedReport = (outcome: { completedReport?: string; partialReport?: string; failureNotice?: string; replayBlock?: string }): string | undefined => {
+  const reports = [outcome.completedReport, outcome.partialReport !== undefined ? `[Incomplete partial report]\n${outcome.partialReport}` : undefined, outcome.failureNotice, outcome.replayBlock !== undefined ? `[Tool replay blocked] ${outcome.replayBlock}` : undefined]
+    .filter((r): r is string => r !== undefined && r !== "");
+  return reports.length === 0 ? undefined : redactSecrets(reports.join("\n\n"));
 };
 
 export interface WorkerJobRecord {
@@ -388,7 +406,7 @@ export interface WorkerJobRecord {
   /** 이미 센 무진전 재시도 id — 같은 사건을 두 번 세지 않게(바운드). 런타임 전용. */
   stallSeen?: string[];
   /**
-   * 작업 **원결과** — done 이면 최종 보고, failed 면 «마무리 전에 완성된 본 보고»(있을 때만, 2026-10-31).
+   * 작업 **원결과** — done 이면 최종 보고, failed 면 «실패 전 보고(미완 부분 포함 가능)»(있을 때만, 2026-10-31).
    * ★«결과가 있다» 가 «성공» 이 아니다 — 성공 여부는 `status` 가 말한다.
    */
   result?: string;
@@ -1424,7 +1442,7 @@ const maybeSendProgress = (job: WorkerJobRecord, ev: CheckinEvidence, now: numbe
   ev.outputsSinceProgress = undefined;
   // 내부 알림 본문은 소환자가 판단해 전달한다. 진행 보고용 사본에서만 상세를 빼고 원본 기록은 보존한다.
   const actions = actionsSince(ev.recent, since).map((a) => {
-    if (!/^(?:mcp__.+__)?notify_owner$/.test(a.tool)) return a;
+    if (!/^(?:mcp__.+__)?(?:notify_owner|request_owner_intervention)$/.test(a.tool)) return a;
     const { detail, ...action } = a;
     return action;
   });
@@ -2758,23 +2776,21 @@ export const notifyOwner = (turnThreadKey: string, message: unknown): string => 
   const job = jobId !== undefined ? jobs.get(jobId) : undefined;
   if (job === undefined || job.status !== "running") {
     console.warn(`[job-notice] 작업자 턴이 아닌 호출 거절 (thread=${turnThreadKey})`);
-    return "작업자 턴이 아닙니다 — 이 도구는 실행 중인 매니저·서브에이전트만 씁니다. 보내지 않았습니다.";
+    return `작업자 턴이 아닙니다 — 이 도구는 실행 중인 매니저·서브에이전트만 씁니다. 보내지 않았습니다.\n${KEEP_WORKING}`;
   }
   // ★설정이 꺼져 있으면(2026-11-02 G2, 기본 꺼짐) 기록·수신함·배달·합성 턴 0 — 켜진 채 시작한 턴이 도는 중에 끄면 이미 등록된 도구가 여기로 온다.
   //  거절도 남긴다(남발·오용을 사후에 셀 수 있게 — 대시보드는 rejected 를 그리지 않는다).
   if (!loadNotifyOwnerEnabled()) {
     publishNotice(job, "rejected", undefined, { reason: "disabled" });
     console.warn(`[job-notice] '${job.label}' (${job.kind}:${job.jobId}) 거절 — 설정 꺼짐(jobs.notifyOwner.enabled)`);
-    return "작업자 알림(notify_owner)이 설정에서 꺼져 있어 보내지 않았습니다. 답을 기다리지 말고 할 수 있는 일을 계속하고, 소환자만 풀 수 있는 막힘은 결과 보고 첫 줄에 적으세요.";
+    return `작업자 개입 요청(request_owner_intervention)이 설정에서 꺼져 있어 보내지 않았습니다. 막힘은 결과 보고 첫 줄에 적으세요.\n${KEEP_WORKING}`;
   }
   const prior = job.notices ?? [];
   const c = checkNotice(prior, message);
   if (c.kind === "rejected") {
     publishNotice(job, "rejected", undefined, { reason: c.reason });
-    console.warn(`[job-notice] '${job.label}' (${job.kind}:${job.jobId}) 거절 — ${c.reason}(${c.chars}자)`);
-    return c.reason === "empty"
-      ? "빈 알림이라 보내지 않았습니다 — 무엇이 막혔고 무엇을 하면 풀리는지 한 줄로 쓰세요."
-      : `한 줄(${NOTICE_MAX_CHARS}자 이내)로 다시 보내세요 — ${c.chars}자라 보내지 않았습니다.`;
+    console.warn(`[job-notice] '${job.label}' (${job.kind}:${job.jobId}) 거절 — ${c.reason}`);
+    return `빈 알림이라 보내지 않았습니다 — 현재 상황과 필요한 개입을 쓰세요.\n${KEEP_WORKING}`;
   }
   if (c.kind === "duplicate") {
     publishNotice(job, "duplicate", c.prior);
@@ -2782,13 +2798,13 @@ export const notifyOwner = (turnThreadKey: string, message: unknown): string => 
     const mins = Math.max(0, Math.round((Date.now() - c.prior.at) / 60_000));
     return (
       `이미 ${mins}분 전에 같은 알림(${c.prior.id})을 보냈습니다(${c.prior.answeredAt !== undefined ? "답 있음" : "답 없음"}) — ` +
-      `다시 보내지 않았습니다. 계속 일하세요.`
+      `다시 보내지 않았습니다.\n${KEEP_WORKING}`
     );
   }
   if (c.kind === "cap") {
     publishNotice(job, "cap");
     console.warn(`[job-notice] '${job.label}' (${job.kind}:${job.jobId}) 상한 ${NOTICE_CAP_PER_JOB}회 — 거절`);
-    return `이 작업의 알림 상한(${NOTICE_CAP_PER_JOB}회)을 다 썼습니다 — 보내지 않았습니다. 결과 보고 첫 줄에 적으세요.`;
+    return `이 작업의 알림 상한(${NOTICE_CAP_PER_JOB}회)을 다 썼습니다 — 보내지 않았습니다. 결과 보고 첫 줄에 적으세요.\n${KEEP_WORKING}`;
   }
   const n: JobNotice = { id: c.id, at: Date.now(), text: c.text, target: "", state: "recorded" };
   job.notices = [...prior, n];
@@ -3658,7 +3674,7 @@ export const renderJobNotice = (n: JobNoticeInput, now: number = Date.now()): st
   // 원인이 비면(`error` 없음) `humanizeWorkerError` 가 «알 수 없는 오류» 를 사용자 언어로 낸다.
   const { cause, resume } = failureCauseOf(n, now);
   if (n.result !== undefined && n.result !== "") {
-    // ★마무리 단계 실패 — 본 작업은 끝났다. «처음부터 다시» 를 권하지 않고, 완성된 본 보고 전문을 싣는다(설계 §4-1). 상태는 실패 그대로.
+    // Failed result text is evidence, not proof that the whole task completed.
     return translate("srv.job.failedAfterReport", {
       label: n.label,
       cause,
@@ -3840,7 +3856,7 @@ const buildCompletionPrompt = (
  */
 export const summonerDeliveryText = (
   job: WorkerJobRecord,
-  outcome: { result: string } | { error: string; completedReport?: string },
+  outcome: WorkerOutcome,
 ): string =>
   // ★세 가지를 **구분**한다 (ADR 위험 목록 "취소 결과의 의미"). 종전엔 취소도
   //  `[… 완료] 실패했습니다: 사용자 요청으로 취소되었습니다.` 로 나갔다 — 한 문장에
@@ -3857,15 +3873,15 @@ export const summonerDeliveryText = (
       `사용자에게 먼저 물어보세요.`
     : "result" in outcome
       ? `[백그라운드 서브에이전트 '${job.label}' 완료] 결과:\n${outcome.result}`
-      : outcome.completedReport !== undefined && outcome.completedReport !== ""
-        // 마무리 단계 실패 — 본 작업은 끝났다. 종전엔 본 보고가 오류 문자열에 섞여 같이 갔다 — 부모가 받던 본 보고를 잃지 않는다(설계 §4-1).
-        ? `[백그라운드 서브에이전트 '${job.label}' 실패(마무리 단계)] 원인: ${outcome.error}\n` +
-          `본 작업은 끝났고 마무리 단계에서 실패했습니다 — 마무리 전에 완성된 본 보고:\n${outcome.completedReport}`
-        : `[백그라운드 서브에이전트 '${job.label}' 실패] ${outcome.error}`;
+      : failedReport(outcome) !== undefined
+        // Failed reports are evidence, not proof that the whole task completed.
+        ? `[백그라운드 서브에이전트 '${job.label}' 실패(보고 보존)] 원인: ${redactSecrets(outcome.error)}\n` +
+          `실패 전에 남긴 보고입니다. 전체 작업 완료를 뜻하지 않습니다:\n${failedReport(outcome)}`
+        : `[백그라운드 서브에이전트 '${job.label}' 실패] ${redactSecrets(outcome.error)}`;
 
 const deliverToSummoner = (
   job: WorkerJobRecord,
-  outcome: { result: string } | { error: string; completedReport?: string },
+  outcome: WorkerOutcome,
 ): boolean => {
   const parentId = parentJobIdOf(job.threadKey);
   if (parentId === undefined) return false; // 소환자가 세션 — 새 턴 경로.
@@ -3967,7 +3983,7 @@ const deliverCompletionInner = async (
       jobId,
       redactSecrets(outcome.error),
       outcome.errorName,
-      outcome.completedReport !== undefined ? redactSecrets(outcome.completedReport) : undefined,
+      failedReport(outcome) !== undefined ? redactSecrets(failedReport(outcome)!) : undefined,
     );
     // ★한도 자동 이어가기 (2026-10-23 §3.6) — 마킹 **바로 다음, await 없이**: 합류 쪽이 상태를 읽을 때 이미 칸이 있다.
     noteJobLimitStop(jobId, outcome);

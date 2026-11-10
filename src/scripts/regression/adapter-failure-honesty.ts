@@ -393,7 +393,7 @@ export const check: RegressionCheck = {
     const pm = await child("partial-fail-manager");
     out.push(assert("★④ codex: 글을 화면에 흘리지 않는 턴(매니저)은 도중 과부하를 같은 요청으로 재전송해 온전한 답을 받는다", pm.outcome === "returned" && pm.text === "온전한 답입니다." && pm.calls === 2, show(pm)));
     const se = await child("side-effect-then-partial-fail");
-    out.push(assert("★④ codex: 흘린 뒤라 재전송 못 한 과부하도 안내는 «잠시 후 다시» 다(«요청을 바꿔서» 아님)", se.outcome === "returned" && String(se.text).includes("try again in a moment") && !String(se.text).includes("change the request") && se.calls === 2, show(se)));
+    out.push(assert("★④ codex: 흘린 뒤라 재전송 못 한 과부하도 안내는 «잠시 후 다시» 다(«요청을 바꿔서» 아님)", se.outcome === "threw" && se.rawName === "CodexBackendFailureError" && String(se.rawMessage).includes("server_is_overloaded") && se.partial === "결론부터 말씀드리면, 첫째" && String(se.display).includes("결론부터 말씀드리면") && String(se.display).includes("try again in a moment") && !String(se.display).includes("change the request") && !String(se.rawMessage).includes("try again") && se.calls === 2, show(se)));
     // ★서버가 응답 도중 끊으면(`terminated` ← `other side closed`) 사용자 손 없이 복구한다(2026-10-10 정태님 — 맥·윈도우 돌쇠 하루 1~4건).
     const cb = await child("cut-before-output");
     out.push(assert("★⑩ codex: 첫 출력 전에 끊기면 같은 요청을 그대로 다시 보내 답을 받는다", cb.outcome === "returned" && cb.text === "온전한 답입니다." && cb.calls === 2 && cb.sameBody === true, show(cb)));
@@ -410,7 +410,7 @@ export const check: RegressionCheck = {
     const c4 = await child("cut-then-fetch-fail");
     out.push(assert("★⑩ codex: 끊김 뒤 연결 단계 실패가 이어지면 앞 시도의 글을 다시 붙이지 않는다(최종 답·입력에 앞글 중복 X)", !String(c4.text).includes("앞글 앞글") && Number(c4.partialInLast) <= 1, show(c4)));
     const c5 = await child("cut-exhausted-after-side-effect");
-    out.push(assert("★⑩ codex: 부작용 뒤 끊김이 소진되면 안내는 흘린 글 전부를 싣고, 붙였던 부분 글은 이력 항목에 안 남는다", c5.outcome === "returned" && String(c5.text).includes("부분보고 이어서 또") && c5.partialItems === 0, show(c5)));
+    out.push(assert("★⑩ codex: 부작용 뒤 끊김이 소진되면 안내는 흘린 글 전부를 싣고, 붙였던 부분 글은 이력 항목에 안 남는다", c5.outcome === "threw" && c5.rawName === "TypeError" && c5.rawMessage === "terminated" && c5.cutIdentity === true && c5.cutCauseIdentity === true && c5.rawCauseName === "SocketError" && c5.rawCauseCode === "UND_ERR_SOCKET" && c5.partial === "부분보고 이어서 또" && String(c5.display).includes("부분보고 이어서 또") && String(c5.display).includes("Incomplete partial report") && c5.calls === 4 && c5.partialItems === 0, show(c5)));
     const c6 = await child("overload-after-external-tool-delta");
     out.push(assert("⑩ codex: 게이트웨이 외부 도구 조각이 나간 뒤 과부하면 재전송하지 않는다(끊김과 같은 규칙)", c6.outcome === "threw" && c6.calls === 1, show(c6)));
     {
@@ -449,7 +449,7 @@ export const check: RegressionCheck = {
     const cap = await child("input-cap");
     out.push(assert("★⑨ codex: iteration 0 의 조립 입력이 상한을 넘으면 **보내지 않고** 던진다(다음 후보로 즉시)", cap.outcome === "threw" && cap.calls === 0 && /over the 200-char limit/.test(String(cap.text)), show(cap)));
     const red = await child("swallow-redacts");
-    out.push(assert("② codex: 부작용 뒤 일반 실패는 부분 보고를 지키되 답장의 백엔드 원문 비밀은 가린다", red.outcome === "returned" && red.leaked === false && red.redacted === true, show(red)));
+    out.push(assert("② codex: 부작용 뒤 일반 실패는 부분 보고를 지키되 답장의 백엔드 원문 비밀은 가린다", red.outcome === "threw" && red.rawName === "Error" && String(red.rawMessage).startsWith("Codex backend request failed: 400 ") && red.rawHasSecret === true && red.calls === 2 && red.leaked === false && red.redacted === true, show(red)));
 
     // ── ② facade 경유 — 도구 뒤 계정 축 실패 ────────────────────────────────────
     for (const sc of ["facade-429", "facade-401"] as const) {
@@ -460,7 +460,13 @@ export const check: RegressionCheck = {
           f.outcome === "threw" &&
             show(f.events) === '["llm.turn_error"]' &&
             Array.isArray(f.cooldowns) && (f.cooldowns as unknown[]).length === 1 &&
-            /had already started running/.test(String(f.text)),
+            f.rawName === "Error" && f.classification === (sc === "facade-429" ? "limit" : "auth") &&
+            f.rawMessage === (sc === "facade-429"
+              ? 'Codex backend request failed: 429 {"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":3600}}'
+              : 'Codex backend request failed: 401 {"error":{"code":"invalid_api_key","message":"bad token"}}') &&
+            f.calls === (sc === "facade-429" ? 4 : 2) && f.toolStarts === 1 &&
+            /had already started running/.test(String(f.replay)) &&
+            /had already started running/.test(String(f.display)),
           show(f),
         ),
       );

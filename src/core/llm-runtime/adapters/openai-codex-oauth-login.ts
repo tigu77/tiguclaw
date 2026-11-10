@@ -26,29 +26,49 @@ export const CODEX_CALLBACK_PATH = "/auth/callback";
 /** Both consumers preserve the registered localhost redirect without wildcard binding. */
 export const listenCodexCallback = async (
   listener: RequestListener,
+  onUnavailable: () => void = () => {},
 ): Promise<{ close: () => void }> => {
   const servers: Server[] = [];
-  const close = (): void => { for (const server of servers) server.close(); };
+  let closed = false;
+  let lateError: Error | undefined;
+  const close = (): void => {
+    closed = true;
+    for (const server of servers) server.close();
+  };
+  let listeningCount = 0;
   try {
     for (const host of ["127.0.0.1", "::1"]) {
       const server = createServer(listener);
+      servers.push(server); // Own pending listeners too: close can race the second bind.
       try {
         await new Promise<void>((resolve, reject) => {
-          const onError = (error: Error): void => { reject(error); };
-          server.once("error", onError);
+          let bound = false;
+          // Keep error ownership for the server's entire lifetime, including late errors after close.
+          server.on("error", (error: Error) => {
+            if (!bound) { reject(error); return; }
+            if (closed) return;
+            lateError = error;
+            close(); // A broken listener invalidates the automatic route, not manual login.
+            onUnavailable();
+          });
           server.listen({ port: CODEX_CALLBACK_PORT, host, ipv6Only: host === "::1" }, () => {
-            server.removeListener("error", onError);
-            resolve();
+            bound = true;
+            if (closed) {
+              server.close(); // close while bind was pending must not leave a late listener alive.
+              reject(lateError ?? new Error("Callback listener closed"));
+            } else resolve();
           });
         });
-        servers.push(server);
+        listeningCount++;
       } catch (error) {
         server.close();
+        if (lateError) throw lateError;
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "EAFNOSUPPORT" && code !== "EADDRNOTAVAIL" && code !== "EPROTONOSUPPORT") throw error;
       }
     }
-    if (servers.length === 0) throw new Error("No loopback address family available");
+    if (listeningCount === 0) throw new Error("No loopback address family available");
+    if (lateError) throw lateError;
     return { close };
   } catch (error) {
     close();
@@ -221,6 +241,8 @@ export const beginCodexLogin = async (): Promise<{ url: string; autoCallback: bo
           if (pending === session) closePending();
         }
       })().catch(() => respondToCodexCallbackFailure(res));
+    }, () => {
+      console.warn("[codex-login] Callback listener stopped — finish by pasting the redirect URL.");
     });
     if (pending === session) {
       session.server = server;

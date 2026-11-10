@@ -85,6 +85,7 @@ import {
   stopSelfMaintenance,
 } from "./core/self-maintenance.js";
 import { stripInternalRuntimeScaffolding, redactSecrets } from "./core/outbound-sanitize.js";
+import { presentFailure } from "./core/llm-runtime/swallowed-failure.js";
 import { route } from "./core/router.js";
 import { type SteeringChannel } from "./core/steering.js";
 import { followHomeCredentials, unresolvedModelSpecs, unresolvedOverrideNote } from "./core/llm-runtime/index.js";
@@ -1398,9 +1399,10 @@ const handler: MessageHandler = async (msg) => {
     // ★한도 자동 이어가기 (2026-10-23 §3.6) — 한도로 끝난 턴이면 재개를 걸고 «{when} 이어서 · 취소 길» 을 **같은 메시지**에(옵션 꺼짐·한도 아님 = 바이트 동일).
     //  위 두 `return`(사용자 중지·작업 취소)을 지난 뒤라 그 몫은 걸리지 않는다.
     const failText = withResumeNote(formatRegionAError(detail, errName), noteTurnLimitStop(e, msg));
-    const original = await replyCommand(msg, failText, { turnFailed: true });
+    const shownFailure = presentFailure(e, failText);
+    const original = await replyCommand(msg, shownFailure, { turnFailed: true });
     // 성공 경로와 대칭 — 실패도 egress 로 나간다(유령 신호 방지, fanOutEgress 주석 참조). 인입 응답과 같은 글.
-    await fanOutEgress(egressTargets, failText, bus, msg.threadKey, original);
+    await fanOutEgress(egressTargets, shownFailure, bus, msg.threadKey, original);
     // ★StopFailure 훅 — `Stop` 의 짝 (2026-09-08). `Stop` 은 위 `try` 안에 있어 **실패한
     //  턴에는 어떤 훅도 안 났다.** 그런데 훅으로 하려는 일 중 «턴이 실패했을 때 알려줘» 가
     //  가장 흔하다(실측 분모: 실패 130 / 1,594 턴 = 8.2%). 상류(Claude Code)에도 같은 이름의
@@ -2048,10 +2050,9 @@ const updateFailedNotified = await (async (): Promise<boolean> => {
   return true;
 })();
 
-// 자가 업데이트 완료 통지 — 부팅 시 <home>/.update-complete 마커가 있으면 읽어 요청자에게
-// "업데이트 완료 vX→vY" 1회 통지 후 마커 삭제(멱등). 채널 start 이후(send 가능 시점)라야
-// raw 아웃바운드가 도달. best-effort — 마커 깨졌거나 발송 실패해도 부팅을 막지 않고 마커는
-// 삭제한다(재통지 루프 0). dest 는 마커에 적재된 notify 좌표(요청 슬래시/도구의 channel·target).
+// 성공 통지는 현재 boot/revision 증거만 허용한다. legacy/비성공 기록의 보존과
+// 이번 boot의 일반 재시작 알림은 별개다. pending 대기 소진은 별도 receipt로 남겨
+// 생산자가 원문 CAS로 늦게 confirmed를 쓰는 경로를 막지 않는다.
 const updateNotified = await (async (): Promise<boolean> => {
   const result = await consumeUpdateMarker({
     boot: getUpdateBoot(),
@@ -2059,6 +2060,9 @@ const updateNotified = await (async (): Promise<boolean> => {
     read: async (name: string) => {
       try { return await fsp.readFile(path.join(getPaths().home, name), "utf8"); }
       catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; throw e; }
+    },
+    write: async (name: string, raw: string) => {
+      await fsp.writeFile(path.join(getPaths().home, name), raw, "utf8");
     },
     remove: async (name: string, raw: string) => {
       const file = path.join(getPaths().home, name);
@@ -2076,7 +2080,7 @@ const updateNotified = await (async (): Promise<boolean> => {
       });
     } catch (e) { console.error(`self-update: completion delivery failed: ${String(e)}`); }
   }
-  // Invalid/legacy/pending/failed is handled, NOT a general Restart complete.
+  // Only this boot's success, failure or first bounded wait suppresses Restart complete.
   return result.handled;
 })();
 

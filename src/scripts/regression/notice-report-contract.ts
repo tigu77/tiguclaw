@@ -221,12 +221,14 @@ export const check: RegressionCheck = {
       out.push(assert(`★② ${ad}: 허용 턴 · \`report_to_user\` 표시 — 증명 없음(평소대로 전달)`, mark !== undefined && mark.err === undefined && mark.exposed && !mark.omitted, show(mark)));
       out.push(assert(
         `★② ${ad}: 허용 턴 · 호스트가 깨끗한 종료를 증명 못 함(${ad === "claude" ? "확정 답 뒤 예외" : ad === "codex" ? "부작용 뒤 빈 글 → 대체 문구" : "도구 미지원 → 도구 없는 재시도"}) — 증명 없음`,
-        fail !== undefined && fail.err === undefined && !fail.omitted,
+        fail !== undefined && !fail.omitted && (ad === "codex"
+          ? fail.calls === 6 && String(fail.err).includes("no summary text could be produced") && String(fail.display).includes("steer_worker") && String(fail.text) === ""
+          : fail.err === undefined),
         show(fail),
       ));
       if (ad === "codex") {
         const sw = by("swallow"), fl = by("flush");
-        out.push(assert("★② codex: 부작용 뒤 요청 실패를 안내문으로 삼킨 턴 — 증명 없음", sw !== undefined && sw.err === undefined && !sw.omitted, show(sw)));
+        out.push(assert("★② codex: 부작용 뒤 요청 실패는 throw · 사용자 실패 안내 전달 — 생략 증명 없음", sw !== undefined && !sw.omitted && sw.calls === 2 && String(sw.text) === "" && String(sw.err) === 'Codex backend request failed: 400 {"error":{"message":"회귀: 요청 거부","type":"invalid_request_error"}}' && String(sw.display).includes("Check the results, or ask again") && String(sw.display).includes("steer_worker"), show(sw)));
         out.push(assert("★② codex: 빈 응답이 이어져 호스트가 마무리를 강제(final flush)한 턴 — 모델 글로 끝나도 증명 없음", fl !== undefined && fl.err === undefined && !fl.omitted && String(fl.text).includes("강제 마무리 뒤의 글"), show(fl)));
       }
       if (ad === "openai") {

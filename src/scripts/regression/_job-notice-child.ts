@@ -24,7 +24,7 @@ const jn = await import("../../core/job-notice.js");
 const { getEventBus } = await import("../../core/eventbus.js");
 const { createSpawnAgentMcpServer } = await import("../../core/llm-runtime/capabilities/agent-registry.js");
 const { createWorkerMcpServer, runWorkerJob, harvestTurnText } = await import("../../core/llm-runtime/capabilities/worker-registry.js");
-const { createNotifyOwnerMcpServer, NOTIFY_OWNER_DESCRIPTION } = await import("../../core/llm-runtime/capabilities/notify-owner-mcp.js");
+const { createNotifyOwnerMcpServer, NOTIFY_OWNER_TOOL, NOTIFY_OWNER_DESCRIPTION } = await import("../../core/llm-runtime/capabilities/notify-owner-mcp.js");
 const { createFileOpsMcpServer, killAllBgShells } = await import("../../core/llm-runtime/capabilities/file-ops-mcp.js");
 const { createSteeringChannel } = await import("../../core/steering.js");
 const jp = await import("../../core/job-progress.js");
@@ -146,7 +146,7 @@ const listJob = async (id: string): Promise<R | null> => {
   const res = textOf(await p);
   out.join = {
     ms: Date.now() - t0, ret: r.text.slice(0, 100), top: res.startsWith("📣 기다리는 동안 작업자 알림"), hasId: res.includes(`notice_id n1`) && res.includes(`job_id ${C1}`),
-    c2Running: res.includes("조사2") && res.includes("작업자 알림이 와서 일찍 돌아왔습니다"), steer: drain(P).length, turns: turns.length, events: outcomes(C1),
+    text: res, c2Running: res.includes("조사2") && res.includes("작업자 알림이 와서 일찍 돌아왔습니다"), steer: drain(P).length, turns: turns.length, events: outcomes(C1),
   };
 }
 
@@ -247,19 +247,18 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
   const d = await notify(M, "D 가 막힘");
   const N = job("길이", S);
   const ok300 = await notify(N, "가".repeat(300));
-  const bad301 = await notify(N, "가".repeat(301));
+  const ok301 = await notify(N, "가".repeat(301));
   const empty = await notify(N, "   ");
-  // ★«300자» 는 사람이 세는 글자(코드 포인트)다 — 보충 평면 문자(이모지)는 UTF-16 으로 두 칸이라, 길이를 UTF-16 으로 세면 승인 범위 안의 알림이
-  //  거절된다(독립 변이 사냥 구멍 2). 300개는 통과 · 301개는 거절.
-  const EM = job("이모지", S);
-  const emoji300 = await notify(EM, "🙂".repeat(300));
-  const EM2 = job("이모지2", S);
-  const emoji301 = await notify(EM2, "🙂".repeat(301));
+  const EM = job("긴 이모지", S);
+  const longText = "🙂".repeat(8192) + "끝 조건 보존";
+  const long = await notify(EM, longText);
   out.limits = {
     turns: turns.filter((t) => t.text.includes(`job_id ${M}`)).length, notices: wj.getJob(M)?.notices?.length,
     a2: a2.text.slice(0, 40), d: d.text.slice(0, 40), events: outcomes(M), a1: a1.text.slice(0, 20), b: b.text.slice(0, 10), c: c.text.slice(0, 10),
-    ok300: ok300.text.slice(0, 12), bad301: bad301.text.slice(0, 40), empty: empty.text.slice(0, 20), lenEvents: outcomes(N),
-    emoji300: emoji300.text.slice(0, 12), emoji301: emoji301.text.slice(0, 40), emojiKept: wj.getJob(EM)?.notices?.length ?? 0,
+    ok300: ok300.text.slice(0, 12), ok301: ok301.text.slice(0, 12), empty: empty.text.slice(0, 20), lenEvents: outcomes(N),
+    long: long.text.slice(0, 12), longChars: [...longText].length,
+    longKept: wj.getJob(EM)?.notices?.[0]?.text === longText,
+    longDelivered: turns.some((t) => t.text.includes(longText)),
   };
 }
 
@@ -273,13 +272,93 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
   out.exposure = {
     main: createNotifyOwnerMcpServer({ threadKey: S }) === undefined,
     endpoint: createNotifyOwnerMcpServer({ threadKey: "endpoint:x" }) === undefined,
-    manager: mgr !== undefined && Object.keys(toolsOf(mgr)).join() === "notify_owner",
+    manager: mgr !== undefined && Object.keys(toolsOf(mgr)).join() === "request_owner_intervention",
     sub: createNotifyOwnerMcpServer({ threadKey: `agent:${C}` }) !== undefined,
     ended: createNotifyOwnerMcpServer({ threadKey: `worker:${E}` }) === undefined,
-    descLen: [...(mgr === undefined ? "" : toolsOf(mgr).notify_owner?.description ?? "")].length,
-    descIsExport: mgr !== undefined && toolsOf(mgr).notify_owner?.description === NOTIFY_OWNER_DESCRIPTION,
+    descLen: [...(mgr === undefined ? "" : toolsOf(mgr)[NOTIFY_OWNER_TOOL]?.description ?? "")].length,
+    descIsExport: mgr !== undefined && toolsOf(mgr)[NOTIFY_OWNER_TOOL]?.description === NOTIFY_OWNER_DESCRIPTION,
     mainSteerHasNoticeId: JSON.stringify(toolsOf(createWorkerMcpServer(mainInput())).steer_worker?.inputSchema ?? {}).includes("notice_id"),
     mgrSteerHasNoticeId: JSON.stringify(toolsOf(createSpawnAgentMcpServer(managerInput(M))).steer_worker?.inputSchema ?? {}).includes("notice_id"),
+  };
+}
+
+// ── ⑥b 실제 신규 handler — schema와 별개로 직접 호출도 빈 필드를 거절, 기존 text 코어로만 전달 ──────────
+{
+  reset();
+  const { setNotifyOwnerEnabled } = await import("../../core/settings.js");
+  const M = job("개입 handler", S);
+  const server = createNotifyOwnerMcpServer({ threadKey: coord(M) })!;
+  const tool = toolsOf(server)[NOTIFY_OWNER_TOOL]!;
+  const call = async (args: unknown): Promise<ToolResult> => tool.handler(args, {});
+  const schema = tool.inputSchema as { safeParse: (x: unknown) => { success: boolean } };
+  const invalid = [{}, { message: "구 입력" }, { situation: "상황" }, { intervention: "조치" },
+    { situation: "", intervention: "조치" }, { situation: " \n ", intervention: "조치" },
+    { situation: "상황", intervention: "\t " }, { situation: 1, intervention: "조치" },
+    { situation: "상황", intervention: null }];
+  const invalidResults = [];
+  for (const args of invalid) invalidResults.push(await call(args));
+  const afterInvalid = { notices: wj.getJob(M)?.notices?.length ?? 0, turns: turns.length };
+  const situation = "잠금 확인 필요. ".repeat(180) + "상황 끝🙂";
+  const intervention = "소환자만 자원 해제 결정. ".repeat(100) + "승인 없이는 진행 금지🙂";
+  const expected = jn.normalizeNoticeText(`상황: ${situation}\n필요 개입: ${intervention}`);
+  // 실제 MCP bridge로 schema 검증 → 신규 도구 → 공통 코어 → 세션 전달 경로까지 잰다.
+  const { adaptClaudeMcpServer } = await import("../../core/llm-runtime/adapters/_mcp-bridge.js");
+  const bridge = await adaptClaudeMcpServer(server, "notify-owner-limit-regression");
+  const listed = (await bridge.listTools()).find((t) => t.name === NOTIFY_OWNER_TOOL);
+  const okLong = textOf({ content: await bridge.callTool(NOTIFY_OWNER_TOOL, { situation, intervention }) } as ToolResult);
+  const duplicate = textOf(await call({ situation: `  ${situation}\n `, intervention: ` ${intervention}\t ` }));
+  await call({ situation: "공유 잠금", intervention: "잠금 해제" });
+  await call({ situation: "사고", intervention: "확산 차단" });
+  const cap = textOf(await call({ situation: "다른 결정", intervention: "선택" }));
+  setNotifyOwnerEnabled(false);
+  const disabled = textOf(await call({ situation: "꺼진 뒤", intervention: "조치" }));
+  const disabledFactory = createNotifyOwnerMcpServer({ threadKey: coord(M) }) === undefined;
+  setNotifyOwnerEnabled(true);
+  await bridge.close();
+  out.interventionHandler = {
+    names: Object.keys(toolsOf(server)), schemaValid: schema.safeParse({ situation: "상황", intervention: "조치" }).success,
+    schemaLong: schema.safeParse({ situation, intervention }).success, bridgeSchema: listed?.inputSchema,
+    schemaInvalid: invalid.map((a) => !schema.safeParse(a).success),
+    invalid: invalidResults.map((r) => ({ isError: r.isError, text: textOf(r) })), afterInvalid,
+    okLong, duplicate, cap, disabled, disabledFactory, chars: [...expected].length,
+    kept: wj.getJob(M)?.notices?.[0]?.text === expected,
+    eventKept: notices.some((n) => n.jobId === M && n.outcome === "sent" && n.text === expected),
+    delivered: turns.some((t) => t.text.includes(expected)),
+    count: wj.getJob(M)?.notices?.length, events: outcomes(M),
+    guidance: [okLong, duplicate, cap, disabled, ...invalidResults.map(textOf)],
+  };
+}
+
+// 합성 흐름 fixture: 개입 부분은 보류, 독립 작업은 유지. 실제 모델의 정책 준수 입증은 아니다.
+{
+  reset();
+  const M = withChannel(job("개입 흐름", S));
+  const independent = withChannel(job("독립 작업", S));
+  const handler = toolsOf(createNotifyOwnerMcpServer({ threadKey: coord(M) })!)[NOTIFY_OWNER_TOOL]!.handler;
+  const steps = { blocked: 0, independent: 0 };
+  const situation = "공유 자원 잠김. ".repeat(100) + "상황 핵심 끝";
+  const intervention = "자원 해제 결정. ".repeat(80) + "미승인 진행 금지";
+  const expected = jn.normalizeNoticeText(`상황: ${situation}\n필요 개입: ${intervention}`);
+  const result = textOf(await handler({ situation, intervention }, {}));
+  // 답이 없는 동안 개입 작업은 호출하지 않고, 무관한 계산은 바로 수행한다.
+  steps.independent += [1, 2, 3].reduce((a, b) => a + b, 0);
+  const before = { ...steps, running: wj.getJob(M)?.status, independentRunning: wj.getJob(independent)?.status,
+    pending: wj.getJob(M)?.notices?.[0]?.answeredAt === undefined, turns: turns.length };
+  const turn = turns[0];
+  const accepted = turn?.beforeTurn?.() === null;
+  const received = accepted ? turn?.text ?? "" : "";
+  const consumedOnce = typeof turn?.beforeTurn?.() === "string" && jn.__noticeInboxSizeForTest() === 0;
+  const steer = toolsOf(createWorkerMcpServer(mainInput())).steer_worker!.handler;
+  const answer = textOf(await steer({ job_id: M, message: "잠금을 풀었습니다", notice_id: "n1" }, {}));
+  const input = drain(M);
+  if (input.some((m) => m.text.startsWith("[알림 n1 에 대한 답]"))) steps.blocked += 1;
+  out.interventionFlow = { before, after: steps, result, received, expected, consumedOnce, answer,
+    answered: wj.getJob(M)?.notices?.[0]?.answeredAt !== undefined,
+    delivered: steered.some((s) => s.jobId === M && s.outcome === "delivered" && s.answersNoticeId === "n1"),
+    independentRunning: wj.getJob(independent)?.status,
+    sessionGuide: jn.sessionNoticeText({ jobId: M, noticeId: "n1", threadKey: S, label: "개입 흐름", kind: "worker", text: "상황", at: 1 }),
+    managerGuide: jn.managerNoticeText({ jobId: M, noticeId: "n1", threadKey: S, label: "개입 흐름", kind: "worker", text: "상황", at: 1 }),
+    joinGuide: jn.joinNoticeBlock([{ jobId: M, noticeId: "n1", threadKey: S, label: "개입 흐름", kind: "worker", text: "상황", at: 1 }]),
   };
 }
 
@@ -483,7 +562,7 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
   const { buildActivityDetail } = await import("../../core/llm-runtime/adapters/_activity-detail.js");
   const fallback: R[] = [];
   for (const mode of ["none", "throw", "summary"] as const) {
-    for (const label of ["notify_owner", "mcp__notify-owner__notify_owner", "mcp__notify_owner__notify_owner"]) {
+    for (const label of ["notify_owner", "mcp__notify-owner__notify_owner", "mcp__notify_owner__notify_owner", "request_owner_intervention", "mcp__notify-owner__request_owner_intervention"]) {
       reset();
       const P = withChannel(job("상세경계", S));
       const text = `내부전용원문-${mode}-${label}`;
@@ -544,7 +623,7 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
       loaded: loadNotifyOwnerEnabled(),
       factoryMgr: createNotifyOwnerMcpServer({ threadKey: `worker:${M}` }) === undefined,
       factorySub: createNotifyOwnerMcpServer({ threadKey: `agent:${C}` }) === undefined,
-      r1: r1.text, r2: r2.text.slice(0, 40), ms: Math.max(r1.ms, r2.ms),
+      r1: r1.text, r2: r2.text.slice(0, 100), ms: Math.max(r1.ms, r2.ms),
       recorded: (wj.getJob(M)?.notices?.length ?? 0) + (wj.getJob(C)?.notices?.length ?? 0),
       inbox: jn.__noticeInboxSizeForTest(), steer: drain(P).length, turns: turns.length, events: evs([M, C]),
     };
@@ -556,8 +635,8 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
     const M = job("켜진채시작", S);
     const srv = createNotifyOwnerMcpServer({ threadKey: `worker:${M}` });
     setNotifyOwnerEnabled(false);
-    const ret = srv === undefined ? "(서버 없음)" : textOf(await toolsOf(srv).notify_owner!.handler({ message: "도는 중 끈 뒤 호출" }, {}));
-    out.offMidTurn = { built: srv !== undefined, ret: ret.slice(0, 40), recorded: wj.getJob(M)?.notices?.length ?? 0, inbox: jn.__noticeInboxSizeForTest(), turns: turns.length, events: evs([M]) };
+    const ret = srv === undefined ? "(서버 없음)" : textOf(await toolsOf(srv)[NOTIFY_OWNER_TOOL]!.handler({ situation: "도는 중 끈 뒤 호출", intervention: "조치" }, {}));
+    out.offMidTurn = { built: srv !== undefined, ret, recorded: wj.getJob(M)?.notices?.length ?? 0, inbox: jn.__noticeInboxSizeForTest(), turns: turns.length, events: evs([M]) };
   }
   // ⓓ 켜짐에서 세션 알림 → 합성 턴 줄 섬 → 끔 → 차례 = 모델 없이 건너뜀(G3) · 수신함 비움 · 기록 남음(recorded)
   {
@@ -670,5 +749,8 @@ out.failWindow = { live: await failScenario(false), childEnded: await failScenar
 
 for (const ch of channels.values()) ch.close();
 out.joinRegistered = joinRegistered;
-console.log(JSON.stringify(out));
+// 큰 합성 결과도 pipe에 전부 쓴 뒤 종료한다 — console.log 직후 exit는 64KiB에서 잘릴 수 있다.
+await new Promise<void>((resolve, reject) => {
+  process.stdout.write(`${JSON.stringify(out)}\n`, (error) => error ? reject(error) : resolve());
+});
 process.exit(0);

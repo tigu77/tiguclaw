@@ -143,8 +143,8 @@
           else { showBgTimerDetail(entry); bgDetailPinned = true; }
         });
         session.append(raw, badge);
-        info.append(label, session);
-        row.append(when, info);
+        info.append(when, label, session);
+        row.appendChild(info);
         if (!schedule) {
           const stop = document.createElement("button");
           stop.type = "button";
@@ -168,8 +168,8 @@
         if (schedule) {
           const next = typeof x.nextRun === "number" && Number.isFinite(x.nextRun) ? new Date(x.nextRun).toLocaleString() : i18n("bg.schedules.unknown");
           entry.when.textContent = !x.enabled ? i18n("bg.timers.off") : x.triggerType === "reboot" ? i18n("bg.schedules.reboot") : i18n("bg.schedules.waiting", { when: next });
+          if (x.triggerType === "cron") entry.when.textContent += " · " + x.cronExpr + " · " + x.timezone;
           entry.detail = x.label + "\n" + entry.when.textContent;
-          if (x.triggerType === "cron") entry.detail += "\n" + x.cronExpr + " · " + x.timezone;
         } else {
           const failed = !x.enabled && x.lastStatus === "error";
           entry.row.classList.toggle("failed", failed);

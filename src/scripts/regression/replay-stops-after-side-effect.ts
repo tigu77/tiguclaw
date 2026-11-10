@@ -1,3 +1,4 @@
+import { replayBlockOf } from "../../core/llm-runtime/partial-failure.js";
 /**
  * 회귀: **부작용이 시작되면 다른 모델로 다시 돌리지 않는다** (2026-09-14)
  *
@@ -124,7 +125,8 @@ export const check: RegressionCheck = {
           );
           return out2.text;
         } catch (e) {
-          return e instanceof Error ? e.message : String(e);
+          if (kind === "side-effect") out.push(assert("failure cause stays unchanged; replay prohibition is separate metadata", e instanceof Error && e.message === "첫 후보가 터졌다" && replayBlockOf(e) !== undefined, { message: String(e), replay: replayBlockOf(e) }));
+          return `${e instanceof Error ? e.message : String(e)}\n${replayBlockOf(e) ?? ""}`;
         } finally {
           restore();
         }
@@ -204,7 +206,7 @@ export const check: RegressionCheck = {
         );
         result = o.text;
       } catch (e) {
-        result = e instanceof Error ? e.message : String(e);
+        result = `${e instanceof Error ? e.message : String(e)}\n${replayBlockOf(e) ?? ""}`;
       } finally {
         restore();
       }

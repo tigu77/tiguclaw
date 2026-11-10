@@ -19,6 +19,7 @@ process.env.ANTHROPIC_API_KEY = "sk-ant-regression-not-a-key"; // 인증 판정 
 
 import { mkdtempSync } from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import { assertIsolated, fakeNetwork } from "./_framework.js";
 
 const adapter = process.argv[2] as "claude" | "codex" | "openai";
@@ -35,6 +36,7 @@ const inputs = {
   main: { text: "해줘", threadKey: "dashboard:regr-notice-ad", channel: "cli", cwd: process.env.TIGUCLAW_HOME },
   sub: { text: "[Subagent Task]: 해줘", threadKey: `agent:${A}`, channel: "cli", cwd: process.env.TIGUCLAW_HOME, subagentDepth: 1, turnOrigin: "subagent" },
 };
+const { NOTIFY_OWNER_DESCRIPTION } = await import("../../core/llm-runtime/capabilities/notify-owner-mcp.js");
 const { setNotifyOwnerEnabled, loadNotifyOwnerEnabled } = await import("../../core/settings.js");
 
 /** 그 턴의 모델 요청에 실린 도구 이름(또는 서버 키)을 한 줄로 모은다 — 접힌 묶음(`namespace`) 안의 도구도 편다. */
@@ -42,17 +44,36 @@ let seen = "";
 let calls = 0;
 let fcOut: { none?: string; query?: string; noneErr?: boolean; queryErr?: boolean } | undefined;
 let run: (input: unknown) => Promise<unknown>;
-type T = { name?: string; tools?: T[] };
+type T = { name?: string; tools?: T[]; description?: string; parameters?: unknown };
+type Contract = { current: number; old: number; schema?: unknown; description?: string; descriptionMatches: boolean };
+let contract: Contract = { current: 0, old: 0, descriptionMatches: false };
+const flatTools = (ts: T[]): T[] => ts.flatMap((t) => [t, ...flatTools(t.tools ?? [])]);
+const capture = (ts: T[]): void => {
+  const all = flatTools(ts);
+  const current = all.filter((t) => /^(?:mcp__.+__)?request_owner_intervention$/.test(t.name ?? ""));
+  contract = { current: current.length,
+    old: all.filter((t) => /^(?:mcp__.+__)?notify_owner$/.test(t.name ?? "")).length,
+    schema: current[0]?.parameters, description: current[0]?.description,
+    descriptionMatches: current[0]?.description === NOTIFY_OWNER_DESCRIPTION };
+};
 const flat = (ts: T[]): string[] => ts.flatMap((t) => [t.name ?? "", ...flat(t.tools ?? [])]);
 
 if (adapter === "claude") {
   const { runClaude, withFakeClaudeQuery } = await import("../../core/llm-runtime/adapters/claude-agent-sdk.js");
   type ToolResult = { content: Array<{ text?: string }>; isError?: boolean };
-  type Srv = { instance: { _registeredTools: Record<string, { handler: (a: unknown, e: unknown) => Promise<ToolResult> }> } };
+  type Srv = { instance: { _registeredTools: Record<string, { handler: (a: unknown, e: unknown) => Promise<ToolResult>; inputSchema?: unknown; description?: string }> } };
   let fcap: Srv | undefined;
   const fake = ((args: { options: { mcpServers?: Record<string, unknown> } }) => {
     calls += 1;
     seen = Object.keys(args.options.mcpServers ?? {}).join(",");
+    // 서버 키만 보지 않고 실제 query 입력에 들어온 도구 이름·스키마·설명을 읽는다.
+    capture(Object.values(args.options.mcpServers ?? {}).flatMap((srv) =>
+      Object.entries((srv as Srv).instance?._registeredTools ?? {})
+        .filter(([name]) => /^(?:mcp__.+__)?(?:request_owner_intervention|notify_owner)$/.test(name))
+        .map(([name, t]) => ({ name, description: t.description,
+          parameters: t.inputSchema === undefined ? undefined : z.toJSONSchema(t.inputSchema as z.ZodType),
+        })),
+    ));
     fcap = args.options.mcpServers?.["find-capabilities"] as Srv | undefined;
     return (async function* () {
       yield { type: "system", subtype: "init", session_id: "s", model: "claude-fake" };
@@ -82,6 +103,7 @@ if (adapter === "claude") {
     const raw = typeof init.body === "string" ? init.body : "";
     const body = raw !== "" ? (JSON.parse(raw) as { tools?: T[] }) : {};
     seen = flat(body.tools ?? []).join(",");
+    capture(body.tools ?? []);
     return new Response(
       new ReadableStream<Uint8Array>({
         start(c) {
@@ -107,6 +129,7 @@ if (adapter === "claude") {
     async *getStreamedResponse(req: { tools?: T[] }) {
       calls += 1;
       seen = flat(req.tools ?? []).join(",");
+      capture(req.tools ?? []);
       yield { type: "response_started" };
       yield { type: "output_text_delta", delta: "끝" };
       yield { type: "response_done", response: { id: "r", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, requests: 1 }, output: [{ type: "message", id: "m", role: "assistant", status: "completed", content: [{ type: "output_text", text: "끝" }] }] } };
@@ -117,7 +140,7 @@ if (adapter === "claude") {
 }
 
 const names = (s: string): string[] => s.split(",");
-const has = (s: string): boolean => (adapter === "claude" ? names(s).includes("notify-owner") : names(s).some((n) => n === "notify_owner" || n.endsWith("notify_owner")));
+const has = (s: string): boolean => (adapter === "claude" ? names(s).includes("notify-owner") : names(s).some((n) => n === "request_owner_intervention" || n.endsWith("__request_owner_intervention")));
 /** 양성 대조 — 그 턴이 실제로 무엇으로 조립됐나(«없음» 단언이 공허하게 통과하지 않게). */
 const roleOf = (s: string): string => {
   const ns = names(s);
@@ -127,12 +150,13 @@ const roleOf = (s: string): string => {
   // 서브 = 매니저 도구도 메인 도구도 없는데 도구는 실렸다(서브는 자식을 못 띄운다 — depth 게이트).
   return mgr && !main ? "manager" : main ? "main" : ns.some((n) => n !== "") ? "sub" : "unknown";
 };
-type Out = { which: string; on: boolean; has: boolean; role: string; calls: number; err?: string; seen: string; ms: number; fc?: typeof fcOut };
+type Out = { which: string; on: boolean; has: boolean; role: string; calls: number; err?: string; seen: string; ms: number; contract: Contract; fc?: typeof fcOut };
 const out: Out[] = [];
 for (const which of seq) {
   if (which === "on" || which === "off") { setNotifyOwnerEnabled(which === "on"); continue; }
   seen = "";
   fcOut = undefined;
+  contract = { current: 0, old: 0, descriptionMatches: false };
   const before = calls;
   let err: string | undefined;
   const t0 = Date.now();
@@ -142,7 +166,7 @@ for (const which of seq) {
     err = (e instanceof Error ? e.message : String(e)).slice(0, 300);
   }
   const ms = Date.now() - t0;
-  const rec: Out = { which, on: loadNotifyOwnerEnabled(), has: has(seen), role: roleOf(seen), calls: calls - before, ...(err !== undefined ? { err } : {}), seen: seen.slice(0, 1200), ms };
+  const rec: Out = { which, on: loadNotifyOwnerEnabled(), has: has(seen), role: roleOf(seen), calls: calls - before, ...(err !== undefined ? { err } : {}), seen: seen.slice(0, 1200), ms, contract };
   if (fcOut !== undefined) rec.fc = fcOut;
   out.push(rec);
 }

@@ -51,12 +51,16 @@ export const check: RegressionCheck = {
       text: string;
       hasPartial: boolean;
       hasNotice: boolean;
+      error?: string;
+      replayBlocked: boolean;
+      calls: number;
+      dispatches: number;
     };
 
     return [
       assert(
         "★★끊기기 전까지 쓴 보고가 **답장에 남는다** — 없으면 사용자는 무슨 일이 있었는지 알 방법이 0이다(일은 이미 끝나 있었다)",
-        j.outcome === "returned" && j.hasPartial,
+        j.outcome === "threw" && j.hasPartial,
         `결과=${j.outcome} · 부분보고=${j.hasPartial} · 앞머리="${j.text.slice(0, 30)}…"`,
       ),
       assert(
@@ -65,9 +69,9 @@ export const check: RegressionCheck = {
         j.hasNotice ? "안내 문구 포함" : "★안내가 없다 — 잘린 줄 모른다",
       ),
       assert(
-        "★순서가 **보고 → 안내** 다 — 안내가 앞이면 사용자는 실패로 읽고 본문을 안 본다",
-        j.text.indexOf("부분보고-표식") < j.text.indexOf("Something went wrong"),
-        `보고 위치=${j.text.indexOf("부분보고-표식")} · 안내 위치=${j.text.indexOf("Something went wrong")}`,
+        "★원오류와 미완 보고는 분리하고 이미 실행한 도구의 전체 턴 replay를 막는다",
+        !j.text.includes("terminated") && !(j.error ?? "").includes("부분보고-표식") && j.replayBlocked && j.calls >= 2 && j.dispatches === 1,
+        { error: j.error, replayBlocked: j.replayBlocked, calls: j.calls, dispatches: j.dispatches },
       ),
     ];
   },

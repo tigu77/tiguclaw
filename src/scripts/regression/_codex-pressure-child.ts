@@ -77,6 +77,10 @@ globalThis.fetch = fakeNetwork(async (_url, init) => {
   return complete(logical, items, header);
 });
 const { runOpenAiCodex } = await import("../../core/llm-runtime/adapters/openai-codex-oauth.js");
+const { partialReportOf } = await import("../../core/llm-runtime/partial-failure.js");
+const { presentFailure } = await import("../../core/llm-runtime/swallowed-failure.js");
+let partial: string | undefined;
+let display: string | undefined;
 let error = "";
 let text = "";
 try {
@@ -85,7 +89,7 @@ try {
     ...(media ? { attachments: [{ kind: "image" as const, path: image, filename: "synthetic.png", mimeType: "image/png", bytes: 650_000 }] } : {}),
   });
   text = result.text;
-} catch (e) { error = String(e); }
+} catch (e) { error = String(e); partial = partialReportOf(e); display = presentFailure(e, e instanceof Error ? e.message : String(e)); }
 unsub();
-console.log("PRESSURE_RESULT " + JSON.stringify({ mode, observations, starts, error, text, sameTransientBody, rescueReduced }));
+console.log("PRESSURE_RESULT " + JSON.stringify({ mode, observations, starts, error, text, partial, display, sameTransientBody, rescueReduced }));
 process.exit(0);

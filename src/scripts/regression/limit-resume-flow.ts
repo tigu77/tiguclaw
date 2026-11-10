@@ -99,7 +99,7 @@ export const check: RegressionCheck = {
       catchBody.indexOf("stoppedByUser(turnAc.signal)") >= 0 &&
       catchBody.indexOf('e.name === "WorkerCancelledError"') > catchBody.indexOf("stoppedByUser(turnAc.signal)") &&
       catchBody.indexOf("noteTurnLimitStop(e, msg)") > catchBody.indexOf('e.name === "WorkerCancelledError"');
-    const oneText = /await replyCommand\(msg, failText, \{ turnFailed: true \}\)/.test(catchBody) && /await fanOutEgress\(egressTargets, failText, bus, msg\.threadKey, original\)/.test(catchBody);
+    const oneText = /const shownFailure = presentFailure\(e, failText\);/.test(catchBody) && /await replyCommand\(msg, shownFailure, \{ turnFailed: true \}\)/.test(catchBody) && /await fanOutEgress\(egressTargets, shownFailure, bus, msg\.threadKey, original\)/.test(catchBody);
     const onlyInCatch = idx.split("noteTurnLimitStop(").length - 1 === 1 && catchBody.includes("noteTurnLimitStop(e, msg)"); // 호출은 실패 출구 한 번뿐
     const stopBlock = between(idx, 'if (msg.text.trim() === "/stop") {', 'if (msg.text.trim() === "/update") {');
     const stopBranches = stopBlock.split("withCancel(").length - 1;

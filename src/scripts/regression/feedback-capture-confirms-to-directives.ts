@@ -12,7 +12,7 @@
  *  ④ 한 줄·길이·key 형식 · 없는 key retire 거절
  *  ⑥~⑨ (적대 검토 반영) 쓸 때 상한 = 실제 실림 · 동시 호출 · user 우선 선별·배치 · list·긴 자율 key 내리기·구분자 거절
  *  ⑤ 배선: 코어 서버가 도구를 내고, 스킬은 **빌트인**으로 발견되며 **메인 대화에만** 실린다,
- *     sysprompt·헌법이 실제 도구·스킬 이름을 가리킨다
+ *     메인 칸 조립본이 실제 도구·스킬 이름을 가리키고 다른 칸 조립본은 지시하지 않는다(2026-11-10 개정)
  *
  * ★도구·스킬은 **코어 소유**다(같은 날 정태님 «플러그인인데 코어 소스에서 가리켜?») — 헌법이 가리키는 이름을
  *  플러그인이 내면, 플러그인을 끈 설치본에서 헌법이 없는 도구를 지시한다. 그래서 ⑤ 가 출처까지 잰다.
@@ -84,8 +84,17 @@ export const check: RegressionCheck = {
     const skill = skills.find((s) => s.name === "feedback-capture");
     const mainIdx = formatSkillIndex(skills, "main");
     const mgrIdx = formatSkillIndex(skills, "manager");
-    const sysprompt = readFileSync(path.join(REPO, "src/core/llm-runtime/adapters/_shared-sysprompt.ts"), "utf8");
+    // ★이름은 **도구가 닿는 칸의 조립본**에서 본다(2026-11-10 지침 통합 후속). 공유 sysprompt 는 모든 칸에 가므로
+    //  거기 메인 전용 도구 이름을 요구하면, 그 도구가 없는 매니저·서브에게 «쓰라» 는 지시를 강요하게 된다.
+    const { REGION_A_SYSTEM_PROMPT } = await import("../../core/llm-runtime/adapters/_shared-sysprompt.js");
+    const { scopeConstitution } = await import("../../core/constitution-scope.js");
+    const sysprompt = String(REGION_A_SYSTEM_PROMPT);
     const constitution = readFileSync(path.join(REPO, "SYSTEM.md"), "utf8");
+    const roleView = (k: "main" | "manager" | "subagent"): string => {
+      const s = scopeConstitution(constitution, k);
+      return `${sysprompt}\n${s.body}\n${s.roleExtra}`;
+    };
+    const views = { 메인: roleView("main"), 매니저: roleView("manager"), 에이전트: roleView("subagent") };
     // 자율 지침이 있어도 사용자 것이 먼저 실린다(실림 순서는 user 우선)
     await upsertDirective({ key: "regr-auto", text: "회귀-자율 교훈", source: "auto" });
     await call({ key: "regr-user", text: "회귀-사용자 규칙" });
@@ -188,14 +197,53 @@ export const check: RegressionCheck = {
         { 발견: skill?.source, 메인: mainIdx.includes("feedback-capture"), 매니저: mgrIdx.includes("feedback-capture") },
       ),
       assert(
-        "⑤ sysprompt 방아쇠와 헌법이 실제 도구·스킬 이름을 가리킨다",
-        sysprompt.includes("`confirm_feedback`") && sysprompt.includes("`feedback-capture`") && constitution.includes("`confirm_feedback`"),
+        "★⑤ 메인 칸 조립본(sysprompt+헌법)은 실제 도구·스킬 이름을 가리키고, 도구가 닿지 않는 매니저·에이전트 조립본은 그 이름을 지시하지 않는다",
+        views.메인.includes("`confirm_feedback`") && views.메인.includes("`feedback-capture`") &&
+          !views.매니저.includes("confirm_feedback") && !views.에이전트.includes("confirm_feedback") &&
+          !views.매니저.includes("`feedback-capture`") && !views.에이전트.includes("`feedback-capture`"),
         {
-          sysprompt도구: sysprompt.includes("`confirm_feedback`"),
-          sysprompt스킬: sysprompt.includes("`feedback-capture`"),
-          헌법도구: constitution.includes("`confirm_feedback`"),
+          메인도구: views.메인.includes("`confirm_feedback`"),
+          메인스킬: views.메인.includes("`feedback-capture`"),
+          매니저: views.매니저.includes("confirm_feedback") || views.매니저.includes("`feedback-capture`"),
+          에이전트: views.에이전트.includes("confirm_feedback") || views.에이전트.includes("`feedback-capture`"),
         },
       ),
+      assert(
+        "⑤ 교정 보존 원칙(현재 반영 → 보존 가치 판단, 단발 교정 자동 규칙화 금지)은 모든 칸 공유 프롬프트에 있다",
+        /교정은 먼저 현재 작업에 반영하고, 영속 저장은 별도로 판단/.test(sysprompt) &&
+          /단발 교정·평범한 맞장구를 자동 규칙화하거나/.test(sysprompt),
+        "공유 원칙",
+      ),
+      // 증거란에 항목별 관측값을 싣는다(suite-selfcheck: 기대값만 적은 증거 금지).
+      ...(() => {
+        const body = readFileSync(path.join(REPO, "skills/feedback-capture/SKILL.md"), "utf8");
+        const listAt = body.search(/^## \d+\. 올리기 전에 겹치는지 본다/m);
+        const setAt = body.search(/^## \d+\. 올린다/m);
+        const description = /^description:\s*(.*)$/m.exec(body)?.[1] ?? "";
+        const correctionRow = body.split("\n").find((l) => l.startsWith("| **분명한 교정**")) ?? "";
+        // ★설명(트리거 자리)과 실제 분류 행을 **각각** 본다(R1 독립 검토) — 도입부만 보면 분류 행이 종전처럼
+        //  «무조건 규칙화» 로 돌아가도 초록이었다.
+        const seen = {
+          설명_반영후대조: /먼저 지금 작업에 반영하고, 다음 대화에도 지켜야 할 것만 기존 지침과 대조/.test(description),
+          설명_단발: /단발 교정은 반영으로 끝내/.test(description),
+          분류행_먼저반영: /먼저 지금 작업에 반영한다/.test(correctionRow),
+          분류행_3으로: /다시 지켜야 할 방식[^|]*3으로/.test(correctionRow),
+          분류행_이번만: /이번 산출물에만 해당하면 반영으로 끝낸다/.test(correctionRow),
+          본문_순서: /지금 작업에 반영 → 다음 대화에도 지킬 가치가 있나 → 기존 지침과 대조 → 필요한 것만 저장/.test(body),
+          본문_단발: /단발\s*교정은 반영으로 끝낸다/.test(body),
+          절_순서: listAt >= 0 && setAt > listAt,
+          명시지시_AGENT: /묻지 말고 `AGENT\.md` 에 바로 반영/.test(body),
+          증거만: /증거만/.test(body),
+          사용자언어: /사용자가 말한 언어로/.test(body),
+        };
+        return [
+          assert(
+            "★⑤ 스킬 설명·분류 행·본문이 같은 순서(지금 반영 → 보존 가치 → 기존 대조 → 저장)를 따르고, 명시 상시 지시는 묻지 않고 AGENT.md 로·애매한 반응은 증거만·사용자 언어로 적는다",
+            Object.values(seen).every(Boolean),
+            JSON.stringify(seen),
+          ),
+        ];
+      })(),
       assert(
         "⑤ 자율 지침이 있어도 사용자 확정분이 먼저 실린다",
         ordered.indexOf("회귀-사용자 규칙") >= 0 && ordered.indexOf("회귀-사용자 규칙") < ordered.indexOf("회귀-자율 교훈"),

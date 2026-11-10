@@ -698,10 +698,14 @@ const runSteps = async (
   frameId: string,
   raw: readonly RawStep[],
   host: PluginHost | undefined,
+  signal?: AbortSignal,
   // ★반환에 **그림이 든다** — `do` 는 행동 뒤 «지금 상태» 를 같이 돌려준다(사후 장면).
 ): Promise<{
   content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string; _meta?: Record<string, unknown> }>;
 }> => {
+  const cancelled = (): boolean => signal?.aborted === true;
+  const cancelledBeforeInput = () => textOnly("조작이 취소되었습니다 — 새 입력을 보내지 않았습니다.");
+  if (cancelled()) return cancelledBeforeInput();
   const ctl = w.control;
   if (ctl === null) return textOnly("이 플랫폼에서는 아직 조작(클릭·입력)을 지원하지 않습니다.");
   // ★★**진짜 진입 시각** (2026-09-20, 보완 인계서 ②). 첫 판은 `controlPreflight`
@@ -721,6 +725,7 @@ const runSteps = async (
 
   const perm = await ctl.controlPreflight();
   tPreflight = Date.now();
+  if (cancelled()) return cancelledBeforeInput();
   if (!perm.ok) {
     host?.log(`조작 거절 — 권한(${perm.reason})`);
     // ★★**«사유» 는 같아도 «고치는 법» 은 플랫폼마다 다르다** (2026-09-18, 회사돌쇠 3차).
@@ -742,6 +747,7 @@ const runSteps = async (
   //  먹는지** 아무도 안 재고 있었다. TTL 후보를 고르기 전에 그 분해가 먼저다.
   const idle = await ctl.idleSeconds((diagnostic) => host?.log(diagnostic));
   tIdle = Date.now();
+  if (cancelled()) return cancelledBeforeInput();
   const now = tIdle;
   const begin = beginAction(w.desktop, owner, now, idle);
   if (!begin.ok) {
@@ -837,9 +843,18 @@ const runSteps = async (
     //  것 전부**를 올린다.
     //  ★**대입이 아니라 병합**이다 — 대입은 이전 정리 실패분을 잃는다(위에서 갚았으므로
     //   보통 비어 있지만, 비어 있음에 기대지 않는다).
+    if (cancelled()) return cancelledBeforeInput();
     w.desktop.held = mergeHeld(w.desktop.held, p.touched);
     fired = true;
-    const sent = await ctl.post(p.events);
+    let postThrew = false;
+    let sent: Awaited<ReturnType<ControlBackend["post"]>>;
+    try {
+      sent = await ctl.post(p.events, signal);
+    } catch (e) {
+      postThrew = true;
+      // 실행부의 예상 밖 거부도 정리와 현재 결과를 건너뛰지 않는다. 진행은 알 수 없다.
+      sent = { ok: false, reason: "failed", detail: String(e), stdout: "" };
+    }
     w.desktop.lastSelfInputMs = Date.now();
     // ★★**판독이 먼저다 — 그 다음에 장부를 줄인다** (2026-09-20, 회사돌쇠 독립 검토).
     //  종전엔 `sent.ok` 만 보고 장부를 «끝까지 갔을 때 남는 것»(`holds`)으로 줄인 **뒤에**
@@ -852,7 +867,9 @@ const runSteps = async (
     //  ★★**아래 정리 블록의 주석은 이미 이 경우를 정확히 적고 있었다.** 가드가 틀린 게
     //   아니라 **그 앞 한 줄이 무력화**하고 있었다 — 변이로는 안 나오고 순서를 봐야 나오는
     //   부류다(CLAUDE.md 의 «변이만으로는 순서 결함이 안 나온다»).
-    const oc = stepsOutcome(sent.stdout, steps.length, sent.ok);
+    const oc: StepsOutcome = postThrew
+      ? { status: steps.map(() => "불명") }
+      : stepsOutcome(sent.stdout, steps.length, sent.ok);
     if (sent.ok && sent.fired === 0) {
       // ★한 번도 안 쐈다 — 누른 것이 없으니 **뗄 것도 없다.** 여기서 비우지 않으면 아래
       //  정리가 **누른 적 없는 키에 keyup 을 쏜다**(아스트라가 경계한 «무조건 해제»).
@@ -868,21 +885,28 @@ const runSteps = async (
     //  것 전부» 라 실제로 눌린 것의 **상위집합**이다 — 안 눌린 키에 keyup 이 한 번 더 가는
     //  것은 무해하지만, **눌린 채 남는 키는 사용자 기계에 미아로 남는다.** 값이 다르다.
 
+    let releaseFailure = "";
     // ★★**정리는 «성공/실패» 가 아니라 «장부에 남았나» 로 한다**(계약 2). 가드가 멈춘
     //  실행은 자식이 **정상 종료**했는데도 `keydown` 이 눌린 채 남는다 — 종전처럼 실패
     //  경로에서만 놓으면 그 키가 시스템에 미아로 남는다.
     if (w.desktop.held.keys.length > 0 || w.desktop.held.buttons.length > 0) {
       const rel = releasePlan(w.desktop);
       if (rel.length > 0) {
-        const released = await ctl.post(rel);
+        // 취소된 본 요청 신호를 해제에 넘기지 않는다. native post는 종료 확인 뒤 반환한다.
+        try {
+          const released = await ctl.post(rel);
+          if (released.ok) forgetHeld(w.desktop);
+          else releaseFailure = released.detail || released.reason;
+        } catch (e) { releaseFailure = String(e); }
         // ★정리 입력도 «우리 입력» 이다 — 안 찍으면 다음 행동이 그걸 사람으로 오인한다.
         w.desktop.lastSelfInputMs = Date.now();
-        if (released.ok) forgetHeld(w.desktop);
       }
     }
 
     if (!sent.ok) {
       host?.log(`조작 실패 — ${sent.reason}: ${sent.detail}`);
+      // MCP 요청 취소 뒤에는 응답이 버려질 수 있다. 입력 내용 없이 부분 진행을 장부 로그에도 남긴다.
+      host?.log(`조작 부분 결과 — ${oc.status.map((status, i) => `${i + 1}:${status}`).join(", ")}`);
       report = `${postFailureMessage(sent.reason, sent.detail)}\n\n${reportSteps(p.describes, oc)}`;
     } else {
       const done = oc.status.filter((s) => s === "완료").length;
@@ -891,6 +915,11 @@ const runSteps = async (
           (oc.stoppedAt === undefined ? "" : ` · ${String(oc.stoppedAt.i + 1)}번째에서 멈춤(${oc.stoppedAt.why})`),
       );
       report = reportSteps(p.describes, oc);
+    }
+    if (releaseFailure !== "") {
+      const warning = `★입력 해제 실패 — 눌린 키·버튼이 남았을 수 있습니다: ${releaseFailure}`;
+      host?.log(warning);
+      report += `\n\n${warning}`;
     }
   } finally {
     // ★성공이든 실패든 **반드시** 활성 행동과 리스를 정리한다(§14-2).
@@ -1015,7 +1044,7 @@ const actionTools = (w: Wiring, host?: PluginHost) => [
         .max(STEPS_MAX)
         .describe("순서대로 낼 손짓들"),
     },
-    async (a: { frameId: string; steps: RawStep[] }) => runSteps(w, a.frameId, a.steps, host),
+    async (a: { frameId: string; steps: RawStep[] }, extra) => runSteps(w, a.frameId, a.steps, host, (extra as { signal?: AbortSignal } | undefined)?.signal),
   ),
 ];
 

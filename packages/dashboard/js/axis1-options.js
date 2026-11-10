@@ -332,7 +332,8 @@
             (div.firstChild || div).appendChild(x);
           }
         }
-        interruptOpenTurn(activeThreadKey); // 표시 탭의 입력 경계 — 숨은 queueKey 의 에코가 다시 끊지 않는다.
+        // 낙관 버블은 표시일 뿐 턴 경계가 아니다(취소·전송 실패·늦은 out).
+        // 서버 echo에서 해당 큐의 진행 경계만 닫는다.
         vtAppend(div);
         pendingQueued.push(entry);
         localChatCount += 1;

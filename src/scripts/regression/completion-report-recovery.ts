@@ -66,8 +66,8 @@ export const check: RegressionCheck = {
         str("readD").slice(0, 200),
       ),
       assert(
-        "★재시작 뒤 마무리 실패는 «실패(마무리 단계) · 원인» 머리 + 본 보고",
-        str("readF1").includes("실패(마무리 단계) · 원인: fetch failed") && str("readF1").includes("[F1 본 보고] 완성됨"),
+        "★재시작 뒤 마무리 실패는 «실패(보고 보존) · 원인» 머리 + 본 보고",
+        str("readF1").includes("실패(보고 보존) · 원인: fetch failed") && str("readF1").includes("[F1 본 보고] 완성됨"),
         str("readF1").slice(0, 200),
       ),
       assert("원결과 없는 실패는 원오류를 말한다 · 취소는 «중지됐습니다»", str("readF0").includes("plain failure") && str("readC").includes("중지됐습니다"), `${str("readF0").slice(0, 80)} / ${str("readC").slice(0, 60)}`),
@@ -324,7 +324,7 @@ export const check: RegressionCheck = {
         assert("대시보드 블록을 소스에서 떼어냈다(검사 전제)", block.includes("applyJobReport") && block.includes("hydrateFullTask"), `${block.length}자`),
         assert(
           "★끝난 카드 펼침 — 실패+원결과면 «본 보고(마무리 단계 실패 전에 완성)» 와 **원오류**를 함께 보인다(재시작 뒤 서버 단건 그대로)",
-          f1.fetched === 1 && f1.result.includes("본 보고(마무리 단계") && f1.result.includes("[F1 본 보고] 완성됨") && f1.report === i18n("bg.report.none") &&
+          f1.fetched === 1 && f1.result.includes("실패 전 보고(미완 부분 포함 가능)") && f1.result.includes("[F1 본 보고] 완성됨") && f1.report === i18n("bg.report.none") &&
             f1.err === "fetch failed", // 본 보고가 있어도 실패 원인은 보인다(독립 사냥 U3)
           s(f1),
         ),

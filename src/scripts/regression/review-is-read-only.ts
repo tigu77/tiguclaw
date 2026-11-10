@@ -50,6 +50,15 @@ export const check: RegressionCheck = {
     // ── ①-b 스킬 본문이 들고 있어야 할 것 셋 ─────────────────────────────
     // ★종전 그물은 **에이전트 파일만** 봤다 — 스킬에서 같은 규칙을 지워도 초록이었다
     //  (실측 변이 2/2 통과). 스킬은 서브 프롬프트로도 복사되므로 여기가 정본이다.
+    const evidenceRules = skill.split("## D.")[1]?.split("## E.")[0] ?? "";
+    const evidenceContract = {
+      staticProof: /실제로 닿는 입력·호출부/.test(evidenceRules) && /정적 근거\([^\n]+\)\*\*로 충분하다/.test(evidenceRules),
+      runtimeProof: /동작·타이밍·환경 의존 주장은 필요한\s+실행·재현으로 확인/.test(evidenceRules),
+      unknownMarked: /확인하지 못한 부분은 \*\*«의심\(미확인\)»/.test(evidenceRules),
+      noUnprovenDefect: /근거 없는 발견은 확정 결함으로 보고하지 않는다/.test(evidenceRules),
+      readingIsNotExecution: /도구로 읽기·검색을 했다는 사실과 제품 경로를 실행했다는 주장은 별개/.test(evidenceRules),
+      noBlanketExecution: !/확인 동작을 돌리지 않은 발견은 보고하지 않는다|발견마다 동작 하나를 실행한다/.test(skill),
+    };
     const skillChecks: [string, boolean, string][] = [
       [
         "★★사람 수가 **천장 공식**으로 적혀 있다 — `min(묶음 수, 3)`. 「3명」 이라고만 적으면 천장이 **정원**으로 읽혀 매번 다 채운다(작은 변경에 3명이 뜬다)",
@@ -57,9 +66,9 @@ export const check: RegressionCheck = {
         "천장 공식",
       ],
       [
-        "★★**확인 동작을 돌린 뒤에만 보고한다**는 규칙이 있다 — 이게 이 스킬의 적대적 검증 전부다. 지우면 사람을 안 늘린 채 검증만 사라지고, 보고는 더 깨끗해 보인다(가장 나쁜 실패 방향)",
-        /확인 동작을 돌리지 않은 발견은 보고하지 않는다/.test(skill),
-        "확인 동작 필수",
+        "★★확인 근거는 필수다 — 도달 경로·정적 계약으로 입증되면 인정하고, 동작·타이밍·환경 주장은 필요한 실행과 미확인 표시를 요구한다. 근거 없는 확정·읽기와 실행의 혼동·일괄 실행 강제는 금지한다",
+        Object.values(evidenceContract).every(Boolean),
+        JSON.stringify(evidenceContract),
       ],
       [
         "★스킬 본문도 금지를 **예시로** 준다 — 「고치지 마라」만 있으면 어디까지가 쓰기인지 모른다(`git show` 는 되고 `git checkout` 은 안 된다)",

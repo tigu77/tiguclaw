@@ -117,10 +117,11 @@ export const check: RegressionCheck = {
       const wiring = {
         success: fanBy("text").map((a) => a[4] ?? null),
         successForwards: /const original = publishReplyOut\(t\.bus, \{[\s\S]*?\}\);\s*await t\.fanOut\(t\.replyText, original\);/.test(rc),
-        failure: fanBy("failText").map((a) => a[4] ?? null),
+        failure: fanBy("shownFailure").map((a) => a[4] ?? null),
         stopped: fanBy("STOPPED_NOTICE()").map((a) => a[4] ?? null),
         publishBinds: (idx.match(/const original = publishReplyOut\(bus, \{/g) ?? []).length + (rc.match(/const original = publishReplyOut\(t\.bus, \{/g) ?? []).length,
-        replyBinds: (idx.match(/const original = await replyCommand\(msg, (?:failText|STOPPED_NOTICE\(\)), \{ turnFailed: true \}\);/g) ?? []).length,
+        failurePresentation: /const shownFailure = presentFailure\(e, failText\);/.test(idx),
+        replyBinds: (idx.match(/const original = await replyCommand\(msg, (?:shownFailure|STOPPED_NOTICE\(\)), \{ turnFailed: true \}\);/g) ?? []).length,
         forwards: /deliverOutbound\(\{[\s\S]*copyOfRecorded: true,\s*\.\.\.\(copyOf !== undefined \? \{ copyOf \} : \{\}\)/.test(fanBody),
       };
 
@@ -144,7 +145,7 @@ export const check: RegressionCheck = {
         assert("④ 배선 — 성공·실패·작업취소는 원본 발행의 반환을 넘기고 멈춤 안내 두 곳은 안 넘긴다 · fanOutEgress 가 deliverOutbound 에 넘긴다",
           JSON.stringify(wiring.success) === '["original"]' && wiring.successForwards && JSON.stringify(wiring.failure) === '["original"]' &&
             wiring.stopped.filter((x) => x === "original").length === 1 && wiring.stopped.filter((x) => x === null).length === 2 &&
-            wiring.publishBinds === 1 && wiring.replyBinds === 2 && wiring.forwards,
+            wiring.publishBinds === 1 && wiring.failurePresentation && wiring.replyBinds === 2 && wiring.forwards,
           wiring),
       ];
     } finally {

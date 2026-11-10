@@ -149,6 +149,44 @@ export const check: RegressionCheck = {
     const mgrHasDelegation = fullFor("manager").includes("### 위임과 규모");
     out.push(assert("★매니저는 「위임과 규모」를 받는다 — 팬아웃을 하는 칸이다", mgrHasDelegation, mgrHasDelegation ? `있음 (그 칸 본문 ${size("manager")}B)` : "사라졌다"));
 
+    // ⑥-b ★공용 본문에 남은 도구 예시는 **그 안에서 실행 주체를 밝힌다** (2026-11-10 지침 통합 후속).
+    //    따로 «역할 경고» 한 줄을 얹고 아래 예시를 그대로 두면 같은 판단이 두 자리가 된다. 그 칸에 닿지 않는
+    //    도구(표 `REACH` 에서 파생)를 적은 줄은 같은 줄에서 주체(위임 도구가 있는 칸·메인 대화·소환자에게 요청)를
+    //    말해야 하고, 공통 발견 안내(`project_capabilities`·`invoke_skill`)는 모든 칸에 남는다.
+    //    ★등급: 줄 단위 배선 린트 — 의미 반전은 못 본다.
+    const { reaches: toolReaches } = await import("../../core/llm-runtime/capability-reach.js");
+    //    주체 표현은 도구마다 다르다 — 위임 도구(`spawn_agent`)는 «위임 도구가 있는/없는 칸», 메인 전용 도구는
+    //    «메인 대화». 어느 쪽이든 «소환자에게» 요청하라는 말이면 된다. 한 줄에 둘이 있으면 둘 다 한정돼야 한다.
+    const DELEGATE_ACTOR = /위임 도구가 (?:있는|없는) 칸|소환자에게/;
+    const MAIN_ACTOR = /메인 대화|소환자에게/;
+    const TOOL_CAP = [
+      ["spawn_agent", "agents", DELEGATE_ACTOR],
+      ["add_mcp_server", "mcp-admin", MAIN_ACTOR],
+      ["register_endpoint", "endpoints", MAIN_ACTOR],
+      ["run_in_background", "workers", MAIN_ACTOR],
+      ["confirm_feedback", "directives", MAIN_ACTOR],
+    ] as const;
+    //    ★판정 단위는 **문장**이다(R1 독립 검토) — 줄 단위로 보면 한 줄 안 다른 도구의 주체(«소환자에게»)가
+    //     MCP 등록 주체(«메인 대화»)가 지워진 것을 가렸다.
+    const sentences = (l: string): string[] => l.split(/(?<=[다요])\.(?:\s+|$)/);
+    const unqualified = (["manager", "subagent"] as const).flatMap((k) =>
+      fullFor(k)
+        .split("\n")
+        .flatMap(sentences)
+        .filter((st) => TOOL_CAP.some(([t, c, actor]) => !toolReaches(c, k) && st.includes(t) && !actor.test(st)))
+        .map((st) => `${k}: ${st.slice(0, 50)}`),
+    );
+    const discovery = (["manager", "subagent"] as const).every(
+      (k) => fullFor(k).includes("project_capabilities(path)") && fullFor(k).includes("invoke_skill(name, path"),
+    );
+    out.push(
+      assert(
+        "★매니저·서브 칸이 받는 줄 중 그 칸에 없는 도구를 적은 줄은 실행 주체를 밝히고, 공통 발견 안내는 남는다",
+        unqualified.length === 0 && discovery,
+        unqualified.length === 0 ? { 발견안내: discovery } : `★주체 없는 줄: ${unqualified.join(" / ")}`,
+      ),
+    );
+
     // ⑦ ★**끊긴 참조가 없다** — 잘라낸 절을 아직 «가리키는» 문장이 남으면, 그 칸의 헌법은
     //    없는 조항을 인용하게 된다. 자르기보다 이쪽이 더 조용한 실패다: 모델은 못 찾는
     //    참조를 만나면 지어내거나 그 문장을 통째로 무시한다.

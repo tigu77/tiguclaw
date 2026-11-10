@@ -82,7 +82,7 @@ export const check: RegressionCheck = {
     out.push(assert("legacy force never opens restored; explicit rescue opens old restored only and retains recent3", normal === 0 && rescue === 2, { normal, rescue }));
 
     type Observation = { chars: number; bytes: number; outputs: Array<{ id: string; len: number; marker: boolean }> };
-    type Flow = { observations: Observation[]; starts: number; error: string; text: string; sameTransientBody: boolean; rescueReduced: boolean };
+    type Flow = { observations: Observation[]; starts: number; error: string; text: string; partial?: string; display?: string; sameTransientBody: boolean; rescueReduced: boolean };
     const modes = ["matched", "missing", "false", "bad-total", "media-legacy", "transient", "overflow", "overflow-twice", "overflow-generic", "visible-overflow", "generic400", "unknown-model", "wrong-model", "missing-model"];
     const flows: Record<string, Flow> = {};
     for (let start = 0; start < modes.length; start += 4) {
@@ -103,7 +103,7 @@ export const check: RegressionCheck = {
     for (const mode of ["overflow-twice", "overflow-generic"]) out.push(assert(`actual ${mode} propagates its own cause without another rescue (facade replay covered by codex-rescue-error-cause)`,
       flows[mode]?.text === "" && flows[mode]!.observations.length === 4 && flows[mode]!.starts === 10 && flows[mode]!.rescueReduced &&
       (mode === "overflow-twice" ? flows[mode]!.error.includes("context_length_exceeded") : flows[mode]!.error.includes("failed: 400") && flows[mode]!.error.includes("invalid_prompt") && !flows[mode]!.error.includes("context_length_exceeded")), flows[mode]));
-    out.push(assert("visible text delta prohibits local context retry", flows["visible-overflow"]?.error === "" && flows["visible-overflow"].observations.length === 3 && flows["visible-overflow"].starts === 10 && flows["visible-overflow"].text.includes("already visible"), flows["visible-overflow"]));
+    out.push(assert("visible text delta prohibits local context retry", flows["visible-overflow"]?.error === "Error: Codex context_length_exceeded — local recovery unavailable or exhausted" && flows["visible-overflow"].observations.length === 3 && flows["visible-overflow"].starts === 10 && flows["visible-overflow"].text === "" && flows["visible-overflow"].partial?.includes("already visible") === true && flows["visible-overflow"].display?.includes("already visible") === true && flows["visible-overflow"].display?.includes("Incomplete partial report") === true, flows["visible-overflow"]));
     out.push(assert("generic400 prose never triggers rescue", flows.generic400?.observations.length === 3 && flows.generic400.error !== "", flows.generic400));
     return out;
   },

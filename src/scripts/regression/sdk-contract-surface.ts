@@ -23,7 +23,9 @@
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 /**
- * 2026-08-06 `@anthropic-ai/claude-agent-sdk` 0.3.222 기준 스냅샷.
+ * 2026-11-10 `@anthropic-ai/claude-agent-sdk` 0.3.322 기준 스냅샷.
+ * SDKSessionWritesLostMessage 추가: 저장 실패 통지이며 새 답변 턴이 아니다.
+ * 실제 adapter 주입 검사(claude-turn-boundary-runs)로 답/스티어 경계 보존을 확인한다.
  * ★늘었으면 **읽어보고** 갱신해라 — 새 메시지 종류는 대개 새 동작을 뜻한다(0.3 의
  *  task_* 4종이 곧 "알림이 턴을 자동으로 연다" 였고, 그게 사고였다).
  */
@@ -38,7 +40,7 @@ const BASELINE: readonly string[] = [
   "SDKModelRefusalNoFallbackMessage", "SDKNotificationMessage",
   "SDKPartialAssistantMessage", "SDKPermissionDeniedMessage", "SDKPluginInstallMessage",
   "SDKPromptSuggestionMessage", "SDKRateLimitEvent", "SDKResultMessage",
-  "SDKSessionStateChangedMessage", "SDKStatusMessage", "SDKSystemMessage",
+  "SDKSessionStateChangedMessage", "SDKSessionWritesLostMessage", "SDKStatusMessage", "SDKSystemMessage",
   "SDKTaskNotificationMessage", "SDKTaskProgressMessage", "SDKTaskStartedMessage",
   "SDKTaskUpdatedMessage", "SDKThinkingTokensMessage", "SDKToolProgressMessage",
   "SDKToolUseSummaryMessage", "SDKUserMessage", "SDKUserMessageReplay",

@@ -44,6 +44,7 @@ import {
 export { parseRedirectInput };
 /** 이 시간 안에 콜백이 안 오면 수동 경로를 **다시** 안내한다(중단하지 않는다). */
 const NUDGE_MS = 45_000;
+const SESSION_TTL_MS = 10 * 60 * 1000;
 
 /**
  * 콜백 성공 페이지. ★"창을 닫으세요" 로 끝내지 않는다 — 터미널이 안 넘어갔을 때
@@ -92,9 +93,11 @@ const main = async (): Promise<void> => {
     const rl = createInterface({ input: process.stdin });
     let server: { close: () => void } | undefined;
     let nudge: NodeJS.Timeout | undefined;
+    let expiry: NodeJS.Timeout | undefined;
 
     const cleanup = (): void => {
       if (nudge !== undefined) clearTimeout(nudge);
+      if (expiry !== undefined) clearTimeout(expiry);
       rl.close();
       server?.close();
     };
@@ -122,6 +125,8 @@ const main = async (): Promise<void> => {
         expectedState: flow.state,
         verifier: flow.pkce.verifier,
       });
+      if (settled) return; // The deadline may have ended the session during exchange.
+      settled = true;
       cleanup();
       // ★쿨다운 해제는 코어가 했다 — 쿨다운은 DB 가 진실이라(`remainingForKey`) 돌고 있는 데몬에도
       //  바로 먹고, 토큰은 데몬이 다음 턴에 `.env` 변경을 보고 따라간다(`credential-env.ts`). 재시작 불필요.
@@ -136,7 +141,6 @@ const main = async (): Promise<void> => {
       console.log(`   Saved to: ${homeEnvPath()}`);
       console.log(`   access_token expires in ~${r.expiresInSec}s`);
       console.log(`   refresh_token kept (automatic refresh is on)`);
-      settled = true;
       resolve();
     };
 
@@ -194,20 +198,21 @@ const main = async (): Promise<void> => {
         }
       })().catch(() => respondToCodexCallbackFailure(res));
     };
-    // Finish binding both families before opening the browser; a racing manual finish closes them.
-    void listenCodexCallback(callback).then((listeners) => {
+    const manualRecovery = (): void => {
+      if (settled) return;
+      console.warn(
+        `[codex-auth] Automatic callback unavailable (port ${PORT}) — after signing in, ` +
+          "copy the browser's full address bar URL, paste it here and press Enter.",
+      );
+    };
+    // Finish binding before opening the browser; failure disables only the automatic route.
+    void listenCodexCallback(callback, manualRecovery).then((listeners) => {
       server = listeners;
       if (settled) listeners.close();
       else if (autoOpen) openInBrowser(flow.url);
-    }).catch((err: unknown) => {
-      const msg = String(err);
-      if (msg.includes("EADDRINUSE")) {
-        console.error(
-          `🔴 Port ${PORT} is already in use — the official Codex CLI login is running, or an ` +
-            `earlier codex-auth is still alive. Close it and run this again.`,
-        );
-      }
-      fail(err);
+    }).catch(() => {
+      manualRecovery();
+      if (!settled && autoOpen) openInBrowser(flow.url);
     });
 
     // ── 수동 경로 — 주소창 붙여넣기 ────────────────────────────────────────
@@ -222,6 +227,11 @@ const main = async (): Promise<void> => {
       console.log("[codex-auth] Found the code in the pasted URL — exchanging it for a token.");
       void complete(parsed.code, parsed.state).catch(fail);
     });
+
+    rl.on("close", () => {
+      if (!settled && !inFlight) fail(new Error("Sign-in input closed — start signing in again."));
+    });
+    expiry = setTimeout(() => fail(new Error("Sign-in timed out — start signing in again.")), SESSION_TTL_MS);
 
     nudge = setTimeout(() => {
       if (settled) return;

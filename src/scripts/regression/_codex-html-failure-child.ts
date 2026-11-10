@@ -1,3 +1,4 @@
+import { createReplayGuard, canReplay } from "../../core/llm-runtime/replay-safety.js";
 /**
  * `codex-html-failure-summarized` 의 자식 — codex 어댑터를 가짜 네트워크로 실제로 돌려 **HTML 오류 페이지(520)** 를 받게 한다.
  * (`_adapter-failure-child` 와 같은 이유로 자식이다: `fetch` 를 스텁하고 인증을 전역 등록한다. 시나리오 하나 = 프로세스 하나.)
@@ -88,16 +89,17 @@ const main = async (): Promise<void> => {
     return;
   }
   const { runOpenAiCodex } = await import("../../core/llm-runtime/adapters/openai-codex-oauth.js");
+  const replay = createReplayGuard();
   let outcome = "returned";
   let text = "";
   try {
-    const out = await runOpenAiCodex({ text: "회귀 검사 요청", threadKey: `regr:chf-${scenario}`, channel: "cli", model: "gpt-fake" } as never);
+    const out = await runOpenAiCodex({ replay, text: "회귀 검사 요청", threadKey: `regr:chf-${scenario}`, channel: "cli", model: "gpt-fake" } as never);
     text = out.text;
   } catch (e) {
     outcome = "threw";
     text = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
   }
-  console.log(JSON.stringify({ outcome, text, calls, advice: { checkOrAskAgain: translate("srv.codex.checkOrAskAgain") } }));
+  console.log(JSON.stringify({ outcome, text, calls, blocked: !canReplay(replay), dispatches: replay.unsafeCount, advice: { checkOrAskAgain: translate("srv.codex.checkOrAskAgain") } }));
 };
 
 void main().then(

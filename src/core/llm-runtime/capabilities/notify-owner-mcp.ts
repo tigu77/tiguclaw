@@ -1,5 +1,5 @@
 /**
- * `notify_owner` 도구 — 작업자(매니저·서브에이전트)가 **소환자만 풀어 줄 수 있는 것**을 한 줄 알리고 계속 일한다 (2026-10-25).
+ * `request_owner_intervention` 도구 — 소환자의 결정·조치가 필요한 상황을 기존 알림 코어로 전달한다.
  *
  * 설계: `docs/decisions/2026-10-23-notify-owner-design.md` §6. 판단은 코어(`job-notice.ts` 판정 · `worker-jobs.ts` 배달) 한 곳이고,
  * 여기는 도구 껍데기다. ★팩토리가 **자기 잡이 없거나 설정이 꺼져 있으면(기본 — 2026-11-02 `jobs.notifyOwner.enabled`) `undefined`** 를 돌려준다(메인 턴·엔드포인트 턴) — «이 턴에 자기 잡이 있나» 는
@@ -10,18 +10,19 @@ import { coreMcpServer } from "./_core-server.js";
 import { z } from "zod";
 import { tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { getJob, notifyOwner, parentJobIdOf } from "../../worker-jobs.js";
-import { NOTICE_CAP_PER_JOB, NOTICE_MAX_CHARS } from "../../job-notice.js";
+import { KEEP_WORKING, NOTICE_CAP_PER_JOB } from "../../job-notice.js";
 import type { RegionASdkInput } from "../types.js";
 import { loadNotifyOwnerEnabled } from "../../settings.js";
 
 /** 도구 이름 — 회귀가 노출을 대조하는 정본. */
-export const NOTIFY_OWNER_TOOL = "notify_owner";
+export const NOTIFY_OWNER_TOOL = "request_owner_intervention";
 
 export const NOTIFY_OWNER_DESCRIPTION =
-  "실행 중에 **당신을 띄운 쪽(소환자)만 풀어 줄 수 있는 것**이 생기면 한 줄로 알립니다 — 공유 자원을 다른 쪽이 쥐고 있음(잠금·실행 중인 앱), " +
-  "사용자 결정이 필요함, 맡은 범위 밖의 일이 필요함. **보내고 바로 계속 일하세요 — 답을 기다리지 않습니다.** 답이 오면 다음 판단 시점에 " +
-  "지시로 들어옵니다. 무엇이 막혔고·무엇을 하면 풀리는지를 쓰세요. ★정해진 일·스스로 정할 수 있는 것은 묻지 말고 하세요. 진행 보고용이 " +
-  `아닙니다(진행은 하네스가 알립니다). 같은 내용은 한 번만, 작업당 ${NOTICE_CAP_PER_JOB}회까지.`;
+  "상위 결정·조치가 필요한 막힘 또는 중대 사고·위험한 오정보를 **당신을 띄운 쪽(소환자)**에 알리고 개입을 요청합니다. " +
+  "situation에 현재 상황, intervention에 소환자에게 필요한 결정·조치를 적으세요. 두 필드는 모두 비공백 문자열입니다. " +
+  "상위가 판단하는 데 필요한 상황과 요청할 결정·조치를 간결하게 전달하세요. " +
+  "유효한 승인 안에서 스스로 해결할 수 있는 일·정해진 일·진행·완료·단순 준수 신고에는 쓰지 않습니다. " +
+  KEEP_WORKING + ` 같은 내용은 한 번만, 작업당 ${NOTICE_CAP_PER_JOB}회까지.`;
 
 /**
  * 이 턴에 **자기 잡**(실행 중인 작업자 좌표 `worker:`/`agent:<id>`)이 있을 때만 서버를 만든다. 메인·엔드포인트 턴은 `undefined`.
@@ -44,12 +45,19 @@ export const createNotifyOwnerMcpServer = (
         NOTIFY_OWNER_TOOL,
         NOTIFY_OWNER_DESCRIPTION,
         {
-          message: z
-            .string()
-            .describe(`한 줄(${NOTICE_MAX_CHARS}자 이내) — 무엇이 막혔고, 소환자가 무엇을 하면 풀리는지.`),
+          situation: z.string().min(1).regex(/\S/).describe("현재 상황 — 소환자의 결정·조치가 필요한 막힘 또는 중대 사고·위험한 오정보."),
+          intervention: z.string().min(1).regex(/\S/).describe("소환자에게 필요한 결정·조치."),
         },
-        // never-throw — 배달 실패는 «기록만» 으로 돌려준다(작업자 턴을 깨지 않는다).
-        async (args) => ({ content: [{ type: "text" as const, text: notifyOwner(threadKey, args.message) }] }),
+        // SDK schema를 우회하는 직접 호출도 빈 필드를 받지 않는다. 의미 필터는 두지 않는다.
+        async (args) => {
+          if (typeof args?.situation !== "string" || args.situation.trim() === "" ||
+              typeof args?.intervention !== "string" || args.intervention.trim() === "") {
+            return { isError: true, content: [{ type: "text" as const, text: `situation과 intervention은 모두 비공백 문자열이어야 합니다. ${KEEP_WORKING}` }] };
+          }
+          // 정규화·중복·3회·전달 판정은 기존 코어 한 곳에서 한다.
+          const message = `상황: ${args.situation.trim()}\n필요 개입: ${args.intervention.trim()}`;
+          return { content: [{ type: "text" as const, text: notifyOwner(threadKey, message) }] };
+        },
       ),
     ],
   });

@@ -44,9 +44,9 @@ const run = async (): Promise<Assertion[]> => {
     const files = new Map([[legacyFile,JSON.stringify({notify:{channel:"telegram",target:"original"},to:"1234567"})]]);
     const reads: string[] = [];
     const deps = {path:fixturePath,getPaths:()=>({home:c.homeAbs}),UPDATE_COMPLETE_MARKER:".update-complete",UPDATE_PENDING_MARKER:".update-pending",UPDATE_FAILED_MARKER:".update-failed",updateFailedNotified:failed,
-      fsp:{readFile:async(p:string)=>{reads.push(p);if(!files.has(p))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(p);},unlink:async(p:string)=>{files.delete(p);}},
+      fsp:{writeFile:async(n:string,raw:string)=>{files.set(n,raw);},readFile:async(p:string)=>{reads.push(p);if(!files.has(p))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(p);},unlink:async(p:string)=>{files.delete(p);}},
       consumeUpdateMarker:helper.consumeUpdateMarker, getUpdateBoot:()=>({}), translate:()=>"SUCCESS",deliverOutbound:async()=>{sent++;},bus:{},DEFAULT_SESSION_ID:"default",console:{error(){},warn(){},log(){}}};
-    try { const handled=await new AsyncFunction(...Object.keys(deps), js+";return updateNotified;")(...Object.values(deps)); out.push(assert(`actual boot consumer ${fixturePath.sep} refuses legacy completion (failure=${failed}) and handles context`,handled===true&&sent===0&&reads.includes(legacyFile)&&files.has(legacyFile),{handled,sent,reads})); }
+    try { const handled=await new AsyncFunction(...Object.keys(deps), js+";return updateNotified;")(...Object.values(deps)); out.push(assert(`actual boot consumer ${fixturePath.sep} refuses legacy completion (failure=${failed}) without suppressing later restarts`,handled===failed&&sent===0&&reads.includes(legacyFile)&&files.has(legacyFile),{handled,sent,reads})); }
     catch(e){out.push(assert("actual boot consumer execution",false,String(e)));}
   }
   if (helper) {
@@ -57,7 +57,7 @@ const run = async (): Promise<Assertion[]> => {
     const consume = async(marker:any, change?:any, failure=false) => {
       const files=new Map<string,string>([[".update-pending",JSON.stringify(marker)]]); let clock=0,polls=0,removed=0;
       if(failure)files.set(".update-failed","{}");
-      const result=await helper.consumeUpdateMarker({boot,failed:false,now:()=>clock,read:async(n:string)=>files.get(n)??null,remove:async(n:string,raw:string)=>{if(files.get(n)===raw){removed++;files.delete(n);}},sleep:async(ms:number)=>{clock+=ms;polls++;if(change)files.set(".update-pending",JSON.stringify(change));}});
+      const result=await helper.consumeUpdateMarker({boot,failed:false,now:()=>clock,read:async(n:string)=>files.get(n)??null,write:async(n:string,raw:string)=>{files.set(n,raw);},remove:async(n:string,raw:string)=>{if(files.get(n)===raw){removed++;files.delete(n);}},sleep:async(ms:number)=>{clock+=ms;polls++;if(change)files.set(".update-pending",JSON.stringify(change));}});
       return {result,files,polls,removed,clock};
     };
     for(const [label,marker] of Object.entries({
@@ -70,9 +70,65 @@ const run = async (): Promise<Assertion[]> => {
       "rollback":{...confirmed,state:"failed"},
       "legacy":{notify:pending.notify},
     })) {
-      const r=await consume(marker);out.push(assert(`shared consumer refuses ${label}, no deletion/fallback`,r.result.handled&&!r.result.data&&r.removed===0,r));
+      const r=await consume(marker);out.push(assert(`shared consumer refuses ${label}, no deletion or success claim`,!r.result.handled&&!r.result.data&&r.removed===0,r));
     }
     const timeout=await consume(pending);out.push(assert("pending never consumed; bounded timeout blocks restart fallback",timeout.result.handled&&!timeout.result.data&&timeout.removed===0&&timeout.clock===helper.UPDATE_CONFIRM_WAIT_MS,timeout));
+    // Persistent receipt is separate from the producer-owned CAS raw bytes.
+    const lifecycleFiles=new Map<string,string>([[".update-pending",JSON.stringify(pending)]]);
+    let lifecycleClock=0, replacementAtRemove=false;
+    const lifecycle=(currentBoot=boot, onSleep?:()=>void)=>helper.consumeUpdateMarker({
+      boot:currentBoot,failed:false,now:()=>lifecycleClock,
+      read:async(n:string)=>lifecycleFiles.get(n)??null,
+      write:async(n:string,raw:string)=>{lifecycleFiles.set(n,raw);},
+      remove:async(n:string,raw:string)=>{if(replacementAtRemove)lifecycleFiles.set(n,JSON.stringify({...pending,expected:{...expected,notBefore:expected.notBefore+1}}));if(lifecycleFiles.get(n)===raw)lifecycleFiles.delete(n);},
+      sleep:async(ms:number)=>{lifecycleClock+=ms;onSleep?.();},
+    });
+    const first=await lifecycle();
+    const firstClock=lifecycleClock;
+    const nextBoot={...boot,bootId:"44444444-4444-4444-8444-444444444444"};
+    const second=await lifecycle(nextBoot);
+    out.push(assert("expired observation never repeats 82500ms wait on next boot; pending CAS bytes preserved",first.handled&&!second.handled&&!second.data&&lifecycleClock===firstClock&&lifecycleFiles.get(".update-pending")===JSON.stringify(pending),{first,second,firstClock,lifecycleClock}));
+    // Execute the real CLI producer's confirmation block after the consumer timed out.
+    const casStart=source.indexOf("  if (pending) {",source.indexOf("const restartFailed ="));
+    const casEnd=source.indexOf("  // ── 단계 8b:",casStart);
+    const cas=source.slice(casStart,casEnd);
+    const casDeps={pending,pendingPath:".update-pending",restartFailed:false,finalLaunch:{confirmed:boot},updateMarkerMatches:helper.updateMarkerMatches,
+      readFileSync:(n:string)=>lifecycleFiles.get(n),writeFileSync:(n:string,raw:string)=>lifecycleFiles.set(n,raw),
+      renameSync:(a:string,b:string)=>{lifecycleFiles.set(b,lifecycleFiles.get(a)!);lifecycleFiles.delete(a);},console:{error(){}}};
+    new Function(...Object.keys(casDeps),cas)(...Object.values(casDeps));
+    out.push(assert("actual CLI raw CAS still confirms after consumer timeout",JSON.parse(lifecycleFiles.get(".update-pending")!).state==="confirmed",lifecycleFiles.get(".update-pending")));
+    const late=await lifecycle();
+    out.push(assert("late confirmed success takes precedence over timeout receipt",Boolean(late.data)&&!lifecycleFiles.has(".update-pending"),late));
+    lifecycleFiles.set(".update-pending",JSON.stringify({...pending,ts:1,expected:{...expected,notBefore:expected.notBefore-1}}));
+    const beforeNew=lifecycleClock;
+    const newPending=JSON.parse(lifecycleFiles.get(".update-pending")!);
+    const newSuccess=await lifecycle(boot,()=>lifecycleFiles.set(".update-pending",JSON.stringify({...newPending,state:"confirmed",confirmed:boot})));
+    out.push(assert("new update ignores old receipt and old timestamp; normal confirmation waits",Boolean(newSuccess.data)&&lifecycleClock===beforeNew+250,newSuccess));
+    lifecycleFiles.set(".update-pending",JSON.stringify(confirmed));replacementAtRemove=true;
+    await lifecycle();
+    out.push(assert("replacement at remove survives read-before-unlink CAS",lifecycleFiles.has(".update-pending"),[...lifecycleFiles]));
+    replacementAtRemove=false;
+    lifecycleFiles.clear();lifecycleFiles.set(".update-pending",JSON.stringify(pending));
+    const beforeFailure=lifecycleClock;
+    const interrupted=await lifecycle(boot,()=>lifecycleFiles.set(".update-failed","{}"));
+    out.push(assert("failure wins while pending confirmation is awaited",interrupted.handled&&!interrupted.data&&lifecycleClock===beforeFailure+250&&lifecycleFiles.has(".update-failed"),interrupted));
+    lifecycleFiles.delete(".update-failed");
+    const failedNext=await lifecycle(nextBoot);
+    out.push(assert("failed observation does not suppress or delay next boot",!failedNext.handled&&!failedNext.data,failedNext));
+    lifecycleFiles.clear();lifecycleFiles.set(".update-pending",JSON.stringify(pending));
+    const intermediate=await lifecycle({...boot,bootId:expected.oldBootIds[0]});
+    out.push(assert("intermediate boot does not retire producer pending",!intermediate.data&&!lifecycleFiles.has(".update-observed")&&lifecycleFiles.get(".update-pending")===JSON.stringify(pending),[...lifecycleFiles]));
+    const finalAfterIntermediate=await lifecycle(boot,()=>lifecycleFiles.set(".update-pending",JSON.stringify(confirmed)));
+    out.push(assert("final boot still waits and confirms after intermediate boot",Boolean(finalAfterIntermediate.data),finalAfterIntermediate));
+    lifecycleFiles.clear();lifecycleFiles.set(".update-pending",JSON.stringify(pending));
+    const replacement={...pending,expected:{...expected,notBefore:expected.notBefore-10}};
+    const swapped=await lifecycle(boot,()=>lifecycleFiles.set(".update-pending",JSON.stringify(replacement)));
+    out.push(assert("replaced expectation while waiting stays untouched and is not retired",!swapped.data&&lifecycleFiles.get(".update-pending")===JSON.stringify(replacement)&&!lifecycleFiles.has(".update-observed"),swapped));
+    lifecycleFiles.clear();lifecycleFiles.set(".update-complete",JSON.stringify({to:"legacy"}));
+    const legacyFirst=await lifecycle();const legacyNext=await lifecycle(nextBoot);
+    out.push(assert("legacy survives both boots as non-success evidence without repeat suppression",!legacyFirst.handled&&!legacyNext.handled&&!legacyFirst.data&&!legacyNext.data&&lifecycleFiles.has(".update-complete"),{legacyFirst,legacyNext}));
+    const ordinary=await helper.consumeUpdateMarker({boot,failed:false,read:async()=>null,write:async()=>{},remove:async()=>{}});
+    out.push(assert("normal boot keeps general restart notification",ordinary.handled===false,ordinary));
     const ok=await consume(pending,confirmed);out.push(assert("same CLI confirmed boot only, one delivery claim, original destination",ok.polls===1&&ok.removed===1&&ok.result.data?.notify?.target==="original-target",ok.result));
     const failed=await consume(confirmed,undefined,true);out.push(assert("failure wins simultaneous completion",!failed.result.data&&failed.removed===0,failed.result));
     for (const fixturePath of fixturePaths) for (const failure of [false,true]) {
@@ -80,7 +136,7 @@ const run = async (): Promise<Assertion[]> => {
       const files=new Map([[pendingFile,JSON.stringify(confirmed)]]); const deliveries:any[]=[];
       const reads:string[]=[],removed:string[]=[];
       const deps={path:fixturePath,getPaths:()=>({home:c.homeAbs}),getUpdateBoot:()=>boot,updateFailedNotified:failure,consumeUpdateMarker:helper.consumeUpdateMarker,
-        fsp:{readFile:async(n:string)=>{reads.push(n);if(!files.has(n))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(n);},unlink:async(n:string)=>{removed.push(n);files.delete(n);}},
+        fsp:{writeFile:async(n:string,raw:string)=>{files.set(n,raw);},readFile:async(n:string)=>{reads.push(n);if(!files.has(n))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(n);},unlink:async(n:string)=>{removed.push(n);files.delete(n);}},
         deliverOutbound:async(d:any)=>{deliveries.push(d);},translate:()=>"verified-success",bus:{},DEFAULT_SESSION_ID:"fixture",console:{error(){}}};
       const handled=await new AsyncFunction(...Object.keys(deps),js+";return updateNotified;")(...Object.values(deps));
       out.push(assert(`actual index boot consumer ${fixturePath.sep} verified success/failure arbitration ${failure}`,handled&&reads.includes(pendingFile)&&deliveries.length===(failure?0:1)&&(failure||deliveries[0].target==="original-target")&&removed.length===(failure?0:1)&&files.has(pendingFile)===failure,{deliveries,reads,removed}));
@@ -92,10 +148,23 @@ const run = async (): Promise<Assertion[]> => {
       const failureBlock=index.slice(index.indexOf("const updateFailedNotified ="),index.indexOf("const updateNotified ="));
       const failureJs=ts.transpileModule(failureBlock,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
       const deps={path:fixturePath,getPaths:()=>({home:c.homeAbs}),getUpdateBoot:()=>boot,consumeUpdateMarker:helper.consumeUpdateMarker,UPDATE_FAILED_MARKER:".update-failed",
-        fsp:{readFile:async(n:string)=>{reads.push(n);if(!files.has(n))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(n);},unlink:async(n:string)=>{removed.push(n);files.delete(n);}},
+        fsp:{writeFile:async(n:string,raw:string)=>{files.set(n,raw);},readFile:async(n:string)=>{reads.push(n);if(!files.has(n))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(n);},unlink:async(n:string)=>{removed.push(n);files.delete(n);}},
         deliverOutbound:async()=>{sent++;},translate:()=>"success",updateFailedText:()=>"failure",bus:{},DEFAULT_SESSION_ID:"fixture",console:{error(){}}};
       const handled=await new AsyncFunction(...Object.keys(deps),failureJs+js+";return updateNotified;")(...Object.values(deps));
       out.push(assert(`actual malformed failure ${fixturePath.sep} consumed first still blocks completion and general restart`,handled&&sent===0&&reads.includes(failedFile)&&reads.includes(pendingFile)&&removed.length===1&&removed[0]===failedFile&&files.has(pendingFile),{handled,sent,reads,removed}));
+    }
+    for (const fixturePath of fixturePaths) {
+      const pendingFile=fixturePath.join(c.homeAbs,".update-pending");
+      const files=new Map([[pendingFile,JSON.stringify(pending)]]);
+      let clock=0,currentBoot=boot,sent=0;const writes:string[]=[];
+      const deps={path:fixturePath,getPaths:()=>({home:c.homeAbs}),getUpdateBoot:()=>currentBoot,updateFailedNotified:false,
+        consumeUpdateMarker:(io:any)=>helper.consumeUpdateMarker({...io,now:()=>clock,sleep:async(ms:number)=>{clock+=ms;}}),
+        fsp:{readFile:async(n:string)=>{if(!files.has(n))throw Object.assign(Error("missing"),{code:"ENOENT"});return files.get(n);},
+          writeFile:async(n:string,raw:string)=>{writes.push(n);files.set(n,raw);},unlink:async(n:string)=>{files.delete(n);}},
+        deliverOutbound:async()=>{sent++;},translate:()=>"success",bus:{},DEFAULT_SESSION_ID:"fixture",console:{error(){}}};
+      const runIndex=()=>new AsyncFunction(...Object.keys(deps),js+";return updateNotified;")(...Object.values(deps));
+      const first=await runIndex();const before=clock;currentBoot=nextBoot;const next=await runIndex();
+      out.push(assert(`actual index ${fixturePath.sep} persists receipt outside pending and next boot falls back immediately`,first===true&&next===false&&clock===before&&before===helper.UPDATE_CONFIRM_WAIT_MS&&sent===0&&writes.length===1&&writes[0]===fixturePath.join(c.homeAbs,".update-observed")&&files.get(pendingFile)===JSON.stringify(pending),{first,next,clock,writes,sent}));
     }
     const self=await readFile(path.join(ROOT,"src/core/self-update.ts"),"utf8");
     const a=self.indexOf("    // ── 단계 7: 완료 마커");const b=self.indexOf("    // ── 단계 9:",a);

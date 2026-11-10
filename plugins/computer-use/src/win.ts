@@ -460,7 +460,7 @@ const wrapped = (script: string): string =>
  * ★관측만 있을 땐 스크립트가 하나뿐이라 안 받았는데, 조작이 붙으며 셋이 됐다(캡처·유휴·입력).
  *  ★`-EncodedCommand`(UTF-16LE base64)는 **셋 다 그대로** — 명령줄 따옴표 규칙을 아예 안 지난다.
  */
-const runScript = (script: string, env: Record<string, string>, timeoutMs: number = CHILD_TIMEOUT_MS): Promise<RunOk | RunFail> =>
+const runScript = (script: string, env: Record<string, string>, timeoutMs: number = CHILD_TIMEOUT_MS, signal?: AbortSignal): Promise<RunOk | RunFail> =>
   runChild(psExe(), [
     "-NoProfile",
     "-NonInteractive",
@@ -468,15 +468,18 @@ const runScript = (script: string, env: Record<string, string>, timeoutMs: numbe
     "Bypass",
     "-EncodedCommand",
     Buffer.from(wrapped(script), "utf16le").toString("base64"),
-  ], env, timeoutMs);
+  ], env, timeoutMs, signal);
 
 /**
  * **자식 하나** — PowerShell 이든 컴파일된 캡처 프로그램이든 같은 계약이다: 시한 · stdout 의 `{"error":…}` 가 정본 ·
  * 실패해도 stdout 을 버리지 않는다.
  */
-const runChild = (file: string, args: string[], env: Record<string, string>, timeoutMs: number = CHILD_TIMEOUT_MS): Promise<RunOk | RunFail> =>
+const runChild = (file: string, args: string[], env: Record<string, string>, timeoutMs: number = CHILD_TIMEOUT_MS, signal?: AbortSignal): Promise<RunOk | RunFail> =>
   new Promise((resolve) => {
-    execFile(
+    if (signal?.aborted) return resolve({ ok: false, reason: "failed", detail: "조작 취소 — 입력 전", stdout: "", exitCode: null, killed: false, signaled: false });
+    // SIGKILL로 native 배치 전체를 중단하고 callback(close) 뒤에만 상위에서 키를 해제한다.
+    const cancel = () => { child.kill("SIGKILL"); };
+    const child = execFile(
       file,
       args,
       {
@@ -486,7 +489,9 @@ const runChild = (file: string, args: string[], env: Record<string, string>, tim
         windowsHide: true,
       },
       (err, stdout, stderr) => {
+        signal?.removeEventListener("abort", cancel);
         const out = String(stdout);
+        if (signal?.aborted) return resolve({ ok: false, reason: "failed", detail: "조작 취소 — 잔여 입력 중단(이미 보낸 입력은 되돌리지 않음)", stdout: out, exitCode: null, killed: err?.killed === true, signaled: err?.signal != null });
         // ★**스크립트가 제 오류를 stdout 에 적었으면 그게 정본**이다(형식을 우리가 정했다).
         const own = scriptError(out);
         if (err === null && own === null) return resolve({ ok: true, stdout: out });
@@ -505,6 +510,8 @@ const runChild = (file: string, args: string[], env: Record<string, string>, tim
         });
       },
     );
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
   });
 
 /**
@@ -920,15 +927,16 @@ export const idleSeconds = async (onFailure?: (diagnostic: string) => void): Pro
  *  시한보다 짧은 시한에 죽었다(집 Windows 전체 회귀에서 «dry 에서 실패: 8000ms 초과» — 기준·최종 양쪽에서 재현). 같은 열은 같은 시한이다.
  * ★`TIGUCLAW_DRY` 는 언제나 명시한다 — 자식은 `process.env` 를 물려받으므로 어디선가 켜져 있으면 **진짜 조작이 조용히 아무것도 안 하게** 된다.
  */
-const runControl = (events: readonly LowEvent[], dry: boolean): Promise<RunOk | RunFail> =>
+const runControl = (events: readonly LowEvent[], dry: boolean, signal?: AbortSignal): Promise<RunOk | RunFail> =>
   runScript(CONTROL_SCRIPT, {
     TIGUCLAW_EVENTS: JSON.stringify(events),
     TIGUCLAW_DRY: dry ? "1" : "0",
-  }, postTimeoutMs(events, CHILD_TIMEOUT_MS));
+  }, postTimeoutMs(events, CHILD_TIMEOUT_MS), signal);
 
 /** 이벤트를 순서대로 쏜다 — 스크립트는 **고정 리터럴**, 값은 전부 `$env` (관측과 같은 규율). */
 export const post = async (
   events: readonly LowEvent[],
+  signal?: AbortSignal,
 ): Promise<
   | {
       ok: true;
@@ -949,7 +957,7 @@ export const post = async (
 > => {
   if (events.length === 0) return { ok: true, fired: 0, stdout: "" };
   // ★`TIGUCLAW_DRY` 를 **명시적으로 끈다**(`runControl`) — 켜는 쪽이 아니라 **끄는 쪽**을 못 박는다.
-  const r = await runControl(events, false);
+  const r = await runControl(events, false, signal);
   if (!r.ok) return r;
   try {
     const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as { fired?: number };

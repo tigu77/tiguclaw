@@ -289,6 +289,9 @@ export const runWorkerJob = (
       // 거두기 실패의 오류 이름 — 원인 분류는 이름이 먼저다. 문자열만 넘기면 보고서 본문에 «rate limit» 한 마디만
       //  있어도 시간 종료가 «사용량 한도» 로 읽힌다(outcome.error 에는 보고서 전문이 실린다).
       let harvestFailureName: string | undefined;
+      let harvestPartialReport: string | undefined;
+      let harvestFailureNotice: string | undefined;
+      let harvestReplayBlock: string | undefined;
       // 거두기 실패가 한도였으면 런타임이 실은 재개 시각 — 공용 변환(`failureOutcome`)이 읽는 그 칸을 그대로 옮긴다(2026-10-23 한도 자동 이어가기,
       //  GPT 검토: 이 catch 만 문자열·이름으로 줄여 거두기 턴의 한도에선 재개가 안 걸렸다).
       let harvestResumeAtMs: number | undefined;
@@ -496,6 +499,9 @@ export const runWorkerJob = (
             harvestFailure = e instanceof Error ? e.message : String(e);
             if (e instanceof Error) harvestFailureName = e.name;
             const caught = failureOutcome(e);
+            harvestPartialReport = "error" in caught ? caught.partialReport : undefined;
+            harvestFailureNotice = "error" in caught ? caught.failureNotice : undefined;
+            harvestReplayBlock = "error" in caught ? caught.replayBlock : undefined;
             if ("error" in caught && caught.resumeAtMs !== undefined) harvestResumeAtMs = caught.resumeAtMs;
             break;
           }
@@ -523,6 +529,9 @@ export const runWorkerJob = (
                 // ★원오류만 — 본 보고는 따로 싣는다(2026-10-31 완료 보고 복구 §4-1). 종전엔 «원오류 + 꼬리표 + 본 보고» 한 문자열이라
                 //  분류가 본 보고 낱말에 흔들렸고(진단 S5), 조회·통지가 «실패 원인» 칸에서 본 보고를 읽었다.
                 error: harvestFailure,
+                ...(harvestPartialReport !== undefined ? { partialReport: harvestPartialReport } : {}),
+                ...(harvestFailureNotice !== undefined ? { failureNotice: harvestFailureNotice } : {}),
+                ...(harvestReplayBlock !== undefined ? { replayBlock: harvestReplayBlock } : {}),
                 ...(harvestFailureName !== undefined ? { errorName: harvestFailureName } : {}),
                 ...(harvestResumeAtMs !== undefined ? { resumeAtMs: harvestResumeAtMs } : {}),
                 ...(report !== "" ? { completedReport: report } : {}),

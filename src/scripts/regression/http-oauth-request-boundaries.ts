@@ -232,7 +232,7 @@ export const check: RegressionCheck = {
       release?.(); await manualDone;
       out.push(assert("manual-first completion closes both", listeners.every((s) => !s.listening)));
       // Bind result matrix: only unsupported families fallback; occupancy closes partial success.
-      for (const codes of [[undefined, "EAFNOSUPPORT"], ["EADDRNOTAVAIL", undefined], [undefined, "EADDRINUSE"], ["EAFNOSUPPORT", "EAFNOSUPPORT"]]) {
+      for (const codes of [[undefined, "EAFNOSUPPORT"], ["EADDRNOTAVAIL", undefined], [undefined, "EADDRINUSE"], ["EADDRINUSE", undefined], ["EADDRINUSE", "EADDRINUSE"], ["EAFNOSUPPORT", "EAFNOSUPPORT"]]) {
         const opened: any[] = []; let index = 0;
         const fake = evaluate(loginSource, { ...loginGlobals, createServer: () => {
           const s: any = new EventEmitter(); s.closed = false;
@@ -244,6 +244,117 @@ export const check: RegressionCheck = {
         const expected = codes.includes(undefined) && !codes.includes("EADDRINUSE");
         out.push(assert(`loopback bind ${JSON.stringify(codes)} cleanup`, ok === expected && opened.every((s) => s.closed), { ok, expected }));
       }
+    }
+    // The real binder retains error ownership after listen and after close. No real socket fault needed.
+    for (const phase of ["listening", "closed", "binding"] as const) {
+      const opened: any[] = []; let notified = 0; let escaped = false; let failed = false;
+      const fake = evaluate(loginSource, { ...loginGlobals, createServer: () => {
+        const s: any = new EventEmitter(); s.closed = false;
+        s.close = () => { s.closed = true; };
+        s.listen = (_: unknown, cb: () => void) => {
+          queueMicrotask(() => {
+            if (phase === "binding" && opened.length === 2) {
+              try { opened[0].emit("error", new Error("synthetic late error")); } catch { escaped = true; }
+            }
+            cb();
+          }); return s;
+        };
+        opened.push(s); return s;
+      } });
+      let binding: any;
+      try { binding = await fake.listenCodexCallback(() => {}, () => { notified++; }); } catch { failed = true; }
+      if (phase !== "binding") {
+        if (phase === "closed") binding?.close();
+        try { opened[0].emit("error", new Error("synthetic late error")); } catch { escaped = true; }
+      }
+      out.push(assert(`OAuth ${phase} late error is contained and closes all`, !escaped && opened.every((s) => s.closed) && (phase !== "binding" || failed), { escaped, failed, notified }));
+      binding?.close();
+    }
+    for (const mode of ["ipv4-busy", "ipv6-busy", "both-unavailable", "late-error", "timeout"] as const) {
+      const opened: any[] = []; const timers = new Set<() => void>(); let exchanges = 0;
+      const core = evaluate(loginSource, { ...loginGlobals,
+        exchangeAuthorizationCode: async () => { exchanges++; return { expires: Date.now() + 1000 }; },
+        setTimeout: (cb: () => void) => { timers.add(cb); return cb; }, clearTimeout: (cb: () => void) => { timers.delete(cb); },
+        createServer: () => {
+          const index = opened.length; const s: any = new EventEmitter(); s.closed = false;
+          s.close = () => { s.closed = true; };
+          s.listen = (_: unknown, cb: () => void) => {
+            const code = (mode === "ipv4-busy" && index === 0) || (mode === "ipv6-busy" && index === 1) ? "EADDRINUSE" : mode === "both-unavailable" ? "EAFNOSUPPORT" : null;
+            queueMicrotask(() => code ? s.emit("error", Object.assign(new Error(code), { code })) : cb()); return s;
+          }; opened.push(s); return s;
+        },
+      });
+      const plan = await core.beginCodexLogin();
+      let escaped = false;
+      if (mode === "late-error") { try { opened[0].emit("error", new Error("synthetic late")); } catch { escaped = true; } }
+      if (mode === "timeout") for (const cb of timers) cb();
+      const result = await core.finishCodexLogin("code=c&state=state");
+      // Errors queued after terminal cleanup are still owned, not uncaught process errors.
+      for (const s of opened) { try { s.emit("error", new Error("after cleanup")); } catch { escaped = true; } }
+      out.push(assert(`dashboard ${mode} manual recovery/lifetime closes all`, !escaped && result.ok === (mode !== "timeout") && exchanges === (mode === "timeout" ? 0 : 1) && timers.size === 0 && opened.every((s) => s.closed) && plan.autoCallback === (mode === "late-error" || mode === "timeout"), { escaped, result, exchanges, timers: timers.size, plan }));
+    }
+    // CLI recovery/termination runs the actual main with synthetic readline, timers and exchange.
+    for (const mode of ["ipv4-busy", "ipv6-busy", "both-unavailable", "late-error", "eof", "timeout", "manual-first", "pending-bind", "pending-bind-timeout", "eof-in-flight", "timeout-in-flight"] as const) {
+      const opened: any[] = []; const timers = new Map<object, { cb: () => void; ms: number }>();
+      let exchanges = 0; let browserOpens = 0; let closedInput = false; let outcome = "pending"; let successLogs = 0;
+      let releaseExchange: (() => void) | undefined; let releaseBind: (() => void) | undefined;
+      const rl = Object.assign(new EventEmitter(), { close() { closedInput = true; rl.emit("close"); } });
+      const globals = { ...loginGlobals, createServer: (callback: any) => {
+        const index = opened.length; const s: any = new EventEmitter(); s.closed = false; s.callback = callback;
+        s.close = () => { s.closed = true; };
+        s.listen = (_: unknown, cb: () => void) => {
+          const code = (mode === "ipv4-busy" && index === 0) || (mode === "ipv6-busy" && index === 1) ? "EADDRINUSE" : mode === "both-unavailable" ? "EAFNOSUPPORT" : null;
+          const finish = () => code ? s.emit("error", Object.assign(new Error(code), { code })) : cb();
+          if ((mode === "pending-bind" || mode === "pending-bind-timeout") && index === 0) releaseBind = finish;
+          else queueMicrotask(finish);
+          return s;
+        }; opened.push(s); return s;
+      } };
+      const core = evaluate(loginSource, globals);
+      const cliSource = source("src/scripts/codex-auth.ts");
+      const cli = evaluate(cliSource.slice(0, cliSource.indexOf("main().catch")) + "\nexports.main = main;", {
+        ...globals, PORT: 1455, CALLBACK_PATH: "/auth/callback",
+        console: { log: (s: string) => { if (s.includes("Got the token")) successLogs++; }, warn() {}, error() {} },
+        listenCodexCallback: core.listenCodexCallback, respondToCodexCallbackFailure: core.respondToCodexCallbackFailure,
+        parseRedirectInput: core.parseRedirectInput, canOpenBrowser: () => true, openInBrowser: () => { browserOpens++; },
+        credentialFollowAvailable: () => false, homeEnvPath: () => "/synthetic/.env",
+        createInterface: () => rl, process: { env: {}, platform: "darwin", stdin: {} },
+        setTimeout: (cb: () => void, ms: number) => { const timer = {}; timers.set(timer, { cb, ms }); return timer; },
+        clearTimeout: (timer: object) => { timers.delete(timer); },
+        completeCodexLogin: async () => { exchanges++; await new Promise<void>((r) => { releaseExchange = r; }); return { expiresInSec: 1, clearedCooldowns: 0 }; },
+      });
+      const done = cli.main().then(() => { outcome = "resolved"; }, () => { outcome = "rejected"; });
+      const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+      await flush();
+      if (mode === "late-error") {
+        let escaped = false; try { opened[0].emit("error", new Error("synthetic late")); } catch { escaped = true; }
+        out.push(assert("CLI late server error never escapes", !escaped));
+      }
+      if (mode === "eof") rl.emit("close");
+      else if (mode === "timeout" || mode === "pending-bind-timeout") {
+        const ttl = [...timers.values()].find((t) => t.ms === 10 * 60 * 1000);
+        out.push(assert("CLI has finite login lifetime", Boolean(ttl)));
+        ttl?.cb(); releaseBind?.(); await flush();
+      } else {
+        rl.emit("line", "code=c&state=wrong");
+        out.push(assert(`CLI ${mode} wrong state never exchanges`, exchanges === 0));
+        rl.emit("line", "code=c&state=state");
+        rl.emit("line", "code=c&state=state");
+        if (mode === "manual-first") {
+          const res: any = { writeHead() { return this; }, end() { return this; } };
+          opened[0].callback({ url: "/auth/callback?code=c&state=state" }, res);
+        }
+        if (mode === "eof-in-flight") rl.emit("close");
+        if (mode === "timeout-in-flight") [...timers.values()].find((t) => t.ms === 10 * 60 * 1000)?.cb();
+        await flush(); releaseExchange?.(); await flush();
+        releaseBind?.(); await flush();
+      }
+      await flush();
+      const terminal = mode === "eof" || mode === "timeout" || mode === "pending-bind-timeout" || mode === "timeout-in-flight";
+      out.push(assert(`CLI ${mode} settles, releases timers/input/listeners, exchange once`, outcome === (terminal ? "rejected" : "resolved") && exchanges === (terminal && mode !== "timeout-in-flight" ? 0 : 1) && successLogs === (terminal ? 0 : 1) && closedInput && timers.size === 0 && opened.every((s) => s.closed), { outcome, exchanges, successLogs, closedInput, timers: timers.size, closed: opened.map((s) => s.closed) }));
+      if (!terminal && mode !== "pending-bind") out.push(assert(`CLI ${mode} browser still opens for manual recovery`, browserOpens === 1, browserOpens));
+      // Fixture-only drain for a red candidate that does not yet own EOF/timeout.
+      if (outcome === "pending") { rl.emit("line", "code=c&state=state"); await flush(); releaseExchange?.(); await done; }
     }
     // CLI entry uses the same dual listener, but owns its own callback/manual settlement.
     if (login.listenCodexCallback) {

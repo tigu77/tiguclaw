@@ -24,6 +24,7 @@ const streamResponse = (events: unknown[]): Response =>
     { status: 200 },
   );
 /** 서버가 도중에 끊는 응답 — 이벤트를 다 준 **다음 읽기**에서 undici 와 같은 모양으로 실패한다(error() 는 큐를 비우므로 pull 로 나눈다). */
+let lastCutError: TypeError | undefined;
 const cutResponse = (events: unknown[]): Response => {
   let pulls = 0;
   return new Response(
@@ -35,7 +36,8 @@ const cutResponse = (events: unknown[]): Response => {
           return;
         }
         const cause = Object.assign(new Error("other side closed"), { name: "SocketError", code: "UND_ERR_SOCKET" });
-        c.error(new TypeError("terminated", { cause }));
+        lastCutError = new TypeError("terminated", { cause });
+        c.error(lastCutError);
       },
     }),
     { status: 200 },
@@ -61,6 +63,21 @@ const sideEffectCall = (cid: string): unknown[] =>
   fnCall("add_memory", { name: `regr-${cid}`, kind: "note", summary: "회귀 검사용", body: "x" }, cid);
 
 const print = (o: unknown): void => console.log(JSON.stringify(o));
+const { partialReportOf, replayBlockOf, failureNoticeOf } = await import("../../core/llm-runtime/partial-failure.js");
+const { presentFailure } = await import("../../core/llm-runtime/swallowed-failure.js");
+const { classifyCooldown } = await import("../../core/llm-runtime/rate-limit.js");
+const failed = (e: unknown) => ({
+  text: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+  rawName: e instanceof Error ? e.name : undefined,
+  cutIdentity: lastCutError !== undefined && e === lastCutError,
+  cutCauseIdentity: lastCutError !== undefined && e instanceof Error && e.cause === lastCutError.cause,
+  rawCauseName: e instanceof Error && e.cause instanceof Error ? e.cause.name : undefined,
+  rawCauseCode: e instanceof Error && e.cause instanceof Error ? (e.cause as Error & { code?: string }).code : undefined,
+  rawMessage: e instanceof Error ? e.message : String(e),
+  classification: classifyCooldown(e, e instanceof Error ? e.message : String(e)),
+  partial: partialReportOf(e), replay: replayBlockOf(e), notice: failureNoticeOf(e),
+  display: presentFailure(e, e instanceof Error ? e.message : String(e)),
+});
 
 /** 이 프로세스만의 하위 홈 — 설정(입력 상한)·인증 .env 를 쓴다. */
 const subHome = (settings?: unknown): string => {
@@ -74,7 +91,7 @@ const subHome = (settings?: unknown): string => {
 const runCodex = async (
   respond: (n: number, init: RequestInit) => Response | Promise<Response>,
   extra: Record<string, unknown> = {},
-): Promise<{ outcome: string; text: string; calls: number; bodies: string[]; items: unknown[] }> => {
+): Promise<{ outcome: string; text: string; calls: number; bodies: string[]; items: unknown[]; display?: string; rawName?: string; rawMessage?: string; partial?: string }> => {
   let calls = 0;
   const bodies: string[] = [];
   (globalThis as unknown as { fetch: unknown }).fetch = fakeNetwork(async (_u: string, init: RequestInit) => {
@@ -97,7 +114,7 @@ const runCodex = async (
     } as never);
     return { outcome: "returned", text: out.text, calls, bodies, items: (out as { turnItems?: unknown[] }).turnItems ?? [] };
   } catch (e) {
-    return { outcome: "threw", text: e instanceof Error ? `${e.name}: ${e.message}` : String(e), calls, bodies, items: [] };
+    return { outcome: "threw", ...failed(e), calls, bodies, items: [] };
   }
 };
 
@@ -186,7 +203,7 @@ const main = async (): Promise<void> => {
           ? streamResponse([...sideEffectCall("c1"), completed("r1")])
           : streamResponse([textDelta("결론부터 말씀드리면, 첫째"), ...overloadEvents]),
       );
-      print({ outcome: r.outcome, text: r.text.slice(-300), calls: r.calls });
+      print({ ...r, bodies: undefined, items: undefined });
       return;
     }
     case "cut-before-output": {
@@ -278,7 +295,7 @@ const main = async (): Promise<void> => {
         { workerDepth: 1 },
       );
       const itemsText = JSON.stringify(r.items);
-      print({ outcome: r.outcome, text: r.text.slice(0, 200), calls: r.calls, partialItems: itemsText.split("부분보고").length - 1 });
+      print({ ...r, bodies: undefined, items: undefined, partialItems: itemsText.split("부분보고").length - 1 });
       return;
     }
     case "overload-after-external-tool-delta": {
@@ -365,7 +382,7 @@ const main = async (): Promise<void> => {
           // 가짜 비밀은 실행 중에 잇는다 — 소스에 시크릿 모양이 있으면 공개 싱크의 시크릿 스캔이 멈춘다(그 스캔은 진짜를 막는 게이트다).
           : new Response(JSON.stringify({ error: { message: "bad", echo: ["sk", "regrSecret1234567890abcdef"].join("-") } }), { status: 400 }),
       );
-      print({ outcome: r.outcome, leaked: r.text.includes("sk-regrSecret"), redacted: r.text.includes("[REDACTED]"), calls: r.calls });
+      print({ ...r, bodies: undefined, items: undefined, leaked: (r.display ?? r.text).includes("sk-regrSecret"), redacted: (r.display ?? r.text).includes("[REDACTED]"), rawHasSecret: r.rawMessage?.includes("sk-regrSecret") });
       return;
     }
 
@@ -375,8 +392,10 @@ const main = async (): Promise<void> => {
       pinModelForTest("codex:gpt-fake");
       const events: string[] = [];
       const { getEventBus } = await import("../../core/eventbus.js");
-      getEventBus().subscribe((ev: { type: string }) => {
+      let toolStarts = 0;
+      getEventBus().subscribe((ev) => {
         if (ev.type === "llm.turn_done" || ev.type === "llm.turn_error") events.push(ev.type);
+        if (ev.type === "llm.activity" && ev.payload.kind === "tool" && ev.payload.phase !== "end") toolStarts++;
       });
       let calls = 0;
       (globalThis as unknown as { fetch: unknown }).fetch = fakeNetwork(async () => {
@@ -393,6 +412,7 @@ const main = async (): Promise<void> => {
       const rt = await import("../../core/llm-runtime/index.js");
       let outcome: string;
       let text: string;
+      let failure: ReturnType<typeof failed> | undefined;
       try {
         const out = await rt.runRegionA({ text: "메모 남기고 확인해줘", channel: "cli", threadKey: `regr:afc-${scenario}` } as never);
         outcome = "returned";
@@ -400,8 +420,9 @@ const main = async (): Promise<void> => {
       } catch (e) {
         outcome = "threw";
         text = e instanceof Error ? e.message : String(e);
+        failure = failed(e);
       }
-      print({ outcome, text: text.slice(0, 300), calls, events, cooldowns: rt.listActiveCooldowns().map((c) => c.key) });
+      print({ outcome, text: text.slice(0, 300), ...failure, calls, toolStarts, events, cooldowns: rt.listActiveCooldowns().map((c) => c.key) });
       return;
     }
     default:

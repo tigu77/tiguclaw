@@ -132,7 +132,7 @@ export const check: RegressionCheck = {
     // ③⑤ 배선 — 동작으로 못 보는 부분(throw 인자)은 **겨냥을 좁혀** 못박는다.
     const failure = await sourceHas(CODEX, [
       // 결정적 실패는 retryable=false 로. 생성 지점을 통째로 겨냥한다.
-      /const deterministic = f\.source === "response\.incomplete";/,
+      /const deterministic = f\.source === "response\.incomplete" \|\|/,
       /throw new CodexBackendFailureError\(why, userWhy, !deterministic && !streamed, deterministic\);/,
       // 클래스가 그 값을 **저장**한다(생성자에서 무시하면 위 겨냥이 무의미).
       /readonly retryable: boolean,/,

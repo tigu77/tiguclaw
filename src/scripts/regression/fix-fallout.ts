@@ -122,8 +122,8 @@ export const check: RegressionCheck = {
     }
     out.push(
       assert(
-        "★상수로 등록한 도구도 이름을 풀어 센다 — 못 풀거나 값이 둘인 상수 0 · (양성) notify_owner·spawn_agent 를 상수에서 풀었다",
-        unresolvedRefs.length === 0 && resolvedRefs.includes("NOTIFY_OWNER_TOOL=notify_owner") && resolvedRefs.includes("DAEMON_SUBAGENT_TOOL=spawn_agent"),
+        "★상수로 등록한 도구도 이름을 풀어 센다 — 못 풀거나 값이 둘인 상수 0 · (양성) request_owner_intervention·spawn_agent 를 상수에서 풀었다",
+        unresolvedRefs.length === 0 && resolvedRefs.includes("NOTIFY_OWNER_TOOL=request_owner_intervention") && resolvedRefs.includes("DAEMON_SUBAGENT_TOOL=spawn_agent"),
         unresolvedRefs.length === 0 ? `풀었음 ${resolvedRefs.join(" ")}` : `못 풂 ${unresolvedRefs.join(" ")}`,
       ),
     );
@@ -162,7 +162,7 @@ export const check: RegressionCheck = {
       // 사용자에게 선택지를 다시 띄운다 — 표시 중복.
       "prompt_options",
       // ★소환자에게 알림을 배달한다(합성 턴·지시 채널·대기 깨움) — 되부르면 알림이 두 번 간다(중복 방지는 같은 글만). 2026-11-01 보류 해제 때 기재.
-      "notify_owner",
+      "request_owner_intervention",
       // ★보고 표시(2026-11-01, 작업자 알림 턴 전용) — 클로저 플래그 하나라 재실행 자체는 무해하지만, **분류를 바꾸지 않는다**(지금 판정 기재).
       //  «재실행 무해» 로 옮기는 것은 재실행 안전 정책 변경이라 별도 승인 사안이다(notify-owner-report-contract §8 D8). 부작용이면 표시 뒤 폴백이 막혀
       //  실패가 그대로 전달된다 — 안전 쪽이다.

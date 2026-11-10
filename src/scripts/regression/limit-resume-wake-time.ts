@@ -41,7 +41,7 @@ export const check: RegressionCheck = {
       assert("⑥ 재개 판정이 탐침 시각(last_probe_ts)을 안 바꾼다", d.probe!.probeUnchanged === true && near(d.probe!.rel, 600), show("probe")),
       assert("⑧★이번 실행에서 한도 아닌 이유로 실패한 후보는 «지금 가능» 에서 뺀다", near(d.otherExcluded!.rel, 1200), show("otherExcluded")),
       assert("⑨ 앞 풀 구조적 거부 → 다음 풀에서 한도 → 다음 풀 기준", near(d.nextPool!.rel, 1500) && (d.nextPool!.attempts as string[]).join() === "regr-a,regr-b", show("nextPool")),
-      assert("⑩★한도가 아닌 오류 + 이름에 quota/rate_limit 이 든 도구 실행 뒤 → 재개 없음(사유 문장을 분류하지 않는다)", d.toolNameNotLimit!.rel === null && d.toolNameNotLimit!.msgHasTool === true, show("toolNameNotLimit")),
+      assert("⑩★한도가 아닌 오류 + 이름에 quota/rate_limit 이 든 도구 실행 뒤 → 재개 없음(사유 문장을 분류하지 않는다)", d.toolNameNotLimit!.rel === null && d.toolNameNotLimit!.msgHasTool === true && d.toolNameNotLimit!.rawMessage === "socket hang up" && JSON.stringify(d.toolNameNotLimit!.attempts) === '["regr-a"]', show("toolNameNotLimit")),
       assert("⑪ 401 + 그 도구 이름 → 재개 없음", d.authWithToolName!.rel === null, show("authWithToolName")),
       assert("⑫ 도구 멈춤(이름 rate_limit_status) → 재개 없음", d.toolHang!.rel === null, show("toolHang")),
       assert("한도 뒤 폴백이 성공하면 실패가 아니다(칸이 새지 않는다)", d.fallbackSuccess!.msg === "(성공)", show("fallbackSuccess")),

@@ -16,6 +16,9 @@
  */
 import { promises as fs } from "node:fs";
 import os from "node:os";
+import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import path from "node:path";
 
 import { assert, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
@@ -59,6 +62,8 @@ const makeStubs = (
     /** ★권한 확인이 느린 상황(Windows 프로세스 호출) — 계측이 그 구간을 잡는지 본다. */
     preflightDelayMs?: number;
     releaseOk?: boolean;
+    cancelDuringPost?: AbortController;
+    releaseThrows?: boolean;
     /** 조작 권한 프리플라이트를 **실패**시킨다 — 그 분기가 실제로 도는지 보려고. */
     preflightFail?: { reason: string; detail: string };
     /**
@@ -109,13 +114,18 @@ const makeStubs = (
     },
     idleSeconds: () => Promise.resolve(opts.idle ?? 99),
     frontWindow: () => Promise.resolve(opts.front?.() ?? "stub-front"),
-    post: (events: Rec[]) => {
+    post: (events: Rec[], signal?: AbortSignal) => {
       if (opts.postThrows === true) throw new Error("합성 rejection");
       const h = (desktop as { held: { keys: string[]; buttons: string[] } }).held;
       log.posts.push({ events, heldAtPost: { keys: [...h.keys], buttons: [...h.buttons] } });
       log.order.push("post");
       // 정리(놓기)와 본 발사를 구분한다 — 정리는 `mouseup`/`keyup` 뿐이다.
       const isRelease = events.every((e) => e["t"] === "keyup" || e["t"] === "mouseup");
+      if (isRelease && opts.releaseThrows) throw new Error("합성 해제 rejection");
+      if (!isRelease && opts.cancelDuringPost) {
+        opts.cancelDuringPost.abort();
+        if (signal?.aborted) return Promise.resolve({ ok: false, reason: "failed", detail: "조작 취소", stdout: '{"step":0}\n{"step":1}\n' });
+      }
       const ok = isRelease ? opts.releaseOk !== false : opts.postOk !== false;
       // ★★**가드 중단은 «정상 종료한 부분 실행»** 이다 — `ok:true` 인데 열을 다 못 냈다.
       //  실행부(mac.ts·win.ts)가 그 사실을 **stdout 으로** 말하므로 여기서도 그렇게 낸다
@@ -164,7 +174,7 @@ export const check: RegressionCheck = {
 
     /** 한 판을 차린다 — 배선·기록·도구 둘. */
     const arena = (
-      opts: { captureText?: () => string; front?: () => string; postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number; idle?: number; preflightDelayMs?: number; captureBytes?: number; noScreensFrom?: number } = {},
+      opts: { cancelDuringPost?: AbortController; releaseThrows?: boolean; captureText?: () => string; front?: () => string; postOk?: boolean; postThrows?: boolean; releaseOk?: boolean; guardStopAt?: number; idle?: number; preflightDelayMs?: number; captureBytes?: number; noScreensFrom?: number } = {},
     ): { log: Log; desktop: Rec; look: ToolLike; doTool: ToolLike } => {
       const log: Log = { posts: [], captures: [], order: [] };
       const desktop = newDesktop();
@@ -832,8 +842,10 @@ export const check: RegressionCheck = {
       const a = arena({ postThrows: true });
       const fid = frameIdOf(await a.look.handler({}, extra));
       let threw = false;
+      let resultText = "";
       try {
-        await a.doTool.handler({ frameId: fid, steps: [{ t: "click", x: 10, y: 10 }] }, extra);
+        const result = await a.doTool.handler({ frameId: fid, steps: [{ t: "click", x: 10, y: 10 }] }, extra);
+        resultText = result.content.map(c => String(c["text"] ?? "")).join("\n");
       } catch {
         threw = true;
       }
@@ -843,14 +855,14 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "★의도한 **예외 경로에 실제로 도달**했다(도달 못 해도 통과하는 단언은 빈 단언이다)",
-          threw,
-          `던짐=${String(threw)} · post 기록=${String(a.log.posts.length)}회(던졌으니 0이어야)`,
+          !threw && resultText.includes("합성 rejection") && resultText.includes("[불명]") && resultText.includes("입력 해제 실패"),
+          resultText,
         ),
       );
       out.push(
         assert(
           "★★실행부가 **던져도** 활성 행동이 풀린다 — 안 풀리면 이후 모든 호출이 busy-self 로 영구 차단된다",
-          threw && (a.desktop as { active: unknown }).active === null,
+          resultText.includes("합성 rejection") && (a.desktop as { active: unknown }).active === null,
           `active=${JSON.stringify((a.desktop as { active: unknown }).active)}`,
         ),
       );
@@ -1219,6 +1231,138 @@ export const check: RegressionCheck = {
           ),
         );
       }
+    }
+
+    const cancelTextOf = (r: { content: Rec[] }): string => r.content.filter(c => c["type"] === "text").map(c => String(c["text"])).join("\n");
+    // 취소는 해당 요청만: 사전 입력 0, 진행 stdout 보존, 해제 실패는 현재 응답에도 남는다.
+    {
+      const a = arena();
+      const seen = await a.look.handler({}, extra);
+      const ac = new AbortController(); ac.abort();
+      const result = await a.doTool.handler({ frameId: frameIdOf(seen), steps: [{ t: "click", x: 20, y: 20 }] }, { signal: ac.signal });
+      out.push(assert("사전 취소 do: post 0", a.log.posts.length === 0, a.log.posts.length));
+      out.push(assert("사전 취소 do: 취소 보고", /취소/.test(cancelTextOf(result)), cancelTextOf(result)));
+    }
+    for (const release of ["ok", "fail", "throw"] as const) {
+      const ac = new AbortController();
+      const a = arena({ cancelDuringPost: ac, releaseOk: release !== "fail", releaseThrows: release === "throw" });
+      const seen = await a.look.handler({}, extra);
+      let result: { content: Rec[] };
+      try {
+        result = await a.doTool.handler({ frameId: frameIdOf(seen), steps: [
+          { t: "keydown", key: "shift" }, { t: "wait", ms: 100 },
+          { t: "click", x: 20, y: 20 }, { t: "keyup", key: "shift" },
+        ] }, { signal: ac.signal });
+      } catch (e) { result = { content: [{ type: "text", text: `unexpected throw: ${String(e)}` }] }; }
+      const text = cancelTextOf(result);
+      const held = a.desktop["held"] as { keys: string[]; buttons: string[] };
+      out.push(assert(`진행 취소(${release}): 완료/불명/미실행 부분기록`, /1\. \[완료\]/.test(text) && /2\. \[불명\]/.test(text) && /3\. \[미실행\]/.test(text), text));
+      out.push(assert(`진행 취소(${release}): 해제 별도 시도`, a.log.posts.length === 2 && a.log.posts[1]?.events.every(e => ["keyup", "mouseup"].includes(String(e["t"]))), a.log.posts));
+      out.push(assert(`진행 취소(${release}): 장부`, release === "ok" ? held.keys.length === 0 && held.buttons.length === 0 : held.keys.includes("shift") && held.buttons.includes("left"), held));
+      out.push(assert(`진행 취소(${release}): 현재 응답 해제실패`, release === "ok" ? !/입력 해제 실패/.test(text) : /입력 해제 실패/.test(text), text));
+      out.push(assert(`진행 취소(${release}): 리스 해제`, a.desktop["active"] === null, a.desktop["active"]));
+    }
+
+    // 실제 native post 배선, execFile만 합성한다. kill 요청과 자식 종료를 구분한다.
+    const req = createRequire(import.meta.url);
+    for (const platform of ["mac", "win"]) {
+      const filename = new URL(`../../../plugins/computer-use/src/${platform}.ts`, import.meta.url);
+      const source = await fs.readFile(filename, "utf8");
+      const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+      let spawns = 0, kills = 0;
+      let finish: (() => void) | undefined;
+      const mockExec = (...args: unknown[]) => {
+        spawns++;
+        const callback = args.at(-1) as (e: unknown, out: string, err: string) => void;
+        finish = () => callback(Object.assign(new Error("killed"), { killed: true }), '{"step":0}\n{"step":1}\n', "");
+        return { kill: () => { kills++; return true; } };
+      };
+      const exports: Rec = {};
+      runInNewContext(js, { exports, require: (id: string) => id === "node:child_process" ? { execFile: mockExec } : id === "./control.js" ? { postTimeoutMs: () => 8000, keyDryEvents: () => [] } : id === "./observe.js" ? {} : req(id), process, Buffer, console, setTimeout, clearTimeout });
+      const post = exports["post"] as (events: Rec[], signal?: AbortSignal) => Promise<Rec>;
+      const before = new AbortController(); before.abort();
+      const pre = post([{ t: "wait", ms: 100 }], before.signal);
+      // 기준 소스는 취소를 무시하고 spawn한다 — 합성 자식을 종료해 검사를 멈추지 않는다.
+      const beforeSpawns = spawns;
+      finish?.(); await pre;
+      out.push(assert(`${platform} 사전 취소: native spawn 0`, beforeSpawns === 0, beforeSpawns));
+      const ac = new AbortController();
+      let settled = false;
+      const pending = post([{ t: "wait", ms: 100 }], ac.signal).then(r => { settled = true; return r; });
+      ac.abort(); await Promise.resolve();
+      out.push(assert(`${platform} 진행 취소: native kill 요청`, kills === 1, kills));
+      out.push(assert(`${platform} 진행 취소: 종료 확인 전 해제 금지`, !settled, settled));
+      finish?.(); const result = await pending;
+      out.push(assert(`${platform} 진행 취소: 부분 stdout/취소 사유`, result["ok"] === false && /취소/.test(String(result["detail"])) && String(result["stdout"]).includes('"step":1'), result));
+    }
+
+    // 실제 MCP transport의 요청 취소가 SDK handler extra.signal까지 도달해야 한다.
+    // worker 수명/권한 정책은 이 검사의 대상이 아니므로 timeout 환산 의존성만 대체한다.
+    const bridgeSource = await fs.readFile(new URL("../../core/llm-runtime/adapters/_mcp-bridge.ts", import.meta.url), "utf8");
+    const { createSdkMcpServer, tool } = req("@anthropic-ai/claude-agent-sdk") as typeof import("@anthropic-ai/claude-agent-sdk");
+    type Bridge = { callTool: (name: string, args: Rec) => Promise<unknown>; close: () => Promise<void> };
+    for (const trace of ["0", "1"]) {
+      const exports: Rec = {};
+      runInNewContext(ts.transpileModule(bridgeSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
+        exports, require: (id: string) => id === "../../worker-jobs.js" ? { asFiniteTimeoutMs: (n: number) => n } : req(id),
+        process: { env: { MCP_BRIDGE_TRACE: trace } }, console,
+      });
+      const adapt = exports["adaptSharedClaudeMcpServer"] as (config: unknown, name: string, timeout?: number, signal?: AbortSignal) => Promise<Bridge>;
+      const ac = new AbortController();
+      let calls = 0, cancelled = false;
+      let started!: () => void, finish!: () => void;
+      const entered = new Promise<void>(r => { started = r; });
+      const server = createSdkMcpServer({ name: "cancel-fixture", version: "1", tools: [tool("wait", "synthetic wait", {}, async (_a, extra) => {
+        calls++; started();
+        await new Promise<void>(resolve => {
+          finish = resolve;
+          (extra as { signal: AbortSignal }).signal.addEventListener("abort", () => { cancelled = true; resolve(); }, { once: true });
+        });
+        return { content: [{ type: "text" as const, text: "done" }] };
+      })] });
+      const bridge = await adapt(server, "cancel-fixture", 1000, ac.signal);
+      const pending = bridge.callTool("wait", {}).then(() => "ok", () => "cancelled");
+      await entered; ac.abort();
+      // InMemoryTransport 배달을 기다리는 유한 한 턴. 기준 구현도 hang 없이 실패로 기록한다.
+      await new Promise(resolve => setTimeout(resolve, 20));
+      out.push(assert(`MCP trace=${trace}: handler 취소 도달`, cancelled, cancelled));
+      finish(); await pending;
+      const before = calls;
+      const pre = bridge.callTool("wait", {}).catch(() => undefined);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      out.push(assert(`MCP trace=${trace}: 이미 취소된 요청 dispatch 0`, calls === before, { before, calls }));
+      finish(); await pre; await bridge.close();
+      const other = await adapt(createSdkMcpServer({ name: "other-owner", version: "1", tools: [tool("ping", "synthetic", {}, async () => ({ content: [{ type: "text" as const, text: "other-ok" }] }))] }), "other-owner");
+      const otherResult = await other.callTool("ping", {});
+      out.push(assert(`MCP trace=${trace}: 다른 소유자 영향 없음`, JSON.stringify(otherResult).includes("other-ok"), otherResult));
+      await other.close();
+      // 같은 SDK instance/transport라도 요청 소유자의 신호는 공유하면 안 된다.
+      const ownerA = new AbortController(), ownerB = new AbortController();
+      const handlerSignals: AbortSignal[] = [];
+      const finishes: (() => void)[] = [];
+      const shared = createSdkMcpServer({ name: "shared-owners", version: "1", tools: [tool("wait", "synthetic", {}, async (_a, extra) => {
+        const requestSignal = (extra as { signal: AbortSignal }).signal;
+        handlerSignals.push(requestSignal);
+        if (handlerSignals.length <= 2) await new Promise<void>(resolve => {
+          finishes.push(resolve);
+          requestSignal.addEventListener("abort", resolve as () => void, { once: true });
+        });
+        return { content: [{ type: "text" as const, text: "owner-ok" }] };
+      })] });
+      const a = await adapt(shared, "shared-owners", 1000, ownerA.signal);
+      const b = await adapt(shared, "shared-owners", 1000, ownerB.signal);
+      const runA = a.callTool("wait", {}).then(() => "ok", () => "cancelled");
+      const runB = b.callTool("wait", {}).then(() => "ok", () => "cancelled");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      ownerA.abort();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      out.push(assert(`MCP trace=${trace}: 동일 instance A만 취소`, handlerSignals.length === 2 && handlerSignals[0]?.aborted === true && handlerSignals[1]?.aborted === false, handlerSignals.map(s => s.aborted)));
+      finishes.forEach(f => f());
+      const results = await Promise.all([runA, runB]);
+      out.push(assert(`MCP trace=${trace}: 동시 B 호출 보존`, results[0] === "cancelled" && results[1] === "ok", results));
+      const laterB = await b.callTool("wait", {}).then(r => JSON.stringify(r), () => "cancelled");
+      out.push(assert(`MCP trace=${trace}: A 취소 후 B 재호출 오염 없음`, laterB.includes("owner-ok"), laterB));
+      await b.close();
     }
 
     return out;

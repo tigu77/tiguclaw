@@ -8,13 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.83.0] - 2026-11-12
+
+### Added
+- `delete_schedule` and `delete_watch` accept an `ids` array of up to 100 schedules or watches. Each ID receives its own result, including partial successes, and the existing approval rules still apply.
+- The background panel groups recurring schedules separately from timers, showing their next run time and conversation. Disabled schedules are collapsed and excluded from the running count.
+- Expanding a Read card shows the content saved at read time, up to 40 lines and 4,000 characters. It does not read the file again, and unsaved ranges are marked as unconfirmed.
+- Checks registered as schedules, file watches, or timers can use `report_default: "omit"` to skip replies for successful runs with nothing new to report. Runs remain recorded. Errors, important changes, requested notifications, and approval questions are never skipped. Reporting remains enabled by default.
+
+### Changed
+- With **Worker intervention requests** enabled in dashboard settings, managers and subagents use `request_owner_intervention` to describe the situation and the intervention needed. It is intended for decisions or actions they cannot take themselves, not progress or completion reports. The setting remains off by default, with a limit of three requests per task.
+- Timer and recurring schedule items use two lines: the date, time, or interval first, followed by the content, with the conversation in smaller text. Long names can be viewed with a mouse, keyboard, or tap. Timers scroll with the rest of the background list.
+- Update completion notices are sent only after the newly started daemon confirms that it is running the updated version. `tiguclaw start` avoids starting another daemon when the previous version is still running or its state cannot be determined.
+- **Node.js 22 is now the minimum supported version.** If you use Node 20, upgrade to Node 22 or later before updating.
+- Updated Claude Agent SDK to **0.3.322**. Replies already received are preserved if saving the conversation transcript fails.
+- Long-running Codex background tasks continue across context-window boundaries without an intermediate summary. Tool activity appears when execution actually starts. Explicit context-limit errors receive one recovery attempt without re-running tools.
+- Codex sign-in can continue by pasting the address when the automatic callback is unavailable. Sign-in completes only once, and the CLI sign-in wait ends after 10 minutes.
+- Forced dashboard usage refreshes now require POST. Forced refreshes over GET are rejected.
+- Refined the assistant’s base guidelines and built-in skills around trust, accuracy, efficiency, and speed. Verification should match the risk of a change and reuse valid evidence. Corrections apply to the current work first, and memory tidying preserves the meaning and scope of user instructions.
+- On receiving a worker’s completion notice, the assistant considers the original request, latest instructions, and existing approvals before asking for approval again.
+
 ### Fixed
-- Dashboard messages sent in quick succession keep their input boundary while replies stream. Pending bubbles no longer sort by the browser clock; server echoes and the first saved reply content reconcile the existing virtual-list item without replacing reply targets. Conversation history and server queues are unchanged.
-- `delete_schedule` and `delete_watch` accept an `ids` array (up to 100 IDs) as an alternative to the existing single `id`. They validate the whole input before deletion, deduplicate IDs, and retain per-ID successes, missing items, and errors if only part of a batch succeeds. Existing approval requirements and single-ID responses are unchanged; partial changes are not rolled back.
-- Codex tool activity now starts when execution is actually entered, not when a call is proposed, and failed or cancelled executions close with the same sequence number. Calls discarded at a limit boundary are not left marked as running.
-- Codex background work that can continue now moves directly into the next window without an intermediate checkpoint request. The final cumulative report slot, main-conversation final reports, executed-tool history, and cancellation behavior are preserved.
-- Codex history-pressure decisions conditionally use validated usage and a complete replay boundary from the same response. Missing signals fall back to the previous decision path, while recent results and the first exposure of new tool results remain protected. Efficiency gains at the real endpoint have not yet been measured.
-- Explicit Codex context-limit failures can receive one local recovery attempt without re-executing tools. Authentication, quota, network, cancellation, and other failures after recovery retain their own causes instead of restarting the entire turn on another candidate.
+- Malformed request URLs could raise errors outside request handling in the bridge, dashboard, and sign-in callback.
+- Temporary admin tokens generated when no environment token was configured were written to logs in plain text.
+- Installation paths containing spaces could split service arguments on Linux, while XML reserved characters could break launchd configuration on macOS. Unsupported characters are now rejected up front.
+- With **Codex and OpenAI models**, stopping a task could leave an in-progress computer-use input sequence running to completion. Remaining input now stops, held keys and buttons are released, and results distinguish executed and unexecuted steps.
+- Codex could retry policy and format rejections with the same request, or mark a task as completed after it failed following tool execution. Failures and partial reports are now preserved.
+- Earlier dashboard activity could appear empty or incomplete when many later records or records from other conversations were present.
+- Messages sent in quick succession during a streamed reply could appear above the previous question or change order after a refresh.
+- Corrected the manual-editing guidance in the confirmed-guidelines file header. It now explains that `confirm_feedback` rewrites the file, text outside the block is lost on the next write, and a damaged header prevents writing.
 
 ## [0.82.0] - 2026-11-06
 
@@ -1285,7 +1307,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.82.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...HEAD
+[0.83.0]: https://github.com/tigu77/tiguclaw/compare/v0.82.0...v0.83.0
 [0.82.0]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...v0.82.0
 [0.81.0]: https://github.com/tigu77/tiguclaw/compare/v0.80.0...v0.81.0
 [0.80.0]: https://github.com/tigu77/tiguclaw/compare/v0.79.1...v0.80.0

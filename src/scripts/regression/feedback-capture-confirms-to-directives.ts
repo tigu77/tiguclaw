@@ -19,7 +19,7 @@
  *
  * 등급: **동작**.
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -165,6 +165,37 @@ export const check: RegressionCheck = {
     const setLongPrompt = formatSelfGrowthDirectives();
     await clear(["regr-listed", longAutoKey, longAutoKey2]);
 
+    // ⑩ 실제로 쓰인 파일의 머리말이 도구 단독 쓰기와 같은 말을 한다(2026-11-11 — «도구로만» 아래 «직접 편집 가능» 이 함께 있었다).
+    //  머리말이 경고하는 결과(블록 밖 글은 다음 쓰기 때 사라진다)도 실제 쓰기로 같이 본다.
+    const { getPaths } = await import("../../core/paths.js");
+    const sgFile = getPaths().selfGrowthMd;
+    await call({ key: "regr-header", text: "회귀-머리말 규칙" });
+    appendFileSync(sgFile, "\n회귀-블록 밖 손글씨\n");
+    await call({ key: "regr-header", text: "회귀-머리말 규칙 고침" });
+    const headerBody = readFileSync(sgFile, "utf8");
+    await clear(["regr-header"]);
+    //  머리말은 문구 몇 개를 찾지 않고 **첫 지침 블록 앞 전체**를 아래 기대와 같음으로 본다 — 금지 문구를 둔 채 다른 말로
+    //  허용을 덧붙여도(M5) 잡히게. 기대는 제품 상수를 import 하지 않고 여기 그대로 적는다(같이 틀리면 못 잡는다).
+    //  머리말을 고치면 이 기대도 같이 고친다 — 그 손이 «한목소리» 를 다시 읽게 하는 자리다.
+    const HEADER_EXPECTED = [
+      "# SELF_GROWTH.md — 확정 지침 층",
+      "",
+      "이 파일은 사용자 반응에서 배운 규칙을 모은 운영 메모리입니다.",
+      "",
+      "- 확정 지침은 매 턴 프롬프트에 실립니다(사용자 확정분 먼저, 상한 있음). 쓰기는 `confirm_feedback` 도구로만.",
+      "- 각 지침은 안정 키(상황 slug)로 식별되며 같은 상황 재확정 시 덮어쓰기됩니다(중복 누적 없음).",
+      "- 사용자 확정분은 `source: user` 로 표시됩니다. 예전 자동 지침(`source: auto`)이 남아 있으면 그대로 실리고, `confirm_feedback` 의 list·retire 로 보고 내릴 수 있습니다.",
+      "",
+      "<!-- 이 아래 블록은 confirm_feedback 이 씁니다. 손으로 고치지 마세요 — 블록 밖 글은 다음 쓰기 때 사라지고, 머리 줄이 깨지면 쓰기가 멈춥니다. -->",
+      "",
+      "",
+    ].join("\n");
+    const headerWritten = headerBody.split("<!-- directive:")[0]; // 블록이 없으면 파일 전체 — 기대와 달라 빨강(slice(0,-1) 거짓 통과 방지)
+    const header = {
+      머리말일치: headerWritten === HEADER_EXPECTED,
+      블록밖사라짐: !headerBody.includes("회귀-블록 밖 손글씨"),
+    };
+
     return [
       assert(
         "★① 메인 대화에서 set 하면 user 로 착지해 프롬프트 조각에 실리고, retire 하면 빠진다",
@@ -281,6 +312,11 @@ export const check: RegressionCheck = {
           끝구분자: markerEnd.ok,
           화살표: arrow.ok,
         },
+      ),
+      assert(
+        "★⑩ 쓰인 SELF_GROWTH 머리말 전체가 «confirm_feedback 으로만·손으로 고치지 마세요» 기대 텍스트와 같고(덧붙인 허용 문구 없음), 경고대로 블록 밖 글은 다음 쓰기 때 사라진다",
+        Object.values(header).every(Boolean),
+        header.머리말일치 ? header : { ...header, 쓰인머리말: headerWritten },
       ),
     ];
   },

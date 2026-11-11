@@ -43,7 +43,7 @@ const FILE_HEADER = `# SELF_GROWTH.md — 확정 지침 층
 - 각 지침은 안정 키(상황 slug)로 식별되며 같은 상황 재확정 시 덮어쓰기됩니다(중복 누적 없음).
 - 사용자 확정분은 \`source: user\` 로 표시됩니다. 예전 자동 지침(\`source: auto\`)이 남아 있으면 그대로 실리고, \`confirm_feedback\` 의 list·retire 로 보고 내릴 수 있습니다.
 
-<!-- 이 아래 블록은 confirm_feedback 이 씁니다. 직접 편집 가능하나 키/구분자 형식을 유지하세요. -->
+<!-- 이 아래 블록은 confirm_feedback 이 씁니다. 손으로 고치지 마세요 — 블록 밖 글은 다음 쓰기 때 사라지고, 머리 줄이 깨지면 쓰기가 멈춥니다. -->
 `;
 
 // 각 지침 블록 구분자 (machine-parse 가능 + 사람이 읽기 좋은 HTML 주석 마커).

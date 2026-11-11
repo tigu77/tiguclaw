@@ -47,7 +47,9 @@ const collectRefs = async (dir: URL, out: Set<string> = new Set()): Promise<Set<
     }
     if (!/\.(md|ts|mjs|js)$/.test(e.name)) continue;
     const src = await readFile(child, "utf8");
-    for (const m of src.matchAll(/_workspace\/([A-Za-z0-9_.\-/]+\.(?:mjs|sh|ts|js))/g)) {
+    // ★확장자 뒤 경계(2026-11-11): 경계가 없으면 `…allow.json` 이 `…allow.js` 로 잘려 없는 파일을
+    //  찾았다. 확장자 바로 뒤에 이름 글자가 이어지면 그 자리에서 끊지 않는다.
+    for (const m of src.matchAll(/_workspace\/([A-Za-z0-9_.\-/]+\.(?:mjs|sh|ts|js|json))(?![A-Za-z0-9_\-])/g)) {
       out.add(`_workspace/${m[1] ?? ""}`);
     }
   }
@@ -104,6 +106,8 @@ export const check: RegressionCheck = {
       "_workspace/check-public-boot.mjs",
       "_workspace/check-public-ci.mjs",
       "_workspace/sync-gate.sh",
+      // `.json` 이 잘리지 않고 모이는지(위 경계)를 눈 검사가 본다 — sync-public §4 가 이름으로 부른다.
+      "_workspace/public-secret-allow.json",
     ];
     // 눈 검사는 **스킬 쪽 수집분만** 본다 — 이 파일의 주석은 증거가 될 수 없다.
     const seen = KNOWN.filter((k) => skillRefs.has(k));

@@ -66,7 +66,7 @@ export const blockContaining = (md: string, ...needles: string[]): string | unde
  * 실패를 넣을 자리 — 값은 그 스텁의 종료 코드. git 상태는 `env` 로 준다: `STUB_NOTHING_STAGED=0`(인덱스 비었음) ·
  *  `STUB_HEAD`(rev-parse HEAD) · `STUB_REMOTE_DEV`(ls-remote dev) — 기본은 «바뀐 것 있음 · HEAD = 원격 dev = SYNC_SHA».
  */
-export type SyncStubFail = Partial<Record<"npmCi" | "audit" | "build" | "buildProd" | "typecheck" | "lock" | "ci" | "boot" | "update" | "commit" | "push" | "lsRemote", number>>;
+export type SyncStubFail = Partial<Record<"npmCi" | "audit" | "build" | "buildProd" | "typecheck" | "lock" | "ci" | "boot" | "secret" | "update" | "commit" | "push" | "lsRemote", number>>;
 
 const STUBS = `
 _log() { print -r -- "$*" >> "$STUB_LOG"; }
@@ -85,6 +85,7 @@ node() {
     *check-public-lock.mjs) return \${F_lock:-0} ;;
     *check-public-ci.mjs) return \${F_ci:-0} ;;
     *check-public-boot.mjs) return \${F_boot:-0} ;;
+    *public-secret-scan.mjs) return \${F_secret:-0} ;;
   esac
   echo STUB_OK
   return 0

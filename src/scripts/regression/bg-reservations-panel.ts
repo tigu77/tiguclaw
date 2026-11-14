@@ -7,7 +7,7 @@ import { assert as record, i18nForContext, type RegressionCheck } from "./_frame
 
 export const check: RegressionCheck = {
   name: "bg-reservations-panel",
-  guards: "예약 날짜/주기·내용 행 분리·상세·반복/꺼짐·focus·필터·경합 보존",
+  guards: "예약 두 줄(날짜/주기·세션·⋮ / 내용)·⋮ 메뉴(이동·타이머 멈추기)·상세·반복/꺼짐·focus·필터·경합 보존",
   async run() {
     const clock = makeClock();
     const dom = bootDashboard({ html: bgPanelHtml(), clock, i18n: i18nForContext, allIds: true, upTo: "chat-search.js", extra: { EventSource: class { onmessage = null; onerror = null; onopen = null; addEventListener() {} close() {} } },
@@ -50,17 +50,24 @@ export const check: RegressionCheck = {
     assert.equal(rows('[data-schedule-id="25"]').length, 0, "발송 목적지를 실행세션으로 쓰지 않는다");
     const timerRow = timers()[0];
     const timerLabel = label(timerRow);
-    // 날짜/주기와 내용은 가로 경쟁하지 않고 같은 copy 열 안의 독립 행이다.
+    // 날짜/주기·내용·세션·⋮ 는 같은 copy 열 안에 있다. DOM 순서(날짜→내용→세션→⋮)가 Tab 순서(내용→세션→⋮)를 정하고,
+    // 세션·⋮ 의 «첫 줄 오른쪽» 위치는 아래 CSS grid 배치가 정한다(2026-11-12 정태님 «정확히 두 줄 · 우상단 끝 ⋮ · 그 왼쪽 세션»).
     for (const row of [timerRow, rows('[data-schedule-id="21"]')[0]]) {
       const info = row.querySelector(".bg-timer-info")!;
       const when = row.querySelector(".bg-timer-when, .bg-schedule-when")!;
       assert.ok(when.parentNode === info, "날짜/주기는 내용과 같은 가용 폭을 쓴다");
-      assert.equal(info.children[0], when, "첫 행 날짜/주기");
-      assert.equal(info.children[1], label(row), "둘째 행 예약내용");
-      assert.equal(info.children[2], row.querySelector(".bg-timer-session"), "대화 표시는 별도 작은 행");
+      // 노드 equal 은 실패 시 DOM 전체를 직렬화해 OOM(137)으로 끝난다 — 동일성은 불리언으로 본다.
+      assert.ok(info.children[0] === when, "첫 행 날짜/주기");
+      assert.ok(info.children[1] === label(row), "둘째 행 예약내용");
+      assert.ok(info.children[2] === row.querySelector(".bg-timer-session"), "세션은 내용 뒤(Tab: 내용 → 세션 → ⋮)");
+      assert.ok(info.children[3] === row.querySelector(".bg-timer-menu") && info.children.length === 4, "⋮ 는 DOM 마지막");
+      assert.ok(row.children.length === 1 && row.children[0] === info, "카드 밖 독립 열(옛 멈추기) 없음");
+      const menuBtn = row.querySelector(".bg-timer-menu")!;
+      assert.ok(menuBtn.textContent === "⋮" && menuBtn.getAttribute("role") === "button" && menuBtn.tabIndex === 0 && menuBtn.getAttribute("aria-haspopup") === "menu", "⋮ 는 키보드로 닿는 메뉴 버튼");
+      assert.ok(menuBtn.classList.contains("cm-kebab"), "기존 ⋯ 메뉴 프리미티브(attachKebab)를 쓴다");
+      assert.ok(row.querySelector(".bg-timer-stop") === null, "멈추기는 카드가 아니라 ⋮ 메뉴 안");
     }
     assertIncludes(rows('[data-schedule-id="21"]')[0].querySelector(".bg-schedule-when")!.textContent, current.cronExpr);
-    assert.equal(timerRow.children[timerRow.children.length - 1].className, "bg-timer-stop", "멈추기는 오른쪽 독립 열");
 
     assert.equal(timerLabel.tagName, "BUTTON", "키보드 Enter/Space와 mobile tap native control");
     assert.equal(timerLabel.textContent, timer.label, "전체 label은 textContent이고 잘라 저장하지 않는다");
@@ -125,8 +132,8 @@ export const check: RegressionCheck = {
     dispatch(scheduleLabel, "click");
     R(`closeBg();`);
     assert.equal(detail.hidden, true);
-    // keyed DOM: 이름뿐 아니라 Stop/배지와 native details summary/open까지 보존.
-    const stop = timerRow.querySelector(".bg-timer-stop")!;
+    // keyed DOM: 이름뿐 아니라 ⋮/배지와 native details summary/open까지 보존.
+    const stop = timerRow.querySelector(".bg-timer-menu")!;
     const badge = timerRow.querySelector(".bg-job-session")!;
     const summary = el("bg-schedules-off-summary");
     const offDetails = el("bg-schedules-off");
@@ -141,11 +148,108 @@ export const check: RegressionCheck = {
       assert.equal(rows('[data-schedule-id="21"]')[0], scheduleRow);
     }
     assert.equal(badge.textContent, "↪ Changed title");
+    // ── ⋮ 메뉴(2026-11-12): 카드에 원래 있던 동작만 — 상세 보기 · 세션 이동(이름을 아는 세션만) · 타이머만 멈추기.
+    //    반복 스케줄엔 멈추기·삭제 없음. 메뉴 수명은 대상 카드와 묶인다(사라지거나 접히면 닫고 포커스를 보이는 자리로).
+    const menuOf = () => d.querySelector(".ctx-menu");
+    const menuLabels = () => (menuOf() ? menuOf()!.querySelectorAll(".cm-item").map((r: any) => r.querySelector(".cm-label")!.textContent + (r.classList.contains("cm-disabled") ? "(꺼짐)" : "")) : []);
+    const menuItem = (text: string) => menuOf()!.querySelectorAll(".cm-item").find((r: any) => r.querySelector(".cm-label")!.textContent === text)!;
+    const timerMenu = timerRow.querySelector(".bg-timer-menu")!;
+    const scheduleMenu = scheduleRow.querySelector(".bg-timer-menu")!;
+    R(`window.__cancels = []; fetch = async (url, init) => { if (url === "/api/cancel-timer") { window.__cancels.push(JSON.parse(init.body).id); return window.__cancelOk === false ? {ok:false,status:500} : {ok:true,status:200,json:async()=>({})}; } return {ok:true,json:async()=>(${payload()})}; };`);
+    dispatch(label(timerRow), "click");
+    assert.equal(detail.hidden, false);
+    dispatch(timerMenu, "click");
+    assert.equal(detail.hidden, true, "⋮ 를 열면 떠 있던 상세를 닫는다");
+    assert.deepEqual(menuLabels(), ["상세 보기", "세션으로 이동", "멈추기"], "타이머 메뉴 = 상세 · 이동 · 멈추기");
+    dispatch(scheduleMenu, "click");
+    assert.equal(d.querySelectorAll(".ctx-menu").length, 1, "여러 카드라도 메뉴는 하나");
+    assert.deepEqual(menuLabels(), ["상세 보기", "세션으로 이동"], "반복 스케줄 메뉴엔 멈추기·삭제를 새로 만들지 않는다");
+    // «상세 보기» = 내용 누르기와 같은 고정 상세(말줄임된 날짜·주기·내용 전체).
+    dispatch(menuItem("상세 보기"), "click");
+    assert.ok(menuOf() === null && detail.hidden === false && detail.textContent.includes(current.cronExpr) && detail.textContent.includes(current.label), "메뉴 «상세 보기»가 전체 상세를 고정해 연다");
+    dispatch(d.body, "pointerdown");
+    assert.equal(detail.hidden, true);
+    // Esc → 닫고 ⋮ 로 포커스 복귀.
+    scheduleMenu.focus();
+    dispatch(scheduleMenu, "keydown", { key: "Enter" });
+    assert.ok(menuOf() !== null && d.activeElement !== scheduleMenu, "Enter 로 열고 첫 항목으로");
+    dispatch(d, "keydown", { key: "Escape" });
+    assert.ok(menuOf() === null && d.activeElement === scheduleMenu, "Esc 로 닫고 ⋮ 로 포커스 복귀");
+    // 바깥 누르기 닫기.
+    dispatch(timerMenu, "click");
+    dispatch(d.body, "pointerdown");
+    assert.equal(menuOf(), null, "바깥 누르면 닫힘");
+    // 메뉴가 열린 채 목록이 다시 그려지고 순서가 바뀌어도 메뉴는 연 때의 id 를 겨눈다.
+    dispatch(timerMenu, "click");
+    R(`fetch = async (url, init) => { if (url === "/api/cancel-timer") { window.__cancels.push(JSON.parse(init.body).id); return window.__cancelOk === false ? {ok:false,status:500} : {ok:true,status:200,json:async()=>({})}; } return {ok:true,json:async()=>(${payload(list, [{ ...timer, id: 9, runAt: timer.runAt - 5000, label: "earlier" }, timer])})}; }; renderBgTimers(); loadBgTimers();`);
+    await flush();
+    assert.ok(timers()[0] !== timerRow && timers()[1] === timerRow, "앞에 새 타이머가 끼어 순서가 바뀜");
+    assert.ok(menuOf() !== null, "다시 그려도(행이 남아 있으면) 열린 메뉴는 그대로");
+    R(`window.__cancelOk = false;`);
+    dispatch(menuItem("멈추기"), "click");
+    assert.equal(menuOf(), null, "항목 실행 시 닫힘");
+    assert.equal(d.activeElement, timerMenu, "항목 실행 뒤 ⋮ 로 포커스 복귀");
+    assert.equal(R(`JSON.stringify(window.__cancels)`), JSON.stringify([timer.id]), "열 때의 id 만 멈춘다(순서가 바뀐 뒤에도)");
+    // 멈추는 중 다시 연 메뉴: 멈추기는 꺼져 있고, 실패 응답이 오면 그 메뉴를 닫는다(꺼진 채 굳지 않게) — 다시 열면 켜져 있다.
+    dispatch(timerMenu, "click");
+    assert.deepEqual(menuLabels(), ["상세 보기", "세션으로 이동", "멈추기(꺼짐)"], "멈추는 중에는 멈추기를 끈다");
+    menuItem("상세 보기").focus();
+    await flush();
+    assertIncludes(el("toast").textContent, "멈추지 못했습니다");
+    assert.equal(timers()[1], timerRow, "실패면 그대로 둔다");
+    assert.ok(menuOf() === null && d.activeElement === timerMenu, "실패하면 멈추는 중에 연 메뉴를 닫고 ⋮ 로 포커스를 돌린다");
+    dispatch(timerMenu, "click");
+    assert.deepEqual(menuLabels(), ["상세 보기", "세션으로 이동", "멈추기"], "실패하면 멈추기를 되살린다");
+    dispatch(d, "keydown", { key: "Escape" });
+    R(`window.__cancelOk = true; window.__cancels.length = 0;`);
+    await load();
+    // 메뉴가 열린 카드가 목록에서 사라지면: 메뉴를 닫고, 포커스가 메뉴 안이었으면 보이는 타이머 머리줄로.
+    const earlier = { ...timer, id: 9, runAt: timer.runAt - 5000, label: "earlier" };
+    await load(list, [earlier, timer]);
+    const earlierMenu = timers()[0].querySelector(".bg-timer-menu")!;
+    earlierMenu.focus();
+    dispatch(earlierMenu, "keydown", { key: "Enter" });
+    assert.ok(menuOf() !== null && d.activeElement !== earlierMenu);
+    await load(list, [timer]);
+    assert.ok(menuOf() === null, "대상 카드가 사라지면 메뉴를 닫는다");
+    assert.ok(d.activeElement === el("bg-timers-head"), "포커스는 보이는 타이머 머리줄로(사라진 버튼에 남지 않는다)");
+    // 메뉴가 열린 반복 스케줄이 꺼져 접힌 «꺼짐» 영역으로 옮겨지면: 메뉴를 닫고 포커스는 꺼짐 요약으로.
+    (el("bg-schedules-off") as any).open = false;
+    scheduleMenu.focus();
+    dispatch(scheduleMenu, "keydown", { key: "Enter" });
+    assert.ok(menuOf() !== null);
+    await load([{ ...current, enabled: false }, off, reboot], [timer]);
+    assert.ok(el("bg-schedules-off-list").contains(scheduleRow), "꺼진 스케줄은 꺼짐 영역으로 옮겨진다");
+    assert.ok(menuOf() === null, "접힌 영역으로 옮겨지면 메뉴를 닫는다");
+    assert.ok(d.activeElement === el("bg-schedules-off-summary"), "포커스는 꺼짐 요약으로");
+    await load();
+    // 메뉴를 연 뒤 세션 이름을 잃으면(목록 갱신 등) 이미 보이는 «세션으로 이동»도 실행 때 다시 막는다.
+    {
+      const activeBefore = R(`activeThreadKey`);
+      R(`sessionDisplayNames.set('cli:current','Changed title'); window.refreshBgSessionBadges();`);
+      dispatch(scheduleMenu, "click");
+      assert.ok(menuLabels().includes("세션으로 이동"));
+      R(`activeThreadKey = 'cli:elsewhere'; sessionDisplayNames.delete('cli:current'); openTabs = openTabs.filter(t => t.threadKey !== 'cli:current');`);
+      dispatch(menuItem("세션으로 이동"), "click");
+      assert.equal(R(`activeThreadKey`), "cli:elsewhere", "연 뒤 이름을 잃은 세션으로는 이동하지 않는다(실행 때 재확인)");
+      R(`activeThreadKey = ${JSON.stringify(activeBefore)}; sessionDisplayNames.set('cli:current','Changed title'); window.refreshBgSessionBadges(); renderBgTimers();`);
+    }
+    // 이름을 모르는 세션(원시 좌표 · scheduler:<id>)은 배지처럼 이동을 주지 않는다.
+    const scopeBefore = R(`bgSessionScope`);
+    R(`setBgSessionScope("all");`);
+    for (const id of ["25", "26"]) {
+      dispatch(rows(`[data-schedule-id="${id}"]`)[0].querySelector(".bg-timer-menu")!, "click");
+      assert.deepEqual(menuLabels(), ["상세 보기"], `이름 미상 세션(${id})엔 «세션으로 이동» 없음`);
+      dispatch(d, "keydown", { key: "Escape" });
+    }
+    R(`setBgSessionScope(${JSON.stringify(scopeBefore)});`);
+    await load();
     // DOM 배치가 바뀌어도 같은 id 컨트롤은 재생성하지 않는다.
     timerLabel.focus();
     await load(list, [{ ...timer, id: 2, runAt: timer.runAt - 1000 }, timer]);
-    assert.equal(timers()[1], timerRow);
-    assert.equal(d.activeElement, timerLabel);
+    // 노드 equal 은 실패 시 DOM 전체를 직렬화해 OOM(137)으로 끝난다 — 동일성은 불리언으로 본다.
+    assert.ok(timers()[1] === timerRow, "같은 id 행은 재생성하지 않는다");
+    assert.ok(d.activeElement === timerLabel, "재배치 뒤에도 focus 유지");
     // 전체/현재 필터·세션 이동은 동일한 기존 경로.
     R(`setBgSessionScope(bgSessionScope === "all" ? "session" : "all");`);
     assert.equal(schedules().length, 6);
@@ -215,12 +319,29 @@ export const check: RegressionCheck = {
     assert.equal(R(`reservationPolls`), hiddenPolls, "비활성 탭 polling0");
     const textAndAttrs = d.querySelectorAll("*").map((x: any) => x.textContent + [...x.attrs.values()].join(" ") + (x.title || "")).join("\n");
     assert.equal(textAndAttrs.includes("PROMPT_PRIVATE"), false, "DOM/title/aria에 prompt 노출0");
+    // 마지막 예약이 사라져 두 묶음이 숨어도 포커스는 보이는 패널 컨트롤(닫기)로.
+    {
+      await load([], [timer]);
+      const lastMenu = timers()[0].querySelector(".bg-timer-menu")!;
+      lastMenu.focus();
+      dispatch(lastMenu, "keydown", { key: "Enter" });
+      assert.ok(menuOf() !== null);
+      await load([], []);
+      assert.ok(menuOf() === null && el("bg-timers").hidden === true && el("bg-schedules").hidden === true);
+      assert.ok(d.activeElement === el("bg-close"), "두 묶음이 모두 숨으면 포커스는 패널 닫기 버튼으로");
+    }
     // 시각·말줄임·축소 화면 실제 geometry는 독립 browser QA 인계.
     const css = readFileSync(new URL("../../../packages/dashboard/app.css", import.meta.url), "utf8");
     assert.ok(/\.bg-timer-label\s*\{[^}]*text-overflow:ellipsis[^}]*white-space:nowrap/.test(css));
     assert.ok(/\.bg-timer-label\s*\{[^}]*min-width:0/.test(css));
-    assert.ok(/\.bg-timer-info\s*\{[^}]*display:flex[^}]*flex-direction:column/.test(css));
+    // 첫 줄 = 날짜(1열) + 세션(2열 오른쪽), 둘째 줄 = 내용(두 열 걸침). 실제 좌표·겹침은 브라우저 QA.
+    assert.ok(/\.bg-timer-info\s*\{[^}]*display:grid[^}]*grid-template-columns:minmax\(0, max-content\) minmax\(min\(6em, 35%\), 1fr\) auto/.test(css), "예약 copy 열은 grid · 날짜/세션/⋮ 세 칸");
+    assert.ok(/\.bg-timer-info > \.bg-timer-menu\s*\{[^}]*grid-area:1 \/ 3/.test(css), "⋮ 는 첫 줄 오른쪽 끝");
+    assert.ok(/\.bg-timer-info > \.bg-timer-when, \.bg-timer-info > \.bg-schedule-when\s*\{[^}]*white-space:nowrap[^}]*text-overflow:ellipsis/.test(css), "날짜/주기는 줄바꿈 대신 말줄임(정확히 두 줄)");
+    assert.ok(/\.bg-timer-info > \.bg-timer-session\s*\{[^}]*grid-area:1 \/ 2[^}]*justify-self:end/.test(css), "세션은 첫 줄 오른쪽");
+    assert.ok(/\.bg-timer-info > \.bg-timer-label\s*\{[^}]*grid-area:2 \/ 1 \/ 3 \/ 4/.test(css), "내용은 둘째 줄 전체 폭");
+    assert.ok(/\.bg-timer-info > \.bg-timer-when, \.bg-timer-info > \.bg-schedule-when\s*\{[^}]*grid-area:1 \/ 1/.test(css), "날짜/주기는 첫 줄 왼쪽");
     assert.equal(clock.errors.length, 0, JSON.stringify(clock.errors));
-    return [record("실제 예약 JS/패널 계약", true, "날짜/주기 첫행·내용 둘째행·대화 별도·Stop 오른쪽, safe label 상세·첫 tap/hover/키보드·focus/summary/open 보존, 반복/꺼짐/필터/원시 좌표/이동, 실행중 집계 불변, stale/resync. 실제 pointer geometry는 별도 QA")];
+    return [record("실제 예약 JS/패널 계약", true, "날짜/주기 첫행·세션·⋮ 첫행 오른쪽·내용 둘째행·⋮ 메뉴(이동·타이머 멈추기·Esc 복귀·id 고정·실패 복구), safe label 상세·첫 tap/hover/키보드·focus/summary/open 보존, 반복/꺼짐/필터/원시 좌표/이동, 실행중 집계 불변, stale/resync. 실제 pointer geometry는 별도 QA")];
   },
 };

@@ -1292,7 +1292,7 @@
       .bg-group-head.collapsed + .bg-group-body { display:none; }
       /* 그룹은 내용 높이 그대로 공통 바깥 스크롤에 쌓인다. 클래스 선택자를 유지해
          collapsed + .bg-group-body 의 display:none 이 display:flex 보다 우선한다. */
-      /* 한 번 타이머(2026-10-20, bg-timers.js) — 작업 그룹 위 짧은 목록. 없으면 [hidden](전역 규칙)으로 숨는다. 남은 시간 · 이름/소속 세션 · 멈추기. */
+      /* 한 번 타이머(2026-10-20, bg-timers.js) — 작업 그룹 위 짧은 목록. 없으면 [hidden](전역 규칙)으로 숨는다. 남은 시간 · 이름/소속 세션 · ⋮ 메뉴(멈추기). */
       .bg-timers { flex:none; padding:8px 12px 2px; }
       .bg-timers-head { padding:0 0 4px; }
       .bg-timer { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid var(--border); border-radius:9px; margin-bottom:4px; font-size:0.75rem; min-width:0; }
@@ -1300,7 +1300,16 @@
       .bg-timer.failed { opacity:1; border-color:rgb(var(--danger-rgb) / .5); }
       .bg-timer.failed .bg-timer-when { color:var(--danger-fg); }
       .bg-timer-when { font-weight:800; color:var(--accent); overflow-wrap:anywhere; }
-      .bg-timer-info { flex:1; min-width:0; display:flex; flex-direction:column; align-items:stretch; gap:3px; }
+      /* 타이머·반복 스케줄 공통 **정확히 두 줄**(2026-11-12 정태님 확정): 첫 줄 = 날짜/주기(왼쪽) · 소속 세션 · ⋮ 메뉴(오른쪽 끝),
+         둘째 줄 = 내용. 셋 다 줄바꿈 대신 말줄임 — 전체는 날짜 hover(title)와 내용 상세(hover·focus·탭)로 본다.
+         DOM 순서(날짜 → 내용 → 세션 → ⋮)라 Tab 순서는 내용 → 세션 → ⋮.
+         날짜가 먼저 제 폭을 쓰고 세션은 남는 폭(최소 min(6em, 35%))에서 말줄임. */
+      .bg-timer-info { flex:1; min-width:0; display:grid; grid-template-columns:minmax(0, max-content) minmax(min(6em, 35%), 1fr) auto; align-items:center; column-gap:6px; row-gap:3px; }
+      .bg-timer-info > .bg-timer-when, .bg-timer-info > .bg-schedule-when { grid-area:1 / 1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .bg-timer-info > .bg-timer-label { grid-area:2 / 1 / 3 / 4; }
+      .bg-timer-info > .bg-timer-session { grid-area:1 / 2; justify-self:end; max-width:100%; }
+      .bg-timer-info > .bg-timer-menu { grid-area:1 / 3; opacity:1; }
+      .bg-timer-menu:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
       .bg-timer-label { min-width:0; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); border:0; padding:3px 0; background:transparent; font:inherit; text-align:left; cursor:pointer; }
       .bg-timer-label:focus-visible, .bg-timer-session button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
       .bg-timer-session { min-width:0; color:var(--text-mute); font-size:0.625rem; }
@@ -1312,9 +1321,6 @@
       .bg-schedule-when { min-width:0; color:var(--text-mute); overflow-wrap:anywhere; }
       .bg-schedules-body details > summary { color:var(--text-mute); font-size:0.6875rem; cursor:pointer; padding:6px 0; }
       .bg-schedules-body details .bg-schedule { opacity:.6; }
-      .bg-timer-stop { flex:none; padding:3px 8px; border:1px solid var(--border); border-radius:7px; background:transparent; color:var(--text-mute); cursor:pointer; font-size:0.6875rem; font-weight:800; }
-      .bg-timer-stop:hover { color:var(--text); background:var(--card-hover); }
-      .bg-timer-stop:disabled { opacity:.5; cursor:default; }
       .bg-jobs-body { display:flex; flex-direction:column; }
       .bg-group-body .bg-filter { flex:none; }
       /* 상태 필터는 공통 스크롤 칸 윗변에 남는다(2026-10-30 모바일 신고 «스크롤영역 상단이 겹치네»). 칸을 하나로 합친 뒤

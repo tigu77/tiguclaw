@@ -415,6 +415,57 @@ const sseRaces = async (): Promise<Assertion[]> => {
       promoted.ts === String(S + 300) && promoted.clock === "(없음)" && staleOld === true,
     { 버블시계: bubbleClock, 안내시계: localClock, 스텝그려짐: stepKept, 답그려짐: answerKept, 승격: promoted, 옛replay차단: staleOld },
   ));
+
+  // ⑥ 이력 제외 안내(`llm.history_trimmed`, 2026-11-12) — 압축 실패 줄과 **따로** 스레드당 한 줄로 고쳐 쓰고, 이력 창에선 판정째 미룬다.
+  //  이 fixture 의 `vtOwns` 는 기본 «소유 안 함» 이라, 이 구간만 실제 목록 소유로 바꿔 고쳐 쓰기 경로를 지나게 한다.
+  {
+    const owns = (n: El): boolean => vtItems.some((i) => i.node === n);
+    (ctx as { vtOwns: (n: El) => boolean }).vtOwns = owns;
+    // 문구 키만이 아니라 **넘긴 수**까지 본다(GPT R1 검사 부족) — 이 구간만 매개변수를 본문에 남긴다.
+    const keyOnly = (ctx as { i18n: unknown }).i18n;
+    (ctx as { i18n: (k: string, p?: unknown) => string }).i18n = (k, p) => (p === undefined ? k : `${k}${JSON.stringify(p)}`);
+    const U = S + 20_000;
+    const local = (): El[] => vtItems.map((i) => i.node).filter((n) => n.classList.contains("local") && !n.classList.contains("channel-chat"));
+    const bodyOf = (n: El): string => n.querySelector(":scope .chat-message")?.textContent ?? "";
+    const base = local().length;
+    const trim = (t: number, droppedTurns: number, toolsOmittedTurns: number, threadKey = "A"): void =>
+      renderEvent({ type: "llm.history_trimmed", ts: t, payload: { threadKey, droppedTurns, toolsOmittedTurns, unsummarizedTurns: 9 } });
+    trim(U, 3, 0);
+    const first = local().slice(base).map(bodyOf);
+    trim(U + 1, 0, 2);
+    const toolsOnly = local().slice(base).map(bodyOf);
+    trim(U + 2, 2, 1);
+    trim(U + 3, 0, 0); // 빈 안내는 그리지 않는다
+    trim(U + 4, 5, 0, "B"); // 보고 있지 않은 세션
+    renderEvent({ type: "llm.compact_failed", ts: U + 5, payload: { threadKey: "A", reason: "server_is_overloaded", adapter: "codex" } });
+    const mixed = local().slice(base).map(bodyOf);
+    run("beginHistoryLoad()");
+    trim(U + 6, 4, 0);
+    const held = local().length - base;
+    run("endHistoryLoad()");
+    const flushed = local().slice(base).map(bodyOf);
+    // 그 세션의 **첫** 안내가 이력 창에서 온다 — 판정째 미뤄야 흘린 뒤 줄이 맵에 남아 다음 안내가 그 줄을 고친다
+    //  (렌더만 미루면 `renderLocalChat` 이 스스로 미루며 줄을 돌려주지 않아 다음 안내가 새 줄을 쌓는다).
+    (ctx as { activeThreadKey: string }).activeThreadKey = "C";
+    const baseC = local().length;
+    run("beginHistoryLoad()");
+    trim(U + 7, 1, 0, "C");
+    run("endHistoryLoad()");
+    trim(U + 8, 2, 0, "C");
+    const firstInWindow = local().slice(baseC).map(bodyOf);
+    (ctx as { activeThreadKey: string }).activeThreadKey = "A";
+    (ctx as { vtOwns: () => boolean }).vtOwns = () => false;
+    (ctx as { i18n: unknown }).i18n = keyOnly;
+    const failLine = 'sys.compact.failed{"reason":"server_is_overloaded"}';
+    out.push(assert(
+      "★실제 이력 제외 안내는 서버가 센 수 그대로(턴/도구 기록/둘 다를 구분) 스레드당 한 줄로 고쳐 쓰고 · 압축 실패 줄과 섞이지 않으며 · 다른 세션·빈 안내는 그리지 않고 · 이력 창에선 판정째 미뤘다가 같은 줄을 고친다(첫 안내가 창 안에서 와도)",
+      first.join() === 'sys.history.trimmed{"turns":3}' && toolsOnly.join() === 'sys.history.toolsOmitted{"tools":2}' &&
+        mixed.join("|") === `sys.history.trimmedWithTools{"turns":2,"tools":1}|${failLine}` &&
+        held === 2 && flushed.join("|") === `sys.history.trimmed{"turns":4}|${failLine}` &&
+        firstInWindow.join("|") === 'sys.history.trimmed{"turns":2}',
+      { first, toolsOnly, mixed, held, flushed, firstInWindow },
+    ));
+  }
   return out;
 };
 

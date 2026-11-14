@@ -79,12 +79,22 @@
       let menuEl = null;
       let menuTeardown = null;
       let menuFocusIndex = -1;
+      // 연 버튼(opt-in `opts.returnFocus`) — Esc·항목 실행으로 닫을 때 포커스를 돌려줄 곳. 바깥 클릭·스크롤로 닫힐 땐 돌려주지 않는다.
+      let menuReturnFocus = null;
+      let menuAnchorEl = null; // 연 버튼(opts.anchor) — 그 버튼의 카드가 사라질 때 주인이 메뉴를 닫을 수 있게(`isMenuOpenAt`).
 
-      const closeMenu = () => {
+      /** 지금 열린 메뉴가 이 버튼에서 열렸나. */
+      const isMenuOpenAt = (el) => menuEl !== null && !!el && menuAnchorEl === el;
+
+      const closeMenu = (restoreFocus) => {
         if (menuTeardown) { try { menuTeardown(); } catch {} menuTeardown = null; }
         if (menuEl && menuEl.parentElement) menuEl.parentElement.removeChild(menuEl);
         menuEl = null;
+        menuAnchorEl = null;
         menuFocusIndex = -1;
+        const back = menuReturnFocus;
+        menuReturnFocus = null;
+        if (restoreFocus === true && back && back.isConnected) back.focus({ preventScroll: true });
       };
 
       // 외부 기여 데이터가 endpoint/builtin 을 갖고 들어와도(백엔드가 이미 drop 하지만 belt-and-
@@ -146,7 +156,7 @@
         if (item.enabled === false) return;
         // `confirm` = 항목이 자기 확인 문구를 준다(일반 문구로는 무엇을 하는지 안 보일 때).
         if (item.danger && !window.confirm(item.confirm || i18n("ctx.confirm", { what: item.label || i18n("ctx.thisAction") }))) return;
-        closeMenu(); // §1.3 — 실행 시 항상 닫음(성공/실패 무관, 에러는 메뉴 밖 토스트/로컬챗에 표기).
+        closeMenu(true); // §1.3 — 실행 시 항상 닫음(성공/실패 무관, 에러는 메뉴 밖 토스트/로컬챗에 표기).
         await executeMenuAction(item, ctx);
       };
 
@@ -292,7 +302,7 @@
           const active = document.activeElement;
           const level = active && el.contains(active) ? active.closest(".ctx-menu") : el;
           const focusable = Array.from(level.querySelectorAll(".cm-item:not(.cm-disabled)")).filter((r) => r.closest(".ctx-menu") === level);
-          if (ev.key === "Escape") { ev.preventDefault(); closeMenu(); return; }
+          if (ev.key === "Escape") { ev.preventDefault(); closeMenu(true); return; }
           if (!focusable.length) return;
           menuFocusIndex = focusable.indexOf(active);
           if (ev.key === "ArrowRight" && active && active.classList.contains("cm-has-sub")) {
@@ -355,6 +365,8 @@
         positionMenu(el, opts || {});
         menuTeardown = attachMenuBehavior(el);
         menuEl = el;
+        menuReturnFocus = opts && opts.returnFocus ? opts.returnFocus : null;
+        menuAnchorEl = opts && opts.anchor ? opts.anchor : null;
         const first = el.querySelector(".cm-item:not(.cm-disabled)");
         if (first) { menuFocusIndex = 0; first.focus(); }
       };
@@ -370,6 +382,7 @@
        * ★`opts.first` = 흐름 **맨 앞**에 넣는다. sticky+float 로 우상단에 띄우려면 흐름의
        *  처음에 있어야 한다(뒤에 있으면 그 위치부터 떠서 본문 아래로 내려간다).
        *  절대배치 시절엔 순서가 무관했다 — 그래서 append 였다.
+       * `opts.returnFocus` = Esc·항목 실행으로 닫히면 이 버튼으로 포커스를 돌려준다(예약 카드 ⋮, 2026-11-12).
        */
       const attachKebab = (hostEl, type, ctxFn, opts) => {
         if (!hostEl) return null;
@@ -380,7 +393,7 @@
           ev.stopPropagation();
           if (ev.preventDefault) ev.preventDefault();
           const ctx = ctxFn(ev);
-          if (ctx) openMenu(type, ctx, { anchor: btn, align: "end" });
+          if (ctx) openMenu(type, ctx, { anchor: btn, align: "end", returnFocus: opts && opts.returnFocus === true ? btn : null });
         };
         btn.addEventListener("click", trigger);
         btn.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") trigger(ev); });

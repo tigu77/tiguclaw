@@ -81,7 +81,9 @@ export const check: RegressionCheck = {
     const row = b.list.querySelector('.bg-timer[data-timer-id="3"]');
     out.push(assert("위젯의 다른 세션 타이머 보여주기 → 범위와 접힌 묶음을 풀고 해당 카드 강조 · 펼침도 저장",
       b.expanded() && b.dash.run("bgSessionScope") === "all" && row?.classList.contains("bg-flash") === true && b.store.get(KEY) === "0", { aria: b.head.getAttribute("aria-expanded"), count: b.count() }));
-    const stop = b.list.querySelector(".bg-timer-stop")!;
+    // 멈추기는 ⋮ 메뉴 안(2026-11-12).
+    dispatch(b.list.querySelector(".bg-timer-menu")!, makeEvent("click"));
+    const stop = b.dash.document.querySelector(".ctx-menu")!.querySelectorAll(".cm-item").find((r) => r.querySelector(".cm-label")?.textContent === "멈추기")!;
     dispatch(stop, makeEvent("click"));
     await b.clock.advance(40);
     out.push(assert("펼친 뒤 멈추기는 기존 id만 취소 · 개수 갱신 · 머리줄 토글로 전파되지 않음",

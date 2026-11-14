@@ -121,6 +121,38 @@
        */
       /** threadKey → 압축 실패 안내 줄. 반복 실패를 **한 줄로 고쳐 쓰려고** 들고 있다. */
       const compactFailLines = new Map();
+      /** threadKey → 이력 제외 안내 줄(`llm.history_trimmed`). 같은 이유로 스레드당 한 줄. */
+      const historyTrimLines = new Map();
+      /**
+       * 스레드당 **한 줄로 고쳐 쓰는** 경고 — 압축 실패·이력 제외가 같은 규칙을 쓴다(2026-11-12, 한 곳).
+       * ★**DOM 부착이 아니라 «목록이 갖고 있나» 를 묻는다** (2026-09-15, 아스트라 P2).
+       *  가상목록은 화면 밖 노드를 DOM 에서 떼어도 논리 목록엔 유지한다 — 그래서
+       *  `isConnected` 로 물으면 스크롤 위치에 따라 **같은 경고가 둘**이 된다.
+       */
+      const upsertThreadLine = (lines, threadKey, text, keyPrefix, ts) => {
+        const failKey = String(threadKey || "");
+        const prevLine = lines.get(failKey);
+        if (prevLine && vtOwns(prevLine)) {
+          const body = prevLine.querySelector(":scope .chat-message");
+          if (body) setChatBody(body, text, false);
+          const tsEl = prevLine.querySelector(":scope .ts");
+          if (tsEl) tsEl.textContent = fmtTime(ts || Date.now());
+          return;
+        }
+        // ★`chatLabel` 에 없는 종류를 지어내면 **라벨에 그 글자가 그대로 찍힌다**
+        //  (`chatLabel[kind] || kind`). 같은 계열인 `compaction_stuck` 과 맞춘다.
+        const line = renderLocalChat("error", text, { ts, key: keyPrefix + failKey });
+        if (line) lines.set(failKey, line);
+      };
+      /** 이력 제외 안내 문구 — 무엇이 빠졌는지(턴 / 도구 기록만)를 서버가 센 수 그대로 고른다. */
+      const historyTrimMessage = (p) => {
+        const turns = Number(p.droppedTurns || 0);
+        const tools = Number(p.toolsOmittedTurns || 0);
+        if (turns > 0 && tools > 0) return i18n("sys.history.trimmedWithTools", { turns, tools });
+        if (turns > 0) return i18n("sys.history.trimmed", { turns });
+        if (tools > 0) return i18n("sys.history.toolsOmitted", { tools });
+        return "";
+      };
       const compactingTimers = new Map(); // threadKey → { el, startTs }
       const tickCompacting = () => {
         const now = Date.now();
@@ -519,35 +551,35 @@
           //  올 때마다 새 줄이 쌓이고 맵도 안 갱신된다. 미루려면 **판정까지 같이** 미뤄야 한다.
           //  ★단 핸들러째(`renderEvent`) 다시 돌리지는 않는다(2026-10-09) — 위 표식 걷기는
           //   상태라 도착 때 한 번이면 되고, 미루는 건 아래 그리기 판정뿐이다.
+          // ★문구는 «완료하지 못했다» 까지만 말한다 (2026-11-12) — 실패만으로는 이번 입력에서 무엇이 빠졌는지 모른다.
+          //  실제로 빠졌으면 창 안전망이 `llm.history_trimmed` 를 따로 낸다(아래). Claude 실패도 같은 문구다.
           const draw = () => {
             if (isEndpointThread(p.threadKey) || !isActiveThread(p.threadKey)) return;
             // ★**이미 있으면 그 줄을 고쳐 쓴다** (2026-09-15 아스트라 지적). 종전엔 키에
             //  스레드만 넣고 «한 줄로 갱신된다» 고 적었는데, `renderLocalChat` 이 키 뒤에
             //  `ts` 를 붙여 중복을 판정하므로 **매번 새 줄이 쌓였다** — 주석이 코드보다
             //  세게 말한 자리다. 압축 실패는 임계를 넘은 뒤 매 턴 나므로 쌓이면 대화가 묻힌다.
-            const failKey = String(p.threadKey || "");
-            const prevLine = compactFailLines.get(failKey);
-            const failText = i18n("sys.compact.failed", {
-              reason: p.reason || i18n("common.unknown"),
-            });
-            // ★**DOM 부착이 아니라 «목록이 갖고 있나» 를 묻는다** (2026-09-15, 아스트라 P2).
-            //  가상목록은 화면 밖 노드를 DOM 에서 떼어도 논리 목록엔 유지한다 — 그래서
-            //  `isConnected` 로 물으면 스크롤 위치에 따라 **같은 경고가 둘**이 된다.
-            if (prevLine && vtOwns(prevLine)) {
-              const body = prevLine.querySelector(":scope .chat-message");
-              if (body) setChatBody(body, failText, false);
-              const ts = prevLine.querySelector(":scope .ts");
-              if (ts) ts.textContent = fmtTime(ev.ts || Date.now());
-              return;
-            }
-            const line = renderLocalChat(
-              // ★`chatLabel` 에 없는 종류를 지어내면 **라벨에 그 글자가 그대로 찍힌다**
-              //  (`chatLabel[kind] || kind`). 같은 계열인 `compaction_stuck` 과 맞춘다.
-              "error",
-              failText,
-              { ts: ev.ts, key: "compact-failed|" + (p.threadKey || "") },
+            upsertThreadLine(
+              compactFailLines,
+              p.threadKey,
+              i18n("sys.compact.failed", { reason: p.reason || i18n("common.unknown") }),
+              "compact-failed|",
+              ev.ts,
             );
-            if (line) compactFailLines.set(failKey, line);
+          };
+          if (holdSseEventDuringHistory(ev.ts, draw)) return;
+          draw();
+          return;
+        }
+        // ★이번 요청의 모델 입력에서 이력이 **실제로** 빠졌다 (2026-11-12 요약 실패 인계) — 창 안전망의 판정 그대로.
+        //  원문 삭제가 아니다(문구가 구분한다). 압축 상태와 무관하므로 «압축 중» 표식은 건드리지 않는다.
+        if (ev.type === "llm.history_trimmed") {
+          const p = ev.payload || {};
+          const draw = () => {
+            if (isEndpointThread(p.threadKey) || !isActiveThread(p.threadKey)) return;
+            const text = historyTrimMessage(p);
+            if (text === "") return;
+            upsertThreadLine(historyTrimLines, p.threadKey, text, "history-trimmed|", ev.ts);
           };
           if (holdSseEventDuringHistory(ev.ts, draw)) return;
           draw();

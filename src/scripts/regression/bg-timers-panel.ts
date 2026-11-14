@@ -128,9 +128,9 @@ export const check: RegressionCheck = {
     const first = rows();
     out.push(
       assert(
-        "★★«현재 세션» 이면 **이 대화가 건 것만**, 울릴 순서로 — 남은 시간 · 이름 · 멈추기 · 상자가 보인다",
+        "★★«현재 세션» 이면 **이 대화가 건 것만**, 울릴 순서로 — 남은 시간 · 이름 · ⋮(멈추기는 그 메뉴 안) · 상자가 보인다",
         first.length === 2 && first[0]!.includes("3분 뒤") && first[0]!.includes("빌드 확인") && first[1]!.includes("3시간 5분 뒤") &&
-          first.every((t) => t.includes("멈추기")) && box?.hidden === false,
+          first.every((t) => t.includes("⋮") && !t.includes("멈추기")) && box?.hidden === false,
         JSON.stringify({ first, hidden: box?.hidden }),
       ),
     );
@@ -151,19 +151,29 @@ export const check: RegressionCheck = {
     );
 
     // ③ 멈추기
-    const stopBtn = () => doc.getElementById("bg-timers-list")?.querySelectorAll(".bg-timer-stop")[0];
+    // 멈추기는 카드의 ⋮ 메뉴 안(2026-11-12) — 첫 카드의 ⋮ 를 열고 «멈추기» 를 누른다. 꺼져 있으면(멈추는 중) 못 누른다.
+    const menuStop = () => doc.querySelector(".ctx-menu")?.querySelectorAll(".cm-item").find((r) => r.querySelector(".cm-label")?.textContent === "멈추기");
+    const stopBtn = () => {
+      const kebab = doc.getElementById("bg-timers-list")?.querySelectorAll(".bg-timer-menu")[0];
+      if (!kebab) return undefined;
+      dispatch(kebab, makeEvent("click"));
+      const item = menuStop();
+      return item ? { el: item, disabled: item.classList.contains("cm-disabled") } : undefined;
+    };
+    const closeMenuNow = () => dash.run("closeMenu()");
     cancelStatus = 500;
     const b1 = stopBtn();
-    if (b1) dispatch(b1, makeEvent("click"));
+    if (b1) dispatch(b1.el, makeEvent("click"));
     await clock.advance(50);
     const afterFail = { rows: rows().length, disabled: stopBtn()?.disabled, toast: doc.getElementById("toast")?.textContent ?? "" };
+    closeMenuNow();
     cancelStatus = 200;
     const b2 = stopBtn();
-    if (b2) dispatch(b2, makeEvent("click"));
+    if (b2) dispatch(b2.el, makeEvent("click"));
     await clock.advance(50);
     out.push(
       assert(
-        "★멈추기 → 서버에 **그 id** 로 · 성공하면 목록에서 빠진다 · 실패면 그대로 두고 버튼을 되살리고 알린다",
+        "★멈추기(⋮ 메뉴) → 서버에 **그 id** 로 · 성공하면 목록에서 빠진다 · 실패면 그대로 두고 멈추기를 되살리고 알린다",
         JSON.stringify(cancels) === JSON.stringify([{ id: 1 }, { id: 1 }]) && afterFail.rows === 2 && afterFail.disabled === false &&
           afterFail.toast.includes("멈추지 못했습니다") && rows().length === 1 && rows()[0]!.includes("나중"),
         JSON.stringify({ cancels, afterFail, after: rows() }),
@@ -181,7 +191,7 @@ export const check: RegressionCheck = {
     await clock.advance(500); // 이 조회는 붙잡혔다(멈추기 전 목록)
     hold = null;
     const b3 = stopBtn();
-    if (b3) dispatch(b3, makeEvent("click"));
+    if (b3) dispatch(b3.el, makeEvent("click"));
     await clock.advance(50); // 멈추기 성공 → 서버에서 지워짐
     staleHold.resolve(undefined); // 옛 조회가 이제 온다
     await clock.advance(50);

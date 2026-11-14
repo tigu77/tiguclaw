@@ -129,12 +129,14 @@ export const check: RegressionCheck = {
         //  이 키 뒤에 ts 를 붙여 중복을 판정하므로 매번 새 줄이 쌓였다(아스트라가 잡았다).
         //  그래서 «키 모양» 이 아니라 **«이미 있으면 고쳐 쓰는 경로가 있나»** 를 본다.
         "★실패 줄은 스레드당 **한 줄로 고쳐 쓴다** — 임계 넘은 뒤 매 턴 반복되므로 쌓이면 대화가 묻힌다",
+        // 2026-11-12: 고쳐 쓰기는 공용 `upsertThreadLine`(이력 제외 안내와 한 곳) — 실패 줄이 그 함수에 자기 맵을 넘기는지 본다.
         /const compactFailLines = new Map\(\)/.test(sse) &&
-          /compactFailLines\.get\(/.test(sse) &&
-          /compactFailLines\.set\(/.test(sse) &&
+          /upsertThreadLine\(\s*compactFailLines,/.test(sse) &&
+          /const upsertThreadLine = \(lines,[\s\S]{0,200}?lines\.get\(/.test(sse) &&
+          /lines\.set\(failKey, line\)/.test(sse) &&
           // 있으면 **새로 그리지 않고 돌아간다**(그 return 이 없으면 고쳐 쓰고 또 쌓는다)
           /prevLine && vtOwns\(prevLine\)[\s\S]{0,400}?return;/.test(sse),
-        `보관 ${/compactFailLines\.set\(/.test(sse)} · 재사용 ${/compactFailLines\.get\(/.test(sse)} · 재렌더 단락 ${/prevLine && vtOwns\(prevLine\)[\s\S]{0,400}?return;/.test(sse)}`,
+        `실패 줄 배선 ${/upsertThreadLine\(\s*compactFailLines,/.test(sse)} · 보관 ${/lines\.set\(failKey, line\)/.test(sse)} · 재사용 ${/const upsertThreadLine = \(lines,[\s\S]{0,200}?lines\.get\(/.test(sse)} · 재렌더 단락 ${/prevLine && vtOwns\(prevLine\)[\s\S]{0,400}?return;/.test(sse)}`,
       ),
       assert(
         // ★가상목록은 화면 밖 노드를 **DOM 에서 떼면서 논리 목록엔 유지**한다. 그래서
@@ -266,10 +268,11 @@ export const check: RegressionCheck = {
         "★이력 로드 창에서는 **고쳐 쓰기 판정째** 미룬다(렌더만 미루면 한 줄 갱신이 무너진다)",
         (() => {
           const at = sse.indexOf('ev.type === "llm.compact_failed"');
-          const blk = at < 0 ? "" : sse.slice(at, sse.indexOf('ev.type === "llm.tool_slow"', at));
+          const blk = at < 0 ? "" : sse.slice(at, sse.indexOf('ev.type === "llm.history_trimmed"', at));
           const drawAt = blk.indexOf("const draw = () =>");
           const holdAt = blk.indexOf("holdSseEventDuringHistory(ev.ts, draw)");
-          return drawAt >= 0 && holdAt > drawAt && blk.slice(drawAt, holdAt).includes("compactFailLines.get");
+          // 판정(고쳐 쓸지)은 `upsertThreadLine` 안 — 그 호출이 미루는 함수 안에 있어야 한다.
+          return drawAt >= 0 && holdAt > drawAt && /upsertThreadLine\(\s*compactFailLines,/.test(blk.slice(drawAt, holdAt));
         })(),
         `판정 포함 보류 ${/holdSseEventDuringHistory\(ev\.ts, draw\)/.test(sse)} · 핸들러 재실행 ${/renderEvent\(ev\)/.test(sse)}`,
       ),

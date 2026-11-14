@@ -1104,10 +1104,12 @@ export const noteCompactionOutcome = (
   const n = (compactionFailStreak.get(threadKey) ?? 0) + 1;
   compactionFailStreak.set(threadKey, n);
   if (n !== COMPACTION_STUCK_THRESHOLD) return; // 임계에서 정확히 1회만.
+  // ★실패 횟수만으로 «맥락이 버려진다» 고 말하지 않는다 (2026-11-12 요약 실패 인계) — 실패해도 기존 요약·원문·경계는 그대로고,
+  //  이번 요청 입력에서 실제로 빠졌는지는 창 안전망(`recentTurnsAfter`)만 안다. 그 판정은 거기서 따로 남긴다.
   console.error(
-    `[codex 6b] ★히스토리 압축이 ${n}회 연속 실패 — 대화 맥락이 계속 버려지는 중입니다 ` +
+    `[${adapter} 6b] ★히스토리 압축이 ${n}회 연속 실패 ` +
       `(threadKey=${threadKey}, 접으려던 양=${foldChars}자, 사유=${reason}). ` +
-      `이 상태가 지속되면 비서가 하던 작업을 잊고 계획만 반복합니다.`,
+      `기존 요약·원문은 그대로이며, 이력이 입력에서 실제로 빠졌는지는 «창 안전망이 이력을 잘랐다» 줄로 확인한다.`,
   );
   try {
     getEventBus().publish({
@@ -2985,6 +2987,22 @@ export const recentTurnsAfter = (
       `[history] ★창 안전망이 이력을 잘랐다 — 미요약 ${after.length}턴 중 ${after.length - kept.length}턴 버림 · ${textOnly}턴 도구 항목 뺌 ` +
         `(고정 ${opts.budgetUsedChars}자 · 상한 ${charCap}자) threadKey=${opts.threadKey}`,
     );
+    // ★사용자에게는 **여기서** 알린다 (2026-11-12 요약 실패 인계) — 요약 실패 이벤트만으로는 실제로 빠졌는지 모른다.
+    //  빠진 것은 «이번 요청의 모델 입력» 이다. 원문은 대화 기록에 그대로 있다(이 함수는 저장소를 건드리지 않는다).
+    try {
+      getEventBus().publish({
+        type: "llm.history_trimmed",
+        ts: Date.now(),
+        payload: {
+          threadKey: opts.threadKey,
+          droppedTurns: after.length - kept.length,
+          toolsOmittedTurns: textOnly,
+          unsummarizedTurns: after.length,
+        },
+      });
+    } catch {
+      /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+    }
   }
   return kept;
 };

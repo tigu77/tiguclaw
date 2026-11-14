@@ -81,7 +81,9 @@ export const check: RegressionCheck = {
     out.push(assert("서버가 준 현재 origin 변경을 그대로 사용 · 최초 id/발송 목적지로 필터하지 않음",
       list.children.length === 1 && !!row(1) && !row(2) && badge(1)?.textContent === "↪ 바뀐 이름", list.textContent));
     if (!row(1)) return out; // 앞의 이동/범위 단언이 실패한 변이에서도 그 실패를 보고한다.
-    const stop = row(1)!.querySelector(".bg-timer-stop")!;
+    // 멈추기는 ⋮ 메뉴 안(2026-11-12).
+    dispatch(row(1)!.querySelector(".bg-timer-menu")!, makeEvent("click"));
+    const stop = dash.document.querySelector(".ctx-menu")!.querySelectorAll(".cm-item").find((r) => r.querySelector(".cm-label")?.textContent === "멈추기")!;
     dispatch(stop, makeEvent("click")); await clock.advance(50);
     out.push(assert("개별 Stop은 그 id만 취소하고 세션이동/묶음토글과 분리", cancels.length === 1 && cancels[0] === 1 && R('activeThreadKey') === "dashboard:other" && head.getAttribute("aria-expanded") === "true", cancels));
     out.push(assert("실제 제품 스크립트 비동기 오류 없음", clock.errors.length === 0, clock.errors));

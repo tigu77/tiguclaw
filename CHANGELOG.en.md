@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.84.0] - 2026-11-15
+
+### Added
+- With Codex, OpenAI, and OpenAI-compatible connections (including Google), the dashboard now shows a one-line notice in the open conversation when earlier unsummarized turns or tool records were actually left out of a request's model input because of the input limit. The original messages stay in the conversation history.
+
+### Changed
+- Timer and recurring-schedule cards now always use two lines: timing (time remaining, next run time, schedule, or status), the conversation badge and a ⋮ menu on the first line, and the content on the second. Text that doesn't fit is truncated; the full text is available in the tooltip and the details view.
+- Stop for timers moved into the card's ⋮ menu, which also offers Show details and Go to session (when the conversation name is known).
+
+### Fixed
+- When conversation compaction failed, the notice claimed older context had been dropped and might be forgotten even when nothing was removed. It now reports only that compaction didn't finish and why.
+
+### Security
+- The transitive dependencies `hono` and `@hono/node-server` were updated from 4.13.13 to 4.13.16 and from 2.1.3 to 2.1.6 for published security advisories (`hono`: [GHSA-4m76-xfj5-7975](https://github.com/advisories/GHSA-4m76-xfj5-7975), [GHSA-h7mg-cq63-vhpq](https://github.com/advisories/GHSA-h7mg-cq63-vhpq), [GHSA-46wx-v44x-9hh2](https://github.com/advisories/GHSA-46wx-v44x-9hh2), [GHSA-4h7h-rv7c-7m2v](https://github.com/advisories/GHSA-4h7h-rv7c-7m2v), [GHSA-3gg2-335m-rxc6](https://github.com/advisories/GHSA-3gg2-335m-rxc6); `@hono/node-server`: [GHSA-qv5m-9pm6-hqp3](https://github.com/advisories/GHSA-qv5m-9pm6-hqp3), [GHSA-jpvv-r467-5p4w](https://github.com/advisories/GHSA-jpvv-r467-5p4w)).
+
 ## [0.83.0] - 2026-11-12
 
 ### Added
@@ -1307,7 +1322,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...HEAD
+[0.84.0]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...v0.84.0
 [0.83.0]: https://github.com/tigu77/tiguclaw/compare/v0.82.0...v0.83.0
 [0.82.0]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...v0.82.0
 [0.81.0]: https://github.com/tigu77/tiguclaw/compare/v0.80.0...v0.81.0

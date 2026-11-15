@@ -8,6 +8,21 @@
 
 ## [Unreleased]
 
+## [0.84.0] - 2026-11-15
+
+### 추가
+- Codex, OpenAI 및 OpenAI 호환 연결(Google 포함)에서 입력 한도 때문에 요약되지 않은 이전 대화나 도구 실행 기록이 이번 요청의 모델 입력에서 실제로 빠졌을 때, 대시보드에서 보고 있는 대화에 한 줄로 알립니다. 대화 원문은 기록에 그대로 남습니다.
+
+### 변경
+- 타이머·반복 예약 카드를 두 줄로 고정했습니다. 첫 줄에는 실행 정보(남은 시간·다음 실행 시각·주기·상태)와 소속 대화·⋮ 메뉴를, 둘째 줄에는 내용을 표시합니다. 넘치는 글은 말줄임하며 전체 내용은 툴팁과 상세 보기에서 확인할 수 있습니다.
+- 타이머의 «멈추기»를 카드의 ⋮ 메뉴로 옮겼습니다. 메뉴에서 상세 보기, 세션으로 이동(소속 대화 이름을 알 때), 멈추기(타이머만)를 고를 수 있습니다.
+
+### 수정
+- 대화 압축에 실패했을 때 실제로 빠진 맥락이 없어도 이전 맥락이 잘려 잊힐 수 있다고 안내하던 문제를 수정했습니다. 이제 압축을 완료하지 못한 사실과 사유만 알립니다.
+
+### 보안
+- 보안 권고가 나온 전이 의존성 `hono`를 4.13.13에서 4.13.16으로, `@hono/node-server`를 2.1.3에서 2.1.6으로 올렸습니다(`hono`: [GHSA-4m76-xfj5-7975](https://github.com/advisories/GHSA-4m76-xfj5-7975) · [GHSA-h7mg-cq63-vhpq](https://github.com/advisories/GHSA-h7mg-cq63-vhpq) · [GHSA-46wx-v44x-9hh2](https://github.com/advisories/GHSA-46wx-v44x-9hh2) · [GHSA-4h7h-rv7c-7m2v](https://github.com/advisories/GHSA-4h7h-rv7c-7m2v) · [GHSA-3gg2-335m-rxc6](https://github.com/advisories/GHSA-3gg2-335m-rxc6), `@hono/node-server`: [GHSA-qv5m-9pm6-hqp3](https://github.com/advisories/GHSA-qv5m-9pm6-hqp3) · [GHSA-jpvv-r467-5p4w](https://github.com/advisories/GHSA-jpvv-r467-5p4w)).
+
 ## [0.83.0] - 2026-11-12
 
 ### 추가
@@ -2857,7 +2872,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...HEAD
+[0.84.0]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...v0.84.0
 [0.83.0]: https://github.com/tigu77/tiguclaw/compare/v0.82.0...v0.83.0
 [0.82.0]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...v0.82.0
 [0.81.0]: https://github.com/tigu77/tiguclaw/compare/v0.80.0...v0.81.0

@@ -135,13 +135,19 @@ export const check: RegressionCheck = {
 
     // ── ① 배포 문서가 **배포 안 되는 것**을 정본이라 가리키지 않는가 ──────────────
     const dangling: string[] = [];
-    for (const rel of shippedDocs()) {
+    const docs = shippedDocs();
+    // ★받은 사람의 트리에서 본 배포 문서 경로 집합 (2026-11-16 레드팀 G1). `shippedDocs()` 는 지운 문서를
+    //  건너뛰므로(위 ★) **남은 문서가 그 문서를 링크하면** 여기서 «없는 문서» 로 잡는다 — 필터만 두면
+    //  `docs/code-map.md` 를 지우고 README 링크를 남겨도 초록이었다. 판정 기준은 디스크가 아니라 배포 집합이다.
+    const toShipped = (f: string): string => f.replace(/^_workspace\/public-overlay\//, "");
+    const shippedSet = new Set(docs.map(toShipped));
+    for (const rel of docs) {
       const body = readFileSync(path.join(REPO, rel), "utf8");
       // ★오버레이 파일은 **배포 루트가 그 폴더**다 (2026-09-07 P3 를 닫으며). 링크를 레포
       //  루트에서 풀면 `_workspace/public-overlay/...` 가 되어 `DEV_ONLY` 에 걸리고 **전부
       //  오탐**이 된다(실측 23건). 참조를 풀 때만 배포본에서의 자리로 바꿔 읽는다 —
       //  파일을 읽는 경로(`rel`)와 참조를 푸는 기준(`asShipped`)은 다른 것이다.
-      const asShipped = rel.replace(/^_workspace\/public-overlay\//, "");
+      const asShipped = toShipped(rel);
       // 주석/설명이 아니라 **참조**를 본다: 마크다운 링크와 백틱 경로.
       // ★**백틱 맨이름은 안 본다** — 넓혀 봤다가 되돌렸다 (2026-08-30). `` `PROJECT.md` ``
       //  를 잡으려고 패턴을 넓혔더니 `SYSTEM.md` 에서 **오탐 3건**이 났다: 거기 나오는
@@ -150,17 +156,22 @@ export const check: RegressionCheck = {
       //  돌리므로(이 레포가 그렇게 몇 주를 잃었다) 넓히지 않는다.
       //  링크(`[..](경로)`)는 진짜 경로라 그대로 본다. 맨이름 언급은 사람이 본다.
       for (const m of body.matchAll(/\[[^\]]*\]\(([^)]+)\)|`(docs\/[a-z0-9._/-]+)`/gi)) {
-        const t = (m[1] ?? m[2] ?? "").split("#")[0]?.trim() ?? "";
+        // 링크 제목(`[x](경로 "제목")`)은 목적지가 아니다 — 첫 토큰만 경로로 본다.
+        const t = (m[1] ?? m[2] ?? "").trim().split(/\s+/)[0]?.split("#")[0] ?? "";
         if (t === "" || /^(https?:|mailto:)/i.test(t)) continue;
-        const norm = t.startsWith("docs/")
-          ? t
-          : path.posix.normalize(path.posix.join(path.posix.dirname(asShipped), t));
+        const norm = path.posix.normalize(
+          t.startsWith("docs/") ? t : path.posix.join(path.posix.dirname(asShipped), t),
+        );
         // ★"배포본엔 없다" 고 **명시한** 문장은 통과시킨다 — 그건 독자를 속이지 않는다.
         // ★**`DEV_ONLY` 로 판정한다** (2026-08-30, C7). 같은 파일에 목록이 둘인데
         //  이 자리만 짧은 쪽(`NOT_SHIPPED` 9개)을 잡고 있었다 — 위 ①의 배포 대상
         //  판정은 이미 `DEV_ONLY` 를 쓴다. 그 15개 차이로 `PROJECT.md`·`CLAUDE.md`
         //  참조가 통과했다. **한 파일 안의 두 목록이 갈리는 것**이 이 부류의 전형이다.
-        if (DEV_ONLY.some((n) => norm === n || norm.startsWith(n))) {
+        // ★배포 집합에 없는 `.md` 도 같은 판정·같은 줄 면제를 탄다(G1). 공개 레포엔 스킬이 없어 내부 문서가
+        //  `DEV_ONLY` 로 파생되지 않는다 — 그 문서는 «집합에 없음» 으로 와서 같은 면제를 받아야 양쪽이 같다.
+        const devOnly = DEV_ONLY.some((n) => norm === n || norm.startsWith(n));
+        const missing = !devOnly && norm.endsWith(".md") && !shippedSet.has(norm);
+        if (devOnly || missing) {
           // ★면제는 **그 참조가 실제로 있는 줄**에서만 인정한다 (2026-08-20 적대 검토).
           //  종전엔 `body.split("\n").find(l => l.includes(t))` 로 **파일 전체의 첫 매칭 줄**을
           //  봤다. 그래서 어느 한 줄에 면제 문구를 달아두면 그 파일의 **같은 경로 참조 전부**가
@@ -170,7 +181,9 @@ export const check: RegressionCheck = {
           const lineStart = body.lastIndexOf("\n", at) + 1;
           const lineEnd = body.indexOf("\n", at);
           const line = body.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
-          if (!/배포본에 없|not shipped|개발 저장소/.test(line)) dangling.push(`${rel} → ${t}`);
+          if (!/배포본에 없|not shipped|개발 저장소/.test(line)) {
+            dangling.push(`${rel} → ${t}${missing ? " (배포 집합에 없음)" : ""}`);
+          }
         }
       }
     }

@@ -258,9 +258,9 @@ tiguclaw stands on a few open-source projects.
 - **[OpenClaw](https://github.com/openclaw/openclaw)** (MIT, © Peter Steinberger)
   — shaped much of the adapter and capability design. The codex OAuth adapter, skill discovery and
   payload policy all follow patterns OpenClaw laid down.
-- The harness meta-skill (sub-agent teams + orchestration) is **adapted and ported from
-  [revfactory/harness](https://github.com/revfactory/harness)** (Apache-2.0), reworked for tiguclaw's
-  home/skill model and its multi-LLM, sub-agent runtime.
+- The harness meta-skill (sub-agent teams + orchestration) bundled in earlier releases was **adapted
+  and ported from [revfactory/harness](https://github.com/revfactory/harness)** (Apache-2.0), reworked
+  for tiguclaw's home/skill model and its multi-LLM, sub-agent runtime. It is no longer bundled.
 - And tiguclaw is built on Anthropic's **Claude Agent SDK**, supporting **Claude Code**'s tool, hook
   and skill formats.
 

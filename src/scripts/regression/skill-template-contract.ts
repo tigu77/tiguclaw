@@ -52,15 +52,22 @@ export const check: RegressionCheck = {
       }
       const agentDir = path.join(dir, ".tiguclaw", "agents");
       await mkdir(agentDir, { recursive: true });
+      // 2026-11-16: 종전엔 기본 번들 harness 참고문서의 정의 예시 두 개를 읽었다. 그 문서가 제거돼
+      //  같은 모양(필드 사이 주석 줄·콤마 도구 목록·model default)을 격리 합성 정의로 옮겼다 — 파서 계약은 그대로 본다.
       const cases = [
-        { file: "skills/harness/references/agent-design-patterns.md", name: "agent-name", tools: ["Read", "Grep", "Glob"] },
-        { file: "skills/harness/references/qa-agent-guide.md", name: "qa-inspector", tools: ["Read", "Grep", "Bash"] },
+        {
+          name: "agent-name",
+          tools: ["Read", "Grep", "Glob"],
+          template: '---\nname: agent-name\ndescription: "1-2문장 역할 설명 + 위임 트리거 키워드."\n# 기본 모델을 상속하는 예시. 역할별로 실제 가용 프로파일로 바꿀 수 있다.\nmodel: default\n# 도구명은 콤마 구분. 생략 시 전체 도구, none이면 도구 0.\ntools: Read, Grep, Glob\n---\n\n# Agent Name\n',
+        },
+        {
+          name: "qa-inspector",
+          tools: ["Read", "Grep", "Bash"],
+          template: '---\nname: qa-inspector\ndescription: "QA 검증 전문가. 경계면 교차 비교 검증."\nmodel: default\ntools: Read, Grep, Bash\n---\n\n# QA Inspector\n',
+        },
       ];
       for (const c of cases) {
-        const template = fences(await read(c.file)).find(b => b.startsWith("---\n"));
-        out.push(assert(`${c.name} 정의 예시가 존재한다`, template !== undefined, c.file));
-        if (template === undefined) continue;
-        await writeFile(path.join(agentDir, `${c.name}.md`), template);
+        await writeFile(path.join(agentDir, `${c.name}.md`), c.template);
       }
       const agents = await discoverAgents(dir);
       for (const c of cases) {

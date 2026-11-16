@@ -261,10 +261,10 @@ tiguclaw 는 몇몇 오픈소스 프로젝트 위에 서 있습니다.
 - **[OpenClaw](https://github.com/openclaw/openclaw)** (MIT, © Peter Steinberger)
   — 어댑터·능력 설계의 많은 부분에 영향을 줬습니다. codex OAuth 어댑터, 스킬 발견,
   payload 정책 모두 OpenClaw 가 닦아놓은 패턴을 따릅니다.
-- 하네스 메타 스킬(서브에이전트 팀 + 오케스트레이션)은
+- 이전 릴리스에 기본 포함됐던 하네스 메타 스킬(서브에이전트 팀 + 오케스트레이션)은
   **[revfactory/harness](https://github.com/revfactory/harness) 를 적응·이식**
-  (Apache-2.0) 했습니다 — tiguclaw 의 홈/스킬 모델과 멀티 LLM·서브에이전트 전용
-  런타임에 맞게 수정.
+  (Apache-2.0) 한 것이었습니다 — tiguclaw 의 홈/스킬 모델과 멀티 LLM·서브에이전트 전용
+  런타임에 맞게 수정. 지금은 기본으로 포함하지 않습니다.
 - 그리고 tiguclaw 는 Anthropic 의 **Claude Agent SDK** 위에 만들어졌고, **Claude Code** 의
   도구·훅·스킬 형식을 그대로 지원합니다.
 

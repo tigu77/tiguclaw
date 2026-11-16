@@ -8,6 +8,7 @@
  *   `SYSTEM.md` — "짧은 코딩·편집은 **그냥 직접 해라**(과잉 위임 금지, 위임 오버헤드가 더 크다)"
  *      / "한 파일 소편집은 쪼개지 마라(과분해 = 낭비)" → 기본값 = **직접**
  *   `skills/harness/SKILL.md` 게이트 — "독립·비중첩 3개 이상일 때만 팀" → 기본값 = **직접**
+ *   (2026-11-16 그 스킬은 기본 번들에서 제거됐다 — 아래 대상에서도 뺐다. 위는 당시 기록.)
  *  가장 비싼 자리(매 턴)가 가장 무거운 기본값을 밀고 있었고, 사용자는 "하네스가 무겁고
  *  일이 더디다"로 겪었다.
  *
@@ -60,7 +61,6 @@ const nudgeText = (): string => REGION_A_SYSTEM_PROMPT;
 const SOURCES = [
   { rel: "src/core/llm-runtime/adapters/_shared-sysprompt.ts", what: "매 턴 주입 넛지(3어댑터)" },
   { rel: "SYSTEM.md", what: "작동 헌법" },
-  { rel: "skills/harness/SKILL.md", what: "하네스 스킬" },
 ] as const;
 
 /**
@@ -89,7 +89,6 @@ const modelFacingStrings = (src: string): string => {
 const injectedSurfaces = async (): Promise<Array<{ what: string; text: string }>> => [
   { what: "매 턴 주입 넛지(조립본)", text: nudgeText() },
   { what: "작동 헌법", text: read("SYSTEM.md") },
-  { what: "하네스 스킬", text: read("skills/harness/SKILL.md") },
   // 스킬·에이전트 인덱스 = 전 항목의 description 이 매 턴 실린다(개수 무관·자동 추종).
   { what: "스킬 인덱스(전 스킬 description)", text: formatSkillIndex(await discoverSkills(REPO)) },
   { what: "에이전트 인덱스(전 에이전트 description)", text: formatAgentIndex(await discoverAgents(REPO)) },
@@ -112,7 +111,6 @@ const injectedSurfaces = async (): Promise<Array<{ what: string; text: string }>
  *  `constitution-single-source` 참조). 사고의 형상은 **모순**이었지 *부재*가 아니었다.
  *  그래서 목적(넛지가 반대 기본값을 밀지 않는다)은 그대로 두고, 수단만 바꾼다:
  *  **넛지 = 기본값 + 정본 포인터 / 조건 정의 = 헌법**.
- *  harness는 재사용 팀 제작 가이드이므로 조건을 복제하지 않고 구축 전에 정본을 가리킨다.
  */
 const CONDITION_SOURCES = SOURCES.filter((s) => s.rel === "SYSTEM.md");
 
@@ -203,7 +201,7 @@ export const check: RegressionCheck = {
       for (const re of OPPOSITE) if (re.test(s.text)) revived.push(`${s.what}: ${re.source}`);
     }
 
-    // harness는 일반 라우팅을 다시 정의하지 않는다. 정본의 매니저 계약 자체는 유지한다.
+    // 정본(헌법)의 매니저 계약 자체를 본다.
     const constitutionRoute = read("SYSTEM.md");
     out.push(
       assert(
@@ -231,7 +229,7 @@ export const check: RegressionCheck = {
     }
     out.push(
       assert(
-        "★주입면 어디에도 위임 가격표가 없다(넛지 조립본·헌법·하네스·스킬 인덱스 전량)",
+        "★주입면 어디에도 위임 가격표가 없다(넛지 조립본·헌법·스킬 인덱스 전량)",
         priced.length === 0,
         priced.length === 0
           ? `${surfaces.map((s) => s.what).join(" · ")} — 가격표 0건`
@@ -289,38 +287,8 @@ export const check: RegressionCheck = {
       ),
     );
 
-    // ★④ 제작 전에 정본 포인터와 영속화의 실체가 있는가. 제목/description만으로 통과하지 않는다.
-    // 부분문자열 배선 린트이지 산문의 의미 판정은 아니다(상단 한계 참조).
-    const skill = read("skills/harness/SKILL.md");
-    const body = skill.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "");
-    const buildAt = body.search(/^## .*역할·입출력·산출물 연결 구성/m);
-    const beforeBuild = buildAt < 0 ? "" : body.slice(0, buildAt);
-    out.push(
-      assert(
-        "★하네스가 구축 전에 일반 위임 정본과 도구 계약을 가리킨다",
-        beforeBuild.includes("일반 위임 판단의 정본은 SYSTEM.md §1") &&
-          beforeBuild.includes("도구 설명"),
-        `구축 위치 ${buildAt}자 · 앞부분에서 포인터 검사`,
-      ),
-      assert(
-        "★하네스가 구축 전에 일회성 프롬프트/반복팀 영속화 경계를 둔다",
-        beforeBuild.includes("이번 한 번의 역할은 프롬프트로 전달한다") &&
-          beforeBuild.includes("일회성 작업 때문에 에이전트 파일이나 팀 스킬을 만들지 않는다") &&
-          beforeBuild.includes("반복해서 사용할 팀만 영속 자산으로 만든다"),
-        `구축 위치 ${buildAt}자 · 경계 본문이 먼저 있어야 함`,
-      ),
-    );
-
-    // ★⑤ 이력을 두 곳에 두지 않는다 — 스킬이 `## 변경 이력` 테이블을 강제하던 규칙은
-    //  실제로 9개 스킬 중 0개만 지켰고(죽은 규칙), `feedback_minimal_change_docs`
-    //  ("이력은 git log")와도 충돌했다.
-    out.push(
-      assert(
-        "하네스가 스킬 본문에 변경 이력 테이블을 강제하지 않는다(이력은 git)",
-        /변경 이력은 `git log`/.test(skill) && !/`## 변경 이력` 테이블\*\*에 둔다/.test(skill),
-        /변경 이력은 `git log`/.test(skill) ? "git log 로 단일화" : "★이력 이중화 잔존",
-      ),
-    );
+    // (2026-11-16) 옛 ④·⑤ 는 기본 번들 `harness` 제작 스킬 본문 전용 단언이었다 — 그 스킬이
+    //  제거돼 대상이 없다. 위임 기본값·조건·가격표 판정은 위 ①~③ 이 조립본·헌법·스킬 인덱스에서 그대로 본다.
     return out;
   },
 };

@@ -76,9 +76,10 @@ export const check: RegressionCheck = {
       }
 
       // ⑦ invoke_skill 은 기준 폴더를 같이 준다 — 번들 스킬의 상대경로(references/·scripts/)가 풀리게
+      //  (2026-11-16 대상 빌트인 `harness`→`skill-creator` — harness 가 기본 번들에서 제거됐다. 둘 다 references/ 를 가진다.)
       const { createSkillInvokeMcpServer } = await import("../../core/llm-runtime/capabilities/skill-registry.js");
       const skills = await adaptClaudeMcpServer(createSkillInvokeMcpServer(dir), "r1009-skill");
-      const sk = JSON.parse(JSON.stringify(await skills.callTool("invoke_skill", { name: "harness" }))) as { text?: string }[];
+      const sk = JSON.parse(JSON.stringify(await skills.callTool("invoke_skill", { name: "skill-creator" }))) as { text?: string }[];
       const text = sk[0]?.text ?? "";
       const baseDir = /^Base directory for this skill: (.+)$/m.exec(text)?.[1] ?? "";
       const { existsSync } = await import("node:fs");

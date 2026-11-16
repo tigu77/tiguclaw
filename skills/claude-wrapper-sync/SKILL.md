@@ -38,7 +38,7 @@ Claude Code 스킬/에이전트는 프로젝트 `CLAUDE.md`(+ 하위 `**/CLAUDE.
 ## 2) 드라이런 미리보기 (먼저 보여주고 확인)
 쓰기 전에 **무엇이 래핑될지 목록**을 만들어 사용자에게 보인다:
 - 각 항목: 종류(agent/skill/command)·이름·소스경로 → 대상경로.
-- **이름 충돌**: 대상(또는 tiguclaw 빌트인 harness·code-review 등)에 같은 이름이 이미 있으면
+- **이름 충돌**: 대상(또는 tiguclaw 빌트인 code-review·verify 등)에 같은 이름이 이미 있으면
   ⚠️ 표시하고 **덮어쓰기 여부를 명시 확인**받는다(빌트인 클로버링 금지 — 스킵/개명 권장).
 - frontmatter `description` 누락 → 드롭(파서가 버린다). `name` 은 없어도 **폴더/파일명으로 채워진다** — Claude Code 는 `name` 생략이 정상이라, 이걸 모르면 멀쩡한 것을 버리게 된다
 

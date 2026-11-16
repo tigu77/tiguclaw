@@ -6,6 +6,7 @@
  * ★2026-11-03: 그 플러그인을 뺐다 — «플러그인이 다시 적어 두 번 센다» 단언은 대상과 함께 지웠다(적는 곳은 코어 한 곳).
  *
  * 등급: **실행** — 러너의 격리 홈 DB 에 실제 `invoke_skill` 을 불러 행을 센다.
+ * (2026-11-16 호출 대상 빌트인을 `harness`→`verify` 로 바꿨다 — harness 가 기본 번들에서 제거됐다.)
  */
 import { assert, assertIsolated, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -20,15 +21,15 @@ export const check: RegressionCheck = {
     const { listSkillUsage } = await import("../../store/skill-usage.js");
     const { createSkillInvokeMcpServer } = await import("../../core/llm-runtime/capabilities/skill-registry.js");
     const { adaptClaudeMcpServer } = await import("../../core/llm-runtime/adapters/_mcp-bridge.js");
-    const count = (): number => listSkillUsage({ limit: 500 }).find((r) => r.skillName === "harness")?.invokeCount ?? 0;
+    const count = (): number => listSkillUsage({ limit: 500 }).find((r) => r.skillName === "verify")?.invokeCount ?? 0;
 
     const before = count();
     const server = await adaptClaudeMcpServer(
       createSkillInvokeMcpServer(process.cwd(), { channel: "dashboard", threadKey: "regr-skill-usage", adapter: "claude" }),
       "regr-skill-usage",
     );
-    await server.callTool("invoke_skill", { name: "harness" });
-    await server.callTool("invoke_skill", { name: "harness" });
+    await server.callTool("invoke_skill", { name: "verify" });
+    await server.callTool("invoke_skill", { name: "verify" });
     const after = count();
     out.push(
       assert(

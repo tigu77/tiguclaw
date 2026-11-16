@@ -89,10 +89,12 @@ const run = async (): Promise<Assertion[]> => {
   ] as const;
   out.push(
     assert(
-      "내부 습득 경로(harness 스킬·add_mcp_server·register_endpoint)가 메인 칸 조립본에 있다",
+      "내부 습득 경로(스킬화 제안·직접 작성·add_mcp_server·register_endpoint)가 메인 칸 조립본에 있다",
       // ★`harness:harness` 는 **안 풀리는 이름**이었다(콜론 이름 스킬 0개) — 실재하는 이름으로 본다.
-      /`harness` 스킬/.test(mainView) && mainView.includes("add_mcp_server") && mainView.includes("register_endpoint"),
-      "harness · add_mcp_server · register_endpoint (main 조립)",
+      // (2026-11-16 기본 번들 `harness` 제거 — 새 스킬 습득은 헌법의 «스킬화 제안 → 승인 후 비서가 직접 작성» 으로 본다.)
+      /스킬화를 제안/.test(mainView) && /사람 승인 후 비서가 직접 작성/.test(mainView) &&
+        mainView.includes("add_mcp_server") && mainView.includes("register_endpoint"),
+      "스킬화 제안·직접 작성 · add_mcp_server · register_endpoint (main 조립)",
     ),
   );
   const leaked = MAIN_ONLY.filter((t) => prompt.includes(t.tool));

@@ -96,9 +96,12 @@ const DEV_ONLY = [...NOT_SHIPPED, "CLAUDE.md", "PROJECT.md", "_workspace/", ".cl
  *  "무엇이 디스크에 있는가" 를 본 탓이다 — 오늘 세 번째로 같은 부류다.
  */
 const shippedDocs = (): string[] => {
+  // ★작업 트리에서 지웠지만 아직 커밋 전인 추적 파일은 뺀다(2026-11-16 — `skills/harness/SKILL.md` 를
+  //  지우고 커밋 전 전체 회귀를 돌리자 ls-files 에 남은 그 경로를 읽다 ENOENT 로 검사 자체가 던졌다).
+  //  지운 문서는 나가지 않으니 링크를 볼 대상도 아니다. 오버레이 목록은 아래에서 같은 규칙을 탄다.
   const tracked = execFileSync("git", ["ls-files"], { cwd: REPO, encoding: "utf8" })
     .split("\n")
-    .filter((f) => f.endsWith(".md"));
+    .filter((f) => f.endsWith(".md") && existsSync(path.join(REPO, f)));
   const base = tracked.filter(
     (f) =>
       !DEV_ONLY.some((d) => f === d || f.startsWith(d)) &&
@@ -117,7 +120,7 @@ const shippedDocs = (): string[] => {
     encoding: "utf8",
   })
     .split("\n")
-    .filter((f) => f.endsWith(".md"));
+    .filter((f) => f.endsWith(".md") && existsSync(path.join(REPO, f)));
   return [...base, ...overlay];
 };
 

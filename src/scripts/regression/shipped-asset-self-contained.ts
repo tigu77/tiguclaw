@@ -109,13 +109,14 @@ export const check: RegressionCheck = {
     );
 
     // 반대 방향 확인 — 배포 자산끼리의 참조는 정상이어야 한다(과잉 차단 0).
-    //  `skill-creator` 는 배포되므로 harness 가 가리켜도 문제없다는 것을 못 박는다.
-    const harness = readFileSync(path.join(REPO, "skills/harness/SKILL.md"), "utf8");
+    //  `code-review` 는 배포되므로 verify 가 가리켜도 문제없다는 것을 못 박는다.
+    //  (2026-11-16 종전 예시 `harness`→`skill-creator` 는 harness 가 기본 번들에서 제거돼 바꿨다.)
+    const verify = readFileSync(path.join(REPO, "skills/verify/SKILL.md"), "utf8");
     out.push(
       assert(
-        "배포 스킬끼리의 참조는 정상이다(skill-creator)",
-        harness.includes("skill-creator") && shipped.has("skill-creator"),
-        `skill-creator 배포=${shipped.has("skill-creator")} 참조=${harness.includes("skill-creator")}`,
+        "배포 스킬끼리의 참조는 정상이다(code-review)",
+        verify.includes("code-review") && shipped.has("code-review"),
+        `code-review 배포=${shipped.has("code-review")} 참조=${verify.includes("code-review")}`,
       ),
     );
 

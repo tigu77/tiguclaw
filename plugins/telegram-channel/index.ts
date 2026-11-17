@@ -27,6 +27,7 @@ import { claimPromptAnswer, promptReplySession } from "../../src/core/prompt-ans
 import { deliverDocument, sendDocumentTo } from "./send-document.js";
 import { ownerCandidateRoutes, recordBlockedSender } from "./owner-candidates.js";
 import { createInboundBatcher } from "./inbound-batch.js";
+import { createPollHealth, type PollHealth } from "./poll-health.js";
 
 // 텔레그램 bot getFile 다운로드 한도 (20MB). 초과 시 다운로드 생략 + 명시 안내.
 const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -945,6 +946,32 @@ export default class TelegramChannel implements Channel {
       }),
     );
     this.batcher = batcher;
+
+    // ★폴링 상태 관측 (2026-11-17, `poll-health.ts`) — getUpdates 의 성공·실패·소요만 본다(내용·토큰·id 0).
+    //  grammY 의 API 변환기(`api.config.use`) 자리다 — 일시적 폴링 오류는 라이브러리가 debug 로만 남기고 재시도해 데몬 로그에 안 보였다.
+    //  ★우리가 멈추는 중의 실패(중단 신호)는 세지 않는다. 동작은 바꾸지 않는다(시한·재시도·재시작 그대로).
+    const pollHealth = createPollHealth((line) => console.log(line));
+    this.pollHealth = pollHealth;
+    bot.api.config.use(async (prev, method, payload, signal) => {
+      if (method !== "getUpdates") return prev(method, payload, signal);
+      const timeoutSec = (payload as { timeout?: unknown } | undefined)?.timeout;
+      const waitSec = typeof timeoutSec === "number" ? timeoutSec : undefined;
+      const startedAt = pollHealth.begin(waitSec);
+      try {
+        const res = await prev(method, payload, signal);
+        if (!this.stopping) {
+          if (res.ok) pollHealth.ok(startedAt, waitSec);
+          else pollHealth.fail(startedAt, `API ${res.error_code} ${String(res.description).slice(0, 120)}`);
+        }
+        return res;
+      } catch (e) {
+        if (!this.stopping) pollHealth.fail(startedAt, describeTelegramError(e));
+        throw e;
+      }
+    });
+    /** 업데이트가 도착한 시각 — 같은 응답의 앞 업데이트(첨부 다운로드)를 기다린 시간은 도착 뒤로 센다. */
+    const arrivedAt = (): number => pollHealth.lastReceivedAt() ?? Date.now();
+
     // 텔레그램 "입력 중…" 표시. 한 번 보내면 5 초 유지 → 4 초 간격 갱신. 턴이 끝나면 묶음기가 끈다(누수 0).
     const startTyping = (ctx: Context): (() => void) => {
       void ctx.replyWithChatAction("typing").catch(() => {});
@@ -1050,7 +1077,7 @@ export default class TelegramChannel implements Channel {
         // callback_query 핸들러가 *다음 인바운드*로 흘려보낸다(같은 chat=같은 thread·인격).
         presentOptions: buildPresentOptions(ctx, routedSession, routedSession, sessionId),
       };
-      const part = { msg: Promise.resolve(msg), replyTo: repliedMsgId, stopTyping: startTyping(ctx) };
+      const part = { msg: Promise.resolve(msg), replyTo: repliedMsgId, stopTyping: startTyping(ctx), arrivedAt: arrivedAt() };
       // 명령(슬래시)은 기다리지 않는다(`/stop` 이 2.5초 늦으면 안 된다) — 쌓인 묶음을 먼저 보내 순서는 지킨다.
       if (text.startsWith("/")) batcher.now(chatId, part);
       else batcher.add(chatId, `${chatId}\u0000${sessionId}`, part);
@@ -1152,6 +1179,7 @@ export default class TelegramChannel implements Channel {
           msg: built,
           replyTo: message.reply_to_message?.message_id,
           stopTyping: startTyping(ctx),
+          arrivedAt: arrivedAt(),
         });
         // 다운로드가 끝날 때까지 폴러를 붙잡는다 — 종전과 같은 배압(턴은 기다리지 않는다).
         await built;
@@ -1346,6 +1374,8 @@ export default class TelegramChannel implements Channel {
 
   /** stop() 이 시작됐나 — 폴링 종료를 «사망» 으로 보고하지 않게 한다. */
   private stopping = false;
+  /** 폴링 상태 관측 — start() 에서 만든다(`poll-health.ts`). */
+  private pollHealth: PollHealth | null = null;
   /** 연달아 온 메시지 묶음기 — start() 에서 만든다(handler 가 필요). */
   private batcher: ReturnType<typeof createInboundBatcher> | null = null;
 
@@ -1355,6 +1385,9 @@ export default class TelegramChannel implements Channel {
   }
 
   async stop(): Promise<void> {
+    // 정상 대기를 넘겨 매달린 요청이 있으면 한 줄 — 종료가 폴링 쪽에서 막혔는지 가를 수 있게(평소 종료엔 안 쓴다).
+    const stalled = this.pollHealth?.stalled() ?? null;
+    if (stalled !== null) console.log(`telegram: 종료 시 ${stalled}`);
     this.stopping = true;
     // 구독 해제 먼저 — bot 정지 후 잔여 이벤트로 refreshMenu 호출 방지(누수 0).
     if (this.unsubscribeCommandsChanged !== null) {

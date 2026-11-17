@@ -34,10 +34,19 @@ export const check: RegressionCheck = {
         ? { ok: false, error_code: 409, description: "Conflict: terminated by other getUpdates request" }
         : undefined,
     );
+    // 폴링 관측(poll-health) 줄도 본다 — 409 는 라이브러리가 재시도하지 않으므로 «재시도한다» 고 적으면 옆 «폴링 중단» 줄과 모순이다.
+    const pollLines: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => {
+      const line = args.map(String).join(" ");
+      if (line.startsWith("telegram: polling")) pollLines.push(line);
+      origLog(...args);
+    };
     try {
       const statusBefore = channel.status;
       await startWithOwners(channel, "111", async () => {});
       for (let i = 0; i < 40 && errors.length === 0; i++) await settle(50);
+      console.log = origLog;
       const pollsAtDeath = calls.filter((c) => c.method === "getUpdates").length;
       await settle(300);
       const pollsLater = calls.filter((c) => c.method === "getUpdates").length;
@@ -62,7 +71,15 @@ export const check: RegressionCheck = {
           `getUpdates 죽을 때 ${pollsAtDeath}회 · 300ms 뒤 ${pollsLater}회`,
         ),
       );
+      out.push(
+        assert(
+          "폴링 관측은 409 실패를 한 줄 적되 재시도를 단언하지 않는다(재시도 안 하는 오류)",
+          pollLines.filter((l) => l.includes("polling 실패 — API 409")).length === 1 && pollLines.every((l) => !l.includes("재시도")),
+          pollLines,
+        ),
+      );
     } finally {
+      console.log = origLog;
       unsub();
       await channel.stop();
     }

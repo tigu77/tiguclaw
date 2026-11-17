@@ -16,8 +16,12 @@
  *  사고 당시에도 "정직" 이라는 **주석**은 있었다. 그래서 실제 shutdown 경로를 밟혀
  *  **발송된 텍스트를 관측**한다.
  */
-import { assert, within, type Assertion, type RegressionCheck } from "./_framework.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { assert, spawnWithin, within, type Assertion, type RegressionCheck } from "./_framework.js";
 import { sourceOrder } from "./_wiring.js";
+
+const MAINT_CHILD = path.join(path.dirname(fileURLToPath(import.meta.url)), "_self-maintenance-stop-child.ts");
 
 export const check: RegressionCheck = {
   name: "restart-interrupt-honesty",
@@ -143,6 +147,75 @@ export const check: RegressionCheck = {
         "★미배달은 성공으로 세지 않고 사유를 남긴다",
         failed === 0 && failLog.length === 1 && failLog[0].includes("채널 미등록"),
         `성공 ${failed}건 · 로그 ${failLog.join(" ")}`,
+      ),
+    );
+
+    // ★④ 종료가 시작되면 자기 보전 시계를 **중단 기록보다 먼저** 세운다 (2026-11-17 개발돌쇠 실측).
+    //  `llm.turn_error` 가 그 구독을 깨워 종료 중에 점검(동기 `VACUUM INTO` 백업 503MB)이 새로 돌았다 — 07:37:33 종료 시작,
+    //  07:37:39 백업 완료. 두 겹으로 본다: `shutdown` 안의 순서(클로저라 import 불가)는 소스 순서로, «멈춘 시계는 이벤트·남은
+    //  타이머로 다시 돌지 않고 평상시엔 깨어난다» 는 실제 시계를 자식 프로세스에서 돌려(가짜 네트워크·가짜 시계·합성 DB) 잰다.
+    const maintOrder = await sourceOrder("../../index.ts", [
+      /const shutdown = async \(signal: string\): Promise<void> => \{/,
+      /\n  stopSelfMaintenance\(\);/,
+      /type: "llm\.turn_error"/,
+      /await notifyInterruptedTurns\(/,
+    ]);
+    out.push(
+      assert(
+        "★종료는 자기 보전 시계를 중단 기록(turn_error)보다 먼저 세운다(종료 중 새 백업 0)",
+        maintOrder.ok,
+        maintOrder.detail,
+      ),
+    );
+    const child = await spawnWithin(60_000, "self-maintenance stop", ["--import", "tsx", MAINT_CHILD], { stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    const line = child.out.trim().split("\n").filter((l) => l.startsWith("{")).pop();
+    const m = (line === undefined ? { error: child.err.slice(-200) } : JSON.parse(line)) as {
+      boot?: number; normal?: number; deferred?: number; afterStopEvent?: number; afterTimers?: number; liveAfterStop?: string[]; intervals?: number; error?: string;
+    };
+    out.push(
+      assert(
+        "대조 — 평상시엔 turn_error 가 점검을 깨워 백업이 새로 뜬다(실제 시계 실행)",
+        m.boot === 1 && m.normal === 2,
+        m,
+      ),
+    );
+    out.push(
+      assert(
+        "★멈춘 시계는 종료 중 turn_error 로도, 남아 있던 지연 깨우기·주기 틱으로도 새 백업을 시작하지 않는다(실제 시계 실행)",
+        m.deferred === 1 && m.intervals === 1 && m.afterStopEvent === 2 && m.afterTimers === 2 && (m.liveAfterStop ?? ["?"]).length === 0,
+        m,
+      ),
+    );
+
+    // ⑤ force-exit 줄이 «어느 단계에서 얼마나» 를 싣는다 — 단계 기록을 실행해 잰다.
+    const { createShutdownProgress } = await import("../../core/restart.js");
+    let clock = 1_000;
+    const prog = createShutdownProgress(() => clock);
+    const before = prog.describe();
+    prog.step("중단 기록·통지");
+    clock += 400;
+    prog.step("채널 telegram 정지");
+    clock += 1_300;
+    const after = prog.describe();
+    out.push(
+      assert(
+        "★종료 단계 기록 — 시작 후 경과와 마지막 단계·그 단계 경과를 적는다(시작 전엔 기록 없음)",
+        before === "종료 단계 기록 없음" && after.includes("종료 시작 후 1700ms") && after.includes("«채널 telegram 정지» 1300ms째"),
+        { before, after },
+      ),
+    );
+    const stages = await sourceOrder("../../index.ts", [
+      /const shutdown = async \(signal: string\): Promise<void> => \{\s*if \(shuttingDown\) return;\s*shuttingDown = true;\s*shutdownProgress\.step\(/,
+      /shutdownProgress\.step\("외부 MCP 정리"\);\s*try \{\s*const \{ closeAllExternalMcp \}/,
+      /shutdownProgress\.step\("백그라운드 셸 정리"\);\s*try \{/,
+      /for \(const ch of channels\) \{\s*shutdownProgress\.step\(`채널 \$\{ch\.name\} 정지`\);\s*try \{\s*await ch\.stop\(\);/,
+      /for \(const svc of serviceStops\) \{\s*shutdownProgress\.step\(`서비스 \$\{svc\.name\} 정지`\);\s*try \{\s*await svc\.stop\(\);/,
+    ]);
+    out.push(
+      assert(
+        "종료 각 단계(통지·외부 MCP·셸·채널·서비스) 바로 앞에서 단계를 적는다",
+        stages.ok,
+        stages.detail,
       ),
     );
     return out;

@@ -136,6 +136,7 @@ import {
   hasSupervisorRespawn,
   shouldExitForRestart,
   cleanupSelfRestartTask,
+  createShutdownProgress,
 } from "./core/restart.js";
 import { initFileLogging, logFatal } from "./core/logging.js";
 import { acquireHomeLock } from "./store/home-lock.js";
@@ -1483,7 +1484,8 @@ const restartDaemon = (source: string): boolean => {
   // unref() — 정상 graceful 종료가 더 빠르면 이 타이머는 프로세스를 붙잡지 않는다.
   setTimeout(() => {
     // 동기 기록 — 바로 아래 exit(0)이 비동기 큐를 버린다(위 crash 핸들러와 같은 이유).
-    logFatal("daemon: graceful shutdown 지연 — force exit");
+    // 어느 단계에서 멈췄는지 같이 적는다(2026-11-17) — 종전엔 통지 뒤로 기록이 없어 지연 자리를 가를 수 없었다.
+    logFatal(`daemon: graceful shutdown 지연 — force exit (${shutdownProgress.describe()})`);
     process.exit(0);
   }, 1500).unref();
   return true;
@@ -1582,6 +1584,8 @@ const inboundLine = (msg: IncomingMessage, route: InboundRoute): string =>
 
 // ★종료가 시작되면 새 턴을 열지 않는다(아래 `serializedHandler` 가 이 값을 본다 — 판정은 turn-lifecycle).
 let shuttingDown = false;
+/** 종료 단계·경과 — force-exit 백스톱이 «어디서 멈췄나» 를 적는다(정상 종료엔 쓰지 않는다). */
+const shutdownProgress = createShutdownProgress();
 
 const queueHandler: MessageHandler = (msg) => {
   // 사람이 쓴 메시지 — 한도 자동 재개 횟수를 처음부터(2026-10-23 §3.4). 표가 비면 PK 조회 한 번.
@@ -1820,9 +1824,14 @@ registerWorkerHandler(serializedHandler);
 const shutdown = async (signal: string): Promise<void> => {
   if (shuttingDown) return;
   shuttingDown = true;
+  shutdownProgress.step("중단 기록·통지");
   console.log(
     `tiguclaw daemon: received ${signal}, shutting down (진행 중 턴 ${inflightTurns.size + listExternalTurns().length}건)`,
   );
+  // ★자기 보전 시계를 **맨 먼저** 세운다 (2026-11-17). 아래 중단 기록(`llm.turn_error`)이 그 구독을 깨워, 종료 중에 점검이
+  //  새로 돌았다 — 백업 단계는 동기 `VACUUM INTO` 라 그동안 종료 전체가 멈춘다(실측 07:37:33 종료 시작 → 07:37:39 503MB 백업 완료).
+  //  평상시의 실패 깨우기는 그대로다(종료가 시작된 뒤에만 멈춘다). 이미 돌던 틱은 동기라 끝난 뒤에야 여기 온다.
+  stopSelfMaintenance();
   // ★진행 중이던 메인 턴에 **정직 통지** (2026-08-01 A5, 실사고).
   //  종전엔 레지스트리 주석만 "재시작 정직" 이라고 적혀 있었고 알리는 코드는 없었다. 그래서
   //  배포 재시작이 사용자 턴을 죽였을 때 사용자는 **그냥 답이 안 오는 것**으로 겪었다
@@ -1873,8 +1882,6 @@ const shutdown = async (signal: string): Promise<void> => {
     );
     console.log(`daemon: 중단 기록 ${keys.length}건 · 통지 ${n}/${keys.length}건 성공.`);
   }
-  // 자기 보전 시계 정지 — 종료 중에 백업·진단이 새로 시작되지 않게(타이머·구독 누수 0).
-  stopSelfMaintenance();
   // ★자식 프로세스 정리를 **맨 앞으로** (2026-07-28). 종전엔 채널·서비스 정지가 끝난 뒤에야
   //  외부 MCP·백그라운드 셸을 정리했는데, 그 앞단이 1500ms force-exit 백스톱을 넘기면
   //  자식 정리에 **도달하지 못했다**(실측 2건: 종료 시작 2초 뒤 force exit, 사이에 자식
@@ -1884,6 +1891,7 @@ const shutdown = async (signal: string): Promise<void> => {
   // 활동 표시 타이머 정리 — 소켓과 달리 OS 가 회수해 주지 않고, 남으면 graceful
   // shutdown 의 이벤트 루프가 안 비어 force exit 로 밀린다. 동기·무해.
   stopAllChannelActivity();
+  shutdownProgress.step("외부 MCP 정리");
   try {
     const { closeAllExternalMcp } = await import("./core/external-mcp.js");
     await closeAllExternalMcp();
@@ -1894,6 +1902,7 @@ const shutdown = async (signal: string): Promise<void> => {
   }
   // ★await 필수 — killAllBgShells 가 async(내부 process.kill/taskkill)라 시그널 발송이
   //  실제로 끝나야 한다. killTree(그룹 전체)라 손자까지 함께 정리된다.
+  shutdownProgress.step("백그라운드 셸 정리");
   try {
     const { killAllBgShells } = await import(
       "./core/llm-runtime/capabilities/file-ops-mcp.js"
@@ -1905,6 +1914,7 @@ const shutdown = async (signal: string): Promise<void> => {
     );
   }
   for (const ch of channels) {
+    shutdownProgress.step(`채널 ${ch.name} 정지`);
     try {
       await ch.stop();
     } catch (e) {
@@ -1913,6 +1923,7 @@ const shutdown = async (signal: string): Promise<void> => {
     }
   }
   for (const svc of serviceStops) {
+    shutdownProgress.step(`서비스 ${svc.name} 정지`);
     try {
       await svc.stop();
     } catch (e) {

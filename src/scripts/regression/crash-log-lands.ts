@@ -76,7 +76,7 @@ export const check: RegressionCheck = {
     const wired = await sourceHas("../../index.ts", [
       /process\.on\("unhandledRejection", \(reason\) => \{\s*logFatal\(/,
       /process\.on\("uncaughtException", \(err\) => \{\s*logFatal\(/,
-      /logFatal\("daemon: graceful shutdown 지연 — force exit"\)/,
+      /logFatal\(`daemon: graceful shutdown 지연 — force exit \(\$\{shutdownProgress\.describe\(\)\}\)`\)/,
     ]);
     out.push(
       assert(

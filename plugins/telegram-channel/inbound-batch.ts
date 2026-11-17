@@ -15,6 +15,11 @@ import type { IncomingMessage } from "../../src/channels/types.js";
 /** 기본값은 여기 한 곳 — 2026-11-03 정태님 확정(«2.5초로 해»). 실측 간격 2.3초를 덮는 값이다(1초면 그 사고를 못 막는다). */
 export const DEFAULT_QUIET_MS = 2500;
 export const DEFAULT_MAX_MS = 6000;
+/**
+ * 발신부터 핸들러 전달까지 이보다 오래 걸린 묶음만 로그 한 줄(2026-11-17 수신 지연 관측). 묶음 창(최대 6초)·평소 수신은 한참 아래다.
+ *  발신 시각은 텔레그램이 준 초 단위 `message.date` 라 1초 오차·기기 시계 차가 섞인다 — 넉넉히 잡는다.
+ */
+export const LATE_DELIVERY_MS = 60_000;
 
 /** 설정(`.env` 의 `TELEGRAM_BATCH_QUIET_MS`·`TELEGRAM_BATCH_MAX_MS`)을 메시지마다 읽는다 — 화면에서 바꾸면 바로 먹는다. 0 = 끔. */
 export const readBatchWindow = (): { quietMs: number; maxMs: number } => {
@@ -37,6 +42,8 @@ export interface BatchPart {
   replyTo: number | undefined;
   /** 이 메시지가 켠 «입력 중…» 표시를 끈다. */
   stopTyping: () => void;
+  /** 업데이트가 폴링 응답으로 도착한 시각 — 늦은 전달 기록의 발신→도착/도착→전달 경계. 없으면 묶음기에 들어온 시각. */
+  arrivedAt?: number;
 }
 
 /**
@@ -79,17 +86,32 @@ export const createInboundBatcher = (fire: (msg: IncomingMessage) => Promise<voi
   let closing = false;
 
   /** 대화 줄에 묶음 하나를 세운다 — 앞 묶음의 다운로드·발사가 끝난 뒤에 이것을 낸다. */
-  const dispatch = (chatId: string, parts: BatchPart[]): void => {
+  const dispatch = (chatId: string, parts: BatchPart[], enteredAt: number): void => {
     const tail = (chatTail.get(chatId) ?? Promise.resolve())
       .then(async () => {
-        const msgs = (await Promise.all(parts.map((p) => p.msg.catch(() => null)))).filter(
-          (m): m is IncomingMessage => m !== null,
-        );
+        const resolved = await Promise.all(parts.map((p) => p.msg.catch(() => null)));
+        const msgs = resolved.filter((m): m is IncomingMessage => m !== null);
         if (msgs.length === 0) {
           for (const p of parts) p.stopTyping();
           return;
         }
         if (msgs.length > 1) console.log(`telegram: 연달아 온 메시지 ${msgs.length}건을 한 턴으로 묶음`);
+        // 늦게 닿은 묶음만 — 발신→도착(폴링 쪽)과 도착→전달(묶음·다운로드 쪽)을 갈라 적는다. 내용·id 는 싣지 않는다.
+        //  ★묶음에서 **가장 먼저 보낸 메시지 한 건**의 발신·도착을 짝으로 쓴다 — 서로 다른 메시지의 최솟값끼리 빼면 뜻이 섞인다.
+        let sentAt = Infinity;
+        let arrivedAt = enteredAt;
+        resolved.forEach((m, i) => {
+          if (m === null || m.receivedAt >= sentAt) return;
+          sentAt = m.receivedAt;
+          arrivedAt = parts[i]!.arrivedAt ?? enteredAt;
+        });
+        const firedAt = Date.now();
+        if (firedAt - sentAt > LATE_DELIVERY_MS) {
+          console.log(
+            `telegram: 늦은 전달 — 메시지 ${msgs.length}건, 발신→도착 ${Math.round((arrivedAt - sentAt) / 1000)}초 · ` +
+              `도착→전달 ${Math.round((firedAt - arrivedAt) / 1000)}초(발신 시각은 텔레그램 기준·초 단위)`,
+          );
+        }
         // 발사만 하고 기다리지 않는다(폴러·다음 묶음을 막지 않게) — «입력 중» 은 턴이 끝날 때 끈다.
         const run = fire(mergeMessages(msgs))
           .catch(() => {})
@@ -111,7 +133,7 @@ export const createInboundBatcher = (fire: (msg: IncomingMessage) => Promise<voi
     if (p === undefined) return;
     pending.delete(key);
     clearTimeout(p.timer);
-    dispatch(p.chatId, p.parts);
+    dispatch(p.chatId, p.parts, p.firstAt);
   };
 
   /** 이 대화에 쌓인 묶음을 전부 지금 보낸다. */
@@ -125,7 +147,7 @@ export const createInboundBatcher = (fire: (msg: IncomingMessage) => Promise<voi
       const { quietMs, maxMs } = readBatchWindow();
       if (closing || quietMs <= 0) {
         flushChat(chatId); // 창을 막 끈 경우의 잔여분 — 순서대로.
-        dispatch(chatId, [part]);
+        dispatch(chatId, [part], Date.now());
         return;
       }
       // 같은 대화에서 세션이 갈리면 이전 묶음을 먼저 닫는다. A1→B1→A2를 A1+A2로 모으면 B1이 먼저 발사된다.
@@ -160,7 +182,7 @@ export const createInboundBatcher = (fire: (msg: IncomingMessage) => Promise<voi
     /** 명령·버튼 답 — 기다리지 않는다. 이 대화에 쌓인 묶음을 먼저 보내 순서를 지킨다. */
     now(chatId: string, part: BatchPart): void {
       flushChat(chatId);
-      dispatch(chatId, [part]);
+      dispatch(chatId, [part], Date.now());
     },
     /**
      * 종료 — 쌓인 것을 버리지 않고 핸들러에 넘긴다(종료 중이면 코어가 «다시 보내 달라» 고 답한다 — `refuseWhileClosing`).

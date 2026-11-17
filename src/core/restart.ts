@@ -162,3 +162,26 @@ export const cleanupSelfRestartTask = (): void => {
     // best-effort — 무시.
   }
 };
+
+/**
+ * **종료가 어느 단계에서 멈췄나** (2026-11-17). force-exit 백스톱이 «지연» 한 줄만 남겨, 중단 통지 뒤 어디(외부 MCP·셸·채널·서비스)에서
+ *  시간이 갔는지 기록으로 가를 수 없었다. 단계 이름과 시작 시각만 들고 있다가 백스톱이 읽는다 — 정상 종료엔 아무것도 안 쓴다.
+ */
+export const createShutdownProgress = (now: () => number = Date.now) => {
+  let startedAt: number | null = null;
+  let stage = "";
+  let stageAt = 0;
+  return {
+    step(name: string): void {
+      const t = now();
+      if (startedAt === null) startedAt = t;
+      stage = name;
+      stageAt = t;
+    },
+    describe(): string {
+      if (startedAt === null) return "종료 단계 기록 없음";
+      const t = now();
+      return `종료 시작 후 ${t - startedAt}ms · 마지막 단계 «${stage}» ${t - stageAt}ms째`;
+    },
+  };
+};

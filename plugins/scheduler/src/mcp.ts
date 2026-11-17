@@ -3,7 +3,7 @@
  *
  * tools 5종 (contract §5):
  *  - add_schedule    — cron expression dry-parse + nextRun ISO 응답
- *  - list_schedules  — only_enabled 옵션 + 각 row 의 next_run ISO 계산
+ *  - list_schedules  — only_enabled·id(한 건) 옵션 + 각 row 의 next_run ISO 계산
  *  - update_schedule — 부분 패치 + cron 재검증 + enable/disable 토글 흡수
  *  - delete_schedule — 멱등
  *  - run_schedule    — 지금 한 번 실행(정해진 시각과 같은 실행 경로 — 이력 정책·겹침 방지·목적지 그대로)
@@ -215,14 +215,27 @@ const addScheduleTool = (turnSession: TurnSession) => tool(
   },
 );
 
+// ★한 건만 읽기 (2026-11-17 뉴돌쇠 관측). 목록이 25,602자까지 커지자 긴 도구 결과의 머리·꼬리 제한에 가운데가 빠져,
+//  저장된 한 건의 지시문을 끝내 대조하지 못했다. 목록 기본 동작은 그대로 두고 id 로 그 한 건만 돌려준다.
+//  ★한 건 자체가 결과 상한보다 긴 경우까지 푸는 것은 아니다(그 경우는 별도 검토 — 이번 관측의 지시문은 약 3,546자).
 const listSchedulesTool = tool(
   "list_schedules",
-  "등록된 schedule·타이머 전체 목록. only_enabled=true 면 활성만. 각 row 에 trigger_type ('cron'|'reboot'|'once') + next_run (ISO 또는 null) + kind ('schedule'|'timer') + runs_in 포함. reboot row 는 next_run=null (다음 daemon.boot 까지 대기 의미). once 타이머는 울리면 목록에서 사라진다.",
+  "등록된 schedule·타이머 목록. only_enabled=true 면 활성만. id 를 주면 그 한 건만 돌려준다(저장된 prompt 원문 확인용 — 목록이 길 때 쓴다). " +
+    "id 와 only_enabled=true 를 함께 주면 둘 다 만족해야 한다(꺼진 건이면 items 가 빈 배열). 없는 id 면 ok:false, error:'not_found'. " +
+    "각 row 에 trigger_type ('cron'|'reboot'|'once') + next_run (ISO 또는 null) + kind ('schedule'|'timer') + runs_in 포함. reboot row 는 next_run=null (다음 daemon.boot 까지 대기 의미). once 타이머는 울리면 목록에서 사라진다.",
   {
     only_enabled: z.boolean().optional(),
+    id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional().describe("한 건만 볼 때의 schedule id."),
   },
   async (args) => {
-    const rows = listSchedules({ onlyEnabled: args.only_enabled === true });
+    let rows: ScheduleRow[];
+    if (args.id !== undefined) {
+      const row = getSchedule(args.id);
+      if (row === undefined) return okJson({ ok: false, error: "not_found", detail: `no schedule id=${args.id}` });
+      rows = args.only_enabled === true && !row.enabled ? [] : [row];
+    } else {
+      rows = listSchedules({ onlyEnabled: args.only_enabled === true });
+    }
     const items = rows.map((r) => {
       let nextRun: string | null = null;
       if (r.enabled && r.triggerType === "cron") {

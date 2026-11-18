@@ -43,6 +43,8 @@ const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 interface TgSendExtra {
   parse_mode?: "HTML";
   reply_parameters?: { message_id: number };
+  /** 선택지 버튼 — 평문 폴백에서도 유지한다(버튼 없는 질문이 «보냈음» 이 되면 안 된다). */
+  reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
 }
 type TgSend = (chunk: string, extra: TgSendExtra) => Promise<unknown>;
 
@@ -227,7 +229,8 @@ const sendChunk = async (
     return extractMessageId(await sendWithTransportRetry(send, chunk, extra, htmlDelays));
   } catch (e) {
     console.error(`telegram formatted send failed, falling back to plain — ${describeTelegramError(e)}`);
-    return extractMessageId(await sendWithTransportRetry(send, htmlToPlainText(chunk), {}, plainDelays));
+    const plainExtra: TgSendExtra = extra.reply_markup !== undefined ? { reply_markup: extra.reply_markup } : {};
+    return extractMessageId(await sendWithTransportRetry(send, htmlToPlainText(chunk), plainExtra, plainDelays));
   }
 };
 
@@ -525,10 +528,7 @@ const buildPresentOptions =
  * 인입(ctx 있는 턴)과 egress(좌표만 아는 턴)가 같은 판단을 두 벌 갖지 않게 하는 자리다.
  */
 export const renderOptions = async (
-  send: (
-    text: string,
-    extra: { reply_markup: { inline_keyboard: { text: string; callback_data: string }[][] } },
-  ) => Promise<unknown>,
+  send: TgSend,
   question: string,
   options: { label: string; value: string }[],
   opts?: { note?: string; replyToSession?: string; labelSession?: string; promptId?: string; chatId?: string; originThreadKey?: string },
@@ -538,32 +538,94 @@ export const renderOptions = async (
       // 값과 함께 **물어본 세션**·질문 id 를 들고 있는다(있을 때만) — 클릭이 그 세션으로 돌아가고, 답은 한 번만 처리되게.
       { text: o.label, callback_data: storePromptOption(o.value, opts?.replyToSession, opts?.promptId) },
     ]);
-    const body =
-      opts?.note !== undefined && opts.note.trim() !== ""
-        ? `${question}\n\n${opts.note}`
-        : question;
+    // ★설명(note)은 채팅 답과 같은 변환기(telegramFormat)로 서식, 질문은 평문 — HTML 모드라 `< > &` 만 이스케이프 (2026-11-18).
     // 세션 라벨 — 판정은 호출부(인입=갈림, 좌표=출처 세션), 이름 규칙은 코어 한 곳(`outboundSessionLabel`).
-    const prompt = withSessionLabel(outboundSessionLabel(opts?.labelSession), body);
-    const sent = await send(prompt, { reply_markup: { inline_keyboard } });
-    // 일반 답글도 원 질문 세션으로 돌아온다 — 콜백의 1회 선택 수명과는 별개인 기존 영속 발원 기록.
-    const message = sent as { message_id?: unknown; chat?: { id?: unknown } } | null;
-    const chatId = opts?.chatId ?? message?.chat?.id;
-    const origin = opts?.originThreadKey ?? opts?.replyToSession;
-    if (origin !== undefined && typeof message?.message_id === "number" &&
-        (typeof chatId === "string" || typeof chatId === "number") && String(chatId) !== "") {
-      recordOutboundMessage("telegram", String(chatId), message.message_id, origin, Date.now());
+    const head = escapeTelegramHtml(withSessionLabel(outboundSessionLabel(opts?.labelSession), question));
+    const noteHtml = opts?.note !== undefined && opts.note.trim() !== "" ? telegramFormat(opts.note) : "";
+    const whole = splitHtmlForTelegram(noteHtml !== "" ? `${head}\n\n${noteHtml}` : head);
+    // 한 통에 들어가면 종전처럼 한 통(질문 → 설명 → 버튼). 넘치면 설명 조각을 먼저 보내고 **마지막에 질문 + 버튼** —
+    //  버튼 바로 위에 그 질문이 있고 설명은 그 앞에 온전히 있다. 설명 조각 하나라도 못 가면 버튼을 보내지 않는다(설명 없는 승인 금지).
+    const chunks = whole.length <= 1
+      ? whole
+      : [...(noteHtml !== "" ? splitHtmlForTelegram(noteHtml) : []), ...splitHtmlForTelegram(head)];
+    // 분할기는 빈 글에 조각 0개를 준다 — 아무것도 안 보냈는데 성공이 되지 않게(종전엔 빈 글 전송이 실패로 돌아왔다).
+    if (chunks.length === 0) return { ok: false as const, error: "option card has no text to send" };
+    // 분할기는 줄 단위라 줄바꿈 없는 긴 줄(한 줄 초안·코드)은 한 조각에 남는다 — 텔레그램이 거절할 조각이면 **아무것도 보내기 전에**
+    //  실패로 돌린다(설명 일부만 가고 버튼이 빠지는 것·재시도 때 앞 조각이 겹쳐 나가는 것 방지). 길이는 엔티티 해석 뒤 **보이는** 글자 기준 —
+    //  링크 URL 은 세지 않는다(평문 폴백 `htmlToPlainText` 는 URL 을 펼치므로 그 길이로 재면 링크 달린 정상 설명을 막는다, R2).
+    const over = chunks.findIndex((c) => shownTextLength(c) > TELEGRAM_TEXT_MAX);
+    if (over >= 0) {
+      const len = shownTextLength(chunks[over]!);
+      console.error(`telegram 선택지 미전송 — 조각 ${over + 1}/${chunks.length} 이 ${len}자(상한 ${TELEGRAM_TEXT_MAX}) · 줄바꿈 없는 긴 줄`);
+      return {
+        ok: false as const,
+        error: `option card not sent — part ${over + 1}/${chunks.length} is ${len} chars, over Telegram's ${TELEGRAM_TEXT_MAX}-char message limit (a single line or code line is too long to split). Shorten the note: break long lines, keep the key points and link to the full material.`,
+      };
     }
+    let chatOfSent: unknown;
+    const sendAndSee: TgSend = async (text, extra) => {
+      const r = await send(text, extra);
+      chatOfSent = (r as { chat?: { id?: unknown } } | null)?.chat?.id ?? chatOfSent;
+      return r;
+    };
+    // 일반 답글도 원 질문 세션으로 돌아온다 — 콜백의 1회 선택 수명과는 별개인 기존 영속 발원 기록. ★조각이 **간 그때** 남긴다:
+    //  카드가 끝내 실패해도 이미 도착한 설명 조각에 단 답글은 물어본 세션으로 가야 한다(카드 성공 판정과 메시지 수명은 별개).
+    const origin = opts?.originThreadKey ?? opts?.replyToSession;
+    const chatKey = (): string | null => {
+      const c = opts?.chatId ?? chatOfSent;
+      return (typeof c === "string" || typeof c === "number") && String(c) !== "" ? String(c) : null;
+    };
+    const ids: number[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const last = i === chunks.length - 1;
+      try {
+        // 전송 재시도 + HTML 실패 시 평문 폴백(버튼 유지)은 일반 답과 같은 함수.
+        const id = await sendChunk(
+          sendAndSee,
+          chunks[i]!,
+          last ? { parse_mode: "HTML", reply_markup: { inline_keyboard } } : { parse_mode: "HTML" },
+          TRANSPORT_RETRY_DELAYS_MS,
+          TRANSPORT_RETRY_DELAYS_MS,
+        );
+        if (id !== null) {
+          ids.push(id);
+          const c = chatKey();
+          if (origin !== undefined && c !== null) recordOutboundMessage("telegram", c, id, origin, Date.now());
+        }
+      } catch (e) {
+        if (chunks.length === 1) throw e;
+        const why = e instanceof Error ? e.message : String(e);
+        console.error(
+          `telegram 선택지 미전달 — 메시지 ${i + 1}/${chunks.length}(${chunks[i]!.length}자) 실패, 앞 ${i}개는 보냄 · 버튼 미전송. ${describeTelegramError(e)}`,
+        );
+        return {
+          ok: false as const,
+          error: `option card not delivered — message ${i + 1}/${chunks.length} failed after ${i} sent; the buttons were not delivered: ${why}`,
+        };
+      }
+    }
+    const c = chatKey();
     return {
       ok: true as const,
-      ...(typeof message?.message_id === "number" &&
-          (typeof chatId === "string" || typeof chatId === "number") && String(chatId) !== ""
-        ? { channelRefs: [{ channel: "telegram", address: String(chatId), messageIds: [message.message_id] }] }
+      ...(ids.length > 0 && c !== null
+        ? { channelRefs: [{ channel: "telegram", address: c, messageIds: ids }] }
         : {}),
     };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
   }
 };
+
+/** 텔레그램 메시지 한 통의 글자 상한(Bot API sendMessage text: 엔티티 해석 뒤 1-4096자). */
+const TELEGRAM_TEXT_MAX = 4096;
+
+/** HTML 모드 메시지의 보이는 글자 수 — 태그를 빼고 이스케이프 세 글자를 되돌린다(링크 URL 은 글자에 안 든다). */
+const shownTextLength = (html: string): number =>
+  html.replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&amp;/g, "&").length;
+
+/** 텔레그램 HTML 모드의 평문 — 이 세 글자만 이스케이프하면 된다(위 «HTML 채택 근거»). */
+const escapeTelegramHtml = (s: string): string =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 const yyyymmdd = (epochSeconds: number): string => {
   const d = new Date(epochSeconds * 1000);

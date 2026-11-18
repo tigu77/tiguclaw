@@ -26,10 +26,14 @@
  */
 const TURN_ENDING_TOOLS = new Set(["prompt_options"]);
 
+/** 지금까지 돈 도구가 **있고** 전부 설계상 종료 도구인가 — 정상 선택지 종료의 재료(B1·Codex 마무리 판정이 같이 쓴다). */
+export const onlyTurnEndingTools = (names: readonly string[]): boolean =>
+  names.length > 0 && names.every((n) => TURN_ENDING_TOOLS.has(n));
+
 export interface TurnClosingState {
-  /** 이번 iteration 이 낸 텍스트("" = 없음). */
+  /** 이번 iteration 이 낸 **사용자에게 보일** 텍스트("" = 없음 — 제안 태그·인용 표식뿐인 글도 없음이다, 2026-11-17). */
   readonly text: string;
-  /** 지금까지의 마지막 non-empty 텍스트("" = 턴 전체가 무텍스트). */
+  /** 지금까지의 마지막 **보일 글이 있는** 텍스트("" = 턴 전체에 보일 글이 없다). */
   readonly finalText: string;
   /** 그 마지막 텍스트 **이후** 실행한 도구 수. 텍스트가 나올 때마다 0 으로 리셋된다. */
   readonly toolCallsSinceText: number;
@@ -45,12 +49,47 @@ export interface TurnClosingState {
  */
 export const needsClosingReport = (s: TurnClosingState): boolean => {
   if (s.text !== "") return false; // 이번에 보고했다 — 끝내도 된다.
-  if (s.finalText === "") return true; // 턴 전체가 무텍스트 — 기존 빈 응답 경로.
-  if (s.toolCallsSinceText === 0) return false; // 보고 후 도구 없음 = 정상 종료.
   // 설계상 종료 도구만 돌았으면 그 종료는 의도된 것이다(위 TURN_ENDING_TOOLS 주석).
-  const names = s.toolNamesSinceText ?? [];
-  if (names.length > 0 && names.every((n) => TURN_ENDING_TOOLS.has(n))) return false;
+  //  ★보일 글이 한 번도 없어도 마찬가지다 — 선택지만 띄운 턴은 카드가 답이다(2026-11-17). 이 판정을 무텍스트 판정보다 **먼저** 본다:
+  //   거꾸로면 선택지만 띄운 정상 종료에 «빈 응답 금지» 재요청이 가고, 그 답이 제안 태그뿐이면 빈 말풍선이 나갔다(REPORT §3-2).
+  if (onlyTurnEndingTools(s.toolNamesSinceText ?? [])) return false;
+  if (s.finalText === "") return true; // 턴 전체에 보일 글이 없다 — 기존 빈 응답 경로.
+  if (s.toolCallsSinceText === 0) return false; // 보고 후 도구 없음 = 정상 종료.
   return true; // 예고 뒤 도구만 돌고 보고 없음 = 미완결.
+};
+
+/** 한 턴의 순서 기록 한 칸 — 논리 메시지 하나의 원문 글, 또는 실행한 도구 이름(정규화된 이름). */
+export type AnswerStep = { readonly text: string } | { readonly tool: string };
+
+/**
+ * **최종 답 선택 B1** (2026-11-17, `docs/decisions/2026-11-17-empty-reply-after-suggestion/REPORT.md` §5) — Claude·OpenAI 의 마감과
+ *  Claude steering 확정이 부른다(Codex 는 반복마다 같은 규칙을 `needsClosingReport` 재료로 직접 든다).
+ *
+ * - 어댑터가 고른 답(`current` — Claude 의 성공 result·글 조각, OpenAI 의 마지막 응답)에 **보일 글이 있으면 그대로**다. 바뀌는 것은 없다.
+ * - 보일 글이 없으면(제안 태그·인용 표식뿐이거나 빈 글) 이번 턴의 **보일 글이 있는 마지막 논리 메시지**를 찾는다. 그 뒤에 돈 도구가
+ *   종료 도구뿐이면 그 메시지 원문 + 뒤의 원문(`current` — 태그)을 답으로 한다. 잇지 않고 **하나만** 고르므로 중간 진행·철회한 글·반복은
+ *   다시 나오지 않는다. 그 뒤에 작업 도구가 돌았으면 고르지 않는다(«예고 → 작업 → 무보고» 의 예고를 답으로 올리지 않는다).
+ * - 이번 턴에 보일 글이 아예 없고 돈 도구가 종료 도구뿐이면 `choiceEnd` — 선택지만 띄운 정상 종료다(저장 판단의 재료).
+ * ★«선택지 뒤 짧은 실본문» 턴은 `current` 에 보일 글이 있어 그대로다 — 앞 설명을 되살리지 않는 현 정책 유지(§5 잔여).
+ */
+export const pickVisibleAnswer = (
+  current: string,
+  steps: readonly AnswerStep[],
+  visible: (raw: string) => boolean,
+): { text: string; choiceEnd?: true } => {
+  if (visible(current)) return { text: current };
+  const after: string[] = [];
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    const s = steps[i]!;
+    if ("tool" in s) {
+      after.push(s.tool);
+      continue;
+    }
+    if (!visible(s.text)) continue; // 태그뿐인 메시지 — 그 원문은 `current` 쪽에 있다.
+    if (!after.every((n) => TURN_ENDING_TOOLS.has(n))) return { text: current };
+    return { text: current.trim() === "" ? s.text : `${s.text}\n\n${current}` };
+  }
+  return onlyTurnEndingTools(after) ? { text: current, choiceEnd: true } : { text: current };
 };
 
 /**

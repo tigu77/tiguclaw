@@ -85,7 +85,6 @@ import {
   formatResetAt,
 } from "./rate-limit.js";
 import { applyInlineSuggestion, readSuggestionSettings, withInlineSuggestion } from "../next-message-suggestion.js";
-import { stripCitationMarkers } from "../citation-markers.js";
 import { redactSecrets } from "../outbound-sanitize.js";
 import {
   resolveProfileChain,
@@ -1516,7 +1515,11 @@ const persistOutput = (
   input: RegionASdkInput,
   output: RegionASdkOutput,
 ): void => {
-  if (output.sessionId === undefined || output.text === "") return;
+  // ★저장 여부는 «보낼 본문이 있나» 가 아니라 «정상으로 끝난 대화 턴인가» 다 (2026-11-17, `docs/decisions/2026-11-17-empty-reply-after-suggestion/REPORT.md` §12-1).
+  //  본문 없이 선택지만 띄우고 정상 종료한 턴(`choiceEnd` — 제안 태그 유무와 무관)도 사용자 질문·도구 기록·세션 연결을 남긴다.
+  //  그 밖의 빈 글(외부 도구 패스스루·무글 종료·명시 보고 생략 무글 턴·예상 밖 빈 결과)은 지금처럼 건너뛴다. 내부 호출·실패·취소는 여기 오지 않는다.
+  if (output.sessionId === undefined) return;
+  if (output.text === "" && output.choiceEnd !== true) return;
   const sessionId = output.sessionId;
 
   // 채널/세션 분리(ADR 2026-07-15 §D1) — 세션-정체성(threads resume sid / transcript_index)
@@ -1671,7 +1674,7 @@ const runPool = async (
       //  화면이나 다음 턴 히스토리에 태그가 샌다(그게 이 방식의 유일한 실패 모드다).
       //  모델이 안 붙였으면 no-op — `includes` 한 번으로 끝난다.
       // 인용 표식(Codex 웹 검색 출처 자리) — 화면·텔레그램·기록 어디에도 «citeturn0search…» 를 남기지 않는다(`citation-markers.ts`).
-      output.text = stripCitationMarkers(output.text ?? "");
+      //  ★표식 제거와 제안 분리는 한 함수(`visibleReply`)가 소유한다 — 어댑터의 «보일 글» 판정과 같은 정제(2026-11-17).
       applyInlineSuggestion(output);
       // turn_done — 성공 종료 1회 (parity: 세 어댑터 동일 지점). persist 전에 발행해
       // persist 예외와 무관하게 효율 지표가 남게(persist 는 자체 try/catch 라 throw 0이나

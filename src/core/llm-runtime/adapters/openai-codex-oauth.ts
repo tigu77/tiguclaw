@@ -166,7 +166,8 @@ import { createIdleTimer, IdleTimeoutError } from "../idle-timeout.js";
 import { linkAbort, TurnTimeoutError } from "../turn-timeout.js";
 import { composeSwallowedFailure } from "../swallowed-failure.js";
 import { watchToolStart } from "../tool-watchdog.js";
-import { needsClosingReport, TURN_MAX_MODEL_CALLS } from "./_turn-completion.js";
+import { needsClosingReport, onlyTurnEndingTools, TURN_MAX_MODEL_CALLS } from "./_turn-completion.js";
+import { hasVisibleReply } from "../../next-message-suggestion.js";
 import {
   isCheckinGuardedThread,
   JOB_OWNING_TOOL_CALL_TIMEOUT_MS,
@@ -1244,6 +1245,16 @@ export const runOpenAiCodex = async (
   // → 다음 turn 재요청. 절대 상한 = CODEX_MAX_TOOL_ITERATIONS_HARD(런어웨이 최후 방어),
   // CODEX_MAX_TOOL_ITERATIONS 는 soft checkpoint 간격(진행 nudge).
   let finalText = "";
+  /**
+   * **마지막 보일 글 뒤에 온 «보일 글 없는» 답 원문**(제안 태그·인용 표식뿐, 2026-11-17 B1) — 보고가 아니라서 `finalText` 를 바꾸지 않고
+   *  카운터도 리셋하지 않는다. 반환할 때 `finalText` 뒤에 원문 그대로 붙여 코어가 제안을 떼게 한다(`answerText`).
+   */
+  let trailingTag = "";
+  /** `finalText`·`trailingTag` 를 낸 반복의 assistant 메시지 항목 — 최종 답은 비서 행이 가지므로 도구 항목에서 뺀다(중복 저장 0). */
+  let finalTextItems: ResponseInputItem[] = [];
+  let trailingTagItems: ResponseInputItem[] = [];
+  /** 선택지만 띄우고 보일 글 없이 정상 종료했다(`needsClosingReport` 가 종료 도구뿐으로 끝낸 무글 턴) — 빈 응답 처리로 보내지 않는다. */
+  let choiceEnd = false;
   /**
    * 지금 요청한 마무리 턴 **뒤에 이어서 계속 도는가** — 마무리를 **요청할 때** 정하고,
    * 이어갈지 정할 때 **그 결정을 그대로 쓴다**.
@@ -2622,15 +2633,33 @@ export const runOpenAiCodex = async (
       //  openai(finalOutput 1건)와 semantics 를 맞춘다 = #2 parity. 원래 막으려던 회귀(빈
       //  iteration 이 앞 텍스트를 지움)는 `text !== ""` 가드가 그대로 막는다 —
       //  빈 응답이면 덮어쓰지 않고 마지막 실질 텍스트를 유지. 완전 무텍스트 턴은 아래 폴백 관할.
+      // 이번 반복에 **사용자에게 보일 글**이 있었나 — 제안 태그·인용 표식뿐인 글은 보고가 아니다(2026-11-17, REPORT §6-3).
+      let shownThisIteration = false;
+      /** 이번 반복의 글이 최종 답의 어느 몫이 됐나 — 도구 실행 때 메시지 항목이 정상 완료 출력으로 교체되면 그 항목으로 다시 잡는다. */
+      let answerSlot: "final" | "tag" | null = null;
       if (text !== "") {
         // ★중간 해설(phase:"commentary")은 최종 답에 넣지 않는다 — 최종 답 글이 있을 때만(해설뿐인 응답은 지금처럼 그 글).
         //  한 응답에 최종 답과 해설이 같이 오면 둘이 이어 붙어 사용자 답에 작성용 메모가 섞였다(회사돌쇠 10-17 텔레그램).
         //  ★끊김 뒤 이어 쓴 요청이면 앞에 흘린 글에도 해설이 있을 수 있다 — 이어받은 글도 해설을 뺀 것(`carriedAnswer`)으로 잇는다.
         const answer = sseResult.answerText;
         const answerPart = carriedAnswer + (answer ?? continuationText);
-        finalText = (answer !== undefined || carriedSawCommentary) && answerPart.trim() !== "" ? answerPart : text;
-        toolCallsSinceText = 0; // 보고가 나왔다 — 이후 도구부터 다시 센다.
-        toolNamesSinceText = [];
+        const candidate = (answer !== undefined || carriedSawCommentary) && answerPart.trim() !== "" ? answerPart : text;
+        const iterItems = inputArray.slice(replayStart).filter((it) => it.type === "message" && it.role === "assistant");
+        if (hasVisibleReply(candidate)) {
+          shownThisIteration = true;
+          answerSlot = "final";
+          finalText = candidate;
+          finalTextItems = iterItems;
+          trailingTag = "";
+          trailingTagItems = [];
+          toolCallsSinceText = 0; // 보고가 나왔다 — 이후 도구부터 다시 센다.
+          toolNamesSinceText = [];
+        } else {
+          // ★태그만 낸 반복은 보고가 아니다 — 앞 보일 글(`finalText`)과 그 뒤 도구 카운터를 그대로 둔다(B1). 원문은 반환 때 붙인다.
+          answerSlot = "tag";
+          trailingTag = candidate;
+          trailingTagItems = iterItems;
+        }
       }
       if (responseId !== undefined) finalResponseId = responseId;
 
@@ -2737,7 +2766,7 @@ export const runOpenAiCodex = async (
       };
       if (finalFlushRequested) {
         logTurnEnd(text === "");
-        if (finalText === "" && text === "" && !postFlushRetryUsed) {
+        if (finalText === "" && !shownThisIteration && !postFlushRetryUsed) {
           postFlushRetryUsed = true;
           inputArray.push({
             type: "message",
@@ -2842,7 +2871,7 @@ export const runOpenAiCodex = async (
         // nudge 0 — 정상 종료로 취급(과도 재요청 회피).
         // 판정은 `_turn-completion.ts` 단일 규칙 — 왜 예고문이 정상 종료가 아닌지는 거기 주석.
         const closing = needsClosingReport({
-          text,
+          text: shownThisIteration ? text : "",
           finalText,
           toolCallsSinceText,
           toolNamesSinceText,
@@ -2853,6 +2882,8 @@ export const runOpenAiCodex = async (
         //  (needsClosingReport 첫 줄 `text !== ""` 인지, toolCallsSinceText 0 인지 구분 불가).
         //  tail 은 예고형("~하겠습니다")인지 보고형인지 사람이 판단할 최소 재료.
         logTurnEnd(closing);
+        // 보일 글 없이 선택지만 띄우고 끝났다 — 정상 종료(카드가 답이다). 추가 모델 호출도 빈 응답 처리도 없다.
+        if (!closing && finalText === "" && onlyTurnEndingTools(toolNamesSinceText)) choiceEnd = true;
         if (closing) {
           if (emptyBreakRetries < MAX_EMPTY_BREAK_RETRIES) {
             emptyBreakRetries += 1;
@@ -3029,7 +3060,13 @@ export const runOpenAiCodex = async (
       if (input.abortSignal?.aborted) throw input.abortSignal.reason;
       // 위에서 임시로 붙인 텍스트 한 항목만 정상 완료 출력으로 교체한다.
       // 중간 체크포인트 메시지는 지우지 않으며, 기존 이력 프리픽스도 그대로다.
-      if (replayOutput !== undefined) inputArray.splice(replayStart, continuationText !== "" ? 1 : 0, ...replayOutput);
+      if (replayOutput !== undefined) {
+        inputArray.splice(replayStart, continuationText !== "" ? 1 : 0, ...replayOutput);
+        // 임시 텍스트 항목이 교체됐다 — 최종 답 몫으로 잡아 둔 항목도 교체된 메시지로 다시 잡는다(도구 항목에서 뺄 대상).
+        const msgs = replayOutput.filter((it) => it.type === "message" && it.role === "assistant");
+        if (answerSlot === "final") finalTextItems = msgs;
+        else if (answerSlot === "tag") trailingTagItems = msgs;
+      }
       pressureAnchor = replyCanAnchor && replayOutput !== undefined
         ? committedPressureAnchor(replySnapshot, sseResult, replyReasoningIncluded, requestInput())
         : undefined;
@@ -3474,9 +3511,13 @@ export const runOpenAiCodex = async (
   // (tiguclaw 가 실행 안 함) "부작용 도구 미실행 + 빈 텍스트 = throw" 분기를 타면 안 되고,
   // "요약 텍스트 못 만듦" fallback 문구도 붙이면 안 된다(그건 정상 tool_calls 반환이지 실패가
   // 아니다). sessionId/usage 는 일반 경로와 동일 값을 채워 세션 연속성·토큰 관측을 보존.
+  // 반환할 답 원문 — 마지막 보일 글 + 그 뒤의 태그만 답 원문(코어가 제안을 뗀다). 보일 글이 없으면 태그 원문(없으면 "").
+  const answerText = finalText === "" ? trailingTag : trailingTag === "" ? finalText : `${finalText}\n\n${trailingTag}`;
+  // 최종 답을 이룬 메시지가 앞 반복에 있으면(B1) 그 항목은 비서 행이 가진다 — 도구 항목에서 뺀다(끝 이어 붙임 비교는 그대로).
+  const answerItems = trailingTag === "" ? undefined : new Set<ResponseInputItem>([...finalTextItems, ...trailingTagItems]);
   if (pendingExternalToolCalls.length > 0) {
     return {
-      text: finalText,
+      text: answerText,
       sessionId:
         finalResponseId !== undefined
           ? `codex-${finalResponseId}`
@@ -3487,7 +3528,7 @@ export const runOpenAiCodex = async (
       usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
       timing: summarizeTurnTiming(turnSpans, turnBounds()),
       externalToolCalls: pendingExternalToolCalls,
-      turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),
+      turnItems: collectTurnItems(inputArray.slice(turnStart), answerText, answerItems),
       sentUserText: promptWithMemory,
     };
   }
@@ -3523,7 +3564,7 @@ export const runOpenAiCodex = async (
   //  - 부작용 도구 1+ 실행됨: throw 시 claude 재실행이 memory/todo/spawn/schedule 등을
   //    중복 실행하므로 throw 금지. 요청은 처리됐으나 모델이 사용자용 요약 텍스트를 0 생성한
   //    상태 → 정직한 비어있지 않은 fallback 텍스트 반환(중복 회피).
-  if (finalText === "") {
+  if (finalText === "" && !choiceEnd) {
     // 2026-06-07 — 빈 응답 진단 캡처 (env gate 없이 자동 — 희귀 이벤트, 노이즈 0).
     //  가설 A(reasoning effort 가 텍스트 슬롯 잠식) 검증 + 다음 가설 진단에 사용.
     //  데몬 stderr 로 한 줄 — 사용자 텔레그램 노출 X.
@@ -3556,7 +3597,7 @@ export const runOpenAiCodex = async (
   }
 
   return {
-    text: finalText,
+    text: answerText,
     sessionId:
       finalResponseId !== undefined
         ? `codex-${finalResponseId}`
@@ -3569,7 +3610,8 @@ export const runOpenAiCodex = async (
     ...(input.reportOmittable === true && !reportMarked && fallbackQuestions.size === 0 && !hostComposedEnd && !finalFlushRequested ? { reportOmitted: true as const } : {}),
     usage: (logCacheCollapses(), withTurnTotals(finalUsage, turnTotals(), requestUsageEntries, attemptedRequests)),
     timing: summarizeTurnTiming(turnSpans, turnBounds()),
-    turnItems: collectTurnItems(inputArray.slice(turnStart), finalText),
+    turnItems: collectTurnItems(inputArray.slice(turnStart), answerText, answerItems),
     sentUserText: promptWithMemory,
+    ...(choiceEnd && finalText === "" ? { choiceEnd: true as const } : {}),
   };
 };

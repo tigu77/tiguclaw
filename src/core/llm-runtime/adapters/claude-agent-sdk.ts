@@ -92,6 +92,8 @@ import { createMemoryMcpServer } from "../../memory-mcp.js";
 import { resolveJsonlPath, retrieveContext } from "../../memory.js";
 import { type CodexTurn } from "../../../store/memory.js";
 import { loadClaudeReplayHistory } from "./_claude-replay-history.js";
+import { pickVisibleAnswer, type AnswerStep } from "./_turn-completion.js";
+import { hasVisibleReply } from "../../next-message-suggestion.js";
 import {
   createSkillInvokeMcpServer,
   discoverSkills,
@@ -385,6 +387,57 @@ export const settleAnswer = (settled: string | undefined, current: string, faile
   settled === undefined
     ? joinAnswers([current])
     : joinAnswers([settled, failed ? steerTurnFailedNote() : current.trim() === "" ? steerTurnEmptyNote() : current]);
+
+/** 최상위 assistant 프레임 하나 — 최종 답 선택(B1)의 재료. 글 조각(`assistantTextChunks`)과 같은 범위에서 같이 적재·초기화한다. */
+export interface ClaudeAnswerFrame {
+  readonly uuid?: string;
+  readonly msgId?: string;
+  readonly text: string;
+  readonly tools: readonly string[];
+}
+
+/**
+ * 프레임 하나를 적재한다 (2026-11-17, REPORT §5 «B1 의 단위·수명»). SDK 는 응답 하나를 같은 `message.id` 의 프레임 여러 개(블록 하나씩)로
+ *  보내고, `supersedes` 가 있으면 그 uuid 의 앞 프레임을 **대체**한다(거절 폴백) — 대체된 프레임은 후보에서 뺀다.
+ */
+export const noteClaudeAnswerFrame = (frames: ClaudeAnswerFrame[], msg: unknown): void => {
+  const m = msg as { uuid?: unknown; supersedes?: unknown; message?: { id?: unknown; content?: unknown } } | null;
+  if (Array.isArray(m?.supersedes) && m.supersedes.length > 0) {
+    const gone = new Set(m.supersedes.filter((u): u is string => typeof u === "string"));
+    for (let i = frames.length - 1; i >= 0; i -= 1) if (frames[i]!.uuid !== undefined && gone.has(frames[i]!.uuid!)) frames.splice(i, 1);
+  }
+  const blocks = Array.isArray(m?.message?.content) ? (m.message.content as Array<{ type?: unknown; text?: unknown; name?: unknown }>) : [];
+  const text = blocks.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text as string).join("");
+  const tools = blocks.filter((b) => b?.type === "tool_use").map((b) => normalizeToolName(String(b.name ?? "tool")));
+  if (text === "" && tools.length === 0) return;
+  frames.push({
+    ...(typeof m?.uuid === "string" ? { uuid: m.uuid } : {}),
+    ...(typeof m?.message?.id === "string" ? { msgId: m.message.id } : {}),
+    text,
+    tools,
+  });
+};
+
+/** 프레임 → 논리 메시지 순서 기록 — 같은 `message.id` 가 이어지면 한 메시지(글은 이어 붙이고 도구는 그 뒤). id 가 없으면 프레임 하나가 한 메시지. */
+export const claudeAnswerSteps = (frames: readonly ClaudeAnswerFrame[]): AnswerStep[] => {
+  const steps: AnswerStep[] = [];
+  let i = 0;
+  while (i < frames.length) {
+    const id = frames[i]!.msgId;
+    let j = i + 1;
+    while (id !== undefined && j < frames.length && frames[j]!.msgId === id) j += 1;
+    const group = frames.slice(i, j);
+    const text = group.map((f) => f.text).join("");
+    if (text !== "") steps.push({ text });
+    for (const f of group) for (const t of f.tools) steps.push({ tool: t });
+    i = j;
+  }
+  return steps;
+};
+
+/** 이번 SDK 턴의 답 — 고른 답(`current`)에 보일 글이 없으면 B1 으로 다시 고른다(`pickVisibleAnswer`). */
+export const claudeVisibleAnswer = (current: string, frames: readonly ClaudeAnswerFrame[]): { text: string; choiceEnd?: true } =>
+  pickVisibleAnswer(current, claudeAnswerSteps(frames), hasVisibleReply);
 
 /**
  * ★**이미 답이 있으면 뒤따르는 실패로 버리지 않는다** (2026-09-29 적대 재검토 F1, P3).
@@ -1396,6 +1449,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   };
   let settledAnswer: string | undefined;
   let chunkBase = 0;
+  /** 최종 답 선택 B1 의 프레임 기준점 — `chunkBase` 와 **같은 자리**에서 같이 옮긴다(이번 SDK 턴의 수명). */
+  let frameBase = 0;
   let deltaBase = 0;
   let steerTurnFailed = false;
 
@@ -1477,6 +1532,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   /** 이 턴에 SDK 가 «거절» 한도 이벤트를 줬으면 풀리는 시각(epoch ms) — 실패 오류에 실어 보낸다(`withRateLimitUntil`). */
   let rateLimitRejectedUntil: number | undefined;
   let assistantTextChunks: string[] = [];
+  /** 최상위 assistant 프레임(글·도구 이름·`message.id`·`uuid`) — 최종 답 선택 B1 재료(2026-11-17). 글 조각과 같은 조건으로 적재한다. */
+  let answerFrames: ClaudeAnswerFrame[] = [];
   let lastSessionId: string | undefined;
   /** 이 턴의 마지막 **최상위** assistant 메시지 uuid — 메시지 지점 가지치기의 Claude 체크포인트(하위 에이전트·사이드체인 제외, 2026-10-15 설계 v2). */
   let lastAssistantUuid: string | undefined;
@@ -1719,14 +1776,20 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
     if (turnResultSeen && framesClaimSteer(msg, steerUuids)) {
       // 줄 선 우리 입력의 턴 — 앞 답을 확정해 두고 이 턴을 이어 받는다(이 프레임부터 정상 처리).
       if (steerTurnFailed) turnHadFailure = true; // 실패 안내가 답에 합쳐진다 — 체크포인트 후보 없음
+      // 앞 턴도 마감과 **같은 선택**(B1) — 마지막 마감에만 두면 앞 턴의 «설명 → 선택지 → 태그만» 설명이 그대로 유실된다(REPORT §5).
+      const settledTurn = claudeVisibleAnswer(
+        resultText !== undefined && resultText !== "" ? resultText : assistantTextChunks.slice(chunkBase).join(""),
+        answerFrames.slice(frameBase),
+      ).text;
       settledAnswer = settleAnswer(
         settledAnswer,
-        resultText !== undefined && resultText !== "" ? resultText : assistantTextChunks.slice(chunkBase).join(""),
+        settledTurn,
         steerTurnFailed, // 가운데 턴이 실패했으면 그 자리에 안내(합성 API 오류 조각은 싣지 않는다).
       );
       steerTurnFailed = false;
       resultText = undefined;
       chunkBase = assistantTextChunks.length;
+      frameBase = answerFrames.length;
       deltaBase = ownTextDeltas;
       turnResultSeen = false;
       postResultMsgs = 0;
@@ -1999,6 +2062,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         // → is_error 면 result 본문(진짜 거부 상세)을 담아 throw → facade
         // isModelRejected 가 분류·폴백. 어댑터별 분기 아님(claude 의 단일 진실 표면).
         if (msg.is_error === true) {
+          frameBase = answerFrames.length; // 실패한 턴의 프레임도 답 후보가 아니다(아래 조각 기준점과 같은 뜻 — 던지는 갈래엔 영향 없음).
           // ★이어 받던 턴의 실패가 **앞 답까지** 버리게 두지 않는다(07-28 «성공 뒤 에러 result» 와 같은 규칙).
           if (settledAnswer !== undefined) {
             steerTurnFailed = true;
@@ -2072,6 +2136,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       {
         const m = msg as { uuid?: unknown; parent_tool_use_id?: unknown; isSidechain?: unknown };
         if (typeof m.uuid === "string" && (m.parent_tool_use_id === null || m.parent_tool_use_id === undefined) && m.isSidechain !== true) lastAssistantUuid = m.uuid;
+        // 글 조각(`assistantTextChunks`)과 같은 조건 — 서브 내부(parent_tool_use_id 있음) 메시지는 부모 답 후보가 아니다.
+        if (typeof m.parent_tool_use_id !== "string") noteClaudeAnswerFrame(answerFrames, msg);
       }
       // ★앱 도구 호출 캡처 (externalTools, 2026-08-09) — 이 assistant 메시지에 든 tool_use
       //  블록을 **통째로** 읽는다. 모델은 한 메시지에 여러 도구를 병렬로 부르므로, MCP
@@ -2443,6 +2509,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         if (settledAnswer !== undefined && !turnResultSeen) {
           steerTurnFailed = true; // 이어 받던 턴 도중에 끊겼다 — 그 턴의 조각은 싣지 않고 안내로.
           chunkBase = assistantTextChunks.length;
+          frameBase = answerFrames.length;
         }
         console.warn(
           `[claude-turn-boundary] ${input.threadKey} 답을 확정한 뒤 실패 — 받은 답은 유지합니다: ` +
@@ -2477,6 +2544,8 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       resumeRetried = true;
       resultText = undefined;
       assistantTextChunks = [];
+      answerFrames = [];
+      frameBase = 0;
       lastAssistantUuid = undefined; // 버린 시도의 후보가 새 시도로 새지 않게
       turnHadFailure = false;
       lastSessionId = undefined;
@@ -2647,14 +2716,21 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   const resultBody = resultText !== undefined && resultText !== "" ? resultText : undefined;
   const answerFromResult = resultBody !== undefined;
   const currentText = resultBody ?? chunkText;
+  // ★고른 답에 보일 글이 없으면(제안 태그뿐 등) 이번 턴의 보일 글 있는 마지막 메시지로 다시 고른다 — B1(REPORT §5).
+  //  보일 글이 있으면 종전 그대로다. 실패한 이어 받기 턴은 안내로 대신하므로 고르지 않는다.
+  const picked = steerTurnFailed ? { text: currentText } : claudeVisibleAnswer(currentText, answerFrames.slice(frameBase));
   // 이어 받은 턴이 있으면 앞 답 + 이 턴의 답(실패했으면 안내) — 없으면 종전 그대로.
   const text =
     settledAnswer === undefined
-      ? currentText
-      : settleAnswer(settledAnswer, currentText, steerTurnFailed);
+      ? picked.text
+      : settleAnswer(settledAnswer, picked.text, steerTurnFailed);
+  // 정상 선택지 종료 — 이 턴 전체에 보일 글이 없고 선택지만 돌았다(앞 답을 이어 받은 턴이면 답이 이미 있다).
+  const choiceEnd = settledAnswer === undefined && picked.choiceEnd === true;
   console.log(
     `[claude-complete] ${input.threadKey} FINALIZE (loop 이후 마감 진입) textLen=${text.length} ` +
-      `succeeded=${succeeded} (result=${resultText === undefined ? "없음" : String(resultText.length) + "자"} chunks=${chunkText.length}자)`,
+      `succeeded=${succeeded} (result=${resultText === undefined ? "없음" : String(resultText.length) + "자"} chunks=${chunkText.length}자)` +
+      // 보일 글이 없어 B1 으로 다시 골랐나 · 선택지만 띄운 정상 종료인가 — 로그만으로 «왜 이 답인가» 를 가르게(원격 진단).
+      `${picked.text !== currentText ? ` picked=앞메시지(${picked.text.length}자)` : ""}${choiceEnd ? " choiceEnd" : ""}`,
   );
   // ★함수콜 턴은 **텍스트가 없어도 성공**이다 (externalTools, 2026-08-09). 모델이 도구만
   //  부르고 말을 안 하는 건 정상이고, 그게 caller 가 원한 결과다. 이 한 줄이 없으면 오늘
@@ -2708,6 +2784,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
       jsonlPath: jsonl,
       ...(lastAssistantUuid !== undefined && !turnHadFailure && !steerTurnFailed ? { lastMessageUuid: lastAssistantUuid } : {}),
       replyToTrigger,
+      ...(choiceEnd && succeeded && !turnHadFailure ? { choiceEnd: true as const } : {}),
       // 생략 증명(notify-owner-report-contract §3-3) — 보고 기본 생략 턴 · 표시 없음 · **깨끗한 종료**(성공 결과를 받았고 흡수한 실패 없음).
       //  성공 없이 글만 있는 반환·흡수된 실패(`turnHadFailure`·`keepAnswerOnThrow`)·이어 받던 턴 실패·성공 result 가 덮지 않은 글 조각
       //  (`answerFromResult` — 빈 성공 result 뒤에 온 답)은 여기서 빠져 평소대로 전달된다. 글이 없는 깨끗한 종료는 증명된다.

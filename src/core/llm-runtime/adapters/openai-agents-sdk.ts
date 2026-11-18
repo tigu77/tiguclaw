@@ -113,7 +113,8 @@ import { createRequestTimeline, openAiStreamMark } from "./_request-timing.js";
 import { buildActivityDiffFromJson, buildActivityFileFromJson } from "./_activity-diff.js";
 import { buildActivityOutput } from "./_activity-output.js";
 import { createDeltaStream } from "./_delta-stream.js";
-import { TURN_MAX_MODEL_CALLS } from "./_turn-completion.js";
+import { pickVisibleAnswer, TURN_MAX_MODEL_CALLS, type AnswerStep } from "./_turn-completion.js";
+import { hasVisibleReply } from "../../next-message-suggestion.js";
 import { createSteeringLedger } from "./_steering-ledger.js";
 import { REGION_A_SYSTEM_PROMPT as SYSTEM_PROMPT } from "./_shared-sysprompt.js";
 import {
@@ -483,6 +484,23 @@ export const openAiTurnToolItem = (ev: unknown): ResponseInputItem | undefined =
   }
   if (e.name === "tool_output") return { type: "function_call_output", call_id: callId, output: capToolOutputForEntry(openAiToolOutputText(raw?.output)) };
   return undefined;
+};
+
+/**
+ * 스트림 이벤트 → 최종 답 선택(B1)의 순서 기록 한 칸(2026-11-17) — 모델 응답 메시지(`message_output_created`)는 그 글, 도구 호출은 그 이름.
+ *  순수 함수 — 검사가 실행으로 본다(`openAiTurnToolItem` 과 같은 이유).
+ */
+export const openAiAnswerStep = (ev: unknown): AnswerStep | undefined => {
+  const e = ev as { type?: unknown; name?: unknown; item?: { rawItem?: unknown } } | null;
+  if (e?.type !== "run_item_stream_event") return undefined;
+  const raw = e.item?.rawItem as { type?: unknown; role?: unknown; name?: unknown; content?: unknown } | undefined;
+  if (e.name === "tool_called") return raw?.type === "function_call" && typeof raw.name === "string" ? { tool: raw.name } : undefined;
+  if (e.name !== "message_output_created" || raw?.role !== "assistant" || !Array.isArray(raw.content)) return undefined;
+  const text = (raw.content as Array<{ type?: unknown; text?: unknown }>)
+    .filter((c) => c?.type === "output_text" && typeof c.text === "string")
+    .map((c) => c.text as string)
+    .join("");
+  return { text };
 };
 
 /** 반환에 싣는 이 턴의 기록 — Codex 와 같은 `collectTurnItems`(짝 맞추기·비밀값 가림). 없으면 필드를 안 싣는다. */
@@ -1350,7 +1368,8 @@ export const runOpenAi = async (
             ],
           },
         ];
-  const historyItems: AgentInputItem[] = priorTurns.map((t) =>
+  // 본문이 빈 비서 행(선택지만 띄운 턴의 도구 항목 그릇, `appendApiTurn`)은 이 어댑터가 글로만 되살리므로 낼 것이 없다.
+  const historyItems: AgentInputItem[] = priorTurns.filter((t) => !(t.role === "assistant" && t.content === "")).map((t) =>
     t.role === "assistant"
       ? {
           role: "assistant",
@@ -1396,6 +1415,8 @@ export const runOpenAi = async (
   //  `turn_items` 에 묶는다(2026-09-30). 종전엔 OpenAI 만 안 남겨, 이력이 요약되면 도구 결과를 되찾을 길이 없었다
   //  (`read_past_tool_result` 가 언제나 빈 결과). 결과는 Codex 와 같은 진입 상한을 적용한 모양으로 둔다.
   const turnToolItems: ResponseInputItem[] = [];
+  /** 이 턴의 응답 메시지·도구 호출 순서 — 마지막 응답에 보일 글이 없을 때 최종 답을 다시 고르는 재료(B1, `pickVisibleAnswer`). */
+  const answerSteps: AnswerStep[] = [];
 
   // externalTools 스트리밍(llm.tool_call_delta, §2.4) — SDK 는 `tool_called` 를 도구콜이
   // *완전히 조립된 뒤* 1회만 노출한다(codex 의 문자 단위 진짜 델타와 달리 이 어댑터는 "단일
@@ -1546,6 +1567,8 @@ export const runOpenAi = async (
         // 이 턴의 도구 기록 — 이벤트 → 저장 항목 변환은 순수 함수 하나(`openAiTurnToolItem`)가 한다.
         const toolRec = openAiTurnToolItem(ev);
         if (toolRec !== undefined) turnToolItems.push(toolRec);
+        const step = openAiAnswerStep(ev);
+        if (step !== undefined) answerSteps.push(step);
         // 안전 narrowing — SDK union 형상이 바뀌어도 turn 안 깨지게 방어적 접근.
         if (ev.type === "raw_model_stream_event") {
           const data = (ev as { data?: unknown }).data as
@@ -1808,6 +1831,7 @@ export const runOpenAi = async (
       //  steering 누적기는 반대다 — 그건 사용자 발화라 재시도에도 살아야 한다(1197행 주석).
       toolMediaWindow.reset();
       turnToolItems.length = 0; // 도구 없이 다시 묻는다 — 지난 시도의 도구 기록은 이 턴의 것이 아니다.
+      answerSteps.length = 0; // 같은 이유 — 지난 시도의 메시지·도구는 이번 답의 후보가 아니다.
       // 이 시도엔 `report_to_user`·`prompt_options` 가 없다 — 모델이 보고·질문을 낼 수 없으니 생략을 증명하지 않는다(notify-owner-report-contract §3-3).
       toolsDropped = true;
       result = await runOnce(noToolsAgent, false);
@@ -1859,12 +1883,15 @@ export const runOpenAi = async (
   // ★undefined 누출 차단 (2026-07-28) — finalOutput 이 undefined 면 JSON.stringify 는
   //  문자열이 아니라 **undefined 값**을 돌려준다. 타입은 string 이라 컴파일러도 못 잡고,
   //  그 값이 facade·router·채널까지 그대로 흘러간다. 빈 문자열로 닫는다(다른 어댑터와 동형).
-  const text =
+  const lastOutput =
     typeof result.finalOutput === "string"
       ? result.finalOutput
       : result.finalOutput === undefined || result.finalOutput === null
         ? ""
         : JSON.stringify(result.finalOutput);
+  // 마지막 응답에 보일 글이 없으면(제안 태그뿐 등) 보일 글 있는 마지막 응답으로 다시 고른다 — Claude 마감과 같은 함수(B1).
+  const picked = pickVisibleAnswer(lastOutput, answerSteps, hasVisibleReply);
+  const text = picked.text;
 
   // V5 — 자체 sessionId 생성. session resume(previous_response_id)·메모리 통합은 후속.
   // replyToTrigger — reply-intent 도구 호출 시 set (codex/claude 와 동일 출력 필드).
@@ -1879,5 +1906,6 @@ export const runOpenAi = async (
     usage,
     ...openAiTurnItemsField(turnToolItems, text),
     ...(lastTimeline !== undefined ? { timing: lastTimeline.summary() } : {}),
+    ...(picked.choiceEnd === true ? { choiceEnd: true as const } : {}),
   };
 };

@@ -4214,7 +4214,17 @@ const routeCompletion = async (
     // ★결과물도 같은 좌표로 보낼 수 있게 (2026-09-30) — 종전엔 이 자리가 비어 `send_file` 이 매번 «자동 보고 턴이라
     //  보낼 통로가 없습니다» 로 막혔다(회사돌쇠 09-29 5회). 채널이 파일 발송을 못 하면(CLI) 비워 두고 종전 동작.
     ...(completionSendAttachment !== undefined ? { sendAttachment: completionSendAttachment } : {}),
-    ...(completionPresentOptions !== undefined ? { presentOptions: completionPresentOptions } : {}),
+    // ★선택지 카드가 **실제로 떴으면** 사용자는 무언가를 받았다 — 전달로 센다(2026-11-17). 본문 없이 선택지만 띄우고 정상 종료한 턴은
+    //  채널 답을 보내지 않으므로(`deliverTurnReply` 빈 본문 생략) 이걸 안 세면 안전망이 raw 통지를 하나 더 보낸다. 렌더 실패는 세지 않는다.
+    ...(completionPresentOptions !== undefined
+      ? {
+          presentOptions: async (...args: Parameters<typeof completionPresentOptions>) => {
+            const r = await completionPresentOptions(...args);
+            if (r.ok) delivered = true;
+            return r;
+          },
+        }
+      : {}),
     // ★이 답이 실제로 나가는 좌표 — egress fan-out 이 같은 곳에 또 보내지 않게.
     replyTarget: { channel: dest.channel, target: dest.target ?? null },
     // ★이 턴에서 띄우는 매니저·서브의 보고 좌표 · 턴 밖 통지(쿨다운) 좌표 — `turnReachOf` 주석.

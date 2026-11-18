@@ -2102,7 +2102,15 @@ const messageText = (item: ResponseInputItem): string => {
  *  - 작업 중 사용자 지시(표시된 것만 — 하네스 독촉·도구 그림 묶음은 사용자 발화가 아니다) · 비서 중간 발화.
  *  - 추론(암호문)·이미지는 영속화하지 않는다(설계 결정). 끝의 비서 발화가 최종 답과 같으면 뺀다(답은 transcripts 행이 가진다).
  */
-export const collectTurnItems = (turnSlice: readonly ResponseInputItem[], finalText: string): CodexTurnItem[] => {
+export const collectTurnItems = (
+  turnSlice: readonly ResponseInputItem[],
+  finalText: string,
+  /**
+   * 최종 답을 이룬 메시지 항목(2026-11-17 B1) — 답이 «앞 반복의 보일 글 + 뒤 반복의 태그» 로 골라졌으면 그 메시지들은 끝에 이어 있지 않아
+   *  아래 끝 비교로 안 빠진다. 비서 행이 답을 가지므로 여기 든 항목 중 **답 글에 들어 있는** 메시지는 뺀다(같은 반복의 해설 메시지는 남는다).
+   */
+  answerItems?: ReadonlySet<ResponseInputItem>,
+): CodexTurnItem[] => {
   const calls = new Set<string>(), outs = new Set<string>();
   for (const it of turnSlice) {
     if (it.type === "function_call") calls.add(it.call_id);
@@ -2121,6 +2129,7 @@ export const collectTurnItems = (turnSlice: readonly ResponseInputItem[], finalT
       if (it.role === "user" && !steeringItems.has(it)) continue;
       if (it.role !== "user" && it.role !== "assistant") continue;
       const text = messageText(it);
+      if (answerItems?.has(it) === true && text.trim() !== "" && finalText.includes(text.trim())) continue;
       if (text.trim() !== "") out.push({ type: "message", role: it.role, text });
     }
   }
@@ -2174,6 +2183,8 @@ export const buildCodexInputArray = (
         : t.sent ?? (stripInternalRuntimeScaffolding(t.content).trim() || t.content);
     // 턴 간 도구 기억 — «사용자 → 도구 항목 → 비서 답» 순서로 되살린다.
     if (t.role === "assistant" && t.items !== undefined) for (const it of t.items) out.push(historyInputItem(it));
+    // 본문이 빈 비서 행 = 선택지만 띄우고 끝난 턴의 도구 항목 그릇(`appendApiTurn`) — 항목만 되살리고 빈 글 메시지는 내지 않는다.
+    if (t.role === "assistant" && text === "") continue;
     out.push({
       type: "message",
       role: t.role,

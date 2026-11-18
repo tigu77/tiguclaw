@@ -66,8 +66,10 @@
           div.appendChild(q);
         }
         if (payload.note) {
+          // 설명은 채팅 답과 같은 안전 렌더(markdown.js — 태그·속성 allowlist·안전 링크)로 — 질문·보기는 평문 그대로 (2026-11-18).
           const n = document.createElement("div");
-          n.className = "prompt-note"; n.textContent = String(payload.note);
+          n.className = "prompt-note";
+          setChatBody(n, String(payload.note), true);
           div.appendChild(n);
         }
         const btnWrap = document.createElement("div");

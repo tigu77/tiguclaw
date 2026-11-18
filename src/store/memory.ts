@@ -804,7 +804,12 @@ export const appendApiTurn = (input: {
       const sent: CodexTurnItem = { type: "message", role: "user", text: input.userSent };
       db.prepare(`INSERT INTO turn_items (transcript_id, seq, item) VALUES (?, 0, ?)`).run(userId, JSON.stringify(sent));
     }
-    const assistantId = appendTranscript({ claudeSessionId: input.claudeSessionId, role: "assistant", content: input.assistantContent });
+    // ★본문이 빈 비서 차례(선택지만 띄우고 끝난 턴, 2026-11-17)는 **도구 항목이 있을 때만** 그 그릇으로 행을 둔다 — Claude 기록의
+    //  «글 없는 비서 차례 + 도구 사용» 과 같은 모양. 항목도 없으면 만들지 않는다(빈 행 강제 생성 아님). 이력 조립은 빈 글 메시지를 내지 않는다.
+    const assistantId = input.assistantContent === "" && input.items !== undefined && input.items.length > 0
+      ? Number(db.prepare(`INSERT INTO transcripts (claude_session_id, ts, role, content, content_indexed) VALUES (?, ?, 'assistant', '', NULL)`)
+        .run(input.claudeSessionId, Date.now()).lastInsertRowid)
+      : appendTranscript({ claudeSessionId: input.claudeSessionId, role: "assistant", content: input.assistantContent });
     if (assistantId !== undefined && input.items !== undefined && input.items.length > 0) {
       const ins = db.prepare(`INSERT INTO turn_items (transcript_id, seq, item) VALUES (?, ?, ?)`);
       input.items.forEach((it, i) => ins.run(assistantId, i, JSON.stringify(it)));
@@ -1119,6 +1124,7 @@ export const loadThreadHistory = (
       `SELECT role, content, ts, id, claude_session_id FROM transcripts
        WHERE ${scope.sql}
          AND role IN ('user', 'assistant')
+         AND content <> ''
          AND ts > ?
        ORDER BY ts DESC, id DESC
        LIMIT ?`,

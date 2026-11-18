@@ -398,6 +398,12 @@ export interface RegionASdkOutput {
    */
   reportOmitted?: true;
   /**
+   * **정상 선택지 종료**(2026-11-17) — 이 턴은 사용자에게 보일 글 없이 설계상 턴을 끝내는 도구(`TURN_ENDING_TOOLS` — 선택지)만 돌고
+   *  정상으로 끝났다. 어댑터가 최종 답 선택과 **같은 판정**(`pickVisibleAnswer`·`needsClosingReport`)으로만 싣는다. 퍼사드는 이 표식으로
+   *  본문이 비어도 대화 기록·세션 연결을 저장한다(제안 태그 유무와 무관 — `persistOutput`). 채널 송신 여부와는 독립이다.
+   */
+  choiceEnd?: true;
+  /**
    * 인라인 다음-메시지 제안 (2026-08-25) — 모델이 답변 꼬리에 `<next-message>` 로 붙인 한 줄.
    * ★`text` 에서는 **이미 제거돼 있다**(`callAdapter` 반환 직후, persist·publish 보다 앞).
    *  어댑터는 이 필드를 모른다 — 코어가 한 곳에서 뜯는다(LLM-agnostic).

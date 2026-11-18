@@ -85,8 +85,8 @@ export const check: RegressionCheck = {
       /chunks: assistantTextChunks\.length - chunkBase,\s*\n\s*deltas: ownTextDeltas - deltaBase,/,
       // 이어 받던 턴의 에러 result 가 **앞 답까지** 버리지 않는다(07-28 규칙).
       /if \(msg\.is_error === true\) \{[\s\S]{0,300}if \(settledAnswer !== undefined\) \{[\s\S]{0,400}continue;\s*\n\s*\}\s*\n\s*throw (?:withRateLimitUntil\()?new Error/, // 한도 신호를 싣는 감쌈(2026-10-10)은 같은 throw 다
-      // 마감은 앞 답 + 이 턴(실패면 안내).
-      /: settleAnswer\(settledAnswer, currentText, steerTurnFailed\);/,
+      // 마감은 앞 답 + 이 턴(실패면 안내). 이 턴의 답은 B1 선택(보일 글이 없을 때만 앞 메시지로 다시 고름, 2026-11-17)을 거친 값이다.
+      /: settleAnswer\(settledAnswer, picked\.text, steerTurnFailed\);/,
       // ★던진 실패(에러 result 뒤 CLI 종료 코드 1 → SDK throw)도 확정된 답을 버리지 않는다 — **resume 재시도보다 앞**에서.
       /keepAnswerOnThrow\(\{\s*settled: settledAnswer !== undefined,\s*firstTurnDone: turnResultSeen && succeeded,\s*cancelled,\s*\}\)[\s\S]{0,600}break;\s*\}\s*\}\s*(?:try \{\s*console\.log\(`\[claude-turn-fail\][^`]*`\);\s*\} catch \{\s*\}\s*)?if \(\s*!resumeRetried &&/,
       // 가운데 턴이 실패하면 그 턴 조각을 버리고 다음 이어 받기에서 그 자리에 안내.

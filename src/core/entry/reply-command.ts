@@ -106,6 +106,15 @@ export const deliverTurnReply = async (t: {
   suggest: () => void;
 }): Promise<void> => {
   const { msg, out } = t;
+  // ★**보낼 본문이 없으면 채널 답·기록·사본을 내지 않는다** (2026-11-17, `docs/decisions/2026-11-17-empty-reply-after-suggestion/REPORT.md` §6-4).
+  //  판정은 **실제로 나갈 글**(`replyText` — Stop 훅 덧붙임·내부 표식 정리 뒤)이다. `out.text` 로 보면 훅 글만 있는 답을 잘못 막는다.
+  //  선택지만 띄우고 제안 태그만 남긴 턴이 빈 말풍선·라벨만 있는 텔레그램 사본으로 나가던 자리다. 첨부는 턴 도중 별도 경로로 이미 나갔다.
+  //  제안은 그대로 낸다(선택지 카드·턴 종료·사용량·대기 해제는 이 함수 밖 — `turn_done`). 실패·취소·보고 생략은 여기 오지 않는다.
+  if (t.replyText.trim() === "") {
+    console.log(`[reply] ${msg.threadKey} 보낼 본문 없음 — 채널 답·기록·사본 생략(제안은 유지) channel=${msg.channel} replyText=${t.replyText.length}자 outText=${out.text.length}자`);
+    t.suggest();
+    return;
+  }
   // 인입 채널 응답 — 반환 = 실제로 보낸 채널 메시지 id(있는 채널만) — 송신 이벤트에 실어 대화 기록 행에 묶는다(답글 원문 정확 조회, 2026-10-19).
   const sentRef = await msg.reply(t.replyText, out.replyToTrigger === true ? { replyToTrigger: true } : undefined);
   // 반환 = 이 송신 이벤트의 좌표 — egress 사본이 이 원본 행을 짚는다(2026-10-25).

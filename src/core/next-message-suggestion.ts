@@ -16,6 +16,7 @@
  *  겪었다(경과를 아무도 안 재고 있었다). 여기선 처음부터 토큰·소요를 로그와 이벤트에 싣는다.
  */
 import { isDerivedThread } from "./threadkey.js";
+import { stripCitationMarkers } from "./citation-markers.js";
 import { getEventBus } from "./eventbus.js";
 import { loadSettingsLayers } from "./settings.js";
 
@@ -204,7 +205,9 @@ const NEXT_TAG_RE = /<\s*next[-_ ]message\s*[^>]*>([\s\S]*?)<\s*\/\s*next[-_ ]me
  *  화면·채널로 나가는 글은 여전히 뗀 것이다 — 기록만 같은 모양으로 맞춘다.
  */
 export const withInlineSuggestion = (text: string, suggestion: string | undefined): string =>
-  suggestion === undefined || suggestion === "" ? text : `${text}\n\n${NEXT_TAG_OPEN}${suggestion}${NEXT_TAG_CLOSE}`;
+  suggestion === undefined || suggestion === ""
+    ? text
+    : `${text === "" ? "" : `${text}\n\n`}${NEXT_TAG_OPEN}${suggestion}${NEXT_TAG_CLOSE}`;
 
 export const inlineSuggestionRule = (): string =>
   [
@@ -274,8 +277,20 @@ export const extractInlineSuggestion = (
 export const applyInlineSuggestion = <T extends { text?: string; nextSuggestion?: string }>(
   output: T,
 ): T => {
-  const picked = extractInlineSuggestion(output.text ?? "");
+  const picked = visibleReply(output.text ?? "");
   output.text = picked.text;
   if (picked.suggestion !== null) output.nextSuggestion = picked.suggestion;
   return output;
 };
+
+/**
+ * **사용자에게 보일 글** — 모델 원문에서 인용 표식(`citation-markers.ts`)을 걷고 제안 태그를 떼어 낸 나머지 (2026-11-17).
+ * ★이 정제의 소유자는 여기 하나다. 런타임 합류점(`applyInlineSuggestion`)과 어댑터의 «보일 글이 있나» 판정(최종 답 선택·
+ *  Codex 마무리 판정)이 같은 함수를 써야 «태그만 남은 글» 을 두 자리가 다르게 보지 않는다
+ *  (`docs/decisions/2026-11-17-empty-reply-after-suggestion/REPORT.md` §6-1).
+ */
+export const visibleReply = (raw: string): { text: string; suggestion: string | null } =>
+  extractInlineSuggestion(stripCitationMarkers(typeof raw === "string" ? raw : ""));
+
+/** 보일 글이 있나 — 공백뿐이면 없다. */
+export const hasVisibleReply = (raw: string): boolean => visibleReply(raw).text.trim() !== "";

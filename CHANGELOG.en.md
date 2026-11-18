@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.85.0] - 2026-11-18
+
+### Added
+- `list_schedules` returns a single schedule when given an `id`, so you can check one schedule's saved instructions even when the list is long. Listing without an `id` works as before.
+- Choice-card explanations (notes) on the dashboard and Telegram now show basic Markdown formatting such as bold, lists, code, and links. The question and option buttons stay plain text.
+
+### Changed
+- When presenting choices, the assistant is now instructed to put the explanation, draft, or impact needed to choose or approve into the card's question and note. The guidance also tells it to end the turn without a closing message that repeats the card when it is waiting for an answer, and not to treat a failed card as delivered.
+- On Telegram, when a choice explanation doesn't fit in one message, it is sent in parts followed by a final message with the question and buttons. If any part of the explanation fails to send, or a line is too long to split, the buttons are not sent and the card is reported as failed.
+- Refined the assistant's guidelines and built-in skills. For computer use, the assistant is told not to confirm again right before running an action such as sending or deleting that you approved down to the target and content, and to check only what differs on screen from what you approved. `search_conversations` is described as the way to find this instance's past conversations, and diagnosing a problem or looking into another instance at your request is to be done read-only within the approved scope.
+- When results come back from a manager or subagent, the assistant also receives the rule that an unconfirmed cause does not by itself close the work and that other findings don't stand in for the answer to the original question. It is told to keep checking only when a check that could change the conclusion remains within its permissions and scope, and otherwise to report what it confirmed and what remains uncertain.
+- The daemon log now records when Telegram polling starts failing and recovers, slow poll responses, and delayed message delivery. These diagnostic lines don't include message content or IDs. When a slow daemon shutdown is forced to exit, the log also records the last shutdown stage and the elapsed time.
+
+### Removed
+- The bundled `harness` skill (for building sub-agent teams and orchestration) and the related guidance in the assistant's base guidelines have been removed. Manager and subagent delegation and team setup still work, and any skill of the same name you keep in your home or a project stays in place.
+
+### Fixed
+- A reply that only presented choices was sent as an empty message.
+- When the assistant wrote an explanation, presented choices, and ended without further text, the explanation was missing from the conversation history and from copies sent to other channels.
+- With Codex and OpenAI connections, a turn that only presented choices was not saved to the conversation history, so its question was missing from the next request.
+- Codex treated a turn that ended normally after presenting choices as an empty response and asked for another reply.
+- A self-maintenance backup could start after daemon shutdown had begun, delaying the shutdown.
+
 ## [0.84.0] - 2026-11-15
 
 ### Added
@@ -1322,7 +1345,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.85.0...HEAD
+[0.85.0]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...v0.84.0
 [0.83.0]: https://github.com/tigu77/tiguclaw/compare/v0.82.0...v0.83.0
 [0.82.0]: https://github.com/tigu77/tiguclaw/compare/v0.81.0...v0.82.0

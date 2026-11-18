@@ -883,7 +883,7 @@
       .ev.activity { border-left-color:var(--good); background:rgb(var(--good-rgb) / .08); }
       .ev.prompt-options { border-left-color:var(--accent-2); background:rgb(var(--accent-2-rgb) / .08); }
       .ev.prompt-options .type { color:var(--accent-2); }
-      .prompt-note { margin-top:5px; color:var(--text-mute); font-size:0.6875rem; }
+      .prompt-note { margin-top:5px; color:var(--text-mute); font-size:0.8125rem; }
       .prompt-buttons { display:flex; flex-wrap:wrap; gap:7px; margin-top:9px; }
       .prompt-option-btn { background:var(--card); color:var(--text); border:1px solid var(--border-strong); border-radius:11px; padding:8px 13px; font-size:0.75rem; font-weight:750; cursor:pointer; transition:background .12s, border-color .12s, transform .12s; }
       .prompt-option-btn:hover:not(:disabled) { background:var(--card-hover); border-color:var(--accent-2); transform:translateY(-1px); }

@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `list_schedules` returns a single schedule when given an `id`, so you can check one schedule's saved instructions even when the list is long. Listing without an `id` works as before.
-- Choice-card explanations (notes) on the dashboard and Telegram now show basic Markdown formatting such as bold, lists, code, and links. The question and option buttons stay plain text.
+- Choice-card explanations (notes) on the dashboard and Telegram now show basic Markdown formatting such as bold, lists, code, and links. The question and option buttons stay plain text. On the dashboard, notes now use the same text size as the question, so longer explanations are easier to read.
 
 ### Changed
 - When presenting choices, the assistant is now instructed to put the explanation, draft, or impact needed to choose or approve into the card's question and note. The guidance also tells it to end the turn without a closing message that repeats the card when it is waiting for an answer, and not to treat a failed card as delivered.

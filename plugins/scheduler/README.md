@@ -39,7 +39,7 @@ list_schedules({ only_enabled: true })
 → { ok: true, total: 42, returned: 18, items: [...], next_after_id: 31 }
 // 요약 목록 한 페이지 — 행마다 prompt 원문 대신 prompt_chars·prompt_preview, next_run ISO 포함.
 // 응답이 한 번에 읽는 크기 안에 들도록 나눈다. 이어 읽기: list_schedules({ only_enabled: true, after_id: 31 })
-// → 끝 페이지는 complete: true. 읽는 내내 있던 예약은 정확히 한 번 나온다(도중 변경은 total 로 알 수 있다).
+// → 끝 페이지는 complete: true. 읽는 내내 있던 예약은 정확히 한 번 나온다. total 로는 도중 개수 변화만 알 수 있고, 개수가 같은 변경(내용 수정, 같은 수의 추가·삭제)은 드러나지 않는다.
 
 list_schedules({ id: 7 })
 → { ok: true, items: [{ ..., prompt: "..." }] }  // 한 건 상세 — 저장된 prompt 원문 포함. 없는 id 면 not_found

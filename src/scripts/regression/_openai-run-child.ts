@@ -55,6 +55,12 @@ const main = async (): Promise<void> => {
       yield { type: "output_text_delta", delta: "끝" };
       yield { type: "response_done", response: { id: "r", usage, output: [message("끝")] } };
     },
+    "wait-notice-tg-dash": async function* () {
+      yield { type: "response_done", response: { id: "r", usage, output: [message("끝")] } };
+    },
+    "wait-notice-dash-tg": async function* () {
+      yield { type: "response_done", response: { id: "r", usage, output: [message("끝")] } };
+    },
     "abort-before-output": async function* (req: Req) {
       turnAc.abort(new UserCancelledError());
       if (req.signal?.aborted) throw abortError();
@@ -163,6 +169,38 @@ const main = async (): Promise<void> => {
     const afterSecond = getSession("cli" as never, threadKey)?.lastInputTokens ?? null;
     const td = done[1] ?? {};
     process.stdout.write(JSON.stringify({ afterFirst, afterSecond, td2: { inputTokens: td.inputTokens ?? null, inputTokensTotal: td.inputTokensTotal ?? null, iterations: td.iterations ?? null }, calls }) + "\n");
+    process.exit(0);
+  }
+  if (scenario.startsWith("wait-notice-")) {
+    // ★요약 대기 안내의 받는 곳 — 실제 OpenAI 어댑터가 **이 사람 턴의 좌표**를 드라이버에 넘기나(2026-11-19 GPT delta R1 T1).
+    //  앞선 요약 잠금을 2.2초 쥐어(문턱 1.5초) 이 요청이 기다리게 한다. 세션 메타는 직전 사람 인입 그대로(라우터는 턴 뒤 갱신).
+    const tk = `dashboard:openai-${scenario}`;
+    const toDash = scenario === "wait-notice-tg-dash";
+    const { saveSession, setSessionChannelMeta, SESSION_STORAGE_CHANNEL } = await import("../../store/sessions.js");
+    const { registerChannelOutbound } = await import("../../core/channel-outbound.js");
+    const { registerWorkerHandler } = await import("../../core/worker-jobs.js");
+    const { withThreadCompactionLock } = await import("../../core/llm-runtime/adapters/openai-codex-oauth-history.js");
+    saveSession({ channel: SESSION_STORAGE_CHANNEL, threadKey: tk, claudeSessionId: `seed-${tk}`, model: null, systemPromptHash: null });
+    setSessionChannelMeta({ channel: SESSION_STORAGE_CHANNEL, threadKey: tk, lastChannel: (toDash ? "telegram" : "http-bridge") as never, lastChannelTarget: toDash ? "4242" : tk });
+    const sent: string[] = [];
+    registerChannelOutbound("telegram", { deliver: async (target: string) => { sent.push(target); }, defaultOutboundTarget: async () => "owner-default" } as never);
+    registerWorkerHandler((async () => undefined) as never);
+    const waiting: Array<[unknown, unknown]> = [];
+    getEventBus().subscribe((ev) => {
+      const p = ev.payload as Record<string, unknown>;
+      if (ev.type === "llm.compacting" && p.threadKey === tk && p.waiting === true) waiting.push([p.waiterChannel, p.waiterAddress]);
+    });
+    const held = withThreadCompactionLock(tk, () => sleep(2_200));
+    await sleep(20);
+    const r = await runOpenAi({
+      text: "안녕", threadKey: tk, sessionChannel: SESSION_STORAGE_CHANNEL, cwd: process.env.TIGUCLAW_HOME, model: "gpt-regression", provider: "openai",
+      ...(toDash
+        ? { channel: "http-bridge", channelAddress: tk, userWaiting: { channel: "http-bridge", address: tk } }
+        : { channel: "telegram", channelAddress: "777", userWaiting: { channel: "telegram", address: "777" } }),
+    } as never);
+    await held;
+    await sleep(50);
+    process.stdout.write(JSON.stringify({ outcome: "returned", text: r.text, sent, waiting }) + "\n");
     process.exit(0);
   }
   if (scenario === "pre-aborted") turnAc.abort(new UserCancelledError());

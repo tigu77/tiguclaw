@@ -11,7 +11,9 @@
  *  ② 결과표 — 실패·재압축 예외·안 줄어듦·취소·양보·폐기·대기만 · 재압축 성공은 실패 계수 유지 · 구간 안 고착 경보는 구간을 싣는다
  *  ③ 참여자 — 둘 중 하나만 떠나면 유지, 요청이 연 구간은 요청이 다 떠나면 닫힘(남은 백그라운드는 뒤에 아무것도 안 냄)
  *  ④ 대시보드(`sse.js` 함수를 vm 으로 실행) — 같은 구간 새 줄 0 · 떨어진 노드 배지 걷힘 · 이력 로드 미룸·재생 · 구간 없는 끝이 구간 표시를 안 걷음
- *  ⑤ 텔레그램(채널 스텁) — 구간당 1회 · 마지막 인입이 텔레그램일 때만 · 백그라운드 0 · 실패 격리·재발송 0 · 끝에서 마커 정리
+ *  ⑤ 텔레그램(채널 스텁) — 구간당 1회 · **기다리는 요청이 텔레그램일 때 그 요청의 주소로** · 백그라운드 0 · 실패 격리·재발송 0 · 끝에서 마커 정리
+ *     · 공유 세션 채널 전환(실제 요청 경로 `buildTurnHistory` — 세션 메타는 직전 사람 인입): 텔레그램→대시보드 0 · 대시보드→텔레그램 그 주소로 1
+ *       (2026-11-19 Claude 검토 1-1 — 종전 검사는 메타를 미리 심고 이벤트를 직접 발행해 이 순서를 못 봤다)
  *  ⑥ 단계 시간 로그 — 잠금 대기 ms · 재압축 호출 ms · (턴 뒤)/(요청 때) · 구간 끝 한 줄
  * 등급: **동작**(④ 의 이벤트 분기 배선만 린트).
  */
@@ -486,37 +488,105 @@ export const check: RegressionCheck = {
         setSessionChannelMeta({ channel: SESSION_STORAGE_CHANNEL, threadKey: tk, lastChannel: ch as never, lastChannelTarget: target });
       };
       const TG = `dashboard:regr-wait-tg-${rnd}`, DB = `dashboard:regr-wait-db-${rnd}`;
+      const W = { waiterChannel: "telegram", waiterAddress: "4242" }; // 기다리는 요청의 좌표(드라이버가 싣는다)
       mk(TG, "telegram", "4242"); mk(DB, "http-bridge", DB);
       const bus = getEventBus();
       const pub = (type: string, payload: Record<string, unknown>) => bus.publish({ type, ts: Date.now(), payload } as never);
       try {
         pub("llm.compacting", { threadKey: TG, spanId: "s1", waiting: false, pendingTurns: 3 }); // 백그라운드 — 0
-        pub("llm.compacting", { threadKey: TG, spanId: "s1", waiting: true, pendingTurns: 0 }); // 요청 대기 — 1
-        pub("llm.compacting", { threadKey: TG, spanId: "s1", waiting: true, pendingTurns: 0 }); // 같은 구간 — 0
-        pub("llm.compacting", { threadKey: DB, spanId: "s2", waiting: true, pendingTurns: 0 }); // 대시보드 세션 — 0
+        pub("llm.compacting", { threadKey: TG, spanId: "s1", waiting: true, pendingTurns: 0, ...W }); // 요청 대기 — 1
+        pub("llm.compacting", { threadKey: TG, spanId: "s1", waiting: true, pendingTurns: 0, ...W }); // 같은 구간 — 0
+        pub("llm.compacting", { threadKey: DB, spanId: "s2", waiting: true, pendingTurns: 0, waiterChannel: "http-bridge", waiterAddress: DB }); // 대시보드 요청 — 0
         await sleep(30);
         const afterFirst = got.length;
         pub("llm.compacted", { threadKey: TG, spanId: "s1" });
-        pub("llm.compacting", { threadKey: TG, spanId: "s3", waiting: true, pendingTurns: 0 }); // 새 구간 — 1
+        pub("llm.compacting", { threadKey: TG, spanId: "s3", waiting: true, pendingTurns: 0, ...W }); // 새 구간 — 1
         await sleep(30);
         const afterSecond = got.length;
         fail = true;
-        pub("llm.compacting", { threadKey: TG, spanId: "s4", waiting: true, pendingTurns: 0 }); // 실패 — 던지지 않는다
+        pub("llm.compacting", { threadKey: TG, spanId: "s4", waiting: true, pendingTurns: 0, ...W }); // 실패 — 던지지 않는다
         await sleep(30);
         fail = false;
-        pub("llm.compacting", { threadKey: TG, spanId: "s4", waiting: true, pendingTurns: 0 }); // 실패 뒤 같은 구간 — 재발송 0
+        pub("llm.compacting", { threadKey: TG, spanId: "s4", waiting: true, pendingTurns: 0, ...W }); // 실패 뒤 같은 구간 — 재발송 0
         await sleep(30);
         // 조용한 끝(compacting_ended)도 마커를 지운다 — 같은 구간 id 로 다시 오면 다시 보낸다(정리 확인용 합성 순서)
         const beforeQuiet = got.length;
         pub("llm.compacting_ended", { threadKey: TG, spanId: "s3", outcome: "cancelled" });
-        pub("llm.compacting", { threadKey: TG, spanId: "s3", waiting: true, pendingTurns: 0 });
+        pub("llm.compacting", { threadKey: TG, spanId: "s3", waiting: true, pendingTurns: 0, ...W });
         await sleep(30);
         const quietCleared = got.length === beforeQuiet + 1;
         got.length = beforeQuiet;
         out.push(assert("텔레그램 마커는 조용한 끝(compacting_ended)에서도 지워진다", quietCleared, { quietCleared }));
-        out.push(assert("★텔레그램: 요청 대기 구간당 1회(마지막 인입 텔레그램 chatId) · 백그라운드·같은 구간·대시보드 세션 0 · 끝 뒤 새 구간 1 · 실패 격리·재발송 0",
+        out.push(assert("★텔레그램: 요청 대기 구간당 1회(기다리는 텔레그램 요청의 주소) · 백그라운드·같은 구간·대시보드 요청 0 · 끝 뒤 새 구간 1 · 실패 격리·재발송 0",
           afterFirst === 1 && got[0]?.target === "4242" && got[0]!.text.length > 0 && afterSecond === 2 && got.length === 2,
           { afterFirst, afterSecond, total: got.length, targets: got.map((g) => g.target) }));
+
+        // ★공유 세션 채널 전환 — **실제 요청 경로**(`buildTurnHistory` → 드라이버 → 이벤트 → 안내). 세션 메타는 직전 사람 인입 그대로 둔다
+        //  (라우터는 턴이 끝난 뒤에야 갱신한다). 요청 때 재압축만(S1 모양)으로 기다림 알림이 실제로 나간다.
+        const switchCase = async (n: string, metaCh: string, metaTarget: string, input: Record<string, unknown>): Promise<{ sent: string[]; waiting: Ev[] }> => {
+          const T = key(n);
+          seedSummaryOver(T, 0, 50_000);
+          while (fits(T)) addTurns(T, 1);
+          mk(T, metaCh, metaTarget);
+          mode = "ok";
+          const before = got.length;
+          const w = watch(T);
+          await H.buildTurnHistory({ threadKey: T, sessionChannel: "http-bridge", provider: "codex-oauth", ...input } as never, PROMPT, [], "fake-token", undefined, "fake-model", 0, undefined, () => {});
+          await sleep(30);
+          w.unsub();
+          return { sent: got.slice(before).map((g) => g.target), waiting: starts(w.seen).filter((e) => e.payload.waiting === true) };
+        };
+        // 요약 LLM 은 다시 가짜 포트로(위 ①~③ 의 finally 가 풀었다) — 실모델·네트워크 0.
+        H.setSummarizerPort(async (_t: string, target: number) => "요약:" + "약".repeat(Math.max(0, Math.min(target, 400) - 3)));
+        let tgToDash: { sent: string[]; waiting: Ev[] }, dashToTg: { sent: string[]; waiting: Ev[] }, synthTg: { sent: string[]; waiting: Ev[] };
+        try {
+          tgToDash = await switchCase("sw-tg-dash", "telegram", "4242", { channel: "http-bridge", channelAddress: "dashboard:regr-sw", userWaiting: { channel: "http-bridge", address: "dashboard:regr-sw" } });
+          dashToTg = await switchCase("sw-dash-tg", "http-bridge", "dashboard:regr-sw2", { channel: "telegram", channelAddress: "777", userWaiting: { channel: "telegram", address: "777" } });
+          // 합성 턴(대화 안 예약 — 채널·주소를 세션 메타에서 꺼낸다, trigger-in-session.ts)은 기다리는 사람이 없다 — 오염 메타(`dashboard:…`)로도 안내 0.
+          synthTg = await switchCase("sw-synth", "telegram", "dashboard:regr-polluted", { channel: "telegram", channelAddress: "dashboard:regr-polluted", turnOrigin: "schedule" });
+        } finally {
+          H.setSummarizerPort(null);
+        }
+        out.push(assert("★채널 전환(실제 요청 경로): 텔레그램→대시보드 턴은 이전 텔레그램에 안내 0 · 대시보드→텔레그램 첫 턴은 그 턴의 주소로 1 — 받는 곳은 기다리는 요청의 좌표",
+          tgToDash.waiting.length === 1 && tgToDash.sent.length === 0 && tgToDash.waiting[0]!.payload.waiterChannel === "http-bridge" &&
+            dashToTg.waiting.length === 1 && JSON.stringify(dashToTg.sent) === JSON.stringify(["777"]) && dashToTg.waiting[0]!.payload.waiterAddress === "777",
+          { tgToDash: { sent: tgToDash.sent, w: tgToDash.waiting.map((e) => [e.payload.waiterChannel, e.payload.waiterAddress]) },
+            dashToTg: { sent: dashToTg.sent, w: dashToTg.waiting.map((e) => [e.payload.waiterChannel, e.payload.waiterAddress]) } }));
+        out.push(assert("★합성 턴(세션 메타에서 꺼낸 오염 주소)은 기다림 알림에 좌표 없음 · 안내 0",
+          synthTg.waiting.length === 1 && synthTg.waiting[0]!.payload.waiterChannel === undefined && synthTg.sent.length === 0,
+          { sent: synthTg.sent, w: synthTg.waiting.map((e) => [e.payload.waiterChannel, e.payload.waiterAddress]) }));
+        // 주소 없는 텔레그램 요청은 세션 메타로 메우지 않는다(메타 = 텔레그램 4242 여도 0)
+        const beforeNoAddr = got.length;
+        pub("llm.compacting", { threadKey: TG, spanId: "s9", waiting: true, pendingTurns: 0, waiterChannel: "telegram" });
+        await sleep(30);
+        out.push(assert("★주소 없는 텔레그램 요청은 세션 메타로 메우지 않는다 — 안내 0", got.length === beforeNoAddr, { sent: got.slice(beforeNoAddr).map((g) => g.target) }));
+
+        // OpenAI 어댑터 — 실제 `runOpenAi` 를 가짜 Model 로(자식 프로세스), 앞선 요약 잠금을 기다리는 요청의 안내 받는 곳
+        const { spawnWithin } = await import("./_framework.js");
+        const { fileURLToPath } = await import("node:url");
+        const oa = async (sc: string): Promise<{ sent?: string[]; waiting?: Array<[unknown, unknown]>; outcome?: string; err?: string }> => {
+          const r = await spawnWithin(60_000, `openai-run(${sc})`, ["--import", "tsx", fileURLToPath(new URL("./_openai-run-child.ts", import.meta.url)), sc], { env: { ...process.env } });
+          const line = r.out.trim().split(/\r?\n/).pop() ?? "";
+          try { return JSON.parse(line) as never; } catch { return { err: (r.out + r.err).slice(-400) }; }
+        };
+        // 라우터부터 — «이 턴의 채널·주소가 사용자 것» 판정(`userWaiting`)이 실제 경로로 닿나: 사람 인입·잔여 재주입은 그 주소로 · 예약 턴은 0
+        {
+          const r = await spawnWithin(90_000, "wait-notice-route", ["--import", "tsx", fileURLToPath(new URL("./_wait-notice-route-child.ts", import.meta.url))], { env: { ...process.env } });
+          const line = r.out.split(/\r?\n/).find((l) => l.startsWith("WAIT_NOTICE_ROUTE ")) ?? "";
+          let R: { inbound?: string[]; reinject?: string[]; reinjectFromSchedule?: string[]; reinjectDashIntoTg?: string[]; reinjectTgIntoDash?: string[]; schedule?: string[]; error?: string } = {};
+          try { R = JSON.parse(line.slice("WAIT_NOTICE_ROUTE ".length)) as never; } catch { R = { error: (r.out + r.err).slice(-400) }; }
+          out.push(assert("★라우터 경로: 사람 인입·잔여 재주입(사람 턴이 연 것·예약 턴이 연 것 — 실제 `toSteeringInput`→`buildReinjectMessage`)은 기다리는 사용자의 텔레그램 주소로 1 · 다른 채널에서 끼워넣은 잔여는 그 입력의 채널·주소 쌍(대시보드 0 · 텔레그램 그 주소 1) · 대화 안 예약 턴(세션 메타의 오염 주소)은 0",
+            JSON.stringify(R.inbound) === JSON.stringify(["777"]) && JSON.stringify(R.reinject) === JSON.stringify(["777"]) &&
+              JSON.stringify(R.reinjectFromSchedule) === JSON.stringify(["777"]) && JSON.stringify(R.schedule) === "[]" &&
+              JSON.stringify(R.reinjectDashIntoTg) === "[]" && JSON.stringify(R.reinjectTgIntoDash) === JSON.stringify(["888"]),
+            R));
+        }
+        const oaTgDash = await oa("wait-notice-tg-dash");
+        const oaDashTg = await oa("wait-notice-dash-tg");
+        out.push(assert("★OpenAI 어댑터(실제 runOpenAi): 텔레그램→대시보드 턴 안내 0 · 대시보드→텔레그램 턴은 그 턴의 주소로 1 — 좌표 운반",
+          JSON.stringify(oaTgDash.sent) === "[]" && oaTgDash.waiting?.length === 1 && oaTgDash.waiting[0]![0] === "http-bridge" &&
+            JSON.stringify(oaDashTg.sent) === JSON.stringify(["777"]) && oaDashTg.waiting?.length === 1 && oaDashTg.waiting[0]![1] === "777",
+          { oaTgDash, oaDashTg }));
       } finally {
         if (prev !== undefined) registerChannelOutbound("telegram", prev); else unregisterChannelOutbound("telegram");
       }

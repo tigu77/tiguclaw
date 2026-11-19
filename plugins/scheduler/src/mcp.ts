@@ -17,7 +17,7 @@
 import { z } from "zod";
 import { listOutboundChannels } from "../../../src/core/channel-outbound.js";
 import { onDemand } from "../../../src/core/llm-runtime/tool-load-policy.js";
-import { TOOL_OUTPUT_ENTRY_CAP } from "../../../src/core/llm-runtime/tool-output-limits.js";
+import { fitsToolEntry, TOOL_OUTPUT_ENTRY_CAP } from "../../../src/core/llm-runtime/tool-output-limits.js";
 import {
   createSdkMcpServer,
   tool,
@@ -271,7 +271,7 @@ const summaryRow = (r: ScheduleRow) => {
 };
 
 /**
- * 목록 한 페이지 — `afterId` 보다 큰 id 부터 오름차순, 응답 JSON 이 `budget` 자 안에 드는 만큼(최소 1행 — 한 행이 넘쳐도 진행한다).
+ * 목록 한 페이지 — `afterId` 보다 큰 id 부터 오름차순, 응답 JSON 이 원문·가린 뒤 모두 `budget` 자 안에 드는 만큼(최소 1행 — 한 행이 넘쳐도 진행한다).
  * `total` = 그 순간 조건에 맞는 전체 수. 더 있으면 `next_after_id`, 끝이면 `complete: true`.
  * 순수 함수 — 검사가 크기·커서를 직접 잰다.
  */
@@ -296,7 +296,9 @@ export const scheduleListPage = (
   for (let i = 0; i < rest.length; i++) {
     items.push(summaryRow(rest[i]!));
     const more = i + 1 < rest.length;
-    if (items.length > 1 && JSON.stringify(page(more)).length > budget) {
+    // ★가린 뒤 길이도 잰다(`fitsToolEntry`) — 진입은 가린 글로 상한을 판정하므로, 원문만 재면 오류·라벨의 토큰이 가려져 늘어난
+    //  페이지가 다시 잘린다(2026-11-19 Claude 검토 1-2 · 아스트라 실행 15,779→19,139자).
+    if (items.length > 1 && !fitsToolEntry(JSON.stringify(page(more)), budget)) {
       items.pop();
       return page(true);
     }

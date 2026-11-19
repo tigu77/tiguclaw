@@ -1098,8 +1098,14 @@ interface ProgressSpan {
   yielded: boolean;
   discarded: boolean;
 }
+/**
+ * 기다리는 요청의 **도달 좌표**(이 턴의 실채널·배달 주소) — 대기 안내를 받을 곳은 기다리는 그 요청이 안다(2026-11-19 Claude 검토 1-1).
+ *  세션 메타(`setSessionChannelMeta`)는 턴이 **끝난 뒤** 갱신돼(router) 요청 중엔 직전 사람 인입을 가리킨다 — 공유 세션에서 채널을 바꾼
+ *  첫 턴의 안내가 이전 채널로 가거나 빠졌다.
+ */
+export interface ProgressWaiter { channel: ChannelName; address?: string }
 /** 한 호출의 참여 — 붙은 구간이 일찍 닫히면 다음 알림 때 새 구간에 다시 붙는다. */
-export interface ProgressHandle { span: ProgressSpan; role: ProgressRole }
+export interface ProgressHandle { span: ProgressSpan; role: ProgressRole; waiter?: ProgressWaiter }
 const progressSpans = new Map<string, ProgressSpan>();
 let progressSeq = 0;
 /** 잠금 대기가 이보다 짧으면 안내하지 않는다 — 짧은 무대기 경로(잠금 정리 지연 등)에 안내가 뜨지 않게(#3 설계 §2-2). */
@@ -1119,9 +1125,11 @@ const attachProgress = (h: ProgressHandle): void => {
   h.span = cur !== undefined && !cur.closed ? cur : newProgressSpan(h.span.threadKey, h.span.adapter);
   if (h.role === "request") h.span.requests += 1; else h.span.background += 1;
 };
-export const joinProgressSpan = (threadKey: string, adapter: string, role: ProgressRole): ProgressHandle => {
+export const joinProgressSpan = (threadKey: string, adapter: string, role: ProgressRole, waiter?: ProgressWaiter): ProgressHandle => {
   const cur = progressSpans.get(threadKey);
-  const h: ProgressHandle = { span: cur !== undefined && !cur.closed ? cur : newProgressSpan(threadKey, adapter), role };
+  const h: ProgressHandle = {
+    span: cur !== undefined && !cur.closed ? cur : newProgressSpan(threadKey, adapter), role, ...(waiter !== undefined ? { waiter } : {}),
+  };
   if (role === "request") h.span.requests += 1; else h.span.background += 1;
   return h;
 };
@@ -1141,7 +1149,13 @@ export const announceProgress = (h: ProgressHandle, pendingTurns: number): void 
     getEventBus().publish({
       type: "llm.compacting",
       ts: Date.now(),
-      payload: { threadKey: s.threadKey, pendingTurns: first ? pendingTurns : 0, adapter: s.adapter, spanId: s.id, waiting },
+      payload: {
+        threadKey: s.threadKey, pendingTurns: first ? pendingTurns : 0, adapter: s.adapter, spanId: s.id, waiting,
+        // 기다리는 요청의 도달 좌표 — 텔레그램 대기 안내의 받는 곳(worker-jobs `notifyCompactWait`). 기다림 알림에만 싣는다.
+        ...(waiting && h.waiter !== undefined
+          ? { waiterChannel: h.waiter.channel, ...(h.waiter.address !== undefined ? { waiterAddress: h.waiter.address } : {}) }
+          : {}),
+      },
     });
   } catch {
     /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
@@ -2750,6 +2764,8 @@ const compactThreadHistoryUnlocked = async (args: {
   signal?: AbortSignal;
   /** 이 호출의 기다리는 구간 참여(`compactThreadHistory` 가 만든다, #3) — 시작 알림·결과를 여기 모은다. */
   progress?: ProgressHandle;
+  /** 요청 때 부르는 어댑터가 넘기는 **이 턴의 도달 좌표** — 대기 안내의 받는 곳(`ProgressWaiter`). 턴 뒤 접기는 쓰지 않는다. */
+  waiter?: ProgressWaiter;
 }): Promise<CompactedThreadHistory> => {
   const progress = args.progress;
   const when = args.postTurn === true ? "(턴 뒤)" : "(요청 때)";
@@ -3099,7 +3115,7 @@ export const compactThreadHistory = async (args: CompactArgs): Promise<Compacted
   // ★기다리는 구간에 참여한다(2026-11-19 #3) — 줄 서기 **전**에 붙고 `finally` 에서 뗀다(대기 중 취소도). 요청이 잠금 앞에서
   //  `COMPACT_WAIT_NOTICE_MS` 넘게 기다리면 그때 안내한다(F2 — 짧은 대기는 안내 없음). 대기 시간은 로그로 남긴다(F4).
   const role: ProgressRole = args.postTurn === true ? "background" : "request";
-  const progress = joinProgressSpan(args.threadKey, args.adapter, role);
+  const progress = joinProgressSpan(args.threadKey, args.adapter, role, role === "request" ? args.waiter : undefined);
   const lockBusy = threadLocks.has(args.threadKey);
   const waitT0 = Date.now();
   let waitTimer: ReturnType<typeof setTimeout> | undefined =
@@ -3293,6 +3309,8 @@ export const buildTurnHistory = async (
     budget: { instructionsChars, promptChars: currentPromptWithMemory.length, capChars },
     capFor,
     signal: input.abortSignal, // 앞선 요약을 기다리는 동안에도 이 턴의 취소를 듣는다.
+    // 대기 안내의 받는 곳 = 라우터가 정한 기다리는 사용자의 좌표(세션 메타는 턴 뒤에야 갱신된다 — 1-1). 합성 턴은 없음.
+    waiter: input.userWaiting,
     summarize: (text, targetChars, batch) =>
       runSummarizer(
         text,

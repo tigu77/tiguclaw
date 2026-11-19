@@ -3467,9 +3467,13 @@ const notifyCompactWait = (payload: Record<string, unknown>): void => {
   if (payload.waiting !== true || typeof payload.spanId !== "string") return;
   const tk = typeof payload.threadKey === "string" ? payload.threadKey : "";
   if (tk === "" || isDerivedThread(tk) || compactWaitNotified.has(payload.spanId)) return;
-  // 받는 곳은 `telegramTargetFor` 한 곳(마지막 인입이 텔레그램일 때만) — 대시보드·CLI 는 화면에서 본다.
-  const chatId = telegramTargetFor(tk);
-  if (chatId === null) return;
+  // ★받는 곳은 **기다리는 그 사람 요청의 좌표**(`waiterChannel`·`waiterAddress` — 요약 드라이버가 사람 인입 턴에만 싣는다, 2026-11-19 Claude 검토 1-1).
+  //  세션 메타(`telegramTargetFor`)는 턴이 끝난 뒤에야 갱신돼 요청 중엔 직전 사람 인입을 가리킨다 — 공유 세션에서 채널을 바꾼 첫 턴의
+  //  안내가 이전 텔레그램으로 가거나(텔레그램→대시보드) 빠졌다(대시보드→텔레그램). 텔레그램 요청의 그 주소로만 — 세션 메타로 메우지 않는다
+  //  (지난 오염 값을 읽게 된다 — GPT delta 검토 R1 F1). 대시보드·CLI 는 화면에서 본다. 합성 턴은 좌표가 없어 안내 0.
+  if (payload.waiterChannel !== "telegram") return;
+  const chatId = typeof payload.waiterAddress === "string" ? payload.waiterAddress.trim() : "";
+  if (chatId === "") return;
   if (compactWaitNotified.size > 500) compactWaitNotified.clear();
   compactWaitNotified.add(payload.spanId);
   try {

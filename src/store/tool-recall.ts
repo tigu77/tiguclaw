@@ -18,7 +18,7 @@ import { getContextBoundary, getDb } from "./sessions.js";
 import { memberClause, scopeHasRow, threadScope, type ThreadScope } from "./thread-members.js";
 import type { CodexTurnItem } from "./memory.js";
 import { RUN_REF_RE } from "../core/llm-runtime/tool-output-ledger.js";
-import { TOOL_OUTPUT_ENTRY_CAP } from "../core/llm-runtime/tool-output-limits.js";
+import { fitsToolEntry, TOOL_OUTPUT_ENTRY_CAP } from "../core/llm-runtime/tool-output-limits.js";
 import { redactSecrets } from "../core/outbound-sanitize.js";
 
 type Call = Extract<CodexTurnItem, { type: "function_call" }>;
@@ -329,13 +329,8 @@ const clipArgs = (s: string, n: number): string => {
   return `${head}…`;
 };
 
-/**
- * 이 응답 글이 결과 진입에서 **다시 잘리지 않는가** — 진입은 결과를 한 번 더 가려 저장하고 그 가린 글이 상한을 넘으면 앞·뒤 보기로 자른다.
- *  가림은 멱등이 아니라(`Bearer [REDACTED]` 를 다시 가리면 `]` 가 붙는다) 가린 뒤 길이가 늘 수 있어 둘 다 잰다(구현 검토 R1 ①·R6·R7).
- *  재조회 응답(참조 페이지·검색)이 같은 판정을 쓴다.
- */
-export const fitsToolEntry = (json: string, budget: number = TOOL_OUTPUT_ENTRY_CAP): boolean =>
-  json.length <= budget && redactSecrets(json).length <= budget;
+/** 결과 진입 크기 판정 — 정의는 크기 계약 자리 한 곳(`tool-output-limits.ts`). 재조회 응답·예약 목록 페이지가 같이 쓴다. */
+export { fitsToolEntry };
 
 /**
  * **재조회 응답 한 번** — 결과 본문(또는 `part:"args"` 면 인자)의 `offset` 부터, 응답 JSON **전체**가 `budget` 자 안에 드는 만큼

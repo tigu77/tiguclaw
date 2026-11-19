@@ -44,6 +44,11 @@ export interface SteeringInput {
   /** 도착 시각(관측·정렬용). 개입점이 Date.now() 로 채운다. */
   ts: number;
   /**
+   * 이 입력을 보낸 **사용자의 실채널·주소**(2026-11-19) — 사람 턴 메시지(`isUserTurnMessage`)일 때만. 미소비로 남아 재주입되면
+   *  그 턴을 기다리는 사람의 좌표가 된다(`IncomingMessage.waiterReach`) — 재주입 메시지는 그 턴을 연 메시지의 좌표·출처를 물려받는다.
+   */
+  reach?: { channel: IncomingMessage["channel"]; address?: string };
+  /**
    * 이 메시지가 답글이면 그 대상 원문(2026-10-06). `text` 에는 이미 붙어 있고, 미소비분을 새 턴으로 재주입할 때
    * `raw` 에 **자기** 원문을 다시 붙이려고 따로 든다(재주입은 그 턴을 연 다른 메시지의 원문을 쓰면 안 된다).
    */
@@ -300,6 +305,14 @@ export const STEERING_NOTE_PREFIX =
   "작업을 마친 뒤에 다루세요. 사용자 원문:]";
 
 /**
+ * 이 메시지가 **사람의 턴**인가 — 출처 표식이 없거나 `inbound`(2026-11-19). 라우터의 세션 메타 캡처(`capturesSessionChannelMeta`)와
+ *  끼워넣기 입력의 사용자 좌표(`SteeringInput.reach`)가 같은 판정을 쓴다. ★`synthetic` 으로 가르지 않는다 — 잔여 재주입은 `synthetic`
+ *  이지만 사용자가 보낸 말의 복사본이다. 내부 합성 턴은 만드는 자리에서 출처를 적는다(`TurnOrigin`).
+ */
+export const isUserTurnMessage = (msg: Pick<IncomingMessage, "turnOrigin">): boolean =>
+  msg.turnOrigin === undefined || msg.turnOrigin === "inbound";
+
+/**
  * 채널 IncomingMessage → 중립 SteeringInput(ADR §3). 텍스트(framing 래핑)·첨부·도착시각만 실어 채널 무관화.
  * ★답글 원문도 싣는다(2026-10-06) — 응답 중에 보낸 답글이 무엇에 대한 말인지 비서가 알아야 한다(종전엔 빠졌다).
  */
@@ -311,6 +324,7 @@ export const toSteeringInput = (msg: IncomingMessage): SteeringInput => {
   ...(msg.replyToText !== undefined && msg.replyToText.trim() !== "" ? { replyToText: msg.replyToText, ...(ref !== undefined ? { replyToRef: ref } : {}) } : {}),
   ...(msg.attachments !== undefined ? { attachments: msg.attachments } : {}),
   ts: Date.now(),
+  ...(isUserTurnMessage(msg) ? { reach: { channel: msg.channel, ...(msg.channelAddress !== undefined ? { address: msg.channelAddress } : {}) } } : {}),
   };
 };
 
@@ -341,10 +355,13 @@ export const buildReinjectMessage = <M extends IncomingMessage>(
   const text = reinjectTextFor(leftover);
   const atts = leftover.flatMap((s) => s.attachments ?? []);
   if (text === "" && atts.length === 0) return null;
-  const { replyToText: _thisTurnsQuote, replyToRef: _thisTurnsRef, ...turnMsg } = msg;
+  const { replyToText: _thisTurnsQuote, replyToRef: _thisTurnsRef, waiterReach: _thisTurnsWaiter, ...turnMsg } = msg;
+  // 기다리는 사람 = 남은 사람 입력을 보낸 사용자(마지막 것) — 그 턴을 연 메시지의 좌표·출처가 아니다(2026-11-19 GPT delta R3).
+  const reach = [...leftover].reverse().find((s) => s.reach !== undefined)?.reach;
   return {
     ...turnMsg,
     text,
+    ...(reach !== undefined ? { waiterReach: reach } : {}),
     ...(atts.length > 0 ? { attachments: atts } : {}),
     receivedAt: now,
     synthetic: true as const,

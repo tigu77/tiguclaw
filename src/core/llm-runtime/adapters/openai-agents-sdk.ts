@@ -1226,6 +1226,8 @@ export const runOpenAi = async (
     budget: { instructionsChars: instructions.length, promptChars: promptWithMemory.length, capChars },
     capFor,
     signal: input.abortSignal, // 앞선 요약을 기다리는 동안에도 이 턴의 취소를 듣는다.
+    // 대기 안내의 받는 곳 = 라우터가 정한 기다리는 사용자의 좌표(codex 와 같다 — 세션 메타는 턴 뒤에야 갱신된다). 합성 턴은 없음.
+    waiter: input.userWaiting,
     summarize: async (text, targetChars, batch) => {
       // ★**본 턴과 같은 조립 경로를 쓴다** (2026-09-15 2차 정정, 회사 아스트라 지적).
       //  첫 판은 `new Agent({...})` 로 직접 만들어 `modelSettings` 를 통째로 생략했다 —

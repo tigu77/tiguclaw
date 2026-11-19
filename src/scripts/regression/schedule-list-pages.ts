@@ -158,6 +158,35 @@ export const check: RegressionCheck = {
         { tiny: [tiny.returned, tiny.next_after_id], tiny2: tiny2.items?.[0]?.id, last: [last.returned, last.complete] },
       ));
 
+      // ④' 가림이 글을 늘리는 행 — 진입은 **가린 글**로 상한을 판정한다(2026-11-19 Claude 검토 1-2 · 아스트라 실행 15,779→19,139자).
+      //  원문 길이만 재면 상한 가까운 페이지가 가린 뒤 넘쳐 다시 앞·뒤 보기로 잘리고 가운데 행이 빠진다(원래 사고와 같은 모양).
+      {
+        const { preserveToolOutput } = await import("../../core/llm-runtime/adapters/openai-codex-oauth-history.js");
+        const { redactSecrets } = await import("../../core/outbound-sanitize.js");
+        const grow: number[] = [];
+        for (let i = 0; i < 50; i++) {
+          const id = mk("x", "test");
+          recordFiring(id, { ok: false, error: "Bearer abc ".repeat(16) });
+          grow.push(id);
+        }
+        const texts: string[] = [];
+        for (let after = 0, n = 0; n < 400; n++) {
+          const { text, page } = await call({ after_id: after });
+          texts.push(text);
+          if (page.complete === true || page.next_after_id === undefined) break;
+          after = page.next_after_id;
+        }
+        const seenG = texts.flatMap((t) => ((JSON.parse(t) as Page).items ?? []).map((r) => r.id as number));
+        const grows = texts.some((t) => redactSecrets(t).length > t.length);
+        // 실제 진입의 첫 단계(가린 보존본)가 상한 안이면 보기가 잘리지 않는다 — 그 페이지는 통째로 모델에 간다.
+        const entryFits = texts.map((t) => preserveToolOutput(t).length <= TOOL_OUTPUT_ENTRY_CAP);
+        out.push(assert("재현 조건: 목록 응답의 가린 뒤 길이가 원문보다 길다(오류의 Bearer 토큰)", grows, { grows }));
+        out.push(assert("★④' 가림이 늘리는 행에서도 페이지마다 가린 보존본이 진입 상한 안(보기 잘림 0) · 전체 id 가 한 번씩",
+          entryFits.every(Boolean) && grow.every((id) => seenG.filter((x) => x === id).length === 1) &&
+            JSON.stringify(seenG) === JSON.stringify(listSchedules().map((r) => r.id)),
+          { 페이지: texts.length, 넘친페이지: entryFits.filter((f) => !f).length, 가린뒤최대: Math.max(...texts.map((t) => redactSecrets(t).length)) }));
+      }
+
       // ⑤' 새 설치의 첫 예약(id 1)이 인자 없는 첫 페이지에 나온다 — 빈 DB 가 필요해 자식 프로세스로(독립 변이 사냥 M04)
       {
         const { mkdtempSync, rmSync } = await import("node:fs");

@@ -92,6 +92,13 @@ export interface RegionASdkInput {
    *  표시가 없으면 `reportOmitted` 를 싣고, 글 조각(활동·델타)에 `audience:"internal"` 을 단다. 요청 payload 에는 실리지 않는다.
    */
   reportOmittable?: true;
+  /**
+   * 이 턴을 **기다리는 사용자의 실채널·주소**(2026-11-19) — 라우터만 싣는다: 사람 턴(`capturesSessionChannelMeta`)이면 이 턴의 채널·주소,
+   *  끼워넣기 잔여 재주입이면 남은 사람 입력의 좌표(`IncomingMessage.waiterReach`). 요약 대기 안내의 받는 곳으로 드라이버에 그대로 간다
+   *  (`compactThreadHistory` 의 `waiter`). 합성 턴(작업 완료·대화 안 예약·감시)은 기다리는 사람이 없고 주소도 세션 메타에서 꺼낸 것이라 없다.
+   *  요청 payload 에는 실리지 않는다.
+   */
+  userWaiting?: { channel: ChannelName; address?: string };
   channel: ChannelName;
   /**
    * 신규(additive, 2026-07-15) — **세션-정체성 저장 채널** (채널/세션 분리 Phase 1,

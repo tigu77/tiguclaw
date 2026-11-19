@@ -59,6 +59,7 @@ import { getEventBus } from "./eventbus.js";
 import type { TurnSpend } from "./llm-runtime/turn-spend.js";
 import { formatDuration, formatDurationKo } from "./format-duration.js";
 import { translate } from "./i18n.js";
+import { isDerivedThread } from "./threadkey.js";
 import { isSubagentTool } from "./llm-runtime/subagent-tools.js";
 import { createSteeringChannel, isJobSide } from "./steering.js";
 import { beginInterruptedNotice, beginNoticeSending, settleFirstNotice } from "./job-report-delivery.js";
@@ -1291,22 +1292,14 @@ const summonerTurnMessage = (
     originThreadKey: notifySessionThreadKey(reportJob.threadKey),
     ...jobSessionLabel(reportJob.threadKey),
   });
-  // 세션-정체성 정규화 — 완료 재주입(`onWorkerComplete`)과 같은 규칙. 없으면 telegram發 잡의
+  // 세션-정체성 정규화 — 완료 재주입(`onWorkerComplete`)과 같은 규칙(`jobTurnSession`). 없으면 telegram發 잡의
   // 합성 턴이 사용자 실세션과 다른 정체성으로 돌아 resume/transcript 가 갈린다.
-  const idChannel = canonicalSessionChannel(reportJob.threadKey, reportJob.channel);
   const presenter = optionsPresenterFor(dest.channel, dest.target ?? null, reportJob.threadKey, jobSessionLabel(reportJob.threadKey).labelSession); // 고른 값은 물어본 스레드로
   return {
     channel: reportJob.channel,
     channelUserId: reportJob.channelUserId,
     threadKey: reportJob.threadKey,
-    ...(idChannel !== reportJob.channel
-      ? {
-          session: {
-            explicitSessionId: reportJob.threadKey,
-            ...(dest.target !== null ? { channelAddress: dest.target } : {}),
-          },
-        }
-      : {}),
+    ...jobTurnSession(reportJob, dest),
     // ★`synthetic: true` 가 두 가지를 동시에 닫는다: ①관측 발행 스킵(가짜 "나" 버블) ②`steerable(msg)` 가 false — 없으면 이 턴이
     //  사용자의 **진행 중 턴에 끼어드는** steering 메시지가 된다(F1b). 그러면 «사용자가 마침 턴 중인가» 로 갈려 비결정적이다.
     synthetic: true,
@@ -3312,6 +3305,26 @@ export const turnReachOf = (job: { notifyDest?: WorkerNotifyDest }): { notifyDes
   job.notifyDest !== undefined ? { notifyDest: job.notifyDest } : {};
 
 /**
+ * 잡이 여는 합성 턴(완료 재주입·점검·작업자 알림)의 **세션 지정** — 세션-정체성 정규화가 필요할 때만(사용자 세션 threadKey 인데
+ *  잡 채널이 저장 채널과 다를 때). ★주소는 **보고 좌표 채널이 이 턴의 채널(잡 채널)과 같을 때만** 싣는다(2026-11-19 뉴돌쇠):
+ *  종전엔 늘 `dest.target` 을 실어, 예약 대화에서 띄운 잡(잡 채널 telegram · 보고 좌표 http-bridge)의 턴이
+ *  «telegram + 대시보드 세션 id» 쌍이 됐다 — 그 턴 안의 플러그인 좌표·통지 폴백이 그 쌍을 썼다. 사람 최종 발송은
+ *  `reply`·`replyTarget`·`notifyDest`(보고 좌표 쌍)가 따로 맡는다. 세션 메타는 이 턴이 바꾸지 않는다(`router` `capturesSessionChannelMeta`).
+ */
+export const jobTurnSession = (
+  job: { channel: ChannelName; threadKey: string },
+  dest: WorkerNotifyDest,
+): { session?: { explicitSessionId: string; channelAddress?: string } } =>
+  canonicalSessionChannel(job.threadKey, job.channel) === job.channel
+    ? {}
+    : {
+        session: {
+          explicitSessionId: job.threadKey,
+          ...(dest.channel === job.channel && dest.target !== null ? { channelAddress: dest.target } : {}),
+        },
+      };
+
+/**
  * 띄우는 턴의 좌표에서 **보고 좌표를 스폰 시점에 캡처**한다 — 매니저·서브에이전트 공용.
  * 주입된 `notifyDest`(스케줄 등) 우선, 없으면 캡처된 배달 좌표(`channelAddress`), 둘 다 없으면
  * undefined → 완료 때 `destForJob` 의 threadKey 폴백.
@@ -3443,6 +3456,37 @@ export const shouldNotifyToolSlow = (tool: string): boolean =>
   !isSubagentTool(tool);
 
 const toolSlowNotified = new Set<string>();
+/**
+ * 요약 때문에 사용자가 기다리는 구간의 텔레그램 안내 — **구간(`spanId`)당 1회** (2026-11-19 GitHub #3, 설계 §2-5).
+ * ★발송 **전에** 기록한다 — 실패해도 같은 구간의 갱신(`waiting:true` 재알림)에 다시 보내지 않는다. 그 구간의 끝 이벤트에서 지운다.
+ *  끝을 못 받는 경우를 위해 상한(선례와 같은 누수 가드). 끝 안내·패스별·백그라운드 안내는 없다(답이 곧 온다).
+ */
+const compactWaitNotified = new Set<string>();
+const COMPACT_END_EVENTS = new Set(["llm.compacted", "llm.compact_failed", "llm.compacting_ended"]);
+const notifyCompactWait = (payload: Record<string, unknown>): void => {
+  if (payload.waiting !== true || typeof payload.spanId !== "string") return;
+  const tk = typeof payload.threadKey === "string" ? payload.threadKey : "";
+  if (tk === "" || isDerivedThread(tk) || compactWaitNotified.has(payload.spanId)) return;
+  // 받는 곳은 `telegramTargetFor` 한 곳(마지막 인입이 텔레그램일 때만) — 대시보드·CLI 는 화면에서 본다.
+  const chatId = telegramTargetFor(tk);
+  if (chatId === null) return;
+  if (compactWaitNotified.size > 500) compactWaitNotified.clear();
+  compactWaitNotified.add(payload.spanId);
+  try {
+    void deliverOutbound({
+      channel: "telegram",
+      target: chatId,
+      text: translate("srv.compact.waitNotice"),
+      label: "compact-wait",
+      notice: true, // 인프라 통지 — 비서 발화 아님.
+      observeThreadKey: tk,
+    }).catch(() => {
+      /* 안내 실패는 요약·턴에 영향 0 */
+    });
+  } catch {
+    /* 안내 실패는 요약·턴에 영향 0 */
+  }
+};
 /** 메인 턴 지연 통지 — threadKey 당 1회. 턴이 끝나면 아래 구독이 지운다(다음 턴엔 다시 알림). */
 const mainTurnSlowNotified = new Set<string>();
 let toolSlowNotifySubscribed = false;
@@ -3455,6 +3499,14 @@ const subscribeWorkerToolSlowNotify = (): void => {
       const doneTk =
         typeof event.payload.threadKey === "string" ? event.payload.threadKey : "";
       if (doneTk !== "") mainTurnSlowNotified.delete(doneTk);
+      return;
+    }
+    if (COMPACT_END_EVENTS.has(event.type)) {
+      if (typeof event.payload.spanId === "string") compactWaitNotified.delete(event.payload.spanId);
+      return;
+    }
+    if (event.type === "llm.compacting") {
+      notifyCompactWait(event.payload);
       return;
     }
     if (event.type !== "llm.tool_slow") return;
@@ -4175,11 +4227,9 @@ const routeCompletion = async (
   // threadKey(dashboard:*)이면서 job.channel 이 canonical 과 다를 때만(telegram/cli發 매니저)
   // session 을 실어 정규화한다 → route 가 (SESSION_STORAGE_CHANNEL, job.threadKey) 로 키잉해
   // 이전 유저턴과 **동일 세션 정체성**(resume/transcript 파편화 해소). ★내부 파생 스레드
-  // (scheduler:/worker:/endpoint: 등)·대시보드發(이미 canonical)은 idChannel===job.channel →
+  // (scheduler:/worker:/endpoint: 등)·대시보드發(이미 canonical)은 정규화 채널 === job.channel →
   // session 미부여 = 현행 passthrough(스케줄러·서브에이전트 세션 정체성 무변경, 회귀 0).
-  // channelAddress 는 캡처된 배달 좌표(dest.target)로 재확인 — route 의 setSessionChannelMeta
-  // 가 last_channel_target 을 null 로 덮어쓰지 않게(telegram chatId 보존).
-  const idChannel = canonicalSessionChannel(job.threadKey, job.channel);
+  // 주소는 보고 좌표가 이 턴의 채널과 같을 때만 싣는다(`jobTurnSession` — 점검·알림 턴과 같은 한 함수).
   // 파일도 글 보고와 같은 발원 세션으로 묶는다 — 파일에 답글을 달면 매니저를 띄운 세션으로 돌아온다.
   const completionSendAttachment = attachmentSenderFor(dest.channel, dest.target ?? null, notifySessionThreadKey(job.threadKey), jobSessionLabel(job.threadKey).labelSession);
   // 선택지도 같은 좌표로 — 없으면 이 턴의 선택지가 «함께 보낼 채널» 에만 가고 이 대화엔 안 뜬다(2026-10-01).
@@ -4195,14 +4245,7 @@ const routeCompletion = async (
       late: lateUserMessages,
       ...(job !== found && summonerJobId !== undefined ? { summonerLabel: jobs.get(summonerJobId)?.label ?? summonerJobId } : {}),
     }),
-    ...(idChannel !== job.channel
-      ? {
-          session: {
-            explicitSessionId: job.threadKey,
-            ...(dest.target !== null ? { channelAddress: dest.target } : {}),
-          },
-        }
-      : {}),
+    ...jobTurnSession(job, dest),
     // 내부 기원 표식 — 핸들러가 `channel.message.in` 관측 발행을 스킵(스캐폴딩 텍스트가
     // 대시보드에 "나(user)"로 새는 걸 차단). 라우팅·직렬화 등 나머지는 실 인바운드와 동일.
     synthetic: true,

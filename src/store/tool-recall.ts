@@ -5,7 +5,11 @@
  *  답했다(09-29 재현 — 1턴에 읽은 파일 속 값). 원문은 `turn_items` 에 그대로 남아 있으니(정리 ≠ 삭제) 다시 읽을 길만 있으면 된다.
  * ★범위 = **이 대화**뿐이다: 같은 (channel, threadKey) 의 세션이고 `/clear`·스케줄 경계 뒤. 다른 대화는 `search_conversations` 의
  *  몫이다 — 자동 회수와 섞으면 남의 대화 결과가 이 대화 기억처럼 들어온다.
- * ★돌려주는 것은 **저장된 그대로**다(진입 상한 16K — 아주 긴 결과는 앞·뒤만 · 비밀값 가림, `collectTurnItems`). 그 뒤 파일이 바뀌었을 수 있다.
+ * ★돌려주는 것은 **저장된 그대로**다(가린 보존본 — 보존 상한 100,000자, 넘으면 앞·뒤와 «회수 불가» 표식 · `collectTurnItems`). 그 뒤 파일이 바뀌었을 수 있다.
+ *  (2026-11-19 전엔 진입 상한 16K 로 자른 값이 저장돼 가운데를 되찾을 수 없었다 — 그 시기 기록은 그대로다.)
+ * ★참조 두 가지: 저장 참조 `<기록id>#<순번>` · 실행 참조 `r<토큰>.<순번>`(그 턴에 모델 입력에서 생략된 결과 — 저장 항목의 `ref`).
+ *  실행 참조는 진행 중인 턴이면 어댑터의 실행 보관함(`tool-recall-mcp.ts`)이, 끝난 턴이면 여기가 읽는다.
+ * ★응답 한 번의 크기는 **응답 JSON 전체**로 맞춘다(`toolRecallResponse`) — 본문만 맞추면 인자·메타·이스케이프로 진입 상한을 넘어 다시 잘린다.
  * ★참조는 `<기록 id>#<저장 순번>`(transcript_id·seq) — 한 턴에 같은 call_id 가 둘이어도 갈리지 않는다(적대 검토). 요약 접기가 같은
  *  함수(`toolResultRef`)로 만든다. 틀린 참조·다른 대화·경계 이전은 **비슷한 것으로 대신하지 않고** 사유와 함께 거절한다.
  */
@@ -13,6 +17,9 @@ import type { ChannelName } from "../channels/types.js";
 import { getContextBoundary, getDb } from "./sessions.js";
 import { memberClause, scopeHasRow, threadScope, type ThreadScope } from "./thread-members.js";
 import type { CodexTurnItem } from "./memory.js";
+import { RUN_REF_RE } from "../core/llm-runtime/tool-output-ledger.js";
+import { TOOL_OUTPUT_ENTRY_CAP } from "../core/llm-runtime/tool-output-limits.js";
+import { redactSecrets } from "../core/outbound-sanitize.js";
 
 type Call = Extract<CodexTurnItem, { type: "function_call" }>;
 type Output = Extract<CodexTurnItem, { type: "function_call_output" }>;
@@ -29,19 +36,24 @@ export interface ToolRecallHit {
   snippet: string;
 }
 
+export type ToolRecallFailure = { ok: false; reason: "bad_ref" | "not_found" | "other_conversation" | "before_boundary" | "not_tool_result"; ref: string };
+
+/** 결과 한 건 전부(페이지 전) — 실행 보관함과 저장본이 같은 모양으로 넘긴다. */
+export type ToolRecallLoaded = { ok: true; ref: string; at: number; tool: string; args: string; text: string } | ToolRecallFailure;
+
 export type ToolRecallRead =
   | { ok: true; ref: string; at: number; tool: string; args: string; chars: number; offset: number; text: string; nextOffset?: number }
-  | { ok: false; reason: "bad_ref" | "not_found" | "other_conversation" | "before_boundary" | "not_tool_result"; ref: string };
+  | ToolRecallFailure;
 
-/** 한 번에 돌려주는 본문 상한 — 저장본은 건당 16K자 안팎이라 대개 한 번에 끝난다. */
-export const TOOL_RECALL_READ_CHARS = 20_000;
+/** 재조회 응답에 인자를 전문으로 싣는 상한 — 넘으면 앞부분 + `part:"args"` 로 이어 읽기. 예산의 1/16 을 넘지 않는다(이스케이프 6배여도 응답 안). */
+export const TOOL_RECALL_ARGS_INLINE = 1_000;
 /** 검색 목록의 기본 상한. */
 export const TOOL_RECALL_LIST_LIMIT = 10;
 /** 전체 적중 수를 세는 상한 — 넘으면 «이 수 이상» 으로만 알린다(큰 대화에서 끝까지 세느라 루프를 멈추지 않게, 적대 재검토 P2). */
 export const TOOL_RECALL_COUNT_CAP = 1_000;
 /** 검사용 계수 — 턴 읽기·조각 만들기 횟수(N+1 이 되살아나면 검사가 본다). */
-const stats = { turnLoads: 0, snippets: 0 };
-export const __toolRecallStatsForTest = (): { turnLoads: number; snippets: number } => ({ ...stats });
+const stats = { turnLoads: 0, snippets: 0, resultLoads: 0 };
+export const __toolRecallStatsForTest = (): { turnLoads: number; snippets: number; resultLoads: number } => ({ ...stats });
 const ARGS_PREVIEW = 200;
 const SNIPPET_SIDE = 150;
 
@@ -241,40 +253,207 @@ export const listFoldedToolResults = (
 /** 접힌 결과 목록을 찾으며 거꾸로 훑을 **도구 기록이 있는** 최대 턴 수 — 긴 결과가 드문 대화에서도 파싱량이 묶인다. */
 export const FOLDED_SCAN_TURNS = 400;
 
-/** 참조로 결과 전문을 읽는다 — 이 대화·경계 뒤의 도구 결과만. 인자도 **전문**을 돌려준다(접기가 인자도 참조로 줄인다). */
-export const readThreadToolResult = (
-  channel: ChannelName,
-  threadKey: string,
-  ref: string,
-  offset = 0,
-): ToolRecallRead => {
-  const m = /^(\d+)#(\d+)$/.exec(ref.trim());
+/**
+ * 대상 결과와 **짝 호출** — JS 로는 같은 `call_id` 행만 파싱한다. 짝 규칙은 `turnTools` 와 같다(같은 `call_id` 중 먼저 열린 호출) —
+ *  같은 `call_id` 행만 보면 같은 답이다.
+ * ★비용(2026-11-19 구현 검토 R1 ②): `call_id` 색인이 없어 SQLite 는 그 턴의 대상 앞 행을 읽고 `json_extract` 한다 — **턴 크기에 비례**한다
+ *  (색인·열 추가는 스키마 변경이라 이번 범위 밖). 그래서 이어 읽기마다 반복하지 않게 재조회 도구가 한 실행 안에서 꺼낸 결과를 들고 있다
+ *  (`tool-recall-mcp.ts`) — 한 결과를 끝까지 읽는 데 이 조회는 한 번이다.
+ */
+const pairOf = (tid: number, seq: number): { out: Output; call?: Call } | undefined => {
+  const item = getDb().prepare(`SELECT item FROM turn_items WHERE transcript_id = ? AND seq = ?`).get(tid, seq) as { item: string } | undefined;
+  const out = item === undefined ? undefined : parse(item.item);
+  if (out?.type !== "function_call_output") return undefined;
+  const rows = getDb()
+    .prepare(`SELECT seq, item FROM turn_items WHERE transcript_id = ? AND seq <= ? AND json_extract(item, '$.call_id') = ? ORDER BY seq`)
+    .all(tid, seq, out.call_id) as { seq: number; item: string }[];
+  const open: Call[] = [];
+  for (const r of rows) {
+    const it = parse(r.item);
+    if (it?.type === "function_call") open.push(it);
+    else if (it?.type === "function_call_output") {
+      const c = open.shift();
+      if (r.seq === seq) return { out, ...(c !== undefined ? { call: c } : {}) };
+    }
+  }
+  return { out };
+};
+
+const loadAt = (tid: number, seq: number, ref: string, ts: number): ToolRecallLoaded => {
+  stats.resultLoads += 1;
+  const item = getDb().prepare(`SELECT item FROM turn_items WHERE transcript_id = ? AND seq = ?`).get(tid, seq) as { item: string } | undefined;
+  if (item === undefined) return { ok: false, reason: "not_found", ref };
+  if (parse(item.item)?.type !== "function_call_output") return { ok: false, reason: "not_tool_result", ref };
+  const pair = pairOf(tid, seq);
+  if (pair === undefined) return { ok: false, reason: "not_found", ref };
+  return { ok: true, ref, at: ts, tool: pair.call?.name ?? "", args: pair.call?.arguments ?? "", text: pair.out.output };
+};
+
+/**
+ * 참조로 결과 한 건 전부를 꺼낸다 — 이 대화·경계 뒤의 도구 결과만. 인자도 **전문**(접기가 인자도 참조로 줄인다).
+ * 실행 참조(`r<토큰>.<순번>`)는 **끝난 턴의 저장본**에서 찾는다(진행 중인 턴은 실행 보관함 몫) — 저장 항목의 `ref` 를 행 머리로
+ *  찾는다(`collectTurnItems` 가 `type` 바로 뒤에 둔다). 다른 대화·경계 이전은 사유와 함께 거절한다.
+ */
+export const loadThreadToolResult = (channel: ChannelName, threadKey: string, ref: string): ToolRecallLoaded => {
+  const r = ref.trim();
+  const { members, boundary } = scopeOf(channel, threadKey);
+  if (RUN_REF_RE.test(r)) {
+    const scope = memberClause(members, "t");
+    const hit = getDb()
+      .prepare(
+        `SELECT ti.transcript_id AS tid, ti.seq AS seq, t.ts AS ts FROM turn_items ti JOIN transcripts t ON t.id = ti.transcript_id
+          WHERE ${scope.sql} AND ti.item LIKE ? ORDER BY ti.transcript_id DESC LIMIT 1`,
+      )
+      .get(...scope.params, `{"type":"function_call_output","ref":${JSON.stringify(r)},%`) as { tid: number; seq: number; ts: number } | undefined;
+    if (hit === undefined) return { ok: false, reason: "not_found", ref };
+    if (hit.ts <= boundary) return { ok: false, reason: "before_boundary", ref };
+    return loadAt(hit.tid, hit.seq, ref, hit.ts);
+  }
+  const m = /^(\d+)#(\d+)$/.exec(r);
   if (m === null) return { ok: false, reason: "bad_ref", ref };
   const tid = Number(m[1]), seq = Number(m[2]);
   const row = getDb()
     .prepare(`SELECT ts, claude_session_id AS sid FROM transcripts WHERE id = ?`)
     .get(tid) as { ts: number; sid: string } | undefined;
   if (row === undefined) return { ok: false, reason: "not_found", ref };
-  const { members, boundary } = scopeOf(channel, threadKey);
   if (!scopeHasRow(members, tid)) return { ok: false, reason: "other_conversation", ref };
   if (row.ts <= boundary) return { ok: false, reason: "before_boundary", ref };
-  const item = getDb().prepare(`SELECT item FROM turn_items WHERE transcript_id = ? AND seq = ?`).get(tid, seq) as { item: string } | undefined;
-  if (item === undefined) return { ok: false, reason: "not_found", ref };
-  if (parse(item.item)?.type !== "function_call_output") return { ok: false, reason: "not_tool_result", ref };
-  const pair = turnTools(tid).outputs.get(seq);
-  if (pair === undefined) return { ok: false, reason: "not_found", ref };
-  const text = pair.out.output;
-  const start = Math.max(0, Math.min(offset, text.length));
-  const end = Math.min(text.length, start + TOOL_RECALL_READ_CHARS);
+  // 성공하면 **정규형 참조**를 돌려준다 — `0012#03` 처럼 앞에 0 을 붙인 긴 참조(query 칸은 200자까지)를 그대로 되돌리면 응답 뼈대가
+  //  커져 낮은 상한에서 최소 응답도 넘쳤다(구현 검토 R9).
+  return loadAt(tid, seq, toolResultRef(tid, seq), row.ts);
+};
+
+const clipArgs = (s: string, n: number): string => {
+  let head = s.slice(0, n);
+  if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
+  return `${head}…`;
+};
+
+/**
+ * 이 응답 글이 결과 진입에서 **다시 잘리지 않는가** — 진입은 결과를 한 번 더 가려 저장하고 그 가린 글이 상한을 넘으면 앞·뒤 보기로 자른다.
+ *  가림은 멱등이 아니라(`Bearer [REDACTED]` 를 다시 가리면 `]` 가 붙는다) 가린 뒤 길이가 늘 수 있어 둘 다 잰다(구현 검토 R1 ①·R6·R7).
+ *  재조회 응답(참조 페이지·검색)이 같은 판정을 쓴다.
+ */
+export const fitsToolEntry = (json: string, budget: number = TOOL_OUTPUT_ENTRY_CAP): boolean =>
+  json.length <= budget && redactSecrets(json).length <= budget;
+
+/**
+ * **재조회 응답 한 번** — 결과 본문(또는 `part:"args"` 면 인자)의 `offset` 부터, 응답 JSON **전체**가 `budget` 자 안에 드는 만큼
+ * (2026-11-19 설계 §3-1). 메타·인자·JSON 이스케이프를 다 넣어 잰다 — 본문만 맞추면 진입 상한에서 다시 잘린다(개발클로드 회신 §1-5).
+ * 끝 표지: 더 있으면 `truncated:true`·`nextOffset`, 끝이면 `eof:true`. 서로게이트 쌍을 쪼개지 않고, 한 번에 최소 1자 나아간다.
+ * 길이·offset 은 저장된(가린) 보존본 기준이다.
+ */
+export const toolRecallResponse = (
+  r: Extract<ToolRecallLoaded, { ok: true }>,
+  opts: { offset?: number; part?: "output" | "args" } = {},
+  budget: number = TOOL_OUTPUT_ENTRY_CAP,
+): Record<string, unknown> => {
+  const part = opts.part ?? "output";
+  const body = part === "args" ? r.args : r.text;
+  const start = Math.max(0, Math.min(opts.offset ?? 0, body.length));
+  const inline = Math.min(TOOL_RECALL_ARGS_INLINE, Math.floor(budget / 16));
+  const argsField = part === "args"
+    ? {}
+    : r.args.length <= inline
+      ? { args: r.args }
+      : { args: clipArgs(r.args, inline), argsChars: r.args.length, argsTruncated: true, argsNote: '인자 전문은 part:"args" 로 이어 읽습니다' };
+  // `lean` = 메타가 예산을 다 먹을 때의 최소 응답(시각·도구·인자 미리보기 없이, 인자 길이만) — 상한을 아주 낮게 둔 설정에서도 응답이 상한 안(구현 검토 R8).
+  let lean = false;
+  const build = (end: number): Record<string, unknown> => ({
+    ok: true,
+    ref: r.ref,
+    ...(lean ? (part === "args" ? {} : { argsChars: r.args.length }) : {
+      at: new Date(r.at).toISOString(),
+      // 도구 이름은 저장 때 가리지 않는다(호출 항목의 `name`) — 되돌려 줄 땐 가린다(구현 검토 R3·R4).
+      tool: redactSecrets(r.tool),
+      ...argsField,
+    }),
+    part,
+    chars: body.length,
+    offset: start,
+    ...(end < body.length ? { truncated: true, nextOffset: end } : { eof: true }),
+    text: body.slice(start, end),
+  });
+  const fits = (end: number): boolean => fitsToolEntry(JSON.stringify(build(end)), budget);
+  const pick = (): Record<string, unknown> | undefined => {
+    if (fits(body.length)) return build(body.length);
+    // 서로게이트 쌍을 쪼개지 않는 끝 — 후보를 **고친 뒤에** 잰다(고친 끝을 다시 안 재면 가린 뒤 길이가 상한을 넘을 수 있었다 — 구현 검토 R7).
+    // 원문 길이는 끝 위치에 단조지만 가린 뒤 길이는 아니다 — 이분 탐색은 «상한 안인 후보» 만 고르고(최대가 아닐 수 있다), 고른 후보는 늘 잰 것이다.
+    let lo = start + 1, hi = body.length - 1, best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (fits(safeEnd(mid))) { best = safeEnd(mid); lo = mid + 1; } else hi = mid - 1;
+    }
+    // 이분 탐색이 못 찾으면 앞에서부터 몇 글자만 더 찾는다(판정마다 응답 전체를 가려 재므로 바운드).
+    if (best < 0) for (let e = start + 1; e < Math.min(body.length, start + 65) && best < 0; e++) if (fits(safeEnd(e))) best = safeEnd(e);
+    return best < 0 ? undefined : build(best);
+  };
+  const safeEnd = (end: number): number => (end - 1 > start && /[\uD800-\uDBFF]/.test(body.charAt(end - 1)) ? end - 1 : end);
+  const full = pick();
+  if (full !== undefined) return full;
+  lean = true;
+  // 최소 응답으로도 한 글자가 안 들어가면 상한이 응답 뼈대보다 작은 설정이다(지원 밖) — 그래도 한 글자 나아가는 응답을 낸다.
+  return pick() ?? build(start + 1);
+};
+/**
+ * **검색 응답** — 적중 목록을 응답 JSON 전체(원문·가린 뒤 둘 다)가 `budget` 안에 들 때까지 뒤에서부터 줄인다(전체 수는 그대로, 잘림 표시).
+ *  요청에서 온 검색어와 저장된 도구 이름은 가려서 돌려준다(구현 검토 R2·R4). 적중을 다 빼도 넘치면(상한을 아주 낮게 둔 설정) 검색어·안내 없이
+ *  수만 낸다(R8). 0건이면 그 뜻을 말한다 — 기록은 Codex·OpenAI 턴의 도구 결과만 남아, 순수 Claude 대화에선 언제나 0건이다(적대 재검토 P2).
+ */
+export const toolRecallSearchResponse = (
+  s: ReturnType<typeof searchThreadToolResults>,
+  query: string,
+  budget: number = TOOL_OUTPUT_ENTRY_CAP,
+): Record<string, unknown> => {
+  const hits = s.hits.map((h) => ({ ...h, tool: redactSecrets(h.tool), at: new Date(h.at).toISOString() }));
+  const respond = (shown: typeof hits): Record<string, unknown> => ({
+    ok: true,
+    query: redactSecrets(query),
+    total: s.total,
+    ...(s.totalCapped ? { totalAtLeast: true } : {}),
+    truncated: s.totalCapped || s.total > shown.length,
+    hits: shown,
+    ...(s.total === 0 ? { note: "이 대화에 보관된 도구 결과 중에는 없습니다(보관은 Codex·OpenAI 모델이 실행한 도구 결과만 — Claude 로 실행한 결과는 여기 없습니다)." } : {}),
+  });
+  let shown = hits;
+  while (shown.length > 0 && !fitsToolEntry(JSON.stringify(respond(shown)), budget)) shown = shown.slice(0, -1);
+  if (fitsToolEntry(JSON.stringify(respond(shown)), budget)) return respond(shown);
+  return { ok: true, total: s.total, ...(s.totalCapped ? { totalAtLeast: true } : {}), truncated: s.total > 0, hits: [] };
+};
+
+/**
+ * **실패 응답** — 요청에서 온 참조는 가리고 짧게 되돌린다(구현 검토 R2·R9). 응답 JSON 전체가 상한을 넘으면(낮은 상한·이스케이프가 많은 참조)
+ *  참조 되돌림을 빼고, 그래도 넘치면 사유만 — 재조회 응답은 실패도 상한 안이다(R10).
+ */
+export const toolRecallFailureResponse = (r: ToolRecallFailure, note: string | undefined, budget: number = TOOL_OUTPUT_ENTRY_CAP): Record<string, unknown> => {
+  const echo = redactSecrets(r.ref);
+  const tries: Record<string, unknown>[] = [
+    { ok: false, unavailable: r.reason, ref: echo.length > 48 ? `${echo.slice(0, 48)}…` : echo, ...(note !== undefined ? { note } : {}) },
+    { ok: false, unavailable: r.reason, ...(note !== undefined ? { note } : {}) },
+    { ok: false, unavailable: r.reason },
+  ];
+  return tries.find((t) => fitsToolEntry(JSON.stringify(t), budget)) ?? tries[tries.length - 1]!;
+};
+
+/** 참조로 결과를 한 페이지 읽는다 — `loadThreadToolResult` + `toolRecallResponse` 와 같은 페이지(검사·내부 호출용). 인자는 전문. */
+export const readThreadToolResult = (
+  channel: ChannelName,
+  threadKey: string,
+  ref: string,
+  offset = 0,
+): ToolRecallRead => {
+  const r = loadThreadToolResult(channel, threadKey, ref);
+  if (!r.ok) return r;
+  const page = toolRecallResponse(r, { offset });
   return {
     ok: true,
     ref,
-    at: row.ts,
-    tool: pair.call?.name ?? "",
-    args: pair.call?.arguments ?? "",
-    chars: text.length,
-    offset: start,
-    text: text.slice(start, end),
-    ...(end < text.length ? { nextOffset: end } : {}),
+    at: r.at,
+    tool: r.tool,
+    args: r.args,
+    chars: r.text.length,
+    offset: page.offset as number,
+    text: page.text as string,
+    ...(typeof page.nextOffset === "number" ? { nextOffset: page.nextOffset } : {}),
   };
 };

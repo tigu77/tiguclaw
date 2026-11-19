@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { assertIsolated, fakeNetwork, loadPluginModule, pinModelForTest } from "./_framework.js";
 import { registerAuthProvider } from "../../core/llm-runtime/auth-registry.js";
-import { initStore, getSessionChannelMeta } from "../../store/sessions.js";
+import { initStore, getSessionChannelMeta, saveSession, setSessionChannelMeta } from "../../store/sessions.js";
 import { initEventBus } from "../../core/eventbus.js";
 import { registerChannelOutbound } from "../../core/channel-outbound.js";
 import type { IncomingMessage } from "../../channels/types.js";
@@ -114,12 +114,19 @@ wj.registerWorkerHandler(async (msg: IncomingMessage) => {
 const runCase = async (
   name: string,
   job: { threadKey: string; channel: string; notifyDest?: { channel: string; target: string | null } },
+  /** 사람이 마지막으로 들어온 좌표(세션 메타) — 합성 턴이 이것을 바꾸지 않는지 본다(2026-11-19). */
+  userMeta?: { lastChannel: string; lastChannelTarget: string },
 ): Promise<Record<string, unknown>> => {
   wj.__resetJobsForTest();
   attached.length = 0;
   published.length = 0;
   bSends.length = 0;
   routeLines.length = 0;
+  sent.length = 0;
+  if (userMeta !== undefined) {
+    saveSession({ channel: "http-bridge", threadKey: job.threadKey, claudeSessionId: `regr-${name}`, model: null, systemPromptHash: null });
+    setSessionChannelMeta({ channel: "http-bridge", threadKey: job.threadKey, lastChannel: userMeta.lastChannel as never, lastChannelTarget: userMeta.lastChannelTarget });
+  }
   const done = new Promise<void>((r) => { bDone = r; });
   const aId = wj.registerJob({
     label: `A-${name}`, task: "A 작업", threadKey: job.threadKey, channel: job.channel as never, channelUserId: job.threadKey,
@@ -139,6 +146,7 @@ const runCase = async (
     metaTarget: meta?.lastChannelTarget ?? null,
     metaChannel: meta?.lastChannel ?? null,
     routes: [...routeLines],
+    sent: sent.map(({ channel, target }) => ({ channel, target })),
   };
 };
 
@@ -191,10 +199,24 @@ try {
   // 대화는 대시보드, 결과는 텔레그램(감시처럼) — 채널·좌표 쌍이 섞이면 안 된다
   out.cross = await runCase("cross", { threadKey: "dashboard:regr-chain-cross", channel: "http-bridge", notifyDest: { channel: "telegram", target: "chat-7" } });
   // 텔레그램에서 띄운 A(세션 정규화 갈래)
-  out.tg = await runCase("tg", { threadKey: "dashboard:regr-chain-tg", channel: "telegram", notifyDest: { channel: "telegram", target: "chat-9" } });
+  out.tg = await runCase("tg", { threadKey: "dashboard:regr-chain-tg", channel: "telegram", notifyDest: { channel: "telegram", target: "chat-9" } }, { lastChannel: "telegram", lastChannelTarget: "chat-user" });
+  // ★뉴돌쇠 11-18·19 모양 — 예약 대화 안 실행에서 띄운 잡: 잡 채널 = 대화의 마지막 인입(텔레그램) · 보고 좌표 = 예약 결과 목적지(대시보드 세션)
+  out.sched = await runCase("sched", { threadKey: "dashboard:regr-chain-sched", channel: "telegram", notifyDest: { channel: "http-bridge", target: "dashboard:regr-chain-sched" } }, { lastChannel: "telegram", lastChannelTarget: "chat-user" });
   // 보고 좌표가 없는 옛 잡 — 종전 폴백 그대로
   out.none = await runCase("none", { threadKey: "dashboard:regr-chain-none", channel: "http-bridge" });
   out.checkin = await runCheckin();
+  // 세션 메타를 정하는 턴 판정 — 출처별(사람 인입·끼워넣기 재주입은 정하고, 내부 합성 턴은 안 정한다)
+  const { capturesSessionChannelMeta } = await import("../../core/router.js");
+  const { buildReinjectMessage } = await import("../../core/steering.js");
+  const userMsg = { channel: "telegram", channelUserId: "u", threadKey: "dashboard:x", text: "a", receivedAt: 1, reply: async () => {} } as unknown as IncomingMessage;
+  const reinjected = buildReinjectMessage(userMsg, [{ raw: "남은 말" } as never]);
+  out.metaPolicy = {
+    none: capturesSessionChannelMeta({}),
+    inbound: capturesSessionChannelMeta({ turnOrigin: "inbound" }),
+    reinjected: reinjected !== null && reinjected.synthetic === true && capturesSessionChannelMeta(reinjected),
+    internal: (["worker", "subagent", "worker-completion", "worker-checkin", "worker-notice", "synthetic-other", "fork-carry", "file-watch", "schedule", "unknown"] as const)
+      .filter((o) => capturesSessionChannelMeta({ turnOrigin: o })),
+  };
   out.cooldown = await runCooldown(); // ★마지막 — 어댑터를 바꾸고 codex 를 쉬게 한다
 } catch (e) {
   error = e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);

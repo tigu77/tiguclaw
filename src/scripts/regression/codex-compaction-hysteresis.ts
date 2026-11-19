@@ -132,10 +132,11 @@ export const check: RegressionCheck = {
     const breaks = (loopBody.match(/\n\s*break;/g) ?? []).length >= 2;
     // ★재압축은 쿨다운이 **아닐 때** 돈다. 반전하면 이중 결함이다 — 정상일 땐 영영 안 돌고
     //  (상한 무력화), 막힌 백엔드일 때만 때린다(A15).
-    const recompactBlock = src.slice(src.indexOf("for (let rp = 0"), src.indexOf("if (foldedTurnsTotal"));
+    const recompactBlock = src.slice(src.indexOf("for (let rp = 0"), src.indexOf("// 답을 기다리는 요청이 일부러 미룬 것"));
     const cooldownPolarity = /remainingMs\([^)]*\)\s*\?\?\s*0\)\s*!==\s*0\)\s*break;/.test(recompactBlock);
-    // ★알림 발행 조건 — 접은 게 있을 때만. `>= 0` 이면 압축 안 해도 매 턴 스팸(A4).
-    const publishGuard = /if\s*\(foldedTurnsTotal\s*>\s*0\)/.test(src);
+    // ★알림 발행 조건 — 받아들여진 결과가 있을 때만 완료(`>= 0` 이면 압축 안 해도 매 턴 스팸, A4). 2026-11-19 #3 부터 완료 알림은
+    //  기다리는 구간의 끝(`closeProgressSpan`)이 낸다 — 접은 턴 또는 재압축이 있을 때만 «done».
+    const publishGuard = /const success = s\.foldedTurns > 0 \|\| s\.recompacted > 0;/.test(src) && /outcome === "done"\s*\?\s*\{\s*type: "llm\.compacted"/.test(src);
     // ★watermark 는 **성공했을 때만** 전진한다 — 실행해서 본다(A11: 원문 영구 유실).
     const base = { summary: "옛 요약", watermark: 10, foldedTurns: 1, foldedChars: 100 };
     const planStub = { toFold: [1, 2, 3], nextWatermark: 99 };
@@ -163,15 +164,17 @@ export const check: RegressionCheck = {
     // 3번 떴다 — 사용자에겐 한 번의 정리인데 **내부 패스 수가 새어 나왔다**. 발행이 하나뿐이고
     // 패스별 값(`plan.toFold.length`)이 아니라 **누적값**을 싣는지 본다.
     const publishes = (src.match(/type:\s*"llm\.compacted"/g) ?? []).length;
+    //  (2026-11-19 #3) 수치는 구간에 모인 합계(`s.foldedTurns`·`s.foldedChars` — 패스마다 더한다).
     const usesTotals =
-      /type:\s*"llm\.compacted"[\s\S]{0,320}foldedTurns:\s*foldedTurnsTotal/.test(src) &&
-      /type:\s*"llm\.compacted"[\s\S]{0,360}foldedChars:\s*foldedCharsTotal/.test(src);
-    // 발행이 루프 **밖**인가 — 안이면 패스마다 나간다.
+      /type:\s*"llm\.compacted"[\s\S]{0,320}foldedTurns:\s*s\.foldedTurns/.test(src) &&
+      /type:\s*"llm\.compacted"[\s\S]{0,360}foldedChars:\s*s\.foldedChars/.test(src) &&
+      /progress\.span\.foldedTurns \+= /.test(src);
+    // 발행이 루프 **밖**인가 — 안이면 패스마다 나간다. (#3) 구간 끝 함수에 있고, 드라이버 본문엔 없다.
     const loopStart = src.indexOf("while (plan.needed");
-    const loopEnd = src.indexOf("if (foldedTurnsTotal"); // 발행 가드 = 루프 뒤
+    const driverAt = src.indexOf("const compactThreadHistoryUnlocked");
     const publishAt = src.indexOf('type: "llm.compacted"');
     const publishOutsideLoop =
-      loopStart !== -1 && loopEnd > loopStart && publishAt > loopEnd;
+      loopStart !== -1 && driverAt !== -1 && publishAt !== -1 && publishAt < driverAt && src.indexOf("closeProgressSpan") < driverAt;
 
     return [
       assert(

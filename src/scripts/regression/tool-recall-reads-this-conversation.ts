@@ -66,8 +66,9 @@ export const check: RegressionCheck = {
     const oaSrc = await src("../../core/llm-runtime/adapters/openai-agents-sdk.ts");
     const oaWired = /const toolRec = openAiTurnToolItem\(ev\);\s*if \(toolRec !== undefined\) turnToolItems\.push\(toolRec\);/.test(oaSrc) &&
       /\.\.\.openAiTurnItemsField\(turnToolItems,\s*text\)/.test(oaSrc);
-    const regs = await Promise.all(["openai-agents-sdk.ts", "openai-codex-oauth.ts", "claude-agent-sdk.ts"].map(async (f) =>
-      /createToolRecallMcpServer\(input\)/.test(await src(`../../core/llm-runtime/adapters/${f}`))));
+    // Codex 는 이 실행의 결과 보관함도 같이 넘긴다(2026-11-19 — 같은 턴 회수). 동작은 `tool-output-same-turn-recall` 이 실경로로 본다.
+    const regs = await Promise.all(([["openai-agents-sdk.ts", /createToolRecallMcpServer\(input\)/], ["openai-codex-oauth.ts", /createToolRecallMcpServer\(input, toolOutputLedger\)/], ["claude-agent-sdk.ts", /createToolRecallMcpServer\(input\)/]] as const).map(async ([f, re]) =>
+      re.test(await src(`../../core/llm-runtime/adapters/${f}`))));
     // OpenAI 는 도구를 쓰는 턴에만(lean 턴 = 도구 0) — 조건이 뒤집히면 도구가 lean 턴에만 붙는다(적대 검토 O6).
     const oaGate = /if \(!toolsNone\) \{\s*mcpServers\.push\(\s*await adaptClaudeMcpServer\(\s*createToolRecallMcpServer\(input\)/.test(oaSrc);
 
@@ -75,7 +76,8 @@ export const check: RegressionCheck = {
     const { initStore, getDb } = await import("../../store/sessions.js");
     const { appendApiTurn } = await import("../../store/memory.js");
     const { resetThreadContext } = await import("../../store/thread-reset.js");
-    const { searchThreadToolResults: search, readThreadToolResult: read, TOOL_RECALL_READ_CHARS } = await import("../../store/tool-recall.js");
+    const { searchThreadToolResults: search, readThreadToolResult: read } = await import("../../store/tool-recall.js");
+    const { TOOL_OUTPUT_ENTRY_CAP } = await import("../../core/llm-runtime/tool-output-limits.js");
     initStore();
     const CH = "http-bridge" as const;
     const call = (id: string, name: string, args: unknown) => ({ type: "function_call" as const, call_id: id, name, arguments: JSON.stringify(args) });
@@ -152,7 +154,9 @@ export const check: RegressionCheck = {
     const call$ = async (a: unknown) => JSON.parse((await h(a, {})).content.map((c) => c.text ?? "").join("")) as Record<string, unknown>;
     const noArgs = await call$({});
     const badRef = await call$({ ref: "abc" });
-    const viaTool = await call$({ ref: bigRef, offset: TOOL_RECALL_READ_CHARS });
+    const PAGE1 = big1.ok ? (big1.nextOffset ?? 0) : 0;
+    const viaToolRaw = (await h({ ref: bigRef, offset: PAGE1 }, {})).content.map((c) => c.text ?? "").join("");
+    const viaTool = JSON.parse(viaToolRaw) as Record<string, unknown>;
     const refWins = await call$({ ref: newRef, query: "MANY-" });
     const toolSearch = await call$({ query: "NEW-7788" });
     const zero = await call$({ query: "ZERO-HIT-0000" });
@@ -201,9 +205,9 @@ export const check: RegressionCheck = {
       assert("★실경로: 2턴 검색이 1턴의 Read 결과를 찾고 참조를 준다", R.search?.ok === true && R.search.total === 1 && R.search.hits?.[0]?.tool === "Read" && (R.search.hits[0].snippet ?? "").includes(R.mark ?? "∅"), R.search),
       assert("★실경로: 3턴에 그 참조로 당시 결과 전문을 읽는다", R.read?.ok === true && R.read.ref === R.ref && (R.read.text ?? "").includes(R.mark ?? "∅"), { ref: R.ref, read: R.read?.ok }),
       assert("★실경로: 다른 대화에서는 같은 참조가 거절되고(other_conversation) 같은 표식도 안 찾아진다", R.otherRead?.ok === false && R.otherRead.unavailable === "other_conversation" && R.otherSearch?.ok === true && R.otherSearch.total === 0, { otherRead: R.otherRead, otherSearch: R.otherSearch }),
-      assert("★OpenAI 변환(실행): 호출·결과 이벤트 → 짝 맞춘 기록 · 결과는 진입 상한 · 비밀값 가림 · 짝 없는 호출과 잡음은 버림",
+      assert("★OpenAI 변환(실행): 호출·결과 이벤트 → 짝 맞춘 기록 · 결과는 가린 보존본 전체(2026-11-19 — 진입 상한으로 자르지 않는다) · 비밀값 가림 · 짝 없는 호출과 잡음은 버림",
         oaItems.length === 4 && oaItems[0]?.type === "function_call" && (oaItems[0] as { arguments: string }).arguments.includes("/a.txt") &&
-          oaOut1 !== undefined && oaOut1.output.length < bigOut.length && oaOut1.output.includes("OA-HEAD") && oaOut1.output.includes("OA-TAIL") &&
+          oaOut1 !== undefined && oaOut1.output === bigOut &&
           !JSON.stringify(oaItems).includes("sk-proj-REGRRECALLABCDEFGHIJKLMNOP12") && oaEmpty.turnItems === undefined,
         { n: oaItems.length, out1: oaOut1?.output.length, empty: oaEmpty }),
       assert("★OpenAI 어댑터가 그 변환을 스트림마다 부르고 반환에 싣는다 · 세 어댑터 모두 입력을 통째로 넘겨 등록(대화 식은 도구 한 곳)", oaWired && oaGate && regs.every(Boolean), { oaWired, oaGate, regs }),
@@ -236,14 +240,15 @@ export const check: RegressionCheck = {
       assert("전체 수는 상한(1,000)까지만 세고 «이상» 으로 알린다", capped.total === TOOL_RECALL_COUNT_CAP && capped.totalCapped === true, { total: capped.total, capped: capped.totalCapped }),
       assert("0건이면 그 뜻(보관은 Codex·OpenAI 결과만)을 알린다 — «그런 실행이 없었다» 로 읽지 않게", zero.total === 0 && typeof zero.note === "string" && String(zero.note).includes("Claude"), zero),
       assert("★Claude 에는 접힌 채 실린다(이름만 — 순수 Claude 대화의 매 요청 비용을 안 늘린다)", typeof toolMeta["anthropic/searchHint"] === "string", toolMeta),
-      assert("★긴 결과는 잘렸다고 알리고 이어 읽는다 — 이어 붙이면 원문과 같다",
-        big1.ok && big1.text.length === TOOL_RECALL_READ_CHARS && big1.nextOffset === TOOL_RECALL_READ_CHARS &&
+      assert("★긴 결과는 잘렸다고 알리고 이어 읽는다 — 이어 붙이면 원문과 같다(한 번 분량은 응답 JSON 이 진입 상한 안에 드는 만큼)",
+        big1.ok && big1.text.length > 10_000 && big1.nextOffset === big1.text.length &&
           big2?.ok === true && big3?.ok === true && big3.nextOffset === undefined &&
           big1.text.length + big2.text.length + big3.text.length === 45_000,
         { b1: big1.ok && big1.text.length, b2: big2?.ok && big2.text.length, b3: big3?.ok && big3.text.length }),
       assert("도구 응답: 인자가 없으면 오류, 틀린 참조는 unavailable + 사유 문장", noArgs.ok === false && typeof noArgs.error === "string" && badRef.ok === false && badRef.unavailable === "bad_ref" && typeof badRef.note === "string", { noArgs, badRef }),
       assert("★도구가 offset 을 넘기고 잘림을 알린다 · ref 가 query 보다 우선 · 세션 채널로 대화를 잡는다(입력 채널 아님)",
-        viaTool.ok === true && viaTool.offset === TOOL_RECALL_READ_CHARS && viaTool.truncated === true && viaTool.nextOffset === TOOL_RECALL_READ_CHARS * 2 &&
+        viaTool.ok === true && viaTool.offset === PAGE1 && viaTool.truncated === true && typeof viaTool.nextOffset === "number" && viaTool.nextOffset > PAGE1 &&
+          viaToolRaw.length <= TOOL_OUTPUT_ENTRY_CAP &&
           refWins.ref === newRef && typeof refWins.text === "string" && toolSearch.total === 1,
         { viaTool: { offset: viaTool.offset, truncated: viaTool.truncated, next: viaTool.nextOffset }, refWins: refWins.ref, toolSearch: toolSearch.total }),
       assert("★참조 번호를 query 칸에 넣어도 그 결과를 읽는다(검색 0건으로 포기하지 않게)",

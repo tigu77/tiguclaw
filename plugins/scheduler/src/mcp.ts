@@ -3,7 +3,7 @@
  *
  * tools 5종 (contract §5):
  *  - add_schedule    — cron expression dry-parse + nextRun ISO 응답
- *  - list_schedules  — only_enabled·id(한 건) 옵션 + 각 row 의 next_run ISO 계산
+ *  - list_schedules  — id(한 건 상세·원문) · 요약 목록 페이지(after_id 커서, 진입 상한 안) · only_enabled + 각 row 의 next_run ISO 계산
  *  - update_schedule — 부분 패치 + cron 재검증 + enable/disable 토글 흡수
  *  - delete_schedule — 멱등
  *  - run_schedule    — 지금 한 번 실행(정해진 시각과 같은 실행 경로 — 이력 정책·겹침 방지·목적지 그대로)
@@ -17,6 +17,7 @@
 import { z } from "zod";
 import { listOutboundChannels } from "../../../src/core/channel-outbound.js";
 import { onDemand } from "../../../src/core/llm-runtime/tool-load-policy.js";
+import { TOOL_OUTPUT_ENTRY_CAP } from "../../../src/core/llm-runtime/tool-output-limits.js";
 import {
   createSdkMcpServer,
   tool,
@@ -216,54 +217,113 @@ const addScheduleTool = (turnSession: TurnSession) => tool(
 );
 
 // ★한 건만 읽기 (2026-11-17 뉴돌쇠 관측). 목록이 25,602자까지 커지자 긴 도구 결과의 머리·꼬리 제한에 가운데가 빠져,
-//  저장된 한 건의 지시문을 끝내 대조하지 못했다. 목록 기본 동작은 그대로 두고 id 로 그 한 건만 돌려준다.
-//  ★한 건 자체가 결과 상한보다 긴 경우까지 푸는 것은 아니다(그 경우는 별도 검토 — 이번 관측의 지시문은 약 3,546자).
+//  저장된 한 건의 지시문을 끝내 대조하지 못했다. id 로 그 한 건만 돌려준다(원문 포함 — 모양 종전 그대로).
+// ★목록은 요약 행 + 크기 제한 페이지 (2026-11-19 뉴돌쇠, docs/decisions/2026-11-19-tool-output-recovery-design.md §3-2).
+//  행마다 지시문 원문을 싣던 목록이 22,735자가 되어 진입 상한(16,000자)에 가운데 행들이 빠졌고, «오늘 다른 게시 예약이 없는지»
+//  확인하지 못해 게시가 보류됐다. 목록은 원문 대신 길이·한 줄 미리보기를 싣고, 응답 JSON 이 진입 상한 안에 드는 만큼만 담는다.
+//  ★id 오름차순 커서(`after_id`) — id 는 AUTOINCREMENT 라 재사용되지 않는다. 읽는 내내 있고 조건에 맞는 행은 정확히 한 번 나온다.
+//  한 건이 결과 상한보다 길면 공통 회수(read_past_tool_result)로 이어 읽는다.
+/** 목록 행의 지시문 미리보기 길이(한 줄로 접은 뒤). */
+const PROMPT_PREVIEW_CHARS = 80;
+/** 목록 행의 마지막 오류 길이. */
+const LAST_ERROR_CHARS = 200;
+const clip = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n)}…`);
+
+const nextRunOf = (r: ScheduleRow): string | null => {
+  if (r.triggerType === "once" && r.runAt !== null) return new Date(r.runAt).toISOString();
+  if (r.enabled && r.triggerType === "cron") {
+    const v = validateCronExpr(r.cronExpr, r.timezone);
+    if (v.ok) return v.nextRun;
+  }
+  return null;
+};
+
+/** 한 건 상세 — 저장값 그대로(원문 포함). `id` 조회의 행 모양(종전 그대로). */
+const fullRow = (r: ScheduleRow) => ({
+  id: r.id,
+  label: r.label,
+  trigger_type: r.triggerType,
+  cron_expr: r.cronExpr,
+  timezone: r.timezone,
+  prompt: r.prompt,
+  dest_channel: r.destChannel,
+  dest_target: r.destTarget,
+  enabled: r.enabled,
+  last_fired_at: r.lastFiredAt,
+  last_status: r.lastStatus,
+  last_error: r.lastError,
+  keep_runs: r.keepRuns,
+  report_default: r.reportDefault,
+  next_run: nextRunOf(r),
+  kind: isTimer(r) ? "timer" : "schedule",
+  runs_in: r.originThreadKey ?? `own_session scheduler:${r.id}`,
+});
+
+/** 목록 행 — 원문 대신 길이와 한 줄 미리보기. 원문은 `id` 상세로. */
+const summaryRow = (r: ScheduleRow) => {
+  const { prompt, last_error, ...rest } = fullRow(r);
+  return {
+    ...rest,
+    last_error: last_error === null ? null : clip(last_error, LAST_ERROR_CHARS),
+    prompt_chars: prompt.length,
+    prompt_preview: clip(prompt.replace(/\s+/g, " ").trim(), PROMPT_PREVIEW_CHARS),
+  };
+};
+
+/**
+ * 목록 한 페이지 — `afterId` 보다 큰 id 부터 오름차순, 응답 JSON 이 `budget` 자 안에 드는 만큼(최소 1행 — 한 행이 넘쳐도 진행한다).
+ * `total` = 그 순간 조건에 맞는 전체 수. 더 있으면 `next_after_id`, 끝이면 `complete: true`.
+ * 순수 함수 — 검사가 크기·커서를 직접 잰다.
+ */
+export const scheduleListPage = (
+  rows: readonly ScheduleRow[],
+  afterId: number,
+  budget: number,
+): Record<string, unknown> => {
+  const sorted = [...rows].sort((a, b) => a.id - b.id);
+  const rest = sorted.filter((r) => r.id > afterId);
+  const items: ReturnType<typeof summaryRow>[] = [];
+  const page = (more: boolean) => ({
+    ok: true,
+    total: sorted.length,
+    after_id: afterId,
+    returned: items.length,
+    items,
+    ...(more
+      ? { next_after_id: items[items.length - 1]!.id, note: "더 있습니다 — after_id 에 next_after_id 를 넣어 이어 읽으세요. 지시문 원문은 id 로 한 건씩 봅니다." }
+      : { complete: true }),
+  });
+  for (let i = 0; i < rest.length; i++) {
+    items.push(summaryRow(rest[i]!));
+    const more = i + 1 < rest.length;
+    if (items.length > 1 && JSON.stringify(page(more)).length > budget) {
+      items.pop();
+      return page(true);
+    }
+  }
+  return page(false);
+};
+
 const listSchedulesTool = tool(
   "list_schedules",
-  "등록된 schedule·타이머 목록. only_enabled=true 면 활성만. id 를 주면 그 한 건만 돌려준다(저장된 prompt 원문 확인용 — 목록이 길 때 쓴다). " +
-    "id 와 only_enabled=true 를 함께 주면 둘 다 만족해야 한다(꺼진 건이면 items 가 빈 배열). 없는 id 면 ok:false, error:'not_found'. " +
+  "등록된 schedule·타이머. id 를 주면 그 한 건 상세(저장된 prompt 원문 포함). id 없이 부르면 **요약 목록 한 페이지** — 행마다 prompt 원문 대신 prompt_chars·prompt_preview, id 오름차순. " +
+    "응답에 total(지금 조건에 맞는 전체 수)·returned, 더 있으면 next_after_id(→ 다음 호출의 after_id), 끝이면 complete:true. " +
+    "«다른 예약이 없음» 을 확인해야 할 때만 complete:true 까지 이어 읽으세요(읽는 내내 있던 예약은 정확히 한 번 나온다 · 도중에 바뀐 것은 반영 안 될 수 있다 — 페이지 사이 total 이 달라졌으면 다시 읽으세요). 특정 예약만 다루면 id 로 충분합니다. " +
+    "only_enabled=true 면 활성만. id 와 only_enabled=true 를 함께 주면 둘 다 만족해야 한다(꺼진 건이면 items 가 빈 배열). 없는 id 면 ok:false, error:'not_found'. " +
     "각 row 에 trigger_type ('cron'|'reboot'|'once') + next_run (ISO 또는 null) + kind ('schedule'|'timer') + runs_in 포함. reboot row 는 next_run=null (다음 daemon.boot 까지 대기 의미). once 타이머는 울리면 목록에서 사라진다.",
   {
     only_enabled: z.boolean().optional(),
     id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional().describe("한 건만 볼 때의 schedule id."),
+    after_id: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().describe("목록 이어 읽기 — 직전 응답의 next_after_id. 이 id 보다 큰 것부터."),
   },
   async (args) => {
-    let rows: ScheduleRow[];
     if (args.id !== undefined) {
       const row = getSchedule(args.id);
       if (row === undefined) return okJson({ ok: false, error: "not_found", detail: `no schedule id=${args.id}` });
-      rows = args.only_enabled === true && !row.enabled ? [] : [row];
-    } else {
-      rows = listSchedules({ onlyEnabled: args.only_enabled === true });
+      const rows = args.only_enabled === true && !row.enabled ? [] : [row];
+      return okJson({ ok: true, items: rows.map(fullRow) });
     }
-    const items = rows.map((r) => {
-      let nextRun: string | null = null;
-      if (r.enabled && r.triggerType === "cron") {
-        const v = validateCronExpr(r.cronExpr, r.timezone);
-        if (v.ok) nextRun = v.nextRun;
-      }
-      if (r.triggerType === "once" && r.runAt !== null) nextRun = new Date(r.runAt).toISOString();
-      return {
-        id: r.id,
-        label: r.label,
-        trigger_type: r.triggerType,
-        cron_expr: r.cronExpr,
-        timezone: r.timezone,
-        prompt: r.prompt,
-        dest_channel: r.destChannel,
-        dest_target: r.destTarget,
-        enabled: r.enabled,
-        last_fired_at: r.lastFiredAt,
-        last_status: r.lastStatus,
-        last_error: r.lastError,
-        keep_runs: r.keepRuns,
-        report_default: r.reportDefault,
-        next_run: nextRun,
-        kind: isTimer(r) ? "timer" : "schedule",
-        runs_in: r.originThreadKey ?? `own_session scheduler:${r.id}`,
-      };
-    });
-    return okJson({ ok: true, items });
+    return okJson(scheduleListPage(listSchedules({ onlyEnabled: args.only_enabled === true }), args.after_id ?? 0, TOOL_OUTPUT_ENTRY_CAP));
   },
 );
 

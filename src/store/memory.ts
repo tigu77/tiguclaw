@@ -779,7 +779,11 @@ export const appendTranscript = (input: {
  */
 export type CodexTurnItem =
   | { type: "function_call"; call_id: string; name: string; arguments: string; namespace?: string }
-  | { type: "function_call_output"; call_id: string; output: string }
+  /**
+   * `ref` = 그 턴에 모델 입력에서 생략돼 실행 참조(`r<토큰>.<순번>`)를 받은 결과만(2026-11-19). 턴 뒤에도 같은 참조로 읽히게 남긴다.
+   *  공급자 입력엔 실리지 않는다(되살리기가 뺀다).
+   */
+  | { type: "function_call_output"; ref?: string; call_id: string; output: string }
   | { type: "message"; role: "user" | "assistant"; text: string };
 
 /**

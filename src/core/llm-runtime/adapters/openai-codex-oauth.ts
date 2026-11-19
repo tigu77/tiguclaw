@@ -124,6 +124,7 @@ import { createReplyIntentMcpServer } from "../capabilities/reply-intent-mcp.js"
 import { createSendFileMcpServer } from "../capabilities/send-file-mcp.js";
 import { createNotifyOwnerMcpServer } from "../capabilities/notify-owner-mcp.js";
 import { createToolRecallMcpServer } from "../capabilities/tool-recall-mcp.js";
+import { createToolOutputLedger } from "../tool-output-ledger.js";
 import {
   CodexContextLimitError, hasExplicitContextLimit, pressureSnapshot,
   committedPressureAnchor, matchedPressureChars, currentPressureCeiling,
@@ -798,6 +799,8 @@ export const runOpenAiCodex = async (
   // endpoints·commands·extra bridge 가 매 turn 누적됐음, P1.) openai 어댑터의 mcpServers
   // 일괄 close(openai-agents-sdk) 와 동형. 생성하는 모든 bridge 를 여기 push 한다.
   const allBridges: Array<{ close: () => Promise<void> }> = [];
+  // 이 실행의 도구 결과 보관함 — 생략된 결과를 같은 턴에서 다시 읽는다(`tool-output-ledger.ts`). 실행이 끝나면 버린다.
+  const toolOutputLedger = createToolOutputLedger();
   const memoryBridge = await adaptClaudeMcpServer(createMemoryMcpServer(), "memory");
   // 3b — baseCwd=discoveryCwd(input.cwd ?? home) 주입 → 상대경로 기준점이 턴 cwd
   // (프로젝트). claude(SDK options.cwd) 와 대칭 = #2 parity(ADR 2026-07-06 §3b).
@@ -886,8 +889,9 @@ export const runOpenAiCodex = async (
     notifyOwnerServer !== undefined ? await adaptClaudeMcpServer(notifyOwnerServer, "notify-owner") : undefined;
   if (notifyOwnerBridge !== undefined) allBridges.push(notifyOwnerBridge);
   // 앞선 도구 결과 다시 읽기(2026-09-30) — 이력이 요약돼도 원문(`turn_items`)을 되찾는 길. 대화를 클로저로 잡는다(세션 정체성 채널).
+  //  ★이 실행의 결과 보관함을 같이 넘긴다(2026-11-19) — 진입 상한·턴 안 압축으로 생략된 결과를 같은 턴에서 읽는다(결과 진입이 같은 보관함에 넣는다).
   const toolRecallBridge = await adaptClaudeMcpServer(
-    createToolRecallMcpServer(input),
+    createToolRecallMcpServer(input, toolOutputLedger),
     "tool-recall",
   );
   allBridges.push(toolRecallBridge);
@@ -3299,7 +3303,7 @@ export const runOpenAiCodex = async (
         // 턴 안 상한도 토큰을 안다 — 창 × 95% × 이 대화의 글자당 토큰(설정·실측 상한과 작은 쪽). 이력 상한과 같은 비율을 본다.
         ceilingChars: requestCeilingChars(model, input.threadKey, loadModelInputLimits().get(`codex:${model}`)),
         label: input.threadKey,
-      });
+      }, toolOutputLedger);
 
 
       iteration += 1;

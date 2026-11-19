@@ -54,7 +54,7 @@ import { loadModelInputLimits } from "../../settings.js";
 import { retrieveContext } from "../../memory.js";
 import { stripInternalRuntimeScaffolding } from "../../outbound-sanitize.js";
 import {
-  capToolOutputForEntry,
+  preservedToolOutputItem,
   collectTurnItems,
   compactThreadHistory,
   historyCapChars,
@@ -466,7 +466,7 @@ export const openAiToolOutputText = (rawOut: unknown): string => {
 };
 
 /**
- * 스트림 이벤트 → 이 턴의 기록 항목(2026-09-30) — `tool_called` → 호출, `tool_output` → 결과(Codex 와 같은 진입 상한). 그 밖은 undefined.
+ * 스트림 이벤트 → 이 턴의 기록 항목(2026-09-30) — `tool_called` → 호출, `tool_output` → 결과(가린 보존본 — Codex 와 같은 보존 상한). 그 밖은 undefined.
  * ★순수 함수로 둔 이유: 이 어댑터는 실모델 금지 가드 때문에 실경로 회귀가 못 돈다 — 이음매를 **실행해서** 검사할 자리가 여기다
  *  (소스 모양만 보던 그물을 변이 6개가 전부 통과했다 — 적대 검토 G4).
  */
@@ -482,7 +482,8 @@ export const openAiTurnToolItem = (ev: unknown): ResponseInputItem | undefined =
     if (raw?.type !== "function_call" || typeof raw.name !== "string") return undefined;
     return { type: "function_call", call_id: callId, name: raw.name, arguments: typeof raw.arguments === "string" ? raw.arguments : "" };
   }
-  if (e.name === "tool_output") return { type: "function_call_output", call_id: callId, output: capToolOutputForEntry(openAiToolOutputText(raw?.output)) };
+  // 저장 모양 = 가린 보존본(2026-11-19) — 모델은 그 턴에 SDK 를 통해 결과를 본다. 종전엔 저장만 진입 상한으로 잘라 이력 요약 뒤 가운데를 못 되찾았다.
+  if (e.name === "tool_output") return preservedToolOutputItem(callId, openAiToolOutputText(raw?.output));
   return undefined;
 };
 

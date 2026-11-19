@@ -19,6 +19,14 @@ import { runClaude } from "./claude.js";
 import { resolveModelChain } from "./llm-runtime/index.js";
 import { resolveSessionModelSelection } from "./session-model-selection.js";
 
+/**
+ * 이 턴이 세션의 «마지막 인입 채널·주소»(`setSessionChannelMeta`)를 정하나 — **사람 인입**만(출처 표식이 없거나 `inbound`).
+ * ★`synthetic` 으로 가르지 않는다 — 끼워넣기 잔여 재주입(`steering.ts`)은 `synthetic` 이지만 사용자가 실제로 보낸 말의 복사본이라
+ *  출처 표식이 없고, 그 채널·주소 쌍이 사용자 것이다. 내부 합성 턴은 만드는 자리에서 출처를 적는다(`TurnOrigin`).
+ */
+export const capturesSessionChannelMeta = (msg: Pick<IncomingMessage, "turnOrigin">): boolean =>
+  msg.turnOrigin === undefined || msg.turnOrigin === "inbound";
+
 export interface RouteOutput {
   text: string;
   /**
@@ -203,7 +211,10 @@ export const route = async (
   // saveSession(runClaude 내부 persistOutput)이 세션 행을 만든 *직후* 이므로 UPDATE-only 성립.
   // 정규화 인입만 캡처(실채널=msg.channel, 주소=channelAddress). 세션 id 파싱 의존 대체(§1.3).
   // 행 없음(응답 실패로 saveSession 미실행)이면 UPDATE no-op(false) — 폴백 보존, 회귀 0.
-  if (normalize) {
+  // ★사람 인입만 정한다(2026-11-19, docs/decisions/2026-11-19-tool-output-recovery-design.md §3-3) — 내부 합성 턴(작업자 완료·점검·알림,
+  //  대화 안 예약·감시 실행, 가지 결론)이 덮으면 실행 채널과 보고 좌표 주소가 섞여(telegram + 대시보드 세션 id) 다음 턴의
+  //  «함께 보낼» 텔레그램 사본이 `chat not found` 로 실패했다(뉴돌쇠 11-18·11-19).
+  if (normalize && capturesSessionChannelMeta(msg)) {
     try {
       setSessionChannelMeta({
         channel: sessionChannel,

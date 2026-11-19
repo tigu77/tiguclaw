@@ -9,8 +9,9 @@
  *  ① id 를 주면 그 한 건만 — prompt 가 저장값과 바이트 동일, 다른 예약은 섞이지 않는다
  *  ② 없는 id 는 ok:false·not_found(빈 목록으로 «없음» 과 «꺼짐» 을 섞지 않는다)
  *  ③ id + only_enabled — 둘 다 만족해야 한다(꺼진 건은 빈 items, 켜진 건은 한 건) / id 만이면 꺼진 건도 돌려준다
- *  ④ 기존 목록(인자 없음·only_enabled) 계약 보존 + 행 모양 동일
- *  ⑤ 사고 모양 재현 — 큰 목록은 진입 제한에서 대상 원문을 잃고, 한 건 결과는 그대로 통과한다
+ *  ④ 목록(인자 없음·only_enabled)의 포함 범위 계약 보존 + 목록 행 = 한 건 상세의 요약(원문 대신 길이·미리보기, 2026-11-19)
+ *  ⑤ 사고 모양 — 원문을 싣던 목록은 진입 제한에서 대상 원문을 잃었다 → 지금 목록 페이지는 진입 상한 안이고 원문이 없다 ·
+ *     한 건 결과는 그대로 통과한다(페이지 계약 자체는 `schedule-list-pages`)
  *  ⑥ 입력 스키마 — id 는 양의 정수만, 인자 없는 기존 호출은 그대로 통과
  *
  * ★범위: 한 건 자체가 결과 상한보다 긴 경우는 이 검사·수정의 대상이 아니다.
@@ -19,6 +20,7 @@
 import { listOutboundChannels } from "../../core/channel-outbound.js";
 import { capToolOutputForEntry } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
 import { initStore } from "../../store/sessions.js";
+import { TOOL_OUTPUT_ENTRY_CAP } from "../../core/llm-runtime/tool-output-limits.js";
 import { addSchedule, deleteSchedule, getSchedule, updateSchedule } from "../../store/schedules.js";
 import { assert, assertIsolated, loadPluginModule, type Assertion, type RegressionCheck } from "./_framework.js";
 
@@ -47,7 +49,18 @@ export const check: RegressionCheck = {
       const mcp = await loadPluginModule<{ createSchedulerMcpServer: (h?: unknown) => { instance: unknown } }>("../../../plugins/scheduler/src/mcp.js");
       const tools = (mcp.createSchedulerMcpServer({ turnSession: () => null }).instance as { _registeredTools: Tools })._registeredTools;
       const raw = async (args: unknown): Promise<string> => (await tools.list_schedules!.handler(args, {})).content[0]!.text;
-      const call = async (args: unknown) => JSON.parse(await raw(args)) as { ok: boolean; error?: string; items?: Array<Record<string, unknown>> };
+      const call = async (args: unknown) => JSON.parse(await raw(args)) as { ok: boolean; error?: string; items?: Array<Record<string, unknown>>; next_after_id?: number; complete?: boolean };
+      // 목록 전체 — 페이지를 끝까지 이어 읽는다(2026-11-19 페이지 계약).
+      const callAll = async (args: Record<string, unknown>) => {
+        const items: Array<Record<string, unknown>> = [];
+        for (let after = 0, n = 0; n < 100; n++) {
+          const p = await call({ ...args, after_id: after });
+          items.push(...(p.items ?? []));
+          if (p.complete === true || p.next_after_id === undefined) return { ok: p.ok, items };
+          after = p.next_after_id;
+        }
+        return { ok: false, items };
+      };
 
       // 대상 — 약 3,546자(관측 크기), 앞·가운데·끝에 표식. 주변에 긴 예약들을 둬 목록을 25,000자 넘게 키운다.
       const body = "아침 글 지시문 본문 ".repeat(320);
@@ -101,8 +114,8 @@ export const check: RegressionCheck = {
       ));
 
       // ④ 기존 목록 계약 보존 + 행 모양 동일
-      const all = await call({});
-      const enabledOnly = await call({ only_enabled: true });
+      const all = await callAll({});
+      const enabledOnly = await callAll({ only_enabled: true });
       const ids = (r: { items?: Array<Record<string, unknown>> }) => new Set((r.items ?? []).map((x) => x.id as number));
       const allIds = ids(all);
       const enIds = ids(enabledOnly);
@@ -112,20 +125,25 @@ export const check: RegressionCheck = {
         { 전체에_다있음: made.every((id) => allIds.has(id)), 활성에_꺼짐: enIds.has(off) },
       ));
       const fromList = (all.items ?? []).find((r) => r.id === target);
+      const full = one.items?.[0] ?? {};
+      const { prompt: _p, last_error: _e, ...sameFields } = full;
       out.push(assert(
-        "한 건 결과의 행은 목록의 같은 행과 같다(필드·값)",
-        fromList !== undefined && JSON.stringify(fromList) === JSON.stringify(one.items?.[0]),
-        { 목록키: Object.keys(fromList ?? {}).join(","), 한건키: Object.keys(one.items?.[0] ?? {}).join(",") },
+        "★목록 행 = 한 건 상세의 요약 — prompt 원문 없음 · prompt_chars = 저장 원문 길이 · 미리보기 한 줄 · 나머지 필드·값 같음",
+        fromList !== undefined && !("prompt" in fromList) && fromList.prompt_chars === stored?.length &&
+          typeof fromList.prompt_preview === "string" && !/\n/.test(fromList.prompt_preview as string) && (fromList.prompt_preview as string).length <= 81 &&
+          Object.entries(sameFields).every(([k, v]) => JSON.stringify(fromList[k]) === JSON.stringify(v)),
+        { 목록키: Object.keys(fromList ?? {}).join(","), 한건키: Object.keys(full).join(","), chars: fromList?.prompt_chars },
       ));
 
-      // ⑤ 사고 모양 — 큰 목록은 진입 제한에서 대상 가운데를 잃고, 한 건은 그대로
+      // ⑤ 사고 모양 — 원문을 싣던 목록(종전 25,000자+)은 진입 제한에서 대상 가운데를 잃었다. 지금 목록 페이지는 상한 안·원문 없음.
       const listText = await raw({ only_enabled: true });
       const cappedList = capToolOutputForEntry(listText);
       const cappedOne = capToolOutputForEntry(oneText);
       out.push(assert(
-        "★(재현) 25,000자 넘는 목록은 진입 제한에서 대상 원문 가운데가 빠진다",
-        listText.length > 25_000 && listText.includes("TARGET-MID") && !cappedList.includes("TARGET-MID"),
-        { 목록: listText.length, 제한후: cappedList.length, 제한후_대상중간: cappedList.includes("TARGET-MID") },
+        "★목록 페이지는 진입 제한을 그대로 통과한다(원문 없음 — 대상 머리·가운데·끝 표식 0, 대상 id 는 있음)",
+        cappedList === listText && listText.length <= TOOL_OUTPUT_ENTRY_CAP && !/TARGET-(MID|TAIL)|FILLER-[AB]\d \w{100}/.test(listText) &&
+          (JSON.parse(listText) as { items?: Array<{ id: number }> }).items?.some((r) => r.id === target) === true,
+        { 목록: listText.length, 같음: cappedList === listText },
       ));
       out.push(assert(
         "★한 건 결과는 진입 제한을 그대로 통과한다(머리·가운데·끝 표식 모두)",

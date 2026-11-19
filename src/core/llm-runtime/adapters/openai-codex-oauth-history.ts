@@ -45,6 +45,8 @@ import { lookupContextWindow } from "../context-windows.js";
 import { loadModelInputLimits } from "../../settings.js";
 import { isUserCancelled } from "../../steering.js";
 import { translate } from "../../i18n.js";
+import type { ToolOutputLedger } from "../tool-output-ledger.js";
+import { parsePosIntEnv, TOOL_OUTPUT_ENTRY_CAP, TOOL_OUTPUT_HEAD_CHARS, TOOL_OUTPUT_RETAIN_CHARS, TOOL_OUTPUT_TAIL_CHARS } from "../tool-output-limits.js";
 
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
@@ -1067,6 +1069,138 @@ export const isCancelled = (e: unknown): boolean => {
   return /Request was aborted\.|The operation was aborted/.test(m);
 };
 
+// ─── 기다리는 구간 (2026-11-19 GitHub #3, docs/decisions/2026-11-19-issue3-compaction-progress-fix.md §2) ───────────────
+/**
+ * ★사용자가 **요약 때문에 기다리는 한 구간**을 시작 1·끝 1 로 묶는 장부. 종전엔 시작·끝이 «원문 접기» 에만 묶여 재압축만·잠금 대기에선
+ *  아무 안내가 없었고(F1·F2), 각 경로가 제 짝을 내면 대시보드 칸(대화당 하나)이 겹쳐 중복·조기 종료·잔여가 생긴다(통합 인계 핵심 보완).
+ * ★참여자는 `compactThreadHistory` **호출 수명**으로 센다 — 잠금 체인(`threadLocks`)과 다르다(대기 중 취소된 요청은 체인엔 남아도 여기선 바로 빠진다).
+ *  표시는 «기다리는 사람이 있나», 양보는 «줄 뒤가 있나» 라 서로 다른 질문이다. 수동 `/compact` 는 참여하지 않는다(자기 답이 있다).
+ */
+type ProgressRole = "request" | "background";
+interface ProgressSpan {
+  id: string;
+  threadKey: string;
+  adapter: string;
+  opened: boolean;
+  openedAt: number;
+  openedBy?: ProgressRole;
+  waitingAnnounced: boolean;
+  closed: boolean;
+  requests: number;
+  background: number;
+  foldedTurns: number;
+  foldedChars: number;
+  summaryChars: number;
+  recompacted: number;
+  recompactedTo: number;
+  failure?: { reason: string; foldChars: number };
+  cancelled: boolean;
+  yielded: boolean;
+  discarded: boolean;
+}
+/** 한 호출의 참여 — 붙은 구간이 일찍 닫히면 다음 알림 때 새 구간에 다시 붙는다. */
+export interface ProgressHandle { span: ProgressSpan; role: ProgressRole }
+const progressSpans = new Map<string, ProgressSpan>();
+let progressSeq = 0;
+/** 잠금 대기가 이보다 짧으면 안내하지 않는다 — 짧은 무대기 경로(잠금 정리 지연 등)에 안내가 뜨지 않게(#3 설계 §2-2). */
+export const COMPACT_WAIT_NOTICE_MS = 1_500;
+
+const newProgressSpan = (threadKey: string, adapter: string): ProgressSpan => {
+  const s: ProgressSpan = {
+    id: `cs${Date.now().toString(36)}${(progressSeq += 1).toString(36)}`, threadKey, adapter, opened: false, openedAt: 0, waitingAnnounced: false,
+    closed: false, requests: 0, background: 0, foldedTurns: 0, foldedChars: 0, summaryChars: 0, recompacted: 0, recompactedTo: 0,
+    cancelled: false, yielded: false, discarded: false,
+  };
+  progressSpans.set(threadKey, s);
+  return s;
+};
+const attachProgress = (h: ProgressHandle): void => {
+  const cur = progressSpans.get(h.span.threadKey);
+  h.span = cur !== undefined && !cur.closed ? cur : newProgressSpan(h.span.threadKey, h.span.adapter);
+  if (h.role === "request") h.span.requests += 1; else h.span.background += 1;
+};
+export const joinProgressSpan = (threadKey: string, adapter: string, role: ProgressRole): ProgressHandle => {
+  const cur = progressSpans.get(threadKey);
+  const h: ProgressHandle = { span: cur !== undefined && !cur.closed ? cur : newProgressSpan(threadKey, adapter), role };
+  if (role === "request") h.span.requests += 1; else h.span.background += 1;
+  return h;
+};
+/**
+ * 기다림이 **실제로 시작됐다** — 구간이 아직 안 열렸으면 시작(`llm.compacting`)을 한 번, 백그라운드가 연 구간에 요청이 처음 기다리면
+ *  같은 `spanId` 로 `waiting:true` 를 한 번 더(대시보드는 새 줄 없음 · 텔레그램 안내의 계기). 붙은 구간이 일찍 닫혔으면 새 구간에 붙는다.
+ */
+export const announceProgress = (h: ProgressHandle, pendingTurns: number): void => {
+  if (h.span.closed) attachProgress(h);
+  const s = h.span;
+  const waiting = h.role === "request" && !isDerivedThread(s.threadKey);
+  if (s.opened && (!waiting || s.waitingAnnounced)) return;
+  const first = !s.opened;
+  if (first) { s.opened = true; s.openedAt = Date.now(); s.openedBy = h.role; }
+  if (waiting) s.waitingAnnounced = true;
+  try {
+    getEventBus().publish({
+      type: "llm.compacting",
+      ts: Date.now(),
+      payload: { threadKey: s.threadKey, pendingTurns: first ? pendingTurns : 0, adapter: s.adapter, spanId: s.id, waiting },
+    });
+  } catch {
+    /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+  }
+};
+/** 끝 — 모은 결과에서 하나를 고른다: 실패 > 성공 > 취소 > 양보 > 폐기 > 대기만(#3 설계 §2-3 표). 열린 적 없으면 아무것도 안 낸다. */
+const closeProgressSpan = (s: ProgressSpan): void => {
+  if (s.closed) return;
+  s.closed = true;
+  if (progressSpans.get(s.threadKey) === s) progressSpans.delete(s.threadKey);
+  if (!s.opened) return;
+  const elapsedMs = Date.now() - s.openedAt;
+  const success = s.foldedTurns > 0 || s.recompacted > 0;
+  const outcome = s.failure !== undefined ? "failed" : success ? "done" : s.cancelled ? "cancelled" : s.yielded ? "yielded" : s.discarded ? "discarded" : "waited";
+  console.log(
+    `[${s.adapter} 6b] 요약 대기 구간 끝 — 결과=${outcome} 연쪽=${s.openedBy ?? "-"} 경과=${elapsedMs}ms ` +
+      `접은턴=${s.foldedTurns} 재압축=${s.recompacted} 양보=${s.yielded} 취소=${s.cancelled} 폐기=${s.discarded} threadKey=${s.threadKey}`,
+  );
+  try {
+    getEventBus().publish(
+      outcome === "done"
+        ? {
+            type: "llm.compacted",
+            ts: Date.now(),
+            payload: {
+              threadKey: s.threadKey, adapter: s.adapter, foldedTurns: s.foldedTurns, foldedChars: s.foldedChars, summaryChars: s.summaryChars,
+              elapsedMs, spanId: s.id, recompacted: s.recompacted, recompactedTo: s.recompactedTo,
+            },
+          }
+        : outcome === "failed"
+          ? {
+              type: "llm.compact_failed",
+              ts: Date.now(),
+              payload: { threadKey: s.threadKey, adapter: s.adapter, spanId: s.id, outcome, reason: s.failure?.reason ?? "", foldChars: s.failure?.foldChars ?? 0 },
+            }
+          // ★성공도 실패도 아닌 끝(취소·양보·폐기·기다리기만)은 따로 낸다 — `llm.compact_failed` 로 내면 그것을 «실패» 로 세는 계약
+          //  («취소는 실패가 아니다», 실패 계수 검사들)과 갈린다. 표시만 걷는다(#3 설계 §2-3).
+          : {
+              type: "llm.compacting_ended",
+              ts: Date.now(),
+              payload: { threadKey: s.threadKey, adapter: s.adapter, spanId: s.id, outcome, elapsedMs },
+            },
+    );
+  } catch {
+    /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
+  }
+};
+/**
+ * 호출이 끝났다(정상·실패·취소 모두 `finally`) — 마지막 참여자면 닫는다. **요청이 연 구간**에서 요청 참여자가 모두 빠지면 남은 백그라운드가
+ *  있어도 지금 닫는다(남은 건 기다리는 사람 없는 조용한 일 — 표시를 남기지 않는다).
+ */
+export const leaveProgressSpan = (h: ProgressHandle): void => {
+  const s = h.span;
+  if (h.role === "request") s.requests -= 1; else s.background -= 1;
+  if (s.closed) return;
+  if (s.requests <= 0 && s.background <= 0) closeProgressSpan(s);
+  else if (s.requests <= 0 && s.openedBy === "request") closeProgressSpan(s);
+};
+
 export const noteCompactionOutcome = (
   threadKey: string,
   ok: boolean,
@@ -1078,11 +1212,20 @@ export const noteCompactionOutcome = (
    *  화면이 «누가 실패했는지» 를 못 말한다 — 어댑터가 셋이 되자 바로 드러났다.
    */
   adapter = "codex",
+  /**
+   * 이 실패가 속한 **기다리는 구간**(2026-11-19 GitHub #3) — 있으면 끝 신호를 지금 내지 않고 구간 끝에 한 번 낸다(시작 1·끝 1).
+   *  연속 실패 계수·고착 경보는 종전대로 즉시다. 없으면(수동 `/compact`) 종전 그대로.
+   */
+  progress?: ProgressHandle,
 ): void => {
   if (ok) {
     compactionFailStreak.delete(threadKey);
     return;
   }
+  const span = progress !== undefined && !progress.span.closed ? progress.span : undefined;
+  if (span !== undefined) {
+    if (span.failure === undefined) span.failure = { reason, foldChars };
+  } else
   // ★**시작을 냈으면 끝도 낸다** (2026-09-15 정태님 신고). 종전엔 끝 신호가 «성공»
   //  하나뿐이라, 실패·건너뜀이면 화면의 «압축 중 ⏳» 이 **영영 안 걷혔다** — 사용자는
   //  아직 요약 중인 줄 알고 기다리는데 사실 턴은 진작 끝나 있었다(그래서 "요약이 안
@@ -1115,7 +1258,8 @@ export const noteCompactionOutcome = (
     getEventBus().publish({
       type: "llm.compaction_stuck",
       ts: Date.now(),
-      payload: { threadKey, streak: n, foldChars, reason },
+      // 구간 안 경보는 구간을 싣는다 — 대시보드는 그 경보로 진행 표시를 걷지 않는다(끝은 구간의 끝 이벤트만, #3 설계 R1 ①).
+      payload: { threadKey, streak: n, foldChars, reason, ...(span !== undefined ? { spanId: span.id } : {}) },
     });
   } catch {
     // 관측 발행 실패가 턴을 무르지 않는다(원칙 3).
@@ -1762,6 +1906,21 @@ export const summarizeInChunks = async (
 };
 
 /**
+ * **보내는 모양의 결과** — 저장된 보존본이 진입 상한을 넘으면 턴 안과 **같은 보기**(앞·뒤 + 참조 안내)로 (2026-11-19 설계 §3-1).
+ * ★보존(저장)과 재전송을 가른다 — 저장본이 커져도 다음 턴은 종전 크기의 보기만 싣는다. 판정·보기 함수가 진입과 같아(`capToolOutputForEntry`)
+ *  턴 안 입력과 다음 턴 입력이 같은 글이다(프리픽스 캐시). 참조는 저장된 실행 참조(`ref`)가 먼저, 없으면 저장 참조.
+ * `ref` 필드는 보내는 모양·크기 셈에서 뺀다(공급자 입력에 실리지 않는다).
+ */
+const replayView = (items: CodexTurnItem[], refOf?: (index: number) => string | undefined): CodexTurnItem[] =>
+  items.map((it, i) => {
+    if (it.type !== "function_call_output") return it;
+    const { ref, ...rest } = it;
+    if (rest.output.length <= CODEX_TOOL_OUTPUT_ENTRY_CAP) return ref === undefined ? it : rest;
+    const r = ref ?? refOf?.(i);
+    return { ...rest, output: capToolOutputForEntry(rest.output, r !== undefined ? { ref: r } : undefined) };
+  });
+
+/**
  * 되살릴 모양 — 상한 안이면 원문 그대로. 넘으면:
  *  ① 긴 본문부터 같은 JSON 길이로 깎는다(수위 맞추기). 짧은 본문(200자 이하)은 안 깎는다. 짝·순서 유지.
  *  ② 깎아도 안 들어가면(호출이 수백 개라 항목 뼈대만으로 넘침) **뼈대가 들어갈 때까지만 가장 오래된 호출·출력
@@ -1773,7 +1932,13 @@ export const summarizeInChunks = async (
  * ★턴마다 결정적이다(입력이 같으면 결과가 같다) — 요청마다 모양이 바뀌면 이력 캐시가 깨진다. 원문은 `turn_items` 에
  * 그대로 남는다(지우는 게 아니라 **보내는 모양**만 정한다).
  */
-export const replayTurnItems = (items: CodexTurnItem[], cap: number = turnItemsReplayChars()): CodexTurnItem[] => {
+export const replayTurnItems = (
+  stored: CodexTurnItem[],
+  cap: number = turnItemsReplayChars(),
+  /** 저장 순번으로 만든 저장 참조(`<기록id>#<순번>`) — 실행 참조(`ref`)가 없는 큰 결과의 안내에 쓴다. */
+  refOf?: (index: number) => string | undefined,
+): CodexTurnItem[] => {
+  const items = replayView(stored, refOf);
   const full = items.map(itemLen);
   if (full.reduce((n, x) => n + x, 0) <= cap) return items;
   // 항목별 «깎아도 남는 최소» — 깎을 수 없으면 원래 크기.
@@ -1899,11 +2064,12 @@ const loadHistoryTurns = (
     // 보낸 그대로의 사용자 메시지는 되살리는 어댑터만 쓴다 — 안 보내는 것을 세면 창만 헛되이 준다(아래 항목과 같은 규칙).
     if (t.sent !== undefined && !replays) { const { sent: _sent, ...rest } = t; return rest; }
     if (t.items === undefined) return t;
-    const items = replayTurnItems(t.items);
-    // 접기는 깎기 전 원 항목으로 한다(참조로 줄이니 깎을 필요가 없다) — 순번은 원 항목에만 맞으므로 여기서 짝지어 넘긴다.
     const { itemSeqs, ...rest } = t;
-    const foldItems = itemSeqs !== undefined && itemSeqs.length === t.items.length
-      ? t.items.map((item, i) => ({ seq: itemSeqs[i]!, item }))
+    const seqsMatch = itemSeqs !== undefined && itemSeqs.length === t.items.length;
+    const items = replayTurnItems(t.items, undefined, (i) => (seqsMatch ? toolResultRef(t.id, itemSeqs![i]!) : undefined));
+    // 접기는 깎기 전 원 항목으로 한다(참조로 줄이니 깎을 필요가 없다) — 순번은 원 항목에만 맞으므로 여기서 짝지어 넘긴다.
+    const foldItems = seqsMatch
+      ? t.items.map((item, i) => ({ seq: itemSeqs![i]!, item }))
       : undefined;
     return { ...rest, items, itemsChars: replays ? turnItemsChars(items) : 0, ...(foldItems !== undefined ? { foldItems } : {}) };
   });
@@ -2068,8 +2234,41 @@ const buildSummaryTurn = (summary: string): ResponseInputItem | undefined => {
 const historyToolOutputs = new WeakSet<ResponseInputItem>();
 /** 작업 중 사용자 지시(steering) 항목 — 만드는 자리에서 표시한다. 하네스 독촉 메시지와 모양이 같아 모양으로는 못 가른다. */
 const steeringItems = new WeakSet<ResponseInputItem>();
-/** 도구 출력의 **압축 전** 원문 — 압축이 `output` 을 제자리에서 고쳐 쓰므로 진입 순간에 적어 둔다. */
+/**
+ * 도구 출력의 **보존본** — 압축이 `output` 을 제자리에서 고쳐 쓰므로 진입 순간에 적어 둔다. 진입 경로(`appendToolResultsToInput`)는
+ *  가린 보존본(`preserveToolOutput`)을 둔다(2026-11-19 — 종전엔 진입 상한으로 자른 값이라 가운데가 저장에도 없었다).
+ */
 const originalToolOutputs = new WeakMap<ResponseInputItem, string>();
+/** 이미 가린 보존본을 둔 항목 — 저장 때 다시 가리지 않는다(가림은 멱등이 아니다). */
+const preRedactedOutputs = new WeakSet<ResponseInputItem>();
+/** 항목의 실행 소속 — 생략이 일어날 때 참조를 줄 보관함과 그 결과의 도구·인자. 항목 수명과 같다(세 압축 호출부의 인자를 늘리지 않는다). */
+const itemLedger = new WeakMap<ResponseInputItem, { ledger: ToolOutputLedger; tool: string; args: string }>();
+/** 이 항목에 준 실행 참조 — 저장 항목의 `ref` 가 된다(턴 뒤에도 같은 참조로 읽힌다). */
+const itemRefs = new WeakMap<ResponseInputItem, string>();
+
+/**
+ * 이 결과의 실행 참조 — **생략이 실제로 일어나는 자리**(진입 보기·턴 안 압축)에서만 부른다. 처음 부르면 보관함에 보존본을 넣는다.
+ *  등록 조건을 숫자로 따로 두지 않는다 — 압축 최소 길이·설정 변경을 그대로 따른다(설계 R1 ②). 보관함 소속이 없으면 undefined.
+ */
+const toolOutputRefOf = (item: ResponseInputItem): string | undefined => {
+  const have = itemRefs.get(item);
+  if (have !== undefined) return have;
+  const own = itemLedger.get(item);
+  const text = originalToolOutputs.get(item);
+  if (own === undefined || text === undefined) return undefined;
+  const ref = own.ledger.add({ tool: own.tool, args: own.args, text });
+  itemRefs.set(item, ref);
+  return ref;
+};
+
+/** 이 결과의 호출 인자(가린 것) — 같은 `call_id` 의 가장 최근 호출. 재조회 응답이 «무엇의 결과인가» 를 보인다. */
+const callArgsOf = (inputArray: readonly ResponseInputItem[], callId: string): string => {
+  for (let i = inputArray.length - 1; i >= 0; i--) {
+    const it = inputArray[i];
+    if (it?.type === "function_call" && it.call_id === callId) return redactSecrets(it.arguments);
+  }
+  return "";
+};
 
 const historyInputItem = (it: CodexTurnItem): ResponseInputItem => {
   if (it.type === "function_call") return { type: "function_call", call_id: it.call_id, name: it.name, arguments: it.arguments, ...(it.namespace !== undefined ? { namespace: it.namespace } : {}) };
@@ -2124,7 +2323,13 @@ export const collectTurnItems = (
       // 접힌 도구 호출이면 묶음 이름을 같이 남긴다 — 정의는 저장하지 않는다(다음 턴에 현재 정의로 재구성, 도구 접기 계약 A).
       if (outs.has(it.call_id)) out.push({ type: "function_call", call_id: it.call_id, name: it.name, arguments: redactSecrets(it.arguments), ...(it.namespace !== undefined ? { namespace: it.namespace } : {}) });
     } else if (it.type === "function_call_output") {
-      if (calls.has(it.call_id)) out.push({ type: "function_call_output", call_id: it.call_id, output: redactSecrets(originalToolOutputs.get(it) ?? it.output) });
+      // 보존본은 이미 가렸다 — 다시 가리지 않는다. 실행 참조를 받은 결과는 그 참조를 같이 남긴다(턴 뒤에도 같은 참조로 읽힌다).
+      //  ★`ref` 를 `type` 바로 뒤에 둔다 — 저장 참조 찾기가 행 머리 일치로 끝난다(`store/tool-recall.ts`).
+      if (calls.has(it.call_id)) {
+        const orig = originalToolOutputs.get(it) ?? it.output;
+        const ref = itemRefs.get(it);
+        out.push({ type: "function_call_output", ...(ref !== undefined ? { ref } : {}), call_id: it.call_id, output: preRedactedOutputs.has(it) ? orig : redactSecrets(orig) });
+      }
     } else if (it.type === "message") {
       if (it.role === "user" && !steeringItems.has(it)) continue;
       if (it.role !== "user" && it.role !== "assistant") continue;
@@ -2145,7 +2350,8 @@ export const collectTurnItems = (
   }
   // ★다음 턴부터 **깎여서** 보내질 턴을 센다(턴당 한 줄) — 생략 결과 재조회 도구(아스트라 후속 B)를 판단할 신호 **하나**다.
   //  착수 조건 전체가 아니다(요약·요약 입력 상한·턴 안 압축으로 빠진 경우도 있다 — 후속 문서 B).
-  const chars = turnItemsChars(out);
+  // 보내는 모양(진입 상한 보기 적용 뒤)으로 잰다 — 저장본은 보존본이라 더 크다(2026-11-19).
+  const chars = turnItemsChars(replayView(out));
   if (chars > turnItemsReplayChars()) {
     console.log(`[turn-items] 이 턴 도구 항목 ${chars}자 > 되살릴 상한 ${turnItemsReplayChars()}자 — 다음 턴부터 깎거나 오래된 쌍을 빼서 보낸다(항목 ${out.length}개)`);
   }
@@ -2542,7 +2748,11 @@ const compactThreadHistoryUnlocked = async (args: {
   yieldTo?: () => boolean;
   /** 이 요청의 취소 — 앞선 요약을 **기다리는 동안**에도 듣는다(잠금 대기). */
   signal?: AbortSignal;
+  /** 이 호출의 기다리는 구간 참여(`compactThreadHistory` 가 만든다, #3) — 시작 알림·결과를 여기 모은다. */
+  progress?: ProgressHandle;
 }): Promise<CompactedThreadHistory> => {
+  const progress = args.progress;
+  const when = args.postTurn === true ? "(턴 뒤)" : "(요청 때)";
   // ★경합 가드 — 뒤에서 접는 동안 `/clear`·스케줄 경계·다른 요약이 상태를 바꾸면 옛 결과를 **써넣으면 안 된다**
   //  (지운 대화 부활·접은 범위 후퇴). 바뀔 때마다 오르는 리비전(thread-revision.ts)을 시작 때 적고 저장 직전에 본다.
   //  종전엔 경계·워터마크·요약 **길이**를 비교해 같은 길이의 다른 요약을 놓쳤다(아스트라 검토 P1).
@@ -2550,6 +2760,7 @@ const compactThreadHistoryUnlocked = async (args: {
   let expectedGeneration: number = generation();
   const stillOurs = (): boolean => {
     if (generation() === expectedGeneration) return true;
+    if (progress !== undefined) progress.span.discarded = true;
     console.warn(
       `[${args.adapter} 6b] 요약 중에 대화가 초기화·변경됨 — 이번 요약은 저장하지 않는다(지운 대화를 되살리지 않게). threadKey=${args.threadKey}`,
     );
@@ -2627,20 +2838,9 @@ const compactThreadHistoryUnlocked = async (args: {
   const compactStartedAt = Date.now();
   // ★이미 뒤에 요청이 줄을 섰으면 시작 알림을 내지 않는다 — 곧바로 0패스에서 양보하면 끝 알림이 없어 «압축 중 ⏳» 이 남는다
   //  («시작을 냈으면 끝도 낸다», 2026-09-15). 접는 일은 그 요청이 이어받아 자기 알림을 낸다.
-  if (plan.needed && plan.toFold.length > 0 && args.yieldTo?.() !== true && !settled()) {
-    try {
-      getEventBus().publish({
-        type: "llm.compacting",
-        ts: Date.now(),
-        payload: {
-          threadKey: args.threadKey,
-          pendingTurns: plan.toFold.length,
-          adapter: args.adapter,
-        },
-      });
-    } catch {
-      /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
-    }
+  // ★시작은 기다리는 구간이 낸다(2026-11-19 #3) — 이미 열렸으면 새 줄 없음. 조건은 종전 그대로.
+  if (plan.needed && plan.toFold.length > 0 && args.yieldTo?.() !== true && !settled() && progress !== undefined) {
+    announceProgress(progress, plan.toFold.length);
   }
 
   // ★패스 상한은 **사용자가 기다리는 시간**을 묶는 장치다 — 뒤에서 미리 접을 땐 기다리는 사람이 없으므로 따라잡을
@@ -2664,6 +2864,7 @@ const compactThreadHistoryUnlocked = async (args: {
     }
     if (args.yieldTo?.() === true) {
       yielded = true;
+      if (progress !== undefined) progress.span.yielded = true;
       yieldedPassBudget.set(args.threadKey, maxPasses - compactPass);
       console.log(
         `[${args.adapter} 6b] 턴 뒤 접기 양보 — 기다리는 요청이 있어 ${compactPass}/${maxPasses}패스에서 멈춤(남은 몫은 다음 접기가) ` +
@@ -2686,7 +2887,7 @@ const compactThreadHistoryUnlocked = async (args: {
         `[${args.adapter} 6b] 요약 건너뜀 — '${cdKey}' 쿨다운 ${Math.ceil(cdLeft / 60000)}분 남음 ` +
           `(oldest-drop 폴백, watermark 유지 → 해제 후 재시도)`,
       );
-      noteCompactionOutcome(args.threadKey, false, translate("srv.compact.cooldown"), prompt.length, args.adapter);
+      noteCompactionOutcome(args.threadKey, false, translate("srv.compact.cooldown"), prompt.length, args.adapter, progress);
       break; // 쿨다운 중엔 더 시도하지 않는다.
     } else
     try {
@@ -2700,6 +2901,11 @@ const compactThreadHistoryUnlocked = async (args: {
       );
       if (applied.accepted) {
         if (!stillOurs()) return reloadedHistory(args);
+        if (progress !== undefined) {
+          progress.span.foldedTurns += applied.next.foldedTurns - foldedTurnsTotal;
+          progress.span.foldedChars += applied.next.foldedChars - foldedCharsTotal;
+          progress.span.summaryChars += fresh.trim().length;
+        }
         summary = applied.next.summary;
         watermark = applied.next.watermark;
         foldedTurnsTotal = applied.next.foldedTurns;
@@ -2722,7 +2928,7 @@ const compactThreadHistoryUnlocked = async (args: {
             `경과=${((Date.now() - compactStartedAt) / 1000).toFixed(1)}초`,
         );
         growFoldBudget(args.threadKey);
-        noteCompactionOutcome(args.threadKey, true, "", prompt.length, args.adapter);
+        noteCompactionOutcome(args.threadKey, true, "", prompt.length, args.adapter, progress);
         // ★목표에 한참 못 미치면 남긴다 — 하한(50자)은 통과하지만 **내용이 증발한** 경우다.
         //  실제로 40,542자를 90자로 만든 요약이 성공으로 지나갔고 아무 데도 안 남았다.
         //  판정 수치를 실어야 로그만으로 잡힌다([[feedback_logs_must_stand_alone]]).
@@ -2748,7 +2954,7 @@ const compactThreadHistoryUnlocked = async (args: {
             `${compactionDiag(args.threadKey, plan, prompt.length, allTurns.length, existing?.compactedThrough ?? 0)}) ` +
             `→ 다음 시도 예산 ${shrinkFoldBudget(args.threadKey)}자로 축소`,
         );
-        noteCompactionOutcome(args.threadKey, false, translate("srv.compact.summaryChars", { n: got }), prompt.length, args.adapter);
+        noteCompactionOutcome(args.threadKey, false, translate("srv.compact.summaryChars", { n: got }), prompt.length, args.adapter, progress);
       }
     } catch (e) {
       // 요약 실패/타임아웃 → 현행 oldest-drop 폴백. 턴은 깨지 않음(데몬 생존 원칙 3).
@@ -2760,6 +2966,7 @@ const compactThreadHistoryUnlocked = async (args: {
       //  ★연속 실패 계수·예산 축소·끝 신호를 **전부 건너뛰고** 조용히 빠진다 —
       //   이번 턴은 oldest-drop 으로 가고 다음 턴이 같은 자리에서 다시 시도한다.
       if (isCancelled(e)) {
+        if (progress !== undefined) progress.span.cancelled = true;
         console.log(
           `[${args.adapter} 6b] 요약 취소됨 — 사용자가 멈춤(실패로 세지 않는다). ` +
             `thread=${args.threadKey}`,
@@ -2780,7 +2987,7 @@ const compactThreadHistoryUnlocked = async (args: {
               ? " (한도·인증·과부하 실패 — 예산 유지)"
               : ` → 다음 시도 예산 ${shrinkFoldBudget(args.threadKey)}자로 축소`),
       );
-      noteCompactionOutcome(args.threadKey, false, msg, prompt.length, args.adapter);
+      noteCompactionOutcome(args.threadKey, false, msg, prompt.length, args.adapter, progress);
       break; // 실패하면 같은 턴에서 더 시도하지 않는다(같은 벽을 연달아 때리지 않게).
     }
     // 다음 패스 — **저수위**를 임계로 재판정. 아래로 내려갔으면 needed=false 로 루프 종료.
@@ -2799,22 +3006,37 @@ const compactThreadHistoryUnlocked = async (args: {
   //  턴을 조용히 밀어낸다**(사용자 증상: "최근 대화를 못 따라온다", 로그엔 아무것도 없음).
   for (let rp = 0; rp < CODEX_SUMMARY_RECOMPACT_MAX_PASSES; rp++) {
     // 양보했거나 지금 뒤에 줄이 섰으면 재압축(요약 호출)도 미룬다 — 요약이 좀 긴 것뿐, 손실은 0 이다(아래 주석).
-    if (yielded || args.yieldTo?.() === true) break;
+    if (yielded || args.yieldTo?.() === true) {
+      // 종전엔 이 탈출이 로그 없이 빠져, 신고 로그로 «답한 뒤 재압축이 양보했나» 를 가를 수 없었다(#3 F4).
+      if (!yielded) {
+        if (progress !== undefined) progress.span.yielded = true;
+        console.log(`[${args.adapter} 6b] 누적 요약 재압축 양보${when} — 기다리는 요청이 있어 ${rp}회차 앞에서 멈춤 threadKey=${args.threadKey}`);
+      }
+      break;
+    }
     // 답을 기다리는 요청은 요약이 길어도 **들어가면** 그대로 보낸다 — 재압축은 답한 뒤 접기가 한다(회사 실측: 답 앞 재압축 약 3분).
     if (settled()) break;
     const rec = planSummaryRecompaction(summary, summaryCap);
     if (!rec.needed) break;
     if ((cooldownPort?.remainingMs(args.provider) ?? 0) !== 0) break;
+    // ★요청이 재압축 호출에 들어가면 사용자가 기다린다 — 시작을 알린다(F1 «재압축만» 무표시, #3). 백그라운드 재압축만은 조용히.
+    if (args.postTurn !== true && progress !== undefined) announceProgress(progress, 0);
     let folded: string;
+    const recompactT0 = Date.now();
     try {
       folded = await args.summarize(
         rec.oldPart,
         recompactTargetFor(rec.oldPart.length, summaryCap),
       );
     } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      if (progress !== undefined) {
+        if (isCancelled(e)) progress.span.cancelled = true;
+        else if (progress.span.failure === undefined) progress.span.failure = { reason: why, foldChars: rec.oldPart.length };
+      }
       console.warn(
-        `[${args.adapter} 6b] 누적 요약 재압축 실패 — 그대로 둔다(손실 0, 누적 ${summary.length}자): ` +
-          `${e instanceof Error ? e.message : String(e)}` + ` threadKey=${args.threadKey}`,
+        `[${args.adapter} 6b] 누적 요약 재압축 실패${when} — 그대로 둔다(손실 0, 누적 ${summary.length}자, 호출 ${Date.now() - recompactT0}ms): ` +
+          `${why}` + ` threadKey=${args.threadKey}`,
       );
       break;
     }
@@ -2822,8 +3044,11 @@ const compactThreadHistoryUnlocked = async (args: {
     //  아니다 — 목표를 넘겨 돌려주면 누적본이 오히려 커져 상한이 무의미해진다.
     const next = applyRecompaction(summary, folded, rec);
     if (next === null) {
+      if (progress !== undefined && progress.span.failure === undefined) {
+        progress.span.failure = { reason: translate("srv.compact.recompactNoShrink"), foldChars: rec.oldPart.length };
+      }
       console.warn(
-        `[${args.adapter} 6b] 재압축 결과가 안 줄어 버린다 — 앞 구간 ${rec.oldPart.length}자 → ` +
+        `[${args.adapter} 6b] 재압축 결과가 안 줄어 버린다${when}(호출 ${Date.now() - recompactT0}ms) — 앞 구간 ${rec.oldPart.length}자 → ` +
           `${folded.trim().length}자(목표 ${recompactTargetFor(rec.oldPart.length, summaryCap)}자). 누적 ${summary.length}자 유지. threadKey=${args.threadKey}`,
       );
       break;
@@ -2832,8 +3057,9 @@ const compactThreadHistoryUnlocked = async (args: {
     summary = next;
     upsertThreadSummary({ threadKey: args.threadKey, summary, compactedThrough: watermark });
     expectedGeneration = generation();
+    if (progress !== undefined) { progress.span.recompacted += 1; progress.span.recompactedTo = summary.length; }
     console.log(
-      `[${args.adapter} 6b] 누적 요약 재압축 ${rp + 1}회차 — 앞 구간 ${rec.oldPart.length}자 → ` +
+      `[${args.adapter} 6b] 누적 요약 재압축 ${rp + 1}회차${when}(호출 ${Date.now() - recompactT0}ms) — 앞 구간 ${rec.oldPart.length}자 → ` +
         `${folded.trim().length}자 (상한 ${summaryCap}자, 최종 ${summary.length}자) threadKey=${args.threadKey}`,
     );
   }
@@ -2841,7 +3067,7 @@ const compactThreadHistoryUnlocked = async (args: {
   if (summary.length > summaryCap && !settled()) {
     // 수렴 못 했으면 **남긴다** — 조용히 지나가면 최근 턴이 밀려나는 걸 아무도 모른다.
     console.warn(
-      `[${args.adapter} 6b] ★누적 요약이 상한을 넘은 채다 — ${summary.length}자 > ${summaryCap}자 ` +
+      `[${args.adapter} 6b] ★누적 요약이 상한을 넘은 채다${when} — ${summary.length}자 > ${summaryCap}자 ` +
         `(구간 ${summary.split(SUMMARY_SECTION_SEP).length}개). 프롬프트 예산에서 최근 원문 턴이 밀릴 수 있다. threadKey=${args.threadKey}`,
     );
   }
@@ -2850,24 +3076,8 @@ const compactThreadHistoryUnlocked = async (args: {
   //  남았다. 대화가 길어져 옛 내용이 요약으로 바뀌는 건 사용자가 알아야 할 상태 변화다
   //  (클로드코드가 압축을 표시하는 것과 같은 이유). 임계 초과 시에만 일어나므로 매 턴
   //  뜨지 않고, 여러 번 접었어도 **한 번**만 뜬다.
-  if (foldedTurnsTotal > 0) {
-    try {
-      getEventBus().publish({
-        type: "llm.compacted",
-        ts: Date.now(),
-        payload: {
-          threadKey: args.threadKey,
-          adapter: args.adapter, // ★누가 접었나 — 시작 이벤트만 싣고 있었다(2026-09-15).
-          foldedTurns: foldedTurnsTotal,
-          foldedChars: foldedCharsTotal,
-          summaryChars: freshSummaryChars,
-          elapsedMs: Date.now() - compactStartedAt,
-        },
-      });
-    } catch {
-      /* 관측 발행 실패가 턴을 무르지 않는다(원칙 3). */
-    }
-  }
+  //  ★끝 알림은 기다리는 구간이 낸다(2026-11-19 #3) — 이 호출의 결과는 구간에 모였고, 구간의 마지막 참여자가 나갈 때 한 번 나간다
+  //   (`closeProgressSpan`: 접은 수·재압축 횟수·경과). 같은 구간의 다른 참여자(대기 요청·백그라운드)의 결과와 합쳐진다.
 
   return { allTurns, summary, watermark };
 };
@@ -2886,12 +3096,37 @@ export const compactThreadHistory = async (args: CompactArgs): Promise<Compacted
     lastCompactArgs.set(args.threadKey, args);
     if (lastCompactArgs.size > CAP_USED_MAX) lastCompactArgs.delete(lastCompactArgs.keys().next().value as string);
   }
-  // ★답변 뒤 접기는 **선택적인 일**이다 — 뒤에 요청이 줄을 서면 패스 사이에서 양보한다(2026-10-03, 회사돌쇠 압축 인계서 1단계).
-  const r = await withThreadCompactionLock(
-    args.threadKey,
-    (hasWaiter) => compactThreadHistoryUnlocked(args.postTurn === true ? { ...args, yieldTo: hasWaiter } : args),
-    args.signal,
-  );
+  // ★기다리는 구간에 참여한다(2026-11-19 #3) — 줄 서기 **전**에 붙고 `finally` 에서 뗀다(대기 중 취소도). 요청이 잠금 앞에서
+  //  `COMPACT_WAIT_NOTICE_MS` 넘게 기다리면 그때 안내한다(F2 — 짧은 대기는 안내 없음). 대기 시간은 로그로 남긴다(F4).
+  const role: ProgressRole = args.postTurn === true ? "background" : "request";
+  const progress = joinProgressSpan(args.threadKey, args.adapter, role);
+  const lockBusy = threadLocks.has(args.threadKey);
+  const waitT0 = Date.now();
+  let waitTimer: ReturnType<typeof setTimeout> | undefined =
+    role === "request" && lockBusy ? setTimeout(() => announceProgress(progress, 0), COMPACT_WAIT_NOTICE_MS) : undefined;
+  waitTimer?.unref?.();
+  const stopWait = (): void => { if (waitTimer !== undefined) { clearTimeout(waitTimer); waitTimer = undefined; } };
+  let r: CompactedThreadHistory;
+  try {
+    // ★답변 뒤 접기는 **선택적인 일**이다 — 뒤에 요청이 줄을 서면 패스 사이에서 양보한다(2026-10-03, 회사돌쇠 압축 인계서 1단계).
+    r = await withThreadCompactionLock(
+      args.threadKey,
+      (hasWaiter) => {
+        stopWait();
+        if (role === "request" && lockBusy) {
+          console.log(`[${args.adapter} 6b] 요약 잠금 대기 ${Date.now() - waitT0}ms(요청 때) threadKey=${args.threadKey}`);
+        }
+        return compactThreadHistoryUnlocked(args.postTurn === true ? { ...args, yieldTo: hasWaiter, progress } : { ...args, progress });
+      },
+      args.signal,
+    );
+  } catch (e) {
+    if (isCancelled(e)) progress.span.cancelled = true;
+    throw e;
+  } finally {
+    stopWait();
+    leaveProgressSpan(progress);
+  }
   // 접힌 도구 결과 목록은 **보내는 요약에만** 붙인다 — 저장된 요약(재압축 대상)엔 안 넣는다(재압축이 지우지 못하게).
   //  턴 뒤 접기는 반환값을 버리므로 만들지 않는다.
   if (args.postTurn === true) return r;
@@ -3115,29 +3350,15 @@ export const parseCapEnv = (raw: string | undefined): number => {
 // 치환만. claude/openai 어댑터는 SDK 가 자체 효율 관리 → 무수정(층2 native 위임,
 // LLM-agnostic 하드게이트 정합). 매직넘버 금지 — 보수적 기본값 + env override.
 //
-// 공통 env 파서 — 양의 정수만, 아니면 기본값. (parseCapEnv 와 동일 정책, 임의 기본.)
-export const parsePosIntEnv = (raw: string | undefined, fallback: number): number => {
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : fallback;
-};
+// 공통 env 파서 — 양의 정수만, 아니면 기본값. 정의는 도구 결과 크기 계약 모듈 한 곳(여기선 다시 내보내기만).
+export { parsePosIntEnv };
 
 // C2 — 단일 tool output 의 inputArray 진입 cap. 초과 시 머리+꼬리만 남기고 중간
 // 치환. 도구 자체 cap(Bash 1MB·Read 2000라인)과 *별개* 의 어댑터 진입 게이트.
-// 16,000자 ≈ 4.5K tok (gpt-5.5 윈도 400K 의 ~1%) — 한 도구 결과가 25 iteration
-// 따라다녀도 부담 작은 수준.
-const CODEX_TOOL_OUTPUT_ENTRY_CAP = parsePosIntEnv(
-  process.env.CODEX_TOOL_OUTPUT_ENTRY_CAP,
-  16_000,
-);
-const CODEX_TOOL_OUTPUT_HEAD_CHARS = parsePosIntEnv(
-  process.env.CODEX_TOOL_OUTPUT_HEAD_CHARS,
-  8_000,
-);
-const CODEX_TOOL_OUTPUT_TAIL_CHARS = parsePosIntEnv(
-  process.env.CODEX_TOOL_OUTPUT_TAIL_CHARS,
-  4_000,
-);
+// ★값은 어댑터 중립 모듈 한 곳(`tool-output-limits.ts`) — 재조회 응답·예약 목록 페이지가 같은 값 안에 들어야 한다(2026-11-19).
+const CODEX_TOOL_OUTPUT_ENTRY_CAP = TOOL_OUTPUT_ENTRY_CAP;
+const CODEX_TOOL_OUTPUT_HEAD_CHARS = TOOL_OUTPUT_HEAD_CHARS;
+const CODEX_TOOL_OUTPUT_TAIL_CHARS = TOOL_OUTPUT_TAIL_CHARS;
 
 // C1 — inputArray 의 오래된 function_call_output 본문을 placeholder 로 치환할 때
 // raw 유지할 최근 output 개수 K. 모델이 직전 작업 맥락은 온전히 봐야 다음 행동을
@@ -3360,12 +3581,21 @@ const snapTailToLine = (text: string, tailChars: number): string => {
 
 export const capToolOutputForEntry = (
   output: string,
-  opts?: { cap?: number; headChars?: number; tailChars?: number },
+  opts?: { cap?: number; headChars?: number; tailChars?: number; ref?: string },
 ): string => {
   const cap = opts?.cap ?? CODEX_TOOL_OUTPUT_ENTRY_CAP;
-  const headChars = opts?.headChars ?? CODEX_TOOL_OUTPUT_HEAD_CHARS;
-  const tailChars = opts?.tailChars ?? CODEX_TOOL_OUTPUT_TAIL_CHARS;
   if (output.length <= cap) return output;
+  // ★보기 전체(앞·뒤·안내)가 상한 안이어야 한다(2026-11-19 구현 검토 R1 ③) — 상한만 낮춘 설정(예 12,000 · 앞·뒤 기본 8,000/4,000)에선
+  //  종전에도 보기가 상한을 넘었다. 안내 길이를 가장 긴 숫자로 잡아 남는 자리에 앞·뒤를 같은 비율로 줄인다. 기본값은 그대로 들어가 종전과 같다.
+  //  (상한이 안내보다 작은 설정은 지원하지 않는다 — 안내만 남는다.)
+  const room = Math.max(0, cap - noteOf(output, output.length, output.length, output.length, opts?.ref).length - 2);
+  let headChars = opts?.headChars ?? CODEX_TOOL_OUTPUT_HEAD_CHARS;
+  let tailChars = opts?.tailChars ?? CODEX_TOOL_OUTPUT_TAIL_CHARS;
+  if (headChars + tailChars > room) {
+    const h = Math.floor((room * headChars) / (headChars + tailChars));
+    tailChars = room - h;
+    headChars = h;
+  }
   // 머리+꼬리가 원본 이상이면 절약 없음 → 그대로.
   if (headChars + tailChars >= output.length) return output;
   // 경계에서 surrogate pair(이모지 등)가 쪼개지면 lone surrogate(깨진 글자)가 남는다.
@@ -3376,12 +3606,69 @@ export const capToolOutputForEntry = (
   //  있을 때만 당기고 아니면 종전대로 글자 수로 자른다(내용을 더 버리지 않는다).
   const head = snapHeadToLine(output, headChars).replace(/[\uD800-\uDBFF]$/, "");
   const tail = snapTailToLine(output, tailChars).replace(/^[\uDC00-\uDFFF]/, "");
-  const omitted = output.length - head.length - tail.length;
-  return (
-    `${head}\n…[중략 ${omitted}자 — 전체 출력이 잘렸습니다. ` +
-    `특정 부분이 필요하면 Read offset/limit 또는 Grep 으로 좁혀 재요청하세요.]…\n` +
-    `${tail}`
-  );
+  return `${head}\n${noteOf(output, output.length - head.length - tail.length, head.length, tail.length, opts?.ref)}\n${tail}`;
+};
+
+/**
+ * 생략 안내 한 줄 — ★**실제로 쓸 수 있는 회수 길**만 적는다 (2026-11-19). 종전엔 «Read offset/limit 또는 Grep» 을 권했는데 파일 경로가 없는
+ *  도구 결과(MCP·예약 목록)엔 쓸 수 없어, 모델이 가운데를 되찾지 못하고 게시를 보류했다(뉴돌쇠). 참조가 있으면 그 참조와 이어 읽을 위치를,
+ *  없으면 검색으로 찾게 한다. 보존 상한을 넘은 결과면 그 사실도(손실 없는 회수로 보이지 않게).
+ */
+const noteOf = (output: string, omitted: number, head: number, tail: number, ref: string | undefined): string => {
+  const unretained = output.includes(RETAIN_MARKER_HEAD) ? " 보존 상한을 넘은 가운데 일부는 보관되지 않아 회수할 수 없습니다." : "";
+  const how = ref !== undefined
+    ? `이 결과는 ${output.length}자로 보관돼 있습니다(앞 ${head}자·뒤 ${tail}자만 보임). 가운데는 ` +
+      `read_past_tool_result({"ref":"${ref}","offset":${head}}) 로 이어 읽으세요 — 원 도구를 다시 실행하지 마세요.`
+    : `가운데가 필요하면 read_past_tool_result 로 이 결과를 찾아 읽으세요 — 원 도구를 다시 실행하지 마세요.`;
+  return `…[중략 ${omitted}자 — ${how}${unretained}]…`;
+};
+
+/** 보존 상한 표식의 머리 — 보기 안내가 «보관되지 않은 부분이 있다» 를 알아보는 글. */
+const RETAIN_MARKER_HEAD = "…[보존 상한 초과 —";
+/** 보존본의 꼬리 길이 — 끝(결론·오류)은 남긴다. */
+const RETAIN_TAIL_CHARS = 4_000;
+
+/**
+ * **보존본** — 도구 결과를 가린 뒤 보존 상한(`TOOL_OUTPUT_RETAIN_CHARS`, 표식 포함) 안으로 (2026-11-19 설계 §3-1).
+ * ★가림을 **먼저** 한다 — 자르는 경계에 비밀이 걸리면 반쪽이 가려지지 않는다. 결과는 다시 가리지 않는다(가림은 멱등이 아니다:
+ *  `Bearer [REDACTED]` 를 다시 가리면 `]` 가 하나 더 붙는다).
+ * 상한을 넘으면 앞·뒤를 남기고 가운데에 «회수 불가» 표식을 둔다 — 길이·offset 은 이 문자열 기준이다.
+ */
+export const preserveToolOutput = (raw: string, retain: number = TOOL_OUTPUT_RETAIN_CHARS): string => {
+  const red = redactSecrets(raw);
+  if (red.length <= retain) return red;
+  const marker = (omitted: number): string => `\n${RETAIN_MARKER_HEAD} 가린 결과 ${red.length}자 중 가운데 ${omitted}자는 보존하지 않음(회수 불가)]…\n`;
+  let tail = red.slice(red.length - Math.min(RETAIN_TAIL_CHARS, Math.floor(retain / 4)));
+  if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
+  let head = red.slice(0, Math.max(0, retain - tail.length - marker(red.length).length));
+  if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
+  return `${head}${marker(red.length - head.length - tail.length)}${tail}`;
+};
+
+/**
+ * **저장용 결과 항목** — 모델 입력을 우리가 만들지 않는 어댑터(OpenAI: SDK 가 결과를 그 턴에 그대로 넘긴다)의 기록 모양(2026-11-19).
+ *  종전엔 저장 모양만 진입 상한으로 잘라, 이력이 요약된 뒤 재조회해도 가운데가 없었다. 보존본을 그대로 남기고, 이 대화가 Codex 로
+ *  이어지면 되살리기(`replayView`)가 진입 상한 보기를 적용한다.
+ */
+export const preservedToolOutputItem = (callId: string, raw: string): ResponseInputFunctionCallOutput => {
+  const preserved = preserveToolOutput(raw);
+  const item: ResponseInputFunctionCallOutput = { type: "function_call_output", call_id: callId, output: preserved };
+  originalToolOutputs.set(item, preserved);
+  preRedactedOutputs.add(item);
+  return item;
+};
+
+/**
+ * 모델 입력에 실을 글 — 판정은 **보존본 길이 하나**(설계 §3-1 «모델 입력»). 현재 턴(진입)과 다음 턴(되살리기)이 같은 판정을 쓴다.
+ *  - 보존본이 상한을 넘으면 보존본의 앞·뒤 + 참조 안내.
+ *  - 아니면: 원결과도 상한 이하면 원결과(종전 그대로 — 짧은 결과 계약), 원결과만 넘으면(가림이 줄임) 보존본.
+ */
+const entryText = (raw: string, preserved: string, ref: () => string | undefined): string => {
+  if (preserved.length > CODEX_TOOL_OUTPUT_ENTRY_CAP) {
+    const r = ref();
+    return capToolOutputForEntry(preserved, r !== undefined ? { ref: r } : undefined);
+  }
+  return raw.length > CODEX_TOOL_OUTPUT_ENTRY_CAP ? preserved : raw;
 };
 
 /**
@@ -3442,6 +3729,11 @@ export const appendToolResultsToInput = (
    *  타입으로 강제한다(호출부 배선을 검사가 못 보는 자리를 컴파일러가 본다).
    */
   room: { requestChars: number; ceilingChars?: number | undefined; label?: string; deferTextCompaction?: boolean },
+  /**
+   * 이 실행의 결과 보관함(2026-11-19) — 생략이 일어나면(진입 보기·턴 안 압축) 여기 넣고 참조를 안내에 적는다. 없으면(검사 등)
+   *  참조 없는 안내(검색으로 찾기)로 떨어진다.
+   */
+  ledger?: ToolOutputLedger,
 ): number => {
   const incoming = incomingToolResultChars(results);
   const ceiling = room.ceilingChars ?? CODEX_KNOWN_SAFE_INPUT_CHARS;
@@ -3455,17 +3747,20 @@ export const appendToolResultsToInput = (
   const pendingMedia: ResponseMediaItem[] = [];
   const mediaTools: string[] = [];
   for (const { callId, name, output, media, savedScreens = [] } of results) {
-    const item: ResponseInputFunctionCallOutput = {
-      type: "function_call_output",
-      call_id: callId,
-      output: capToolOutputForEntry(output),
-    };
-    if (savedScreens.length > 0) {
-      savedScreenRefs.set(item, [...savedScreens]);
-      const missing = savedScreens.filter(ref => !item.output.includes(ref));
-      if (missing.length > 0) item.output += `\n${savedScreenNote(missing)}`;
-    }
-    originalToolOutputs.set(item, item.output);
+    // ★보존과 보기를 가른다 (2026-11-19 설계 §3-1). 종전엔 진입 상한으로 자른 값을 보조 맵·저장에도 둬서, 가운데는 그 턴에도
+    //  다음 턴에도 되찾을 길이 없었다. 이제 가린 보존본을 따로 두고(저장·재조회의 기준), 모델에겐 같은 크기의 보기만 싣는다.
+    // 재조회 응답도 일반 결과와 똑같이 가린다(2026-11-19 구현 검토 R3: 도구 이름으로 가림을 건너뛰자 그 이름의 어댑터 오류가 가리지 않은 채
+    //  저장됐다). 응답은 원문·가린 뒤 길이 둘 다 진입 상한 안으로 만들어져(`toolRecallResponse`) 여기서 다시 잘리지 않는다.
+    const preserved0 = preserveToolOutput(output);
+    const missing = savedScreens.filter(ref => !entryText(output, preserved0, () => undefined).includes(ref));
+    const note = missing.length > 0 ? `\n${savedScreenNote(missing)}` : "";
+    const preserved = preserved0 + note;
+    const item: ResponseInputFunctionCallOutput = { type: "function_call_output", call_id: callId, output: "" };
+    originalToolOutputs.set(item, preserved);
+    preRedactedOutputs.add(item);
+    if (ledger !== undefined) itemLedger.set(item, { ledger, tool: name, args: callArgsOf(inputArray, callId) });
+    item.output = entryText(output + note, preserved, () => toolOutputRefOf(item));
+    if (savedScreens.length > 0) savedScreenRefs.set(item, [...savedScreens]);
     inputArray.push(item);
     pendingMedia.push(...media);
     if (media.length > 0 && !mediaTools.includes(name)) mediaTools.push(name);
@@ -3655,10 +3950,14 @@ export const compactOldToolOutputs = (
     //  ★도구 이름을 여기서 분기하지 않는다 — 첫 줄 보존은 **모든 도구에 같은 규칙**이다.
     const firstLine = body.slice(0, body.indexOf("\n") === -1 ? body.length : body.indexOf("\n"));
     const label = firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
+    // ★이 실행의 결과면 참조를 적는다(2026-11-19) — 종전 안내 «보존된 결과가 있으면 다시 읽으세요» 는 턴 안에선 읽을 길이 없었다.
+    const ref = toolOutputRefOf(item);
     item.output =
       `${CODEX_COMPACTED_MARKER}[이전 도구 출력 생략 — 약 ${body.length}자.` +
       (label.trim() === "" ? "" : ` 첫 줄: ${label}`) +
-      ` ${RESULT_RECOVERY_GUIDANCE}]`;
+      (ref !== undefined
+        ? ` 보관된 결과는 read_past_tool_result({"ref":"${ref}"}) 로 다시 읽으세요 — 원 도구를 다시 실행하지 마세요.]`
+        : ` ${RESULT_RECOVERY_GUIDANCE}]`);
     const refs = savedScreenRefs.get(item);
     if (refs !== undefined) item.output += `\n${savedScreenNote(refs)}`;
     compacted += 1;

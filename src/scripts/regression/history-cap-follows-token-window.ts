@@ -172,8 +172,11 @@ export const check: RegressionCheck = {
         { blendShort, blendLong, blendNone }),
       assert("★퍼사드(동작): Claude 가 턴을 끝내도 비율을 지우지 않고 그 턴 글자만큼 섞는다(폴백 한 턴이 이력을 접게 만들지 않는다)",
         facadeFb !== undefined && facadeFb > 2.15 && facadeFb < 2.2, facadeFb),
-      assert("★퍼사드(동작): OpenAI 턴은 도구 항목이 다음 요청에 실려 갈 크기까지 섞는다(되살리기 상한으로 깎인 크기) · 작은 항목은 그대로 · 없으면 0",
-        oaErr === "" && facadeOa !== undefined && Math.abs(facadeOa - oaExpect) < 1e-9 && oaReplayed <= H.turnItemsReplayChars() && oaReplayed >= H.turnItemsReplayChars() * 0.95 &&
+      // 2026-11-19: 진입 상한을 넘는 저장 결과는 다음 턴에 **진입 보기**(앞·뒤 + 참조 안내)로 실린다(보존과 재전송 분리) — 20만 자 결과 하나는
+      //  되살리기 상한(9만)까지가 아니라 보기 크기(진입 상한 이하)로 섞인다.
+      assert("★퍼사드(동작): OpenAI 턴은 도구 항목이 다음 요청에 실려 갈 크기까지 섞는다(큰 결과는 진입 보기 크기) · 작은 항목은 그대로 · 없으면 0",
+        oaErr === "" && facadeOa !== undefined && Math.abs(facadeOa - oaExpect) < 1e-9 && oaReplayed <= H.turnItemsReplayChars() &&
+          oaReplayed > 10_000 && oaReplayed <= 16_000 + JSON.stringify(oaItems[0]).length + 200 &&
           H.turnItemsReplayedChars(smallItems as never) === JSON.stringify(smallItems[0]).length && H.turnItemsReplayedChars(undefined) === 0,
         { oaErr, facadeOa, oaExpect, oaReplayed }),
       assert("★그림·PDF base64 글자를 센다(글·도구 결과 안의 같은 문자열은 아님)", media === 1_000 + 22 + 2_000 + 28, media),

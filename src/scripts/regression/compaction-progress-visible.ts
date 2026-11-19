@@ -58,7 +58,7 @@ const run = async (): Promise<Assertion[]> => {
   }
 
   // ── ③ 압축 계열 전부 대시보드에 소비처가 있다(발행만 하고 안 그리던 재발 차단) ──
-  for (const t of ["llm.compacting", "llm.compacted", "llm.compaction_stuck"]) {
+  for (const t of ["llm.compacting", "llm.compacted", "llm.compaction_stuck", "llm.compacting_ended"]) {
     out.push({
       name: `대시보드가 ${t} 를 그린다(소비처 존재)`,
       ok: sse.includes(`ev.type === "${t}"`),
@@ -70,8 +70,9 @@ const run = async (): Promise<Assertion[]> => {
   //  "얼마나 걸리나" 를 재려던 순간 그 숫자가 로그에도 이벤트에도 없었다.
   out.push({
     name: "압축 경과(elapsedMs)가 이벤트에 실린다",
-    ok: codex.includes("elapsedMs: Date.now() - compactStartedAt"),
-    got: codex.includes("elapsedMs: Date.now() - compactStartedAt")
+    // (2026-11-19 #3) 끝 알림은 기다리는 구간이 낸다 — 경과는 구간이 열린 때부터.
+    ok: codex.includes("const elapsedMs = Date.now() - s.openedAt;") && /elapsedMs, spanId: s\.id/.test(codex),
+    got: codex.includes("const elapsedMs = Date.now() - s.openedAt;")
       ? "있음"
       : "없음",
   });

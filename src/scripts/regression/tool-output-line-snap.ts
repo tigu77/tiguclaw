@@ -12,7 +12,8 @@
 import { capToolOutputForEntry } from "../../core/llm-runtime/adapters/openai-codex-oauth-history.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
-const OPTS = { cap: 1000, headChars: 500, tailChars: 500 };
+// 상한은 앞·뒤 + 안내 자리 — 보기 전체가 상한 안이어야 해서(2026-11-19) 앞·뒤가 상한을 꽉 채우면 비율로 줄어든다. 여기서 보는 건 줄 스냅이라 줄지 않게 둔다.
+const OPTS = { cap: 1200, headChars: 500, tailChars: 500 };
 const split = (s: string) => {
   const head = s.split("\n…[중략")[0] ?? "";
   const tail = s.split("]…\n")[1] ?? "";
@@ -31,9 +32,9 @@ export const check: RegressionCheck = {
     const flatInput = "x".repeat(50_000);
     const flat = split(capToolOutputForEntry(flatInput, OPTS));
     // 양쪽 절단 경계가 surrogate pair 한가운데면 깨진 code unit 을 제거한다.
-    const emojiInput = `aaaa😀${"m".repeat(20)}😀bbbb`;
+    const emojiInput = `aaaa😀${"m".repeat(200)}😀bbbb`;
     const emoji = split(
-      capToolOutputForEntry(emojiInput, { cap: 10, headChars: 5, tailChars: 5 }),
+      capToolOutputForEntry(emojiInput, { cap: 150, headChars: 5, tailChars: 5 }),
     );
     // 캡 이하는 손대지 않는다.
     const smallInput = "짧은 출력";
@@ -73,8 +74,8 @@ export const check: RegressionCheck = {
         "surrogate 보호로 빠진 code unit 도 안내 길이에 반영한다",
         emoji.omitted === emojiInput.length - emoji.head.length - emoji.tail.length &&
           !/[\uD800-\uDFFF]$/.test(emoji.head) &&
-          !/^[\uD800-\uDFFF]/.test(emoji.tail),
-        `reported=${emoji.omitted} actual=${emojiInput.length - emoji.head.length - emoji.tail.length}`,
+          !/^[\uD800-\uDFFF]/.test(emoji.tail) && emoji.head === "aaaa" && emoji.tail === "bbbb",
+        `reported=${emoji.omitted} actual=${emojiInput.length - emoji.head.length - emoji.tail.length} head=${JSON.stringify(emoji.head)} tail=${JSON.stringify(emoji.tail)}`,
       ),
       assert("캡 이하는 원본 그대로", small === smallInput && !small.includes("중략"), small),
     ];

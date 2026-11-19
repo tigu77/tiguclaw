@@ -77,6 +77,10 @@
        */
       const compactDoneMessage = (p, took) => {
         const to = (Number(p && p.summaryChars) || 0).toLocaleString();
+        // 누적 요약만 다시 줄였다(접은 턴 없음, 2026-11-19 #3) — «이전 대화를 요약으로 압축했다» 가 아니라 그 사실대로.
+        if (!hasFoldCounts(p) && Number(p && p.recompacted) > 0) {
+          return { key: "sys.compact.recompacted", params: { to: (Number(p.recompactedTo) || 0).toLocaleString(), took } };
+        }
         if (!hasFoldCounts(p)) return { key: "sys.compact.doneNoCounts", params: { to, took } };
         return {
           key: "sys.compact.done",
@@ -153,47 +157,117 @@
         if (tools > 0) return i18n("sys.history.toolsOmitted", { tools });
         return "";
       };
-      const compactingTimers = new Map(); // threadKey → { el, startTs }
+      /**
+       * 압축 진행 표시 장부 (2026-11-19 GitHub #3) — 키 = 서버의 **기다리는 구간**(`spanId`), 구간 없는 이벤트(Claude·옛 서버)는 대화당 한 칸.
+       * ★상태가 먼저고 그리기는 그다음이다 — 종전엔 장부가 DOM 부착에 묶여(`isConnected` 거짓이면 지움), 가상목록 밖으로 나간 줄의 배지를
+       *  끝에서 못 걷었고, 이력 로드 창에서 그리기가 미뤄지면 장부에 안 남았다. 그리고 대화당 한 칸이라 백그라운드 압축과 기다리는 요청이
+       *  각자 짝을 내면 줄이 겹치고 앞선 끝이 뒤의 표시를 일찍 걷었다.
+       * 값: `{ open, tk, el?, startTs }`. 닫힌 구간은 늦게 다시 온 시작(재생)을 막으려 잠시 남긴다(바운드).
+       */
+      const compactingTimers = new Map();
+      const COMPACTING_KEEP = 300;
+      const progressKey = (p) => (p && p.spanId ? "span:" + p.spanId : "tk:" + String((p && p.threadKey) || ""));
       const tickCompacting = () => {
         const now = Date.now();
-        for (const [key, e] of compactingTimers) {
-          if (!e.el || !e.el.isConnected) { compactingTimers.delete(key); continue; }
+        for (const e of compactingTimers.values()) {
+          // 떨어진 노드는 갱신만 건너뛴다(지우지 않는다 — 끝에서 그 노드의 배지를 걷어야 한다).
+          if (!e.open || !e.el || !e.el.isConnected) continue;
           const b = e.el.querySelector(":scope .dur-badge.running");
           if (b) b.textContent = "⏳ " + fmtElapsed(now - e.startTs);
         }
       };
       setInterval(tickCompacting, 1000);
-      /** 압축이 끝났다 = 더는 안 돈다. 표식을 걷는다(끝난 뒤에도 도는 유령 방지). */
-      const stopCompactingTick = (tk) => {
-        const e = compactingTimers.get(tk || "");
-        if (!e) return;
-        compactingTimers.delete(tk || "");
-        const b = e.el && e.el.querySelector(":scope .dur-badge.running");
+      const dropBadge = (e) => {
+        const b = e && e.el && e.el.querySelector(":scope .dur-badge.running");
         if (b) b.remove();
+      };
+      /**
+       * 상한은 **닫힌 기록(재생 막기용)부터** 줄인다 — 열린 구간을 버리면 끝이 와도 그 배지를 못 걷는다(구현 검토 R1 ②).
+       *  열린 것만 남았는데도 넘치면(끝을 못 받은 구간이 쌓인 경우) 가장 오래된 것의 배지를 걷고 버린다.
+       */
+      const keepBounded = () => {
+        while (compactingTimers.size > COMPACTING_KEEP) {
+          let victim;
+          for (const [key, e] of compactingTimers) { if (!e.open) { victim = key; break; } }
+          if (victim === undefined) {
+            victim = compactingTimers.keys().next().value;
+            dropBadge(compactingTimers.get(victim));
+          }
+          compactingTimers.delete(victim);
+        }
+      };
+      /**
+       * 압축이 끝났다 = 더는 안 돈다. 표식을 걷는다(끝난 뒤에도 도는 유령 방지). `spanId` 가 있으면 **그 구간만** —
+       *  다른 구간·구간 없는 표시는 건드리지 않는다(늦게 온 다른 끝이 지금 기다리는 표시를 일찍 걷지 않게).
+       */
+      const stopCompactingTick = (p) => {
+        const k = progressKey(p);
+        const e = compactingTimers.get(k);
+        if (p && p.spanId) {
+          if (e) { dropBadge(e); e.open = false; e.el = null; }
+          else compactingTimers.set(k, { open: false, tk: p.threadKey, el: null, startTs: 0 });
+          keepBounded();
+          return;
+        }
+        if (!e) return;
+        compactingTimers.delete(k);
+        dropBadge(e);
       };
 
       const renderCompacting = (p, evTs) => {
         const tk = p.threadKey;
+        const k = progressKey(p);
+        const prev = compactingTimers.get(k);
+        let entry;
+        if (p.spanId && prev) {
+          // 같은 구간 — 닫혔으면 늦게 다시 온 시작(재생)이라 무시, 열렸고 목록에 그 줄이 있으면 새 줄 없음(합류·갱신).
+          //  ★열렸는데 목록에 줄이 없으면(그때 다른 대화를 보고 있었거나 탭 이동으로 목록이 바뀜) 지금 그린다(구현 검토 R1 ①) —
+          //   «구간이 살아 있다» 와 «화면에 그렸다» 는 수명이 다르다. 가상목록 밖으로 떨어진 줄은 목록이 소유하므로 다시 그리지 않는다.
+          if (!prev.open) return;
+          if (prev.el && vtOwns(prev.el)) return;
+          entry = prev;
+        } else {
+          // 구간 없는 칸을 새 시작이 덮을 땐 앞 칸의 배지를 걷는다(잔여 방지).
+          if (prev) dropBadge(prev);
+          entry = { open: true, tk, el: null, startTs: typeof evTs === "number" ? evTs : Date.now() };
+          compactingTimers.set(k, entry);
+          keepBounded();
+        }
+        const startTs = entry.startTs;
         if (isEndpointThread(tk)) return;
         if (!isActiveThread(tk)) return;
         const turns = Number(p.pendingTurns) || 0;
+        // ★이력 로드 창에서는 **그리기 한 단위**(열림·소유 재확인 → 줄 → 배지 → 장부 연결)를 통째로 미룬다(구현 검토 R2) — `renderLocalChat`
+        //  만 미루면 미뤄진 줄이 장부에 안 묶여(`entry.el` 없음) 같은 구간 갱신이 또 그려 줄이 겹치고 배지가 없었다.
+        //  미룬 그리기가 여럿 쌓여도 실행 때 다시 재므로(열림·목록 소유) 줄은 하나다.
+        //  ★실행 때 다시 묻는 것: 아직 이 칸의 주인인가(끝·덮어쓰기로 지워졌으면 무효) · 지금도 보는 대화인가(보류 중 탭을 바꾸면 다른 대화에
+        //   그리지 않는다 — 지연 실패 안내와 같은 규칙, 구현 검토 R3).
+        const draw = () => {
+          if (!entry.open || compactingTimers.get(k) !== entry || (entry.el && vtOwns(entry.el))) return;
+          if (isEndpointThread(tk) || !isActiveThread(tk)) return;
+          drawCompacting(entry, p, turns, evTs, tk, startTs);
+        };
+        if (holdSseEventDuringHistory(evTs, draw)) return;
+        draw();
+      };
+      const drawCompacting = (entry, p, turns, evTs, tk, startTs) => {
         const el = renderLocalChat(
           "info",
           turns > 0
             ? i18n("compact.running", { turns })
-            : i18n("compact.runningNoTurns"),
+            // 서버의 기다리는 구간은 조용히 닫힐 수 있다(취소·양보·기다리기만) — «끝나면 알려드린다» 를 약속하지 않는 문구.
+            : p.spanId ? i18n("compact.runningWait") : i18n("compact.runningNoTurns"),
           // key 에 ts 를 넣어 같은 스레드의 다음 압축과 안 겹치게(사후 렌더와 동형).
           { ts: evTs, key: "compacting|" + (tk || "") + "|" + evTs },
         );
-        // 중복/보류로 안 그려졌으면(renderLocalChat 이 undefined) 틱도 안 건다.
-        if (!el) return;
-        const startTs = typeof evTs === "number" ? evTs : Date.now();
+        // 중복/보류로 안 그려졌으면(renderLocalChat 이 undefined) 배지도 없다 — 상태는 이미 위에 있다.
+        if (!el || !entry.open) return;
         const b = document.createElement("span");
         b.className = "dur-badge running";
         b.textContent = "⏳ " + fmtElapsed(Date.now() - startTs);
         const body = el.querySelector(":scope > .chat-message") || el;
         body.appendChild(b);
-        compactingTimers.set(tk || "", { el, startTs });
+        entry.el = el;
       };
 
       const renderEvent = (ev) => {
@@ -506,7 +580,8 @@
         //  같은 사고가 반복된다(감사 지적).
         if (ev.type === "llm.compaction_stuck") {
           const p = ev.payload || {};
-          stopCompactingTick(p.threadKey); // 고착도 «끝» 이다 — 돌아가는 표식을 남기지 않는다.
+          // 고착도 «끝» 이다 — 단 서버의 기다리는 구간 안 경보(`spanId`)는 끝이 아니다(끝은 그 구간의 끝 이벤트가, #3).
+          if (!p.spanId) stopCompactingTick({ threadKey: p.threadKey });
           if (!isEndpointThread(p.threadKey) && isActiveThread(p.threadKey)) {
             renderLocalChat(
               "error",
@@ -531,8 +606,13 @@
           renderCompacting(ev.payload || {}, ev.ts);
           return;
         }
+        // 서버의 기다리는 구간이 성공도 실패도 아니게 끝났다(취소·양보·폐기·기다리기만, 2026-11-19 #3) — 표시만 걷는다(줄 없음).
+        if (ev.type === "llm.compacting_ended") {
+          stopCompactingTick(ev.payload || {});
+          return;
+        }
         if (ev.type === "llm.compacted") {
-          stopCompactingTick((ev.payload || {}).threadKey);
+          stopCompactingTick(ev.payload || {});
           renderCompacted(ev.payload || {}, ev.ts);
           return;
         }
@@ -544,7 +624,7 @@
         //  임계에서 한 번 크게 말하는 것과 역할이 다르다 — 이건 «지금 상태» 다).
         if (ev.type === "llm.compact_failed") {
           const p = ev.payload || {};
-          stopCompactingTick(p.threadKey);
+          stopCompactingTick(p);
           // ★**이력 로드 창에서는 «고쳐 쓸지» 판정까지 같이 미룬다** (2026-09-15, 레드팀 O5).
           //  `renderLocalChat` 은 그 창에서 자기 자신을 다시 부르도록 미루는데, 그러면
           //  아래 «한 줄로 고쳐 쓰기» 분기를 **건너뛴다** — 창이 열려 있는 동안 실패가

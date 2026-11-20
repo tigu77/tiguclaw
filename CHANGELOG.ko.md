@@ -8,6 +8,15 @@
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-11-20
+
+### 추가
+- Codex·OpenAI 연결에서 텔레그램으로 보낸 요청의 답이 대화 요약 때문에 늦어지면 그 텔레그램 대화에 한 번 안내합니다. 대시보드에는 앞선 요약을 오래 기다리거나 요약을 다시 줄이는 동안에도 진행 상태가 표시됩니다. 안내를 더한 것이며 기다리는 시간이 줄지는 않습니다.
+
+### 수정
+- Codex 연결에서 아주 긴 도구 결과의 가운데를 같은 턴에도 다음 턴에도 다시 볼 수 없던 문제를 수정했습니다. 이제 같은 턴에서 `read_past_tool_result`로 보존된 구간을 이어 읽을 수 있고, 보존 한도를 넘은 부분은 볼 수 없다고 표시합니다.
+- 예약이 많으면 `list_schedules` 목록 가운데가 잘리던 문제를 수정했습니다. 목록은 페이지로 나뉘고(`after_id`로 다음 페이지), 각 행에는 지시문 미리보기·길이와 마지막 오류 앞 200자가 담기며, 원문과 전체 오류는 `id`로 한 건을 조회해 확인합니다. 예약에서 시작된 작업의 완료 보고가 대화의 채널 정보를 바꿔 이후 텔레그램 사본이 전송되지 않을 수 있던 문제도 수정했습니다.
+
 ## [0.85.0] - 2026-11-18
 
 ### 추가
@@ -2895,7 +2904,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.85.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.86.0...HEAD
+[0.86.0]: https://github.com/tigu77/tiguclaw/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...v0.84.0
 [0.83.0]: https://github.com/tigu77/tiguclaw/compare/v0.82.0...v0.83.0

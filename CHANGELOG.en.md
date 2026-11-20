@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-11-20
+
+### Added
+- With Codex and OpenAI connections, when a reply to a request sent on Telegram is delayed by conversation summarization, you get one notice in that Telegram chat. The dashboard now also shows progress during a long wait for an earlier summary and while re-summarizing. This adds notices; it does not shorten the wait.
+
+### Fixed
+- With Codex connections, the middle of a very long tool result could not be seen again in the same turn or in later turns. It can now be read in the same turn with `read_past_tool_result` up to what was retained, and any part beyond the retention limit is marked as unavailable.
+- With many schedules, the middle of the `list_schedules` list was cut off. The list now comes in pages (pass `after_id` for the next page); each row has an instruction preview and length and the first 200 characters of the last error, and the full text and error are available by looking up one schedule by `id`. The completion report of a task started from a schedule could also overwrite the conversation's channel details, so later Telegram copies could fail to send; this is fixed as well.
+
 ## [0.85.0] - 2026-11-18
 
 ### Added
@@ -1345,7 +1354,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.85.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.86.0...HEAD
+[0.86.0]: https://github.com/tigu77/tiguclaw/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...v0.84.0
 [0.83.0]: https://github.com/tigu77/tiguclaw/compare/v0.82.0...v0.83.0

@@ -38,7 +38,7 @@ import {
   slotHashes,
 } from "../prefix-fingerprint.js";
 import { createHash, randomUUID } from "node:crypto";
-import { noteTurnRateLimit, parseRateLimit } from "../rate-limit-view.js";
+import { noteTurnRateLimit, parseRateLimit, turnCredentialKey } from "../rate-limit-view.js";
 import { withRateLimitUntil } from "../rate-limit.js";
 import { ProviderUnavailableError } from "../rate-limit.js";
 import { createFastModeReporter } from "../fast-mode-view.js";
@@ -635,6 +635,8 @@ export const runClaude = async (
   //  종전엔 `depth === 0 && (input.workerDepth ?? 0) === 0` 이 이 파일에만 8곳,
   //  세 어댑터 합쳐 24곳에 복사돼 있었다. 판정은 `capability-reach.ts` 한 곳에 산다.
   const turnKind = turnKindOf(input);
+  // 스킬 서버(`invoke_skill`·`find_skills`)와 `find_capabilities` 의 플러그인 스킬 항목이 **같은** cwd·칸을 쓴다 — 한 번 만들어 둘에 넘긴다(⑥).
+  const skillScope = { cwd, turn: turnKind };
 
   // 커스텀 서브에이전트 → SDK `options.agents` 주입 (codex spawn_agent 브리지의
   // claude 대응 — SDK native Task tool 이 발견·실행). depth 0 turn 만 주입
@@ -719,12 +721,12 @@ export const runClaude = async (
         // invoke_skill 실행 경로 (모든 소스 — home/project/plugin). 격리 모드라
         // .claude/skills 자동발견 0 → 이 in-process MCP 가 유일 실행 경로. cwd 는
         // 위 options.cwd·아래 스킬 인덱스(discoverSkills)와 동일 소스 → 인덱스↔invoke 정합.
-        skills: createSkillInvokeMcpServer(cwd, {
+        skills: createSkillInvokeMcpServer(skillScope.cwd, {
           channel: input.channel,
           threadKey: input.threadKey,
           adapter: "claude",
           // 이 턴의 칸 — find_skills 가 자기 칸 스킬만 돌려주게(인덱스와 같은 규칙).
-          turn: turnKindOf(input),
+          turn: skillScope.turn,
         }),
         // reply-intent — 이 turn 응답을 트리거 메시지 직접 답글로 마킹 (codex 와 parity).
         "reply-intent": replyIntentServer,
@@ -1316,6 +1318,7 @@ export const runClaude = async (
               capabilityActiveNames,
               "`spawn_agent({name, prompt})` 도구로 실행하세요 (다른 프로젝트/병렬 위임은 `path` 로)",
               input.extraMcpServers,
+              skillScope,
             ),
           }),
     }),
@@ -1518,13 +1521,20 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
   //  **먼저 꺼내** 죽은 프로세스에 쓰고(유실), 그 쓰기 예외로 effectiveAc 까지 abort 됐다. 재시도 직전에 이 신호를
   //  끊으면 `stream()` 은 꺼내기 전에 abort 를 먼저 보고 끝난다(메시지는 채널에 남아 새 시도가 받는다).
   let attemptInputAc = linkAbort(effectiveAc.signal);
-  const buildQuery = (o: Options) =>
-    input.steering === undefined
+  /**
+   * 지금 질의를 띄운 자격의 표지 — 늦게 온 한도 이벤트를 그사이 바뀐 자격에 붙이지 않는다(`rate-limit-view.ts`). 질의를 띄울 때마다
+   * **그 질의가 받는 환경**(`options.env`, 없으면 프로세스 환경 — SDK 기본)에서 잡는다(복구 재시도가 옛 환경을 복사해 띄우는 경우 포함).
+   */
+  let turnCredential = "";
+  const buildQuery = (o: Options) => {
+    turnCredential = turnCredentialKey(o.env ?? process.env);
+    return input.steering === undefined
       ? sdk({ prompt: promptWithMemory, options: o }) // 현행 경로 — 바이트 동일(회귀 0).
       : sdk({
           prompt: buildSteeringPrompt(input.steering, attemptInputAc.signal),
           options: o,
         });
+  };
   let q = buildQuery(options);
   let resumeRetried = false;
 
@@ -1851,7 +1861,7 @@ const isClaudeExecutableMissing = (e: unknown): boolean => {
         const view = parseRateLimit((msg as { rate_limit_info?: unknown }).rate_limit_info);
         // 거절이면 «언제까지» 를 기억한다 — 이 턴이 실패로 끝나면 오류에 실어 쿨다운이 문구 대신 이 시각을 쓴다(2026-10-10).
         if (view.rejectedUntilMs !== undefined) rateLimitRejectedUntil = view.rejectedUntilMs;
-        noteTurnRateLimit(view); // 토큰 자신의 사용률 — 한도 화면이 CLI 대신 이걸 먼저 쓴다.
+        noteTurnRateLimit(view, Date.now(), turnCredential); // 토큰 자신의 사용률 — 한도 화면이 CLI 대신 이걸 먼저 쓴다.
         // 같은 값을 매 턴 찍으면 배경소음이 된다 — **바뀔 때만** 남기고, 경고·거절은 항상
         // 남긴다([[feedback_logs_must_stand_alone]] 「반복은 세라」).
         if (view.line !== null && (view.status !== "allowed" || view.signature !== lastRateLimitSig)) {

@@ -29,6 +29,7 @@ import {
   getAuthProvider,
   registerAuthProvider,
   type AuthLogin,
+  type UsageQueryOptions,
 } from "../llm-runtime/auth-registry.js";
 import { pluginFetch } from "../plugin-fetch.js";
 import type { RegionASdkOutput } from "../llm-runtime/types.js";
@@ -354,7 +355,9 @@ export interface PluginHost {
      *  구현이 스스로 지킨다. 이 선언은 `auth-registry.ts` 의 것과 **같아야 한다** — 갈리면
      *  플러그인은 이쪽을, 라우트는 저쪽을 보게 되고 인자가 조용히 사라진다(실제로 그랬다).
      */
-    getUsage?(force?: boolean): Promise<import("./provider-usage.js").ProviderUsage | undefined>;
+    getUsage?(force?: boolean, opts?: UsageQueryOptions): Promise<import("./provider-usage.js").ProviderUsage | undefined>;
+    /** 지금 자격의 표지(비밀 아님 — 해시 앞부분·만료 시각) — 같은 자격이면 같고 바뀌면 다르다. 뜻은 `auth-registry.ts` 의 같은 이름(그것과 같아야 한다). */
+    credentialTag?(): string;
   }): { ok: boolean; error?: string };
 
   /**

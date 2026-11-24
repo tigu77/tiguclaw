@@ -570,6 +570,8 @@ export const runOpenAi = async (
   const depth = input.subagentDepth ?? 0;
   // ★도구 노출 사다리 — 판정은 `capability-reach.ts` 한 곳(claude·codex 와 같은 표).
   const turnKind = turnKindOf(input);
+  // 스킬 서버(`invoke_skill`·`find_skills`)와 `find_capabilities` 의 플러그인 스킬 항목이 **같은** cwd·칸을 쓴다 — 한 번 만들어 둘에 넘긴다(⑥).
+  const skillScope = { cwd: discoveryCwd, turn: turnKind };
 
   // lean 도구 정책 (2026-06-15, architect §2a I-2). 중립 신호 toolPolicy 를 *이 어댑터의
   // 도구 집합*(MCP 서버들)에서 해석한다 — 도구명 매핑은 어댑터 안(추상 누수 0, I-3).
@@ -666,12 +668,12 @@ export const runOpenAi = async (
         // memory/projects/skills 와 동일 무조건 등록(claude/codex 와 parity, 계약서 §3.1).
         await adaptClaudeMcpServer(createMaintenanceMcpServer(), "maintenance"),
         await adaptClaudeMcpServer(
-          createSkillInvokeMcpServer(discoveryCwd, {
+          createSkillInvokeMcpServer(skillScope.cwd, {
             channel: input.channel,
             threadKey: input.threadKey,
             adapter: "openai",
           // 이 턴의 칸 — find_skills 가 자기 칸 스킬만 돌려주게(인덱스와 같은 규칙).
-          turn: turnKindOf(input),
+          turn: skillScope.turn,
           }),
           "skills",
         ),
@@ -936,6 +938,7 @@ export const runOpenAi = async (
           capabilityActiveNames,
           undefined,
           input.extraMcpServers,
+          skillScope,
         ),
         "find-capabilities",
       ),

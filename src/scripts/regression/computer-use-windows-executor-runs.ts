@@ -261,8 +261,10 @@ export const check: RegressionCheck = {
       const { readSourceSync } = await import("./_wiring.js");
       const winSrc = readSourceSync("plugins/computer-use/src/win.ts");
       const wired = {
-        compile: /if \(!built\.ok\) return \{ \.\.\.built, detail: blockedOr\(built\.detail, !existsSync\(tmp\)\) \};/.test(winSrc),
-        rename: /detail: blockedOr\(msg, \/ENOENT\/\.test\(msg\)\)/.test(winSrc),
+        // ★2026-11-24: 컴파일 경로가 종류(spec)를 받는다 — 대상 이름도 그 spec 에서(캡처 문구 바이트 동일은 W4(e) 가 동작으로 잰다).
+        // 컴파일 실패 + 산출물 없음 = 백신은 **캡처만**(종전 판정) — 종류별 판정은 W4(d) 가 동작으로 잰다.
+        compile: /if \(!built\.ok\) return \{ \.\.\.built, detail: blockedOr\(built\.detail, spec\.missingOutputIsBlock && !existsSync\(tmp\), spec\.what\) \};/.test(winSrc),
+        rename: /detail: blockedOr\(msg, \/ENOENT\/\.test\(msg\), spec\.what\)/.test(winSrc),
         run: /const r = await runChild\(exe\.exe, \[\], env\);[\s\S]{0,120}blockedOr\(r\.detail, spawnRefused\(r\.detail\) \|\| !existsSync\(exe\.exe\)\)/.test(winSrc),
       };
       out.push(
@@ -323,9 +325,274 @@ export const check: RegressionCheck = {
       const src = await fs.readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../plugins/computer-use/src/win.ts"), "utf8");
       out.push(
         assert(
-          "실행부 루프의 입력 사이 최소 간격은 12ms 그대로다(맥에선 시간으로 못 재므로 원문으로)",
-          /"\s*Start-Sleep -Milliseconds 12",/.test(src),
-          "Start-Sleep -Milliseconds 12",
+          "실행부 루프의 입력 사이 최소 간격은 12ms 그대로다 · 누른 뒤만 `$CLICK_HOLD`(⑤ r4 — 맥에선 시간으로 못 재므로 원문으로)",
+          /"\s*Start-Sleep -Milliseconds \$\(if\(\$e\.t -eq 'mousedown'\)\{\$CLICK_HOLD\}else\{12\}\)",/.test(src),
+          "Start-Sleep -Milliseconds $(if($e.t -eq 'mousedown'){$CLICK_HOLD}else{12})",
+        ),
+      );
+      // ── W5 (2026-11-24, ⑤ Windows) — 멈춤 요청 파일·빈 연습이 자식 env 로 **실제로** 넘어간다(부모 env 의 값은 안 샌다) ──
+      type StopRun = Run & { stopFile?: string };
+      const sr = (got as unknown as { stopRuns?: StopRun[] } | null)?.stopRuns ?? [];
+      const allControl = [...(got?.postRuns ?? []), ...control] as StopRun[];
+      out.push(
+        assert(
+          "★★W5 Windows `post`: 본 발사의 멈춤 요청 파일이 자식 env `TIGUCLAW_STOP_FILE` 로 그대로 · `dry:true` 는 `TIGUCLAW_DRY=1` · 해제 꼴·종전 발사·자가 점검은 빈 문자열을 **명시**(부모 env 값이 새지 않는다)",
+          sr.length === 3 && sr[0]?.stopFile === "S:\\멈춤-요청" && sr[0]?.dry === "0" && sr[1]?.dry === "1" && sr[1]?.stopFile === "" &&
+            sr[2]?.stopFile === "" && sr[2]?.dry === "0" && allControl.length === 4 && allControl.every((r) => r.stopFile === ""),
+          { stopRuns: sr.map((r) => ({ stopFile: r.stopFile, dry: r.dry })), others: allControl.map((r) => r.stopFile) },
+        ),
+      );
+      // ── 실행 정책 상속 (2026-11-24) — 자식 PowerShell 은 그 기계의 실행 정책을 따른다(`-ExecutionPolicy` 를 넘기지 않는다) ──
+      type PolicyView = { frontRuns?: Run[]; argvs?: string[][]; refusal?: { calls: number; result: { ok: boolean; detail?: string } } };
+      const pv = (got as unknown as PolicyView | null) ?? {};
+      const argvs = pv.argvs ?? [];
+      const HEAD = ["-NoProfile", "-NonInteractive", "-EncodedCommand"];
+      // 본문은 마지막 한 인자 — 머리를 **토큰 단위로** 대조한다(두 스위치가 한 인자로 합쳐져도 잡는다).
+      const headOk = (a: string[]): boolean => a.length === HEAD.length + 1 && HEAD.every((h, i) => a[i] === h) && /^[A-Za-z0-9+/]+=*$/.test(a[HEAD.length] ?? "");
+      const expected = got === null ? -1 : got.postRuns.length + got.checkRuns.length + sr.length + (pv.frontRuns?.length ?? 0) + 1 + (pv.refusal?.calls ?? 0); // + controlInvocation 1 · 거절 구간
+      out.push(
+        assert(
+          "★★Windows 조작·유휴 조회·자가 점검·전면창 조회·`controlInvocation` 이 자식 PowerShell 에 넘기는 인자는 `-NoProfile`·`-NonInteractive`·`-EncodedCommand`·<본문> 넷뿐 — 실행 정책(`-ExecutionPolicy`)을 넘기지 않아 그 기계의 정책을 상속한다",
+          got !== null && (pv.frontRuns?.length ?? 0) === 1 && argvs.length === expected && argvs.length >= 10 && argvs.every(headOk),
+          { expected, heads: argvs.map((a) => a.slice(0, -1)), front: pv.frontRuns?.length },
+        ),
+      );
+      const rf = pv.refusal;
+      out.push(
+        assert(
+          "★★정책 거절(종료 1 · CLIXML `PSSecurityException`)이면 본 발사는 자식 **한 번**으로 끝나 실패를 돌려준다 — 다른 방식으로 다시 띄우지 않고, 거절 사유 원문이 실린다",
+          rf !== undefined && rf.calls === 1 && rf.result.ok === false && (rf.result.detail ?? "").includes("running scripts is disabled"),
+          rf ?? "기록 없음",
+        ),
+      );
+    }
+
+    // ── W4 (2026-11-24, ⑤ Windows) — 표시 도우미 기동·컴파일 경로(가짜 csc·spawn·fs — 디스크 쓰기·삭제 0) ─────────
+    {
+      const child = await spawnWithin(60_000, "win.ts 도우미 기동", ["--import", "tsx", fileURLToPath(new URL("./_win-indicator-build-child.ts", import.meta.url))], { env: { ...process.env } });
+      const line = child.out.split(/\r?\n/).find((l) => l.startsWith("WIN_IND "));
+      type Ind = {
+        race: { compiling: number; spawns: number; gone: string[] };
+        control: { spawns: number; gone: string[]; exe: string; stdin: unknown; windowsHide: unknown; dry: unknown; label: unknown };
+        pairs: { compiles: Array<{ target?: string; out: string; srcIsCapture: boolean; srcIsIndicator: boolean }>; renamed: Array<[string, string]>; removedBy: Record<string, string[]>; spawns: number };
+        indicatorFail: { plain: string[]; virus: string[] };
+        capture: { missing: { ok: boolean; detail?: string }; virus: { ok: boolean; detail?: string }; plain: { ok: boolean; detail?: string } };
+        indicatorMissing: { gone: string[]; spawns: number };
+      };
+      const g = line === undefined ? null : (JSON.parse(line.slice(8)) as Ind);
+      const diag = g === null ? { stderr: child.err.slice(-600), timedOut: child.timedOut } : null;
+      out.push(
+        assert(
+          "★★W4(a) 컴파일 중 `stop()` → 컴파일이 성공해도 도우미를 **띄우지 않는다**(onGone 0) · 대조군(stop 없음)은 1회 띄운다",
+          g !== null && g.race.compiling === 1 && g.race.spawns === 0 && g.race.gone.length === 0 && g.control.spawns === 1 && g.control.gone.length === 0,
+          diag ?? { race: g!.race, control: g!.control.spawns },
+        ),
+      );
+      out.push(
+        assert(
+          "W4(b) 도우미 기동 인자: exe `tiguclaw-indicator-<해시>.exe` · stdin 파이프(고아 종료용) · `windowsHide:false` · env `TIGUCLAW_DRY=0`·문구",
+          g !== null && /^tiguclaw-indicator-[0-9a-f]{12}\.exe$/.test(g.control.exe) && g.control.stdin === "pipe" && g.control.windowsHide === false &&
+            g.control.dry === "0" && g.control.label === "표시 문구",
+          diag ?? g!.control,
+        ),
+      );
+      const cap = g?.pairs.compiles.find((c) => c.srcIsCapture);
+      const ind = g?.pairs.compiles.find((c) => c.srcIsIndicator);
+      out.push(
+        assert(
+          "★★W4(c) 두 종류 동시: 컴파일 2회(같은 종류 겹친 요청은 1회) · 소스↔인자↔산출이 쌍으로(캡처=/target:exe·capture-, 도우미=/target:winexe·indicator-) · 옛 exe 정리는 **같은 종류만**",
+          g !== null && g.pairs.compiles.length === 2 && cap?.target === "/target:exe" && /^capture-/.test(cap.out) &&
+            ind?.target === "/target:winexe" && /^indicator-/.test(ind.out) &&
+            g.pairs.renamed.some(([a, b]) => /^capture-/.test(a) && /^tiguclaw-capture-[0-9a-f]{12}\.exe$/.test(b)) &&
+            g.pairs.renamed.some(([a, b]) => /^indicator-/.test(a) && /^tiguclaw-indicator-[0-9a-f]{12}\.exe$/.test(b)) &&
+            (g.pairs.removedBy["capture"] ?? []).join() === "tiguclaw-capture-aaaaaaaaaaaa.exe" &&
+            (g.pairs.removedBy["indicator"] ?? []).join() === "tiguclaw-indicator-bbbbbbbbbbbb.exe" && g.pairs.spawns === 2,
+          diag ?? g!.pairs,
+        ),
+      );
+      const failOk = (gone: string[] | undefined): boolean =>
+        gone !== undefined && gone.length === 1 && gone[0]!.includes("표시 도우미 컴파일 실패") && !gone[0]!.includes("화면 캡처");
+      out.push(
+        assert(
+          "★★W4(d) 도우미 컴파일 실패 → onGone 1회 · «표시 도우미» 단계(캡처 문구 아님) · **일반 컴파일 오류(CS1002)는 백신 차단으로 오보하지 않는다**(원문 그대로) · 백신 모양(CS0016 virus)만 «blocked: 표시 도우미를 백신…»",
+          g !== null && failOk(g.indicatorFail.plain) && failOk(g.indicatorFail.virus) &&
+            !g.indicatorFail.plain[0]!.includes("blocked:") && g.indicatorFail.plain[0]!.includes("CS1002") &&
+            g.indicatorFail.virus[0]!.includes("blocked: 표시 도우미를 백신"),
+          diag ?? g!.indicatorFail,
+        ),
+      );
+      out.push(
+        assert(
+          "W4(f) 도우미 컴파일러 없음 → onGone 1회 «표시 도우미 컴파일 실패: csc-missing … 표시 도우미를 만들 수 없습니다» · 띄움 0 · 캡처 문구 아님",
+          g !== null && g.indicatorMissing.gone.length === 1 && g.indicatorMissing.spawns === 0 &&
+            g.indicatorMissing.gone[0]!.includes("표시 도우미 컴파일 실패: csc-missing") && g.indicatorMissing.gone[0]!.includes("표시 도우미를 만들 수 없습니다") &&
+            !g.indicatorMissing.gone[0]!.includes("화면 캡처"),
+          diag ?? g!.indicatorMissing,
+        ),
+      );
+      const missing = g?.capture.missing.detail ?? "";
+      const pm = (obs.preflightMessage as (p: unknown, platform: string) => string | null)({ ok: false, reason: "failed", detail: missing }, "win32") ?? "";
+      const pk = (obs.preflightFailureKind as (p: unknown, platform: string) => string)({ ok: false, reason: "failed", detail: missing }, "win32");
+      out.push(
+        assert(
+          "★★W4(e) 캡처 제품 사슬: 컴파일러 없음의 **실제** detail 이 종전 전문 그대로 → 판독기가 .NET Framework 4 안내·«컴파일러 없음» · 백신 모양 컴파일 실패도 종전 «blocked: 화면 캡처 프로그램을 …» 그대로",
+          g !== null && g.capture.missing.ok === false &&
+            missing === "csc-missing: .NET Framework 4 컴파일러(csc.exe)를 찾지 못했습니다 — 화면 캡처 프로그램을 만들 수 없습니다" &&
+            pm.includes(".NET Framework 4") && pk.includes("컴파일러 없음") &&
+            (g.capture.virus.detail ?? "").startsWith("blocked: 화면 캡처 프로그램을 백신·보안 정책이 격리하거나 막았습니다 (") &&
+            // 캡처는 종전 판정 그대로 — 산출물 없는 컴파일 실패도 «blocked»(도우미만 정밀하게 — W4(d)).
+            (g.capture.plain.detail ?? "").startsWith("blocked: 화면 캡처 프로그램을 백신·보안 정책이 격리하거나 막았습니다 (compile:"),
+          diag ?? { missing, pm: pm.slice(0, 80), pk, virus: g!.capture.virus.detail?.slice(0, 80), plain: g!.capture.plain.detail?.slice(0, 80) },
+        ),
+      );
+    }
+
+    // ── W6·W8 (2026-11-24, ⑤ Windows) — 실행부·도우미 원문과 순수부(맥에선 PowerShell·C# 를 못 돌린다) ─────────
+    {
+      const winMod = (await loadPluginModule<Record<string, unknown>>("../../../plugins/computer-use/src/win.ts")) as {
+        CONTROL_SCRIPT?: string;
+        INDICATOR_CS: string;
+        staleExe: (name: string, prefix: string, keep: string) => boolean;
+        controlEnv: (events: unknown[], dry: boolean, stopFile?: string) => Record<string, string>;
+      };
+      const src = await fs.readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../plugins/computer-use/src/win.ts"), "utf8");
+      const ctl = src.slice(src.indexOf("const CONTROL_SCRIPT = ["), src.indexOf('].join("\\n");', src.indexOf("const CONTROL_SCRIPT = [")));
+      const markLine = ctl.split("\n").find((l) => l.includes("$e.t -eq 'mark'")) ?? "";
+      const waitLine = ctl.split("\n").find((l) => l.includes("$e.t -eq 'wait'")) ?? "";
+      const sendLine = ctl.split("\n").find((l) => l.includes("function Send($i)")) ?? "";
+      const waitFn = ctl.slice(ctl.indexOf("function WaitOrStop($ms)"), ctl.indexOf("\"$CUR = -1"));
+      const shape = {
+        readsStopFile: /\$STOPF = \[string\]\$env:TIGUCLAW_STOP_FILE/.test(ctl) && /function StopAsked\(\)\{ return \(\(\$STOPF -ne ''\) -and \[IO\.File\]::Exists\(\$STOPF\)\) \}/.test(ctl),
+        markStopsBeforeStep: markLine.indexOf("if(StopAsked)") >= 0 && markLine.indexOf("if(StopAsked)") < markLine.indexOf("Emit(") && markLine.includes('\\"why\\":\\"user-esc\\"'),
+        waitInterruptible: waitLine.includes("if(WaitOrStop ([int]$e.ms))") && waitLine.includes('\\"why\\":\\"user-esc\\"') && /while\(\$sw\.ElapsedMilliseconds -lt \$ms\)\{/.test(waitFn) && waitFn.includes("if(StopAsked){ return $true }"),
+        triedBeforeDry: sendLine.indexOf("$script:TRIED = $script:TRIED + 1") >= 0 && sendLine.indexOf("$script:TRIED") < sendLine.indexOf("if($DRY){ return }"),
+        finalHasTried: /\\"tried\\":' \+ \$TRIED/.test(ctl),
+        noKeyRead: !/GetAsyncKeyState|GetKeyState|GetKeyboardState/.test(ctl),
+      };
+      out.push(assert("★W6 Windows 실행부 원문: 멈춤 파일을 읽고 · `mark` 는 진행 줄 **앞**에서 멈춤 확인 · `wait` 는 기한 루프 안에서 확인 · `$TRIED` 는 빈 연습 return **앞** · 최종 줄에 tried · 실행부는 키를 안 읽는다", Object.values(shape).every(Boolean), shape));
+      // 실행부가 내는 멈춤 줄을 공통 판독기가 그대로 읽는다(그 문자열 모양 그대로 — `$CUR`·`$e.i` 자리에 숫자).
+      const { stepsOutcome } = await loadPluginModule<{ stepsOutcome: (so: string, n: number, ok: boolean) => { status: string[]; stoppedAt?: { i: number; why: string } } }>("../../../plugins/computer-use/src/control.ts");
+      const emitted = markLine.match(/'\{\\"stopped\\":' \+ \[int\]\$e\.i \+ '(,\\"why\\":\\"user-esc\\",\\"saw\\":\\"\\"\})'/)?.[1]?.replace(/\\"/g, '"') ?? "";
+      const oc = stepsOutcome(`{"step":0}\n{"stopped":1${emitted}\n`, 3, true);
+      out.push(assert("W6 Windows 멈춤 줄 → 공통 판독: 멈춘 단계 1 · why user-esc · 그 단계부터 «미실행»", emitted !== "" && oc.stoppedAt?.i === 1 && oc.stoppedAt.why === "user-esc" && oc.status.join() === "완료,미실행,미실행", { emitted, oc }));
+      const cs = winMod.INDICATOR_CS;
+      const keyCalls = [...cs.matchAll(/GetAsyncKeyState\(([^)]*)\)/g)].map((m) => m[1]);
+      const ishape = {
+        escOnly: keyCalls.length === 2 && keyCalls.includes("int vKey") && keyCalls.includes("VK_ESCAPE") && /const int VK_ESCAPE = 0x1B;/.test(cs),
+        noCollect: !/SetWindowsHookEx|RegisterRawInputDevices|GetKeyboardState|GetKeyState\(|RegisterHotKey/.test(cs),
+        noFocus: !/SetForegroundWindow|\.Activate\(|\.Focus\(|\.TopMost|BringToFront/.test(cs),
+        // ⑤ r4: 기본 = LAYERED·NOACTIVATE·TOOLWINDOW·TOPMOST, 클릭 통과(TRANSPARENT)는 중지 단추(Label)가 아닌 창만.
+        exStyle: /cp\.ExStyle \|= 0x00080000 \| 0x08000000 \| 0x00000080 \| 0x00000008;/.test(cs) && /if \(kind != Kind\.Label\) cp\.ExStyle \|= 0x00000020;/.test(cs),
+        noActivate: /protected override bool ShowWithoutActivation \{ get \{ return true; \} \}/.test(cs) && !/=>/.test(cs),
+        noDialog: /SetUnhandledExceptionMode\(UnhandledExceptionMode\.ThrowException\)/.test(cs) && /catch \(Exception ex\) \{ Fail\(ex\); \}/.test(cs),
+        dryFirst: cs.indexOf('Emit("{\\"ready\\":1,\\"dry\\":1,\\"glow\\":" + GlowProbe() + "}")') >= 0 && cs.indexOf('Emit("{\\"ready\\":1,\\"dry\\":1,\\"glow\\":" + GlowProbe() + "}")') < cs.indexOf("new Overlay(") && cs.indexOf('Emit("{\\"ready\\":1,\\"dry\\":1,\\"glow\\":" + GlowProbe() + "}")') < cs.indexOf("ShowGlow(s.Bounds)") && cs.indexOf('Emit("{\\"ready\\":1,\\"dry\\":1,\\"glow\\":" + GlowProbe() + "}")') < cs.indexOf("GetAsyncKeyState(VK_ESCAPE)"),
+        orphanExit: /while \(Console\.In\.Read\(\) >= 0\) \{\}/.test(cs) && /Environment\.Exit\(0\);/.test(cs),
+        noInterp: !/\$"/.test(cs),
+      };
+      out.push(assert("★★W7 도우미 원문: 묻는 키는 Esc 하나 · 훅·원시 입력·키보드 상태·핫키 없음 · 포커스 가져오기 없음 · 비활성·클릭 통과·툴창·맨위 확장 스타일 · C# 5(식 본문·보간 없음) · 예외 대화상자 없음 · 빈 연습이 창·키보다 먼저 · stdin EOF 종료", Object.values(ishape).every(Boolean), ishape));
+      // ── W10 (⑤ r4) 원격 표시·중지 단추·단추 자리 응답·미끄러짐 — Windows 는 이 기계에서 못 돌리므로 원문으로 ──
+      const glideBlock = ctl.slice(ctl.indexOf("elseif($e.t -eq 'glide'){"), ctl.indexOf("elseif($e.t -eq 'guard'){"));
+      const tick = cs.slice(cs.indexOf("if (pillShown && movePath != \"\") {"), cs.indexOf("Point p = Cursor.Position;"));
+      const r4 = {
+        // 화면 공유 도구가 캡처로 화면을 보내므로 캡처 제외를 걸면 원격에 안 보인다.
+        noCaptureExclusion: !/SetWindowDisplayAffinity|WDA_EXCLUDEFROMCAPTURE|0x11\)/.test(cs),
+        buttonStops: /tag\.Clicked = delegate \(\) \{ Emit\("\{\\"stop\\":1\}"\); \};/.test(cs) && /if \(kind == Kind\.Label && Clicked != null\) Clicked\(\);/.test(cs),
+        clickNoActivate: /if \(m\.Msg == WM_MOUSEACTIVATE\) \{ m\.Result = new IntPtr\(MA_NOACTIVATE\); return; \}/.test(cs) && /WM_MOUSEACTIVATE = 0x0021, MA_NOACTIVATE = 3/.test(cs),
+        neverPassThrough: !/SetWindowLong|GetWindowLong/.test(cs) && (cs.match(/0x00000020/g) ?? []).length === 1,
+        // 준비 줄 = 단추를 띄운 **뒤**, 실제 사각형과 함께(못 읽으면 내리고 null) · 자리 파일 없음(출력 줄로만).
+        readyAfterShow: cs.indexOf("tag.Show();") >= 0 && cs.indexOf("tag.Show();") < cs.indexOf('Emit("{\\"ready\\":1,\\"pill\\":" + PillJson(tag, ref pillShown) + "}");') &&
+          !/TIGUCLAW_INDICATOR_PILL|WritePill|WriteNone/.test(cs),
+        pillJsonHidesOnUnknown: /if \(shown && GetWindowRect\(tag\.Handle, out wr\)\) return/.test(cs) && /if \(shown\) \{ tag\.Hide\(\); shown = false; \}\s*return "null";/.test(cs),
+        // 비킴: ';' 로 끝난 새 요청만 · 옮김 실패면 위·아래 표식을 되돌림(옛 사각형을 응답) · 응답은 실제 사각형 + 요청 그대로.
+        moveAnswered: /if \(mv != lastMove && mv\.EndsWith\(";"\)\) \{/.test(tick) &&
+          /if \(!SetWindowPos\(tag\.Handle, HWND_TOPMOST, pillX, y, 0, 0, SWP_NOSIZE \| SWP_NOACTIVATE\)\) atTop = !atTop;/.test(tick) &&
+          /Emit\("\{\\"pill\\":" \+ PillJson\(tag, ref pillShown\) \+ ",\\"req\\":\\"" \+ Esc\(mv\) \+ "\\"\}"\);/.test(tick),
+        flash: /Control\.MouseButtons != MouseButtons\.None/.test(cs) && /halo\.SetFlash\(/.test(cs),
+        envMove: /TIGUCLAW_INDICATOR_MOVE: o\.moveFile \}/.test(src) && !/TIGUCLAW_INDICATOR_PILL/.test(src),
+        // 끝남 확인: 컴파일 중 멈춤·컴파일 실패는 바로 끝남 · 띄웠으면 그 자식의 close.
+        closedContract: /if \(inner === null\) markClosed\(\);/.test(src) && /void inner\.closed\.then\(markClosed\);/.test(src) && /if \(stopped\) \{\s*markClosed\(\);/.test(src),
+        // 실행부는 단추를 모른다 · glide 는 보간 좌표를 실제로 `Mouse` 로 보내고(발사 한 줄이 빠지면 빨강) 도중·끝 멈춤을 본다.
+        execUnawareOfPill: !/PILL|ClearOfPill|PillRect|MOVEF|STEP_PRESSED/.test(ctl),
+        glideFires: /Mouse \(\[int\]\[Math\]::Round\(\$c0\.X \+ \$gdx \* \$gs\)\) \(\[int\]\[Math\]::Round\(\$c0\.Y \+ \$gdy \* \$gs\)\) 0 0/.test(glideBlock) && /\[System\.Windows\.Forms\.Cursor\]::Position/.test(glideBlock),
+        glideStops: /if\(StopAsked\)\{ \$gstop = \$true; break \}/.test(glideBlock) && /if\(\(-not \$gstop\) -and \(StopAsked\)\)\{ \$gstop = \$true \}/.test(glideBlock),
+        // 0.1초 후보: 길이는 Stopwatch 경과 시간(박자 수 아님) · ease-out 3차(목표 직전 감속) · 시간 상한·최소·거리비 상수가 박혀 있다.
+        glideTimedEaseOut: glideBlock.includes("$gu = [Math]::Min(1.0, $gsw.Elapsed.TotalMilliseconds / $gT); $gs = 1 - (1 - $gu) * (1 - $gu) * (1 - $gu)") &&
+          glideBlock.includes("$gsw = [Diagnostics.Stopwatch]::StartNew()") && /while\(\$gu -lt 1\)\{/.test(glideBlock) &&
+          // 거리 → 시간: 0 거리는 반복 없음 · 양수 거리는 최소 + 거리비, 상한으로 자름(이 대입이 위 나눗셈의 $gT 다).
+          glideBlock.includes("$gd = [Math]::Sqrt($gdx * $gdx + $gdy * $gdy)") &&
+          glideBlock.includes("$gT = 0.0; if($gd -gt 0){ $gT = [Math]::Min([double]$GLIDE_MAX, $GLIDE_MIN + $gd * $GLIDE_PER_PX) }") &&
+          glideBlock.includes("$gu = 0.0; if($gT -le 0){ $gu = 1.0 }") &&
+          src.includes("`$GLIDE_MAX = ${String(GLIDE_MAX_MS)}; $GLIDE_MIN = ${String(GLIDE_MIN_MS)}; $GLIDE_PER_PX = ${String(GLIDE_MS_PER_PX)}; $GLIDE_TICK = ${String(GLIDE_TICK_MS)};"),
+        dryHasGlide: /\{ t: "glide", x: 0, y: 0 \},\n  \{ t: "mousemove", x: 0, y: 0 \},/.test(src.slice(src.indexOf("const DRY_EVENTS"))),
+      };
+      // ── W11 (⑤ 외형 확정) 가장자리 주황 빛 — 맥과 같은 `GLOW` 값 · 픽셀 알파 띠 창 · 빛 실패가 단추를 끌어내리지 않는다 ──
+      const { GLOW } = await loadPluginModule<{ GLOW: { width: number; alpha: number; falloff: number; rgb: readonly number[] } }>("../../../plugins/computer-use/src/indicator.ts");
+      // ★주석은 코드가 아니다 — 주석 처리된 옛 줄이 판정에 걸리지 않게 C# 주석을 뺀 원문으로 본다(R3; 이 원문의 문자열 안엔 `//`·`/*` 가 없다).
+      //  ★한 번에 왼쪽부터 — 줄 주석 안의 `/*` 는 블록 주석을 열지 않는다(`// /*` … `// */` 사이 실행 코드를 지우면 안 된다, R4).
+      const code = cs.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, "");
+      const fn = (head: string): string => { const i = code.indexOf(head); const j = code.indexOf("\n  }\n", i); return i < 0 || j < 0 ? "" : code.slice(i, j); };
+      const showGlow = fn("static void ShowGlow(Rectangle s) {");
+      const strip = fn("static int[] GlowStrip(Rectangle s, Rectangle r, double k, int band) {");
+      const parts = fn("static Rectangle[] GlowParts(Rectangle s, int band) {");
+      const probeFn = fn("static string GlowProbe() {");
+      const scaleFn = fn("static double ScaleOf(Rectangle s) {");
+      const setPx = code.slice(code.indexOf("public void SetPixels(Rectangle r, int[] px) {"), code.indexOf("protected override void OnPaint("));
+      const glow = {
+        sameValues: code.includes(`const double GLOW_W = ${String(GLOW.width)}, GLOW_A = ${String(GLOW.alpha)}, GLOW_P = ${String(GLOW.falloff)};`) &&
+          code.includes(`const int GLOW_R = ${String(GLOW.rgb[0])}, GLOW_G = ${String(GLOW.rgb[1])}, GLOW_B = ${String(GLOW.rgb[2])};`) &&
+          src.includes("const double GLOW_W = ${String(GLOW.width)}, GLOW_A = ${String(GLOW.alpha)}, GLOW_P = ${String(GLOW.falloff)};"),
+        formula: code.includes("double t = Math.Floor(d / k);") && code.includes("if (t >= GLOW_W) return 0;") && code.includes("double a = GLOW_A * Math.Pow(1 - t / GLOW_W, GLOW_P);") &&
+          code.includes("return ((int)Math.Round(a * 255) << 24) | ((int)Math.Round(GLOW_R * a) << 16) | ((int)Math.Round(GLOW_G * a) << 8) | (int)Math.Round(GLOW_B * a);"),
+        // 화면마다 · 실제 모니터 배율(GetDpiForMonitor, 96 = 1배)로 — 못 읽을 때만 1
+        perScreen: code.includes("try { foreach (Screen s in Screen.AllScreens) ShowGlow(s.Bounds); } catch (Exception) {}") &&
+          showGlow.includes("double k = ScaleOf(s);") && showGlow.includes("int band = GlowBand(s, k);") &&
+          // 그 화면 **가운데 점**의 모니터 핸들로 DPI 를 읽는다(보조 화면이 다른 배율이면 그 배율)
+          scaleFn.includes("IntPtr m = MonitorFromPoint(new POINT(s.X + s.Width / 2, s.Y + s.Height / 2), 2);") &&
+          scaleFn.includes("GetDpiForMonitor(m, 0, out dx, out dy) == 0 && dx > 0) return dx / 96.0;"),
+        // 띠 넷이 겹치지 않는다(위·아래 전체 폭 · 좌우는 그 사이) · 거리는 화면 네 변까지의 최솟값
+        fourBands: parts.includes("new Rectangle(s.X, s.Y, s.Width, band), new Rectangle(s.X, s.Bottom - band, s.Width, band),") &&
+          parts.includes("new Rectangle(s.X, s.Y + band, band, s.Height - 2 * band), new Rectangle(s.Right - band, s.Y + band, band, s.Height - 2 * band) };") &&
+          strip.includes("int d = Math.Min(Math.Min(sx, sy), Math.Min(s.Width - 1 - sx, s.Height - 1 - sy));"),
+        // 빛 실패는 그 띠만 — 픽셀 준비·창 생성·표시·픽셀 올리기가 **전부** 띠의 try 안 · 화면 목록·배율도 Run 에서 감싼다 · Fail 없음
+        failLocal: /foreach \(Rectangle r in GlowParts\(s, band\)\) \{\s*Overlay o = null;\s*try \{\s*int\[\] px = GlowStrip\(s, r, k, band\);\s*o = new Overlay\(r, Overlay\.Kind\.Glow, Color\.Empty, ""\);\s*o\.Show\(\);\s*o\.SetPixels\(r, px\);\s*\} catch \(Exception\) \{ if \(o != null\) \{ try \{ o\.Close\(\); \} catch \{\} \} \}/.test(showGlow) &&
+          !showGlow.includes("Fail(") && code.indexOf("ShowGlow(s.Bounds)") < code.indexOf("tag.Show();"),
+        // 픽셀 알파: 받은 배열을 그대로 DIB 에 복사 · 위아래 뒤집지 않은 32비트 · 미리 곱한 알파(AC_SRC_ALPHA=1) · ULW_ALPHA(2) · 색 키는 빛 창에 안 건다
+        // 픽셀을 쓴 그 DIB(bits ↔ bmp)를 ULW 원본 DC(mem)에 **선택한 뒤** 넘긴다 — 선택이 빠지면 복사는 되고 화면엔 안 간다
+        dibToUlw: ((o: number[]) => o.every((v) => v >= 0) && o.every((v, i) => i === 0 || o[i - 1]! < v))([
+          setPx.indexOf("IntPtr mem = CreateCompatibleDC(screen);"),
+          setPx.indexOf("IntPtr bmp = CreateDIBSection(screen, ref bi, 0, out bits, IntPtr.Zero, 0);"),
+          setPx.indexOf("Marshal.Copy(px, 0, bits, px.Length);"),
+          setPx.indexOf("old = SelectObject(mem, bmp);"),
+          setPx.indexOf("UpdateLayeredWindow(Handle, screen, ref dst, ref size, mem, ref src, 0, ref bf, 2)"),
+        ]),
+        perPixelAlpha: setPx.includes("bi.biHeight = -r.Height; bi.biPlanes = 1; bi.biBitCount = 32;") && setPx.includes("Marshal.Copy(px, 0, bits, px.Length);") &&
+          setPx.includes("bf.SourceConstantAlpha = 255; bf.AlphaFormat = 1;") && setPx.includes("UpdateLayeredWindow(Handle, screen, ref dst, ref size, mem, ref src, 0, ref bf, 2)") &&
+          /if \(kind != Kind\.Glow\) \{\s*BackColor = kind == Kind\.Label \? tint : Key;\s*TransparencyKey = Key;\s*\}/.test(code),
+        // 빈 연습 표본은 화면 경로와 **같은 함수**(GlowBand·GlowParts·GlowStrip)를 지난다 — W(vi) 가 Windows 에서 그 값을 판정한다
+        probeSamePath: probeFn.includes("int band = GlowBand(s, ks[i]);") && probeFn.includes("Rectangle[] parts = GlowParts(s, band);") && probeFn.includes("strips[j] = GlowStrip(s, parts[j], ks[i], band);"),
+        noOldBorder: !/Kind\.Border|new Pen\(tint, 4\)|DrawRectangle\(/.test(code),
+        // 단추·고리 디자인은 그대로(같은 주황 tint · 고리 3→7 · 단추 글자)
+        pillHaloKept: code.includes("Color tint = Color.FromArgb(255, 140, 0);") && code.includes("using (Pen pen = new Pen(tint, flash ? 7 : 3)) e.Graphics.DrawEllipse(pen, 4, 4, Width - 8, Height - 8);") &&
+          code.includes("new Overlay(new Rectangle(pillX, topY, lw, lh), Overlay.Kind.Label, tint, label);"),
+      };
+      out.push(assert("★W11 (⑤ 외형) Windows 도우미 원문: 가장자리 빛 = 맥과 같은 GLOW 값·식(모니터 배율로 나눈 거리 내림) · 화면마다 겹치지 않는 띠 넷 · 띠 배열을 그대로 픽셀 알파 창에(미리 곱한 BGRA·ULW_ALPHA, 색 키 없음) · 빛 준비~표시 실패는 그 띠만(단추 전에 끝남) · 빈 연습 표본이 같은 띠 함수를 지남 · 옛 4px 테두리 없음 · 단추·고리 그대로", Object.values(glow).every(Boolean), glow));
+      out.push(assert("★W10 (⑤ r4) Windows 원문: 캡처 제외 없음(원격에 보임) · 단추 클릭 = `{\"stop\":1}` · 클릭해도 비활성 · 단추 통과 모드 없음 · 준비 줄은 띄운 뒤 실제 사각형과 · 사각형 모름이면 내림 · 비킴 응답은 실제 사각형 + 요청 · 눌림 번쩍임 · 끝남 확인 계약 · 실행부는 단추를 모름 · glide 는 보간 좌표를 쏘고 도중·끝 멈춤 · 자가점검 표본에 glide", Object.values(r4).every(Boolean), r4));
+      const keep = "tiguclaw-indicator-111111111111.exe";
+      const st = {
+        oldSame: winMod.staleExe("tiguclaw-indicator-222222222222.exe", "indicator", keep),
+        current: winMod.staleExe(keep, "indicator", keep),
+        otherKind: winMod.staleExe("tiguclaw-capture-222222222222.exe", "indicator", keep),
+        tmp: winMod.staleExe("indicator-1234.tmp.exe", "indicator", keep),
+        capOld: winMod.staleExe("tiguclaw-capture-222222222222.exe", "capture", "tiguclaw-capture-111111111111.exe"),
+      };
+      const env0 = winMod.controlEnv([], false);
+      out.push(
+        assert(
+          "W8 순수부: `staleExe` 는 같은 종류 옛 해시만(현재·다른 종류·임시 거짓) · `cscArgs` 기본 /target:exe(종전) · `controlEnv` 는 멈춤 파일·빈 연습을 언제나 명시",
+          st.oldSame && !st.current && !st.otherKind && !st.tmp && st.capOld &&
+            cscArgs("a.cs", "b.exe").join(" ") === "/nologo /target:exe /optimize+ /out:b.exe /r:System.Drawing.dll /r:System.Windows.Forms.dll a.cs" &&
+            env0.TIGUCLAW_STOP_FILE === "" && env0.TIGUCLAW_DRY === "0" && winMod.controlEnv([], true, "F").TIGUCLAW_STOP_FILE === "F",
+          { st, env0 },
         ),
       );
     }
@@ -394,6 +661,100 @@ export const check: RegressionCheck = {
         r.ok ? `textSurvives=${String(r.textSurvives)}` : "실행부 실패로 판정 불가",
       ),
     );
+    // ── ③-b Esc 멈춤 요청 파일 — **Windows 에서만**, 빈 연습(입력 0) (2026-11-24, ⑤ Windows 설계 §5 (i)~(v)) ─────────
+    //  ★제품과 같은 스크립트·인자·env(`controlInvocation`)로 띄워 **흘려 읽는다** — 진행 줄을 본 뒤 파일을 만들어야
+    //   «`wait` 도중 멈춤» 이 결정적이다(`post` 는 끝날 때 한 번에 읽는다).
+    {
+      const winX = (await loadPluginModule<Record<string, unknown>>("../../../plugins/computer-use/src/win.ts")) as {
+        controlInvocation: (events: unknown[], dry: boolean, stopFile?: string) => { file: string; args: string[]; env: Record<string, string> };
+        post: (events: unknown[], signal?: AbortSignal, opts?: { stopFile?: string; dry?: boolean }) => Promise<{ ok: boolean; stdout?: string; detail?: string }>;
+        indicatorSelfCheck: () => Promise<{ ok: true; stdout: string } | { ok: false; detail: string }>;
+      };
+      const { spawn: spawnChild } = await import("node:child_process");
+      const stopDir = await fs.mkdtemp(path.join(os.tmpdir(), "cu-win-stop-"));
+      const last = (so: string): { tried?: number; fired?: number; stopped?: { stopped?: number; why?: string } | null } => {
+        try { return JSON.parse(so.trim().split(/\r?\n/).pop() ?? "") as never; } catch { return {}; }
+      };
+      // ★시간은 **PowerShell 기동을 빼고** 잰다 — 줄이 도착한 시각(`at`)과 종료 시각(`closeAt`)을 돌려준다.
+      const stream = (events: unknown[], stopFile: string, onLine: (l: string) => void): Promise<{ so: string; at: Map<string, number>; closeAt: number }> =>
+        new Promise((resolve) => {
+          const inv = winX.controlInvocation(events, true, stopFile);
+          const child = spawnChild(inv.file, inv.args, { env: { ...process.env, ...inv.env }, windowsHide: true });
+          let so = "";
+          let buf = "";
+          const at = new Map<string, number>();
+          child.stdout.on("data", (c: Buffer) => {
+            so += c.toString("utf8");
+            buf += c.toString("utf8");
+            for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
+              const l = buf.slice(0, nl).trim();
+              buf = buf.slice(nl + 1);
+              if (!at.has(l)) at.set(l, Date.now());
+              onLine(l);
+            }
+          });
+          child.on("close", () => resolve({ so, at, closeAt: Date.now() }));
+        });
+      try {
+        const KEY_A = [{ t: "keydown", key: "a" }, { t: "keyup", key: "a" }];
+        const KEY_B = [{ t: "keydown", key: "b" }, { t: "keyup", key: "b" }];
+        const seq = [{ t: "mark", i: 0 }, ...KEY_A, { t: "mark", i: 1 }, { t: "wait", ms: 3000 }, { t: "mark", i: 2 }, ...KEY_B, { t: "unicode", text: "가" }];
+        // (i) 파일이 미리 있다 → 첫 단계 전에 멈춤 · 시도 0
+        const pre = path.join(stopDir, "pre");
+        await fs.writeFile(pre, "");
+        const ri = await stream(seq, pre, () => {});
+        const vi = last(ri.so);
+        out.push(assert("★W(i) 멈춤 파일이 이미 있으면 첫 단계 **시작 전**에 멈춘다 — stopped 0 · why user-esc · 시도(tried) 0", vi.stopped?.stopped === 0 && vi.stopped.why === "user-esc" && vi.tried === 0, { last: vi }));
+        // (ii) 1번째 단계 진행 줄을 본 뒤 파일 생성 → wait 도중 멈춤 · 그 단계부터 미실행 · 시도 = 앞 단계의 2.
+        //  시간은 **파일을 만든 순간부터 자식 종료까지**(기동 시간 제외).
+        const mid = path.join(stopDir, "mid");
+        let fileAt = 0;
+        const rii = await stream(seq, mid, (l) => { if (l === '{"step":1}') { fileAt = Date.now(); void fs.writeFile(mid, ""); } });
+        const vii = last(rii.so);
+        const stopMs = fileAt === 0 ? -1 : rii.closeAt - fileAt;
+        out.push(assert("★★W(ii) `wait 3000` 도중 멈춤 파일 → 그 자리에서 끝난다 · stopped 1 · user-esc · tried 2(앞 단계만) · 파일 생성→종료 1.5초 미만", vii.stopped?.stopped === 1 && vii.stopped.why === "user-esc" && vii.tried === 2 && stopMs >= 0 && stopMs < 1500, { last: vii, stopMs }));
+        // (iii) 대조군 — 파일 없음 → 끝까지 · 시도는 B 와 유니코드까지 센다 · `wait` 는 step 1 → step 2 사이 실측(최소 ms 하한)
+        const riii = await stream(seq, path.join(stopDir, "none"), () => {});
+        const viii = last(riii.so);
+        const s1 = riii.at.get('{"step":1}');
+        const s2 = riii.at.get('{"step":2}');
+        const waitMs = s1 === undefined || s2 === undefined ? -1 : s2 - s1;
+        // 성공해도 실측값을 남긴다 — 러너는 실패한 단언의 값만 찍고, Windows 인계 §5 ⑫ 가 이 숫자를 회신받는다.
+        console.log(`W(iii) waitMs=${String(waitMs)}`);
+        out.push(assert("W(iii) 대조군: 멈춤 파일이 없으면 끝까지 간다(stopped 없음) · `wait 3000` 실측(step1→step2) ≥ 2950ms(짧아지지 않았다) · 시도는 6(A 2 · B 2 · 유니코드 '가' down/up 2)", (viii.stopped ?? null) === null && viii.tried === 6 && waitMs >= 2950, { last: viii, waitMs }));
+        // (iv) 제품 사슬 — post(…,{dry, stopFile}) 가 env 로 넘겨 실행부가 멈춘다
+        //  (stopped 0 = 첫 `mark` 에서 멈춤 = 뒤의 `wait` 는 시작도 안 했다 — 기동 시간이 섞이는 시간 단언은 두지 않는다)
+        const riv = await winX.post([{ t: "mark", i: 0 }, { t: "wait", ms: 3000 }, { t: "mark", i: 1 }, ...KEY_A], undefined, { dry: true, stopFile: pre });
+        const viv = last(riv.stdout ?? "");
+        out.push(assert("★★W(iv) 제품 `post(…,{dry:true, stopFile})` → 자식 env → 실행부가 첫 단계 전에 멈춘다(stopped 0 · user-esc · tried 0)", riv.ok && viv.stopped?.stopped === 0 && viv.stopped.why === "user-esc" && viv.tried === 0, { riv: riv.ok ? viv : riv.detail }));
+        // (v) 도우미 — 대상 기계의 csc.exe 로 컴파일(C# 5 판정) + 빈 연습(창·키 0)
+        const rv = await winX.indicatorSelfCheck();
+        out.push(assert("★★W(v) 표시 도우미가 이 기계의 Framework 4 csc.exe 로 컴파일되고 빈 연습 줄 `{\"ready\":1,\"dry\":1}` 을 낸다(창·키 0)", rv.ok && /"ready":1/.test(rv.stdout) && /"dry":1/.test(rv.stdout), rv.ok ? rv.stdout.trim() : rv.detail.slice(0, 300)));
+        // (vi) 가장자리 빛 — 컴파일된 도우미가 **실제 띠 경로**로 합성 화면 300×200 을 배율 1·1.5 로 만든 표본을 GLOW 식으로 따로 계산한 값과 대조
+        //  (점마다 덮인 띠 수·미리 곱한 A·R·G·B 채널 ±1 · 띠 넓이 합 = 테두리 고리 넓이 — 겹침·빠짐 없음)
+        const { glowAlphaAt, GLOW: G } = await loadPluginModule<{ glowAlphaAt: (d: number) => number; GLOW: { width: number; rgb: readonly number[] } }>("../../../plugins/computer-use/src/indicator.ts");
+        type Probe = { k: number; band: number; area: number; px: Array<[number, number, number, number]> };
+        const probe = ((): Probe[] => { try { return (JSON.parse(rv.ok ? rv.stdout.trim().split("\n").pop() ?? "" : "") as { glow?: Probe[] }).glow ?? []; } catch { return []; } })();
+        const SW = 300, SH = 200;
+        const bad: unknown[] = [];
+        for (const k of [1, 1.5]) {
+          const pr = probe.find((p) => p.k === k);
+          const band = Math.min(Math.ceil(G.width * k), Math.floor(Math.min(SW, SH) / 2));
+          if (pr === undefined || pr.band !== band || pr.area !== SW * SH - (SW - 2 * band) * (SH - 2 * band) || pr.px.length !== 11) { bad.push({ k, pr: pr && { band: pr.band, area: pr.area, n: pr.px.length }, band }); continue; }
+          for (const [x, y, hits, v] of pr.px) {
+            const d = Math.min(x, y, SW - 1 - x, SH - 1 - y);
+            const a = d < band ? glowAlphaAt(d / k) : 0;
+            const want = [Math.round(a * 255), Math.round(G.rgb[0]! * a), Math.round(G.rgb[1]! * a), Math.round(G.rgb[2]! * a)];
+            const got = [Math.floor(v / 2 ** 24) % 256, Math.floor(v / 2 ** 16) % 256, Math.floor(v / 2 ** 8) % 256, v % 256];
+            if (hits !== (d < band ? 1 : 0) || got.some((c, j) => Math.abs(c - want[j]!) > 1)) bad.push({ k, x, y, hits, got, want });
+          }
+        }
+        out.push(assert("★W(vi) 컴파일된 도우미의 가장자리 빛(실제 띠 경로, 배율 1·1.5) = GLOW 식 — 점마다 띠 하나만 덮음·가운데는 안 덮음 · 미리 곱한 A·R·G·B ±1 · 띠 넓이 합 = 고리 넓이", probe.length === 2 && bad.length === 0, { bad, probe }));
+      } finally {
+        await fs.rm(stopDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+
     // ── ④ **관측이 «조작으로 이어질 수 있는» 값을 내는가** (3차 P0) ──────────
     //  ★순수부도 초록, 실행부 스모크도 초록인데 **둘을 잇는 값**이 안 나와 조작 도구
     //   다섯이 호출조차 불가능했다. 검사가 그 층을 안 보고 있었다.

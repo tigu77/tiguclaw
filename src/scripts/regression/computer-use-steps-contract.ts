@@ -305,7 +305,8 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★드래그가 **경로**를 받는다 — 곡선을 직선 여러 개로 쪼개 매번 재관측하지 않는다",
-        curve.ok && kinds(curve.events).join(">") === "mark>mousemove>mousedown>mousedrag>mousedrag>mouseup",
+        // ★⑤ r4: 누르기 전에 실제 포인터가 시작점까지 미끄러진다(`glide`) — 사람이 «어디서 끄나» 를 본다.
+        curve.ok && kinds(curve.events).join(">") === "mark>glide>mousemove>mousedown>mousedrag>mousedrag>mouseup",
         curve.ok ? kinds(curve.events).join(">") : `계획 실패(${curve.why})`,
       ),
     );

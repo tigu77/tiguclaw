@@ -51,6 +51,15 @@ import {
 import { adaptSharedClaudeMcpServer } from "../adapters/_mcp-bridge.js";
 import { coreServerTools } from "./_core-server.js";
 import { memoryToolNames } from "../../memory-mcp.js";
+import {
+  discoverSkills,
+  FIND_SKILLS_MAX,
+  queryTerms,
+  skillSearchText,
+  skillVisibleTo,
+  termHits,
+} from "./skill-registry.js";
+import type { TurnKind } from "../capability-reach.js";
 
 /** 정규형 반환 shape (contract §3a) — 어댑터 무관 동일. */
 export interface CapabilityHit {
@@ -65,6 +74,22 @@ export interface CapabilityHit {
   /** 이번 턴 실제 등록 여부(게이트-aware). */
   available: boolean;
   source: "builtin" | "plugin";
+  /**
+   * `"skills"` = 로드된 플러그인이 제공하는 **스킬 묶음** 항목(2026-11-24 ⑥). MCP 항목과 별개다 — 서버 이름으로 소유자를 역산하지 않는다
+   * (`<name>-tools` 접미사로는 소유자가 유일하지 않다). 생략 = 종전 항목.
+   */
+  kind?: "skills";
+  /** `kind: "skills"` 일 때 그 플러그인의 이 칸에서 보이는 스킬(설명은 채점 재료로만 쓰고 직렬화는 이름만). */
+  skills?: ReadonlyArray<{ name: string; description: string }>;
+}
+
+/**
+ * 플러그인 스킬 항목의 범위 — 어댑터가 **스킬 서버와 같은 값**을 넘긴다(인덱스·`invoke_skill` 과 같은 cwd·칸).
+ * 생략하면 스킬 항목을 안 낸다(종전 그대로).
+ */
+export interface FindCapabilitiesSkillScope {
+  cwd: string;
+  turn?: TurnKind;
 }
 
 /**
@@ -173,11 +198,50 @@ const errText = (text: string) => ({
   isError: true as const,
 });
 
-const serializeHit = (h: CapabilityHit): string => {
+const serializeHit = (h: CapabilityHit, skillNames?: { shown: string[]; total: number }): string => {
+  if (h.kind === "skills") {
+    const names = skillNames ?? { shown: (h.skills ?? []).map((s) => s.name), total: h.skills?.length ?? 0 };
+    // 이름을 하나도 못 실었으면 이름 지정 호출을 권하지 않는다 — 이름을 모르는 사람이 온 경로다(구현 R1 #2).
+    if (names.shown.length === 0) {
+      return `- **${h.name}** [스킬] — ${h.summary}\n    스킬 ${names.total}개 — 표시 한도를 넘어 이름을 싣지 못했습니다. find_skills 로 찾으세요`;
+    }
+    const cut = names.shown.length < names.total ? ` (${names.total}개 중 ${names.shown.length}개 — 나머지는 find_skills 로)` : "";
+    return `- **${h.name}** [스킬] — ${h.summary}\n    스킬: ${names.shown.join(", ")}${cut} — invoke_skill({name}) 로 본문을 불러 따르세요`;
+  }
   const toolsStr = h.tools.length > 0 ? ` (도구: ${h.tools.join(", ")})` : "";
   const availMark = h.available ? "" : " [이번 턴 비활성]";
   const whenStr = h.whenToUse !== undefined ? `\n    용도: ${h.whenToUse}` : "";
   return `- **${h.name}**${availMark} — ${h.summary}${toolsStr}${whenStr}`;
+};
+
+/**
+ * **로드된 플러그인의 스킬 묶음** — 호출 시점에 구한다(설치·켜기·끄기·재설치가 그 사이에 있을 수 있다).
+ * ★소속 = 플러그인 관리자가 지금 그 이름으로 대표하는 폴더(`liveOwnerOf`) — 커맨드 처리기와 같은 판정. 발견(`activePluginDirs`)만
+ *  통과한 폴더(번들 이름의 홈 사본·매니페스트 없는/불완전한 폴더)는 소속으로 표시하지 않는다(그 스킬은 `find_skills` 로 종전대로 닿는다).
+ * ★`discoverSkills` 의 dedup 결과를 쓴다 — 프로젝트·홈 스킬에 가려진 플러그인 스킬은 `source !== "plugin"` 이라 안 나온다
+ *  → 여기서 안내한 이름을 `invoke_skill`(같은 cwd)이 같은 파일로 푼다.
+ */
+const pluginSkillHits = async (scope: FindCapabilitiesSkillScope): Promise<CapabilityHit[]> => {
+  // 관리자는 로더·배선을 끌어온다 — 정적으로 물면 순환이라 동적으로(기존 관용구).
+  const { liveOwnerOf } = await import("../../plugins/manager.js");
+  const groups = new Map<string, Array<{ name: string; description: string }>>();
+  for (const s of await discoverSkills(scope.cwd)) {
+    if (s.source !== "plugin" || !skillVisibleTo(s, scope.turn)) continue;
+    const owner = liveOwnerOf(s);
+    if (owner === undefined) continue;
+    const list = groups.get(owner.name) ?? [];
+    list.push({ name: s.name, description: s.description });
+    groups.set(owner.name, list);
+  }
+  return [...groups].map(([name, skills]) => ({
+    name,
+    kind: "skills" as const,
+    summary: `플러그인 «${name}» 이 제공하는 사용 절차(스킬).`,
+    tools: [],
+    skills,
+    available: true,
+    source: "plugin" as const,
+  }));
 };
 
 /**
@@ -198,6 +262,7 @@ export const createFindCapabilitiesMcpServer = (
   activeNames: ReadonlyArray<string>,
   subagentInvocationHint: string = DEFAULT_SUBAGENT_INVOCATION_HINT,
   extraMcpServers: Record<string, McpSdkServerConfigWithInstance> = {},
+  skillScope?: FindCapabilitiesSkillScope,
 ): McpSdkServerConfigWithInstance => {
   // ★**생성 시점에** 떠 둔다 — 어댑터가 이번 턴의 서버들을 막 만든 직후다(`_core-server.ts`). 질의 때 읽으면 그 사이
   //  다른 턴의 조립을 볼 수 있다.
@@ -300,19 +365,24 @@ export const createFindCapabilitiesMcpServer = (
           }),
         );
 
-        let hits = [...catalogHits, ...coreOnlyHits, ...pluginHits];
+        const skillHits = skillScope === undefined ? [] : await pluginSkillHits(skillScope);
+        let hits = [...catalogHits, ...coreOnlyHits, ...pluginHits, ...skillHits];
         const query = args.query?.trim();
-        if (query !== undefined && query !== "") {
-          // 토큰 단위 OR 매칭 — 모델은 "웹훅 외부호출 webhook endpoint" 처럼 다중어 쿼리를
-          // 자연스레 보낸다. 통짜 부분문자열(query 전체가 한 필드에 그대로)로는 그런 쿼리가
-          // 어느 능력에도 없어 0매칭이 된다(라이브서 확인). 어느 한 토큰이라도 걸리면 hit,
-          // 매칭 토큰 수로 정렬해 관련도 높은 능력을 위로. (find_skills 도 동일 한계 — 별건.)
-          const terms = query.toLowerCase().split(/\s+/).filter((t) => t !== "");
-          const score = (h: CapabilityHit): number => {
-            const hay =
-              `${h.name} ${h.summary} ${h.whenToUse ?? ""} ${h.tools.join(" ")}`.toLowerCase();
-            return terms.reduce((n, t) => (hay.includes(t) ? n + 1 : n), 0);
-          };
+        // 토큰 단위 OR 매칭 — 모델은 "웹훅 외부호출 webhook endpoint" 처럼 다중어 쿼리를
+        // 자연스레 보낸다. 통짜 부분문자열(query 전체가 한 필드에 그대로)로는 그런 쿼리가
+        // 어느 능력에도 없어 0매칭이 된다(라이브서 확인). 어느 한 토큰이라도 걸리면 hit,
+        // 매칭 토큰 수로 정렬해 관련도 높은 능력을 위로. 낱말 규칙은 `find_skills` 와 한 함수(`queryTerms`·`termHits`).
+        const terms = queryTerms(query);
+        if (terms.length > 0) {
+          const score = (h: CapabilityHit): number =>
+            termHits(
+              // 스킬 항목은 **플러그인 이름 + 스킬 이름·설명만** — 공통 표시 문구(summary)는 채점하지 않는다(그 낱말로 모든 플러그인이 걸린다).
+              //  도구 설명엔 없고 스킬 설명에만 있는 낱말로도 걸린다(⑥). 그 밖의 항목은 종전 그대로.
+              h.kind === "skills"
+                ? `${h.name} ${(h.skills ?? []).map(skillSearchText).join(" ")}`
+                : `${h.name} ${h.summary} ${h.whenToUse ?? ""} ${h.tools.join(" ")}`,
+              terms,
+            );
           hits = hits
             .map((h) => ({ h, s: score(h) }))
             .filter((x) => x.s > 0)
@@ -324,7 +394,25 @@ export const createFindCapabilitiesMcpServer = (
         }
 
         const needsFooter = hits.some((h) => !h.available);
-        const body = hits.map(serializeHit).join("\n");
+        // ★스킬 이름은 응답 **합계**로 묶는다 — `find_skills` 한 응답 상한과 같은 값(같은 «한 응답의 스킬 이름 수»).
+        //  앞 항목(채점 순)부터 예산을 쓰고, 질의가 있으면 항목 안에서 걸린 스킬을 먼저(걸린 수 내림차순, 동률은 발견 순서).
+        let budget = FIND_SKILLS_MAX;
+        const body = hits
+          .map((h) => {
+            if (h.kind !== "skills") return serializeHit(h);
+            const all = h.skills ?? [];
+            const ordered =
+              terms.length === 0
+                ? all
+                : all
+                    .map((s, i) => ({ s, i, n: termHits(skillSearchText(s), terms) }))
+                    .sort((a, b) => b.n - a.n || a.i - b.i)
+                    .map((x) => x.s);
+            const shown = ordered.slice(0, Math.max(0, budget)).map((s) => s.name);
+            budget -= shown.length;
+            return serializeHit(h, { shown, total: all.length });
+          })
+          .join("\n");
         return okText(`## 능력 조회\n\n${body}${needsFooter ? ACQUISITION_FOOTER : ""}`);
       } catch (e) {
         return errText(e instanceof Error ? e.message : String(e));

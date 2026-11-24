@@ -81,7 +81,39 @@ export interface Skill {
    * 디버깅·관측·향후 plugin enable/disable 정책 분기용.
    */
   pluginId?: string;
+  /**
+   * source === "plugin" 시 그 폴더의 켜짐 판정 이름(매니페스트 `name`, 없으면 폴더 이름)과 폴더 경로 —
+   * 커맨드 레지스트리와 같은 출처·같은 모양(`command-registry.ts`). **소유 판정용이 아니다** — «이 데몬에 로드된 그 플러그인의
+   * 스킬인가» 는 `liveOwnerOf`(플러그인 관리자의 이름 + 폴더 대조)가 정한다(2026-11-24 ⑥).
+   */
+  pluginName?: string;
+  pluginDir?: string;
 }
+
+/**
+ * **이 칸에서 모델이 스스로 고를 수 있는 스킬인가** — 상시 인덱스·`find_skills`·`find_capabilities` 가 같이 쓰는 한 판정(2026-11-24 ⑥).
+ * `disable-model-invocation` 은 제외, `turn` 을 주면 그 칸에 닿는 `reach` 만. ★이름 지정 `invoke_skill` 은 이 판정을 안 탄다(부모 지정 탈출구).
+ */
+export const skillVisibleTo = (skill: Skill, turn?: TurnKind): boolean =>
+  !skill.disableModelInvocation &&
+  // ★`asReach` 를 **여기서도** 판다 — 정규화가 파서에만 있으면 다른 경로로 들어온 값이 조용히 걸러진다(회귀가 그 구멍을 잡았다).
+  (turn === undefined || turnReaches(turn, asReach(skill.reach)));
+
+/**
+ * 검색어 → 낱말(공백 단위, 소문자). 하나라도 걸리면 후보, **걸린 낱말 수**로 순위 — `find_skills`·`find_capabilities` 가 같은 규칙.
+ * ★모델은 «화면 클릭» 처럼 여러 낱말을 보낸다 — 질의 통째 부분일치로는 0건이었다(2026-11-24 ⑥ 실측).
+ */
+export const queryTerms = (query: string | undefined): string[] =>
+  (query ?? "").toLowerCase().split(/\s+/).filter((t) => t !== "");
+
+/** 스킬 검색이 보는 글 = 이름 + 설명 — `find_skills`·`find_capabilities` 의 스킬 채점이 같이 쓴다(무엇을 채점하나도 한 곳). */
+export const skillSearchText = (s: { name: string; description: string }): string => `${s.name} ${s.description}`;
+
+/** `hay` 에 걸린 낱말 수(대소문자 무시). */
+export const termHits = (hay: string, terms: ReadonlyArray<string>): number => {
+  const h = hay.toLowerCase();
+  return terms.reduce((n, t) => (h.includes(t) ? n + 1 : n), 0);
+};
 
 /**
  * 세 source walk → 모든 스킬 회수 (V9.3 — tiguclaw 런타임 컨벤션 + cwd 인자화).
@@ -164,10 +196,10 @@ const walkPluginsRoot = async (pluginsRoot: string): Promise<Skill[]> => {
   const pluginDirs = await activePluginDirs(pluginsRoot);
 
   const perPlugin = await Promise.all(
-    pluginDirs.map(async ({ id, dir }) => {
+    pluginDirs.map(async ({ id, dir, name }) => {
       const skillsDir = path.join(dir, "skills");
       const skills = await walkSkillsRoot(skillsDir, "plugin");
-      return skills.map((s) => ({ ...s, pluginId: id }));
+      return skills.map((s) => ({ ...s, pluginId: id, pluginName: name, pluginDir: path.resolve(dir) }));
     }),
   );
 
@@ -443,7 +475,7 @@ const SKILL_INDEX_CAP_BYTES = 25_600;
  *  모델이 «전체를 봤다» 고 믿는다(적대 검토 P-3: 122개 도달인데 «122개(전체)» 라 적고
  *  50줄만 줬다). 넘치면 «N개 더 있습니다 — query 로 좁히세요» 를 붙인다.
  */
-const FIND_SKILLS_MAX = 50;
+export const FIND_SKILLS_MAX = 50;
 
 // 사용빈도 랭킹 재료 — skill_usage(일반 store 테이블, 아래 invoke_skill 이 채움). 코어는
 // opportunistic read(빈 테이블·미초기화 시 무랭킹 폴백).
@@ -472,12 +504,7 @@ export const formatSkillIndex = (
   skills: ReadonlyArray<Skill>,
   turn?: TurnKind,
 ): string => {
-  const usable = skills.filter((s) => !s.disableModelInvocation);
-  const invocable = usable.filter(
-    // ★`asReach` 를 **여기서도** 판다 — 정규화가 파서에만 있으면 다른 경로로 들어온
-    //  값이 조용히 걸러진다(회귀가 그 구멍을 잡았다).
-    (s) => turn === undefined || turnReaches(turn, asReach(s.reach)),
-  );
+  const invocable = skills.filter((s) => skillVisibleTo(s, turn));
   // ★**가려진 개수를 자식에게 알리지 않는다** (2026-09-04 정태님 반문: *"가려진 게 있다는
   //  걸 자식이 알 이유가 있어?"*). 한 판 전엔 «N개가 더 있다» 를 한 줄 실었는데, 근거로
   //  든 선례(자가성장 제안이 캡 밖으로 밀려나 5주간 안 보임)가 **이 자리엔 안 맞았다** —
@@ -678,28 +705,25 @@ export const createSkillInvokeMcpServer = (
   //  부모가 이름을 대면 닿으므로, 자동 발견만 막고 명시 지정은 남기는 «되돌릴 수 있는» 쪽이다.
   const findSkillsTool = tool(
     "find_skills",
-    "**이 자리에서 쓸 수 있는** 스킬을 찾습니다. **query 를 생략하면 전체 목록**(이름+설명)을 돌려주니, 무엇을 쓸 수 있는지 모를 때 먼저 이렇게 부르세요. query 를 주면 이름·설명 부분일치로 좁힙니다. 사용빈도순 정렬. 찾은 뒤 invoke_skill 로 로드하세요.",
+    "**이 자리에서 쓸 수 있는** 스킬을 찾습니다. **query 를 생략하면 전체 목록**(이름+설명)을 돌려주니, 무엇을 쓸 수 있는지 모를 때 먼저 이렇게 부르세요. query 를 주면 낱말(공백 단위) 중 하나라도 이름·설명에 걸리는 것을, 걸린 낱말 수 → 사용빈도순으로 돌려줍니다. 찾은 뒤 invoke_skill 로 로드하세요.",
     { query: z.string().optional() },
     async (args) => {
       try {
-        const invocable = (await discoverSkills(cwd)).filter(
-          (s) =>
-            !s.disableModelInvocation &&
-            (ctx?.turn === undefined || turnReaches(ctx.turn, asReach(s.reach))),
-        );
-        const q = (args.query ?? "").toLowerCase();
-        const matched = invocable.filter(
-          (s) =>
-            s.name.toLowerCase().includes(q) ||
-            s.description.toLowerCase().includes(q),
-        );
-        if (matched.length === 0) {
+        const invocable = (await discoverSkills(cwd)).filter((s) => skillVisibleTo(s, ctx?.turn));
+        // ★낱말 단위(2026-11-24 ⑥) — 하나라도 걸리면 후보, 걸린 수 → 사용빈도 순. 빈 질의 = 전체(종전).
+        const terms = queryTerms(args.query);
+        const scored = invocable
+          .map((s) => ({ s, hits: terms.length === 0 ? 0 : termHits(skillSearchText(s), terms) }))
+          .filter((x) => terms.length === 0 || x.hits > 0);
+        if (scored.length === 0) {
           return errText(`'${args.query ?? ""}' 에 매칭되는 스킬이 없습니다.`);
         }
         const usage = skillUsageRank();
-        matched.sort(
-          (a, b) => (usage.get(b.name) ?? 0) - (usage.get(a.name) ?? 0),
+        scored.sort(
+          (a, b) => b.hits - a.hits || (usage.get(b.s.name) ?? 0) - (usage.get(a.s.name) ?? 0),
         );
+        const matched = scored.map((x) => x.s);
+        const q = terms.join(" ");
         const shown = matched.slice(0, FIND_SKILLS_MAX);
         const lines = shown.map((s) => `- ${s.name}: ${s.description}`);
         // ★**잘렸으면 잘렸다고 말한다** (2026-09-04 적대 검토 P-3). 종전엔 50건에서 자르면서

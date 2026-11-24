@@ -25,6 +25,7 @@
  *  ★길게 잡으면 «지금 얼마나 남았지» 에 옛 숫자로 답하게 되고, 그게 이 기능의 존재 이유를
  *   깎는다. 이 레포는 그 부류(낡은 값을 최신인 척 보여주는 것)로 여러 번 데였다.
  */
+import { createHash } from "node:crypto";
 import type { ProviderUsage, UsageWindow } from "../../src/core/plugins/provider-usage.js";
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
@@ -41,7 +42,18 @@ const CACHE_MS = 30_000;
 const FORCE_MIN_GAP_MS = 5_000;
 const TIMEOUT_MS = 5_000;
 
-let cached: { at: number; value: ProviderUsage | undefined } | undefined;
+/**
+ * 토큰 → 표지(해시 앞부분). 없으면 `""`. 토큰 값 자체는 어디에도 남기지 않는다. 플러그인의 자격 표지(`index.ts` credentialTag)도 이 함수다.
+ */
+export const codexTokenTag = (token: string | undefined): string =>
+  token === undefined || token === "" ? "" : createHash("sha256").update(token).digest("hex").slice(0, 12);
+
+/**
+ * ★캐시는 **그 답을 얻은 자격**에 묶인다 (2026-11-20 정태님 «인증이 완료되면 한도 게이지도 갱신»). 다시 로그인하면(화면 붙여넣기·자동
+ *  콜백 어느 쪽이든) 인증 전 «대기» 나 옛 계정 숫자는 다른 자격의 답이라, 접는 창(30초·연타 5초) 안이어도 쓰지 않는다.
+ *  ★답은 **실제로 요청에 실은 토큰**의 표지로 담는다(2026-11-21) — 받는 사이 메모리의 자격이 바뀌어도 답과 자격이 엇갈리지 않게.
+ */
+let cached: { at: number; value: ProviderUsage | undefined; credential: string } | undefined;
 
 /**
  * ★**왜 비었는지는 로그에만 남는다** (2026-09-07). 실패가 조용한 것과 **아무 흔적도 없는 것**은
@@ -103,32 +115,46 @@ const toWindow = (w: unknown): UsageWindow | undefined => {
  *  연타만 막고 동시 요청은 전부 통과해, 비공식 엔드포인트를 동시에 여러 번 때렸다.
  *  (claude 쪽은 같은 구멍으로 CLI 프로세스가 20개 떴다.)
  */
-let inflight: Promise<ProviderUsage | undefined> | undefined;
+/**
+ * ★**같은 자격의** 조회만 나눠 쓴다 — 다시 로그인한 뒤의 요청이 옛 자격으로 돌던 조회의 답을 받지 않게, 그리고 그 옛 조회가 늦거나
+ *  실패해도 새 요청을 붙잡지 않게(기다리지 않고 따로 묻는다, 2026-11-21).
+ * @param currentToken 지금 쥔 토큰(갱신 없이) — «지금 자격» 의 표지를 낸다. 없으면 표지 `""`.
+ */
+let inflight: { credential: string; p: Promise<ProviderUsage | undefined> } | undefined;
 
 export const fetchCodexUsage = async (
   getAccessToken: () => Promise<string>,
   force = false,
+  currentToken: () => string | undefined = () => undefined,
 ): Promise<ProviderUsage | undefined> => {
-  if (inflight !== undefined) return inflight;
-  inflight = fetchCodexUsageInner(getAccessToken, force).finally(() => {
-    inflight = undefined;
+  const cred = codexTokenTag(currentToken());
+  if (inflight !== undefined && inflight.credential === cred) return inflight.p;
+  const p: Promise<ProviderUsage | undefined> = fetchCodexUsageInner(getAccessToken, force, currentToken).finally(() => {
+    if (inflight?.p === p) inflight = undefined;
   });
-  return inflight;
+  inflight = { credential: cred, p };
+  return p;
 };
 
 const fetchCodexUsageInner = async (
   getAccessToken: () => Promise<string>,
-  force = false,
+  force: boolean,
+  currentToken: () => string | undefined,
 ): Promise<ProviderUsage | undefined> => {
   const now = Date.now();
   // ★새로고침을 눌렀으면 캐시를 지난다 — 다만 연타 하한은 지킨다(비공식 경로).
   const gap = force ? FORCE_MIN_GAP_MS : CACHE_MS;
-  if (cached !== undefined && now - cached.at < gap) return withRefreshAfter(cached.value, cached.at);
+  if (cached !== undefined && now - cached.at < gap && cached.credential === codexTokenTag(currentToken())) {
+    return withRefreshAfter(cached.value, cached.at);
+  }
   let value: ProviderUsage | undefined;
   // 못 쟀을 때도 «언제 다시 잰다» 는 말해준다 — 빈 자리는 «원래 안 준다» 로 읽힌다.
   const pending: ProviderUsage = { windows: [], measuredAt: now, retryAt: now + CACHE_MS };
+  // 이 답의 자격 — 토큰을 못 받으면 «지금 자격» 의 대기 답, 받았으면 **실제로 보낸 그 토큰**의 것.
+  let answeredFor = codexTokenTag(currentToken());
   try {
     const token = await getAccessToken();
+    answeredFor = codexTokenTag(token);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
       Accept: "application/json",
@@ -183,7 +209,8 @@ const fetchCodexUsageInner = async (
   //  ★이음매를 없앤다: 두 경로가 **같은 값**을 내보내게 하면 우회할 자리 자체가 없어진다.
   //   덤으로 `retryAt` 이 «최초 실패 시각 + 캐시» 로 고정돼 더 정직하다(열 때마다 안 밀린다).
   const answer = value ?? pending;
-  cached = { at: now, value: answer };
+  // 도는 사이 자격이 바뀌었으면 담지 않는다 — 옛 자격의 답이 새 자격으로 먼저 담긴 답을 덮지 않게(부른 쪽엔 그대로 돌려준다).
+  if (answeredFor === codexTokenTag(currentToken())) cached = { at: now, value: answer, credential: answeredFor };
   return withRefreshAfter(answer, now);
 };
 

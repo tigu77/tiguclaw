@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- While the assistant controls your macOS or Windows screen, a soft orange glow along the screen edges, a stop button at the top center, and a ring around the real pointer are shown. Clicking the button stops the current action, and the assistant won't control the screen again until you send a new message. The pointer moves briefly to its target (at most about 0.1 seconds) before clicking.
+- Skills that come with an active plugin can now be found and used through `find_skills` and `find_capabilities` without knowing their names.
+- In the dashboard, a background job card's to-do list shows how many items are in progress, and their titles, in its header even when collapsed.
+
+### Changed
+- On Windows, computer control no longer overrides the PowerShell execution policy; it runs under the policy configured on that machine.
+
+### Fixed
+- After signing in through a subscription plugin, the usage gauge did not update right away. It now checks that account's limits again right after sign-in and shows only values confirmed for the current account.
+- On Telegram, splitting a reply with long lines or code blocks could produce empty parts, and resending it without formatting could exceed the length limit and fail.
+- When a non-channel plugin failed partway through starting, it was not cleaned up when the daemon shut down.
+
 ## [0.86.0] - 2026-11-20
 
 ### Added

@@ -28,6 +28,7 @@ interface Frame {
 }
 type LowEvent =
   | { t: "mousemove"; x: number; y: number }
+  | { t: "glide"; x: number; y: number }
   | { t: "mousedown"; x: number; y: number; button: Button; count: number }
   | { t: "mouseup"; x?: number; y?: number; button: Button; count: number }
   | { t: "mousedrag"; x: number; y: number; button: Button }
@@ -287,10 +288,13 @@ export const check: RegressionCheck = {
       out.push(
         assert(
           "클릭: 이미지 픽셀 → 화면 좌표 변환이 계획 안에서 끝난다(실행부는 계산하지 않는다)",
+          // ★⑤ r4: 첫 이벤트는 미끄러짐(`glide`) — 목표는 같은 변환 결과다(실행부가 다시 계산하지 않는다).
           click.ok &&
-            click.events[0]?.t === "mousemove" &&
-            (click.events[0] as { x: number; y: number }).x === 864,
-          JSON.stringify(click.ok ? click.events[0] : click),
+            click.events[0]?.t === "glide" &&
+            (click.events[0] as { x: number; y: number }).x === 864 &&
+            click.events[1]?.t === "mousemove" &&
+            (click.events[1] as { x: number; y: number }).x === 864,
+          JSON.stringify(click.ok ? click.events.slice(0, 2) : click),
         ),
       );
       out.push(
@@ -542,9 +546,9 @@ export const check: RegressionCheck = {
       );
       out.push(
         assert(
-          "드래그 순서: 이동 → 누르기 → (끌기…) → 떼기. 그리고 **떼기로 끝난다**",
-          kinds[0] === "mousemove" && kinds[1] === "mousedown" && kinds[kinds.length - 1] === "mouseup",
-          JSON.stringify([kinds[0], kinds[1], kinds[kinds.length - 1]]),
+          "드래그 순서: 미끄러짐 → 이동 → 누르기 → (끌기…) → 떼기. 그리고 **떼기로 끝난다**",
+          kinds[0] === "glide" && kinds[1] === "mousemove" && kinds[2] === "mousedown" && kinds[kinds.length - 1] === "mouseup",
+          JSON.stringify([kinds[0], kinds[1], kinds[2], kinds[kinds.length - 1]]),
         ),
       );
       out.push(

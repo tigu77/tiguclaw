@@ -169,8 +169,17 @@ function formatUsageLine(usage, now) {
       const usageState = new Map();
       /** 🔄 를 다시 켤 타이머 — provider 마다 하나(재렌더마다 쌓이지 않게). */
       const refreshUnlockTimers = new Map();
+      /** provider 마다 «잊은 횟수» — 잊기 전에 시작한 조회의 답(옛 자격의 것)은 늦게 와도 쓰지 않는다(`forgetUsage`). */
+      const usageGen = new Map();
+      /**
+       * 인증이 바뀌어 다시 묻는 provider — 다음 한 번의 조회에 «인증 직후» 를 실어 보낸다. provider 는 그때 자격 저장(토큰 갱신)을
+       * 일으키지 않는다(`UsageQueryOptions`). 화면을 처음 열 때의 조회·🔄 는 종전 그대로다.
+       */
+      const usageAfterAuth = new Set();
       const loadUsage = async (provider, force) => {
         if (!force && usageState.has(provider)) return; // 한 번만 — 재렌더로 다시 안 묻는다
+        const gen = usageGen.get(provider) ?? 0;
+        const afterAuth = usageAfterAuth.delete(provider) && !force; // 🔄(force)는 종전 그대로 — 표시는 한 번 쓰면 지운다
         usageState.set(provider, "loading");
         // ★여기서 **다시 그리지 않는다** (2026-09-09, 적대 검토 P2). 이 함수는
         //  `buildPluginCard` 안에서 불리므로(첫 `await` 전까지 동기 실행), 여기서
@@ -180,27 +189,123 @@ function formatUsageLine(usage, now) {
         //  설치 버튼이 **두 벌**이었다.
         //  ★잃는 것도 없다: 호출부가 `usageState.set` **직후에** 상태를 읽으므로 지금
         //   돌고 있는 렌더가 이미 «확인하는 중» 을 그린다.
+        let answer;
         try {
           const r = await fetch(
-            "/api/auth-usage?provider=" + encodeURIComponent(provider),
+            "/api/auth-usage?provider=" + encodeURIComponent(provider) + (afterAuth ? "&after=auth" : ""),
             { method: force ? "POST" : "GET", cache: "no-store" },
           );
           const d = await r.json();
-          usageState.set(provider, d && d.usage !== undefined ? d.usage : null);
+          answer = d && d.usage !== undefined ? d.usage : null;
         } catch {
-          usageState.set(provider, null); // 못 물었으면 «모름» — 0% 로 뭉개지 않는다
+          answer = null; // 못 물었으면 «모름» — 0% 로 뭉개지 않는다
         }
+        if ((usageGen.get(provider) ?? 0) !== gen) return; // 도는 사이 자격이 바뀌었다 — 옛 답이다(새 조회가 그린다)
+        usageState.set(provider, answer);
         // ★한도 블록만 다시 그린다 — 화면 전체를 다시 그리면 입력 중이던 설치 칸·로그인 칸이 지워진다(repaintAuthUsage).
         repaintAuthUsage(provider);
       };
+      /**
+       * 그 provider 의 한도를 **잊는다** — 다음 렌더가 새로 묻는다 (2026-11-20 정태님 «인증이 완료되면 한도 게이지도 갱신»).
+       * ★한도 값은 **물었을 때의 인증**에 대한 답이다. 인증이 바뀌면(로그인·재인증·로그아웃) 그 값은 다른 자격·다른 계정의 것일 수 있다.
+       *  종전엔 이 화면이 provider 마다 **페이지가 사는 동안 한 번만** 물어, 재인증 뒤에도 인증 전 «대기/모름»·옛 계정 숫자가 남았다.
+       * ★🔄 잠금 타이머도 같이 버린다 — 그 시각은 옛 답이 정한 것이다(남기면 새 답의 시각으로 다시 걸리지 않는다).
+       */
+      const forgetUsage = (provider) => {
+        usageGen.set(provider, (usageGen.get(provider) ?? 0) + 1);
+        usageState.delete(provider);
+        const t = refreshUnlockTimers.get(provider);
+        if (t !== undefined) clearTimeout(t);
+        refreshUnlockTimers.delete(provider);
+      };
+      /**
+       * 마지막으로 읽은 «인증됐나 + 자격 표지»(`credential` — 서버가 감춰 준다, `routes-auth.ts`). 표지가 있어야 **이미 인증된 provider 의
+       * 재인증**(계정 교체)을 안다. 읽기 실패로 지우지 않는다(모름은 변화가 아니다).
+       */
+      const authSeen = new Map();
+      const authKeyOf = (p) => String(p.authenticated) + "|" + (typeof p.credential === "string" ? p.credential : "-");
+      /**
+       * provider 하나의 «인증됐나 + 표지» 를 기준으로 삼는다 — 기준과 다르면 한도를 잊는다. 처음 보는 것도 «다름» 으로 친다(비교 하나로
+       * 끝난다 — 그때는 아직 아무것도 안 물어 잊을 것도 없다).
+       * `afterLogin` — 이 변화를 이 화면의 로그인(칸 감시·붙여넣기 마무리)에서 봤나. 그때만 다음 조회에 «인증 직후» 를 싣는다 — 화면을
+       *  다시 열 때 읽은 목록이 본 변화는 캐시만 버리고 보통 조회로 묻는다(일반 GET 계약 그대로).
+       * @returns 바뀌었나
+       */
+      const noteAuthSeen = (p, afterLogin) => {
+        const key = authKeyOf(p);
+        if (authSeen.get(p.provider) === key) return false;
+        // 처음 보는 것은 화면을 여는 보통 조회다.
+        if (afterLogin && authSeen.has(p.provider)) usageAfterAuth.add(p.provider);
+        else usageAfterAuth.delete(p.provider);
+        forgetUsage(p.provider);
+        authSeen.set(p.provider, key);
+        return true;
+      };
+      /** 목록 요청 번호 — 로그인 감시(`watchAuthChange`)와 다른 갱신이 겹칠 때 늦게 온 **옛** 응답이 새 상태를 덮지 않게. */
+      let authReqSeq = 0;
+      let authReqApplied = 0;
+      /**
+       * **응답을 적용하는 지금** 로그인 칸이 화면에 있는 provider 의 변화만 «인증 직후» 로 친다(`noteAuthSeen`) — 요청을 보낸 쪽(감시·붙여넣기)이
+       *  아니라 바뀐 provider 자신의 칸으로 판정한다: 칸이 둘 열려 있으면 어느 감시가 먼저 읽든 같고, 응답을 기다리는 사이 칸이 사라졌으면
+       *  «인증 직후» 가 남지 않는다(집중 검토 G6·G7).
+       * @returns {string[] | null} «인증됐나»·자격 표지가 바뀐 provider(한도를 잊은 것들) — 목록을 못 읽었으면 `null`.
+       *  ★오류 응답(브리지가 죽으면 프록시가 `502 + {error}` 를 준다)·모양이 틀린 응답도 «못 읽음» 이다 — 빈 목록으로 적용하지 않는다.
+       */
       const fetchAuthProviders = async () => {
+        const seq = ++authReqSeq;
+        const changed = [];
         try {
           const r = await fetch("/api/auth-providers", { cache: "no-store" });
+          if (!r.ok) throw new Error("HTTP " + r.status);
           const d = await r.json();
-          authState.providers = Array.isArray(d.providers) ? d.providers : [];
+          if (!d || !Array.isArray(d.providers)) throw new Error("no providers");
+          if (seq < authReqApplied) return changed;
+          authReqApplied = seq;
+          authState.providers = d.providers;
+          // ★화면 밖에서 끝난 인증(웹 OAuth 자동 콜백·발급기 창·터미널 발급)은 이 화면이 모른다 — 다시 읽었을 때 «인증됐나» 나
+          //  자격 표지가 바뀌었으면 그 provider 의 한도를 잊는다(로그아웃 뒤 옛 숫자가 «미인증» 옆에 남던 것도 같은 자리다).
+          for (const p of authState.providers) {
+            if (!p || typeof p.provider !== "string") continue;
+            if (noteAuthSeen(p, watchingLogin(p.provider))) changed.push(p.provider);
+          }
         } catch {
-          authState.providers = []; // 못 읽으면 «모른다» — 상태를 지어내지 않는다.
+          // 못 읽었다 — 마지막으로 읽은 목록을 그대로 둔다(처음부터 못 읽었으면 빈 목록 = «모른다»). 읽기 실패는 인증 상태의 변화가
+          //  아니다: 지우면 감시 한 번의 실패로 다른 provider 까지 «모름» 이 되고 막 받은 인증의 게이지도 못 그린다.
+          return null;
         }
+        return changed;
+      };
+      /**
+       * **로그인 칸이 열려 있는 동안만** «인증됐나» 를 다시 읽는다 (2026-11-21, 인증 후 한도 게이지 갱신).
+       * ★화면 밖에서 끝나는 인증 — codex 자동 콜백(콜백 페이지가 «곧 인증됨으로 바뀐다» 고 말한다)·claude 발급기 창·터미널 발급 —
+       *  은 이 화면에 알려 주는 길이 없다. 그래서 이 화면이 로그인을 시작한 provider 를, 칸이 화면에 있는 동안 목록으로 확인한다 —
+       *  처음 10분(codex 로그인 세션 수명)은 3초마다, 그 뒤엔 30초마다(터미널 발급은 언제 끝날지 모른다 — 칸이 열려 있으면 계속 본다).
+       *  목록은 네트워크 없는 동기 판정이고(`isAuthenticated`), 한도는 바뀐 뒤 한 번만 묻는다.
+       * ★이미 인증된 provider 의 재인증은 «인증됐나» 가 그대로라 자격 표지로 잡는다 — 표지를 안 주는 provider 면 화면 붙여넣기로 끝낸
+       *  재인증만 잡는다(`submit`). 다른 프로세스가 쓴 자격(터미널 발급)은 목록 라우트가 먼저 따라간다(`followHomeCredentials`).
+       * ★표지가 바뀌었다고 **로그인이 끝난 것은 아니다** — 토큰 자동 갱신도 바꾼다. 그래서 칸을 닫지 않고(전체 렌더 X) 바뀐
+       *  provider 의 상태·한도만 제자리에서 다시 그리고, 칸이 있는 동안 계속 본다. 칸을 닫는 것은 붙여넣기 성공뿐이다.
+       */
+      const AUTH_WATCH_EVERY_MS = 3_000;
+      const AUTH_WATCH_FAST_FOR_MS = 10 * 60_000;
+      const AUTH_WATCH_SLOW_EVERY_MS = 30_000;
+      /** provider 마다 지금 도는 감시 하나 — 로그인을 다시 누르면 앞 감시는 멈춘다. */
+      const authWatch = new Map();
+      /** 그 provider 의 로그인 칸 감시가 **지금** 살아 있나(칸이 화면에 있다) — «인증 직후» 판정은 응답을 적용하는 이 순간에 한다. */
+      const watchingLogin = (id) => authWatch.get(id)?.panel.isConnected === true;
+      const watchAuthChange = (id, panel) => {
+        const mine = { panel };
+        authWatch.set(id, mine);
+        const slowAfter = Date.now() + AUTH_WATCH_FAST_FOR_MS;
+        const alive = () => authWatch.get(id) === mine && panel.isConnected;
+        const every = () => (Date.now() < slowAfter ? AUTH_WATCH_EVERY_MS : AUTH_WATCH_SLOW_EVERY_MS);
+        const tick = async () => {
+          if (!alive()) return;
+          const changed = await fetchAuthProviders();
+          if (changed !== null) for (const p of changed) repaintAuthBox(p);
+          if (alive()) setTimeout(() => void tick(), every());
+        };
+        setTimeout(() => void tick(), AUTH_WATCH_EVERY_MS);
       };
       /** 이 플러그인이 서빙한다고 **선언한** provider 들(매니페스트 needs.auth). */
       const authProvidersOf = (p) => {
@@ -523,6 +628,9 @@ function formatUsageLine(usage, now) {
           const submit = async () => {
             const pasted = input.value;
             if (pasted.trim() === "") return;
+            const seenAtSend = authSeen.get(id); // 보낸 뒤 더 새 관측(감시·목록)이 생겼는지 가르려고
+            // 보낸 뒤 그 provider 를 이미 잊었나 — 기준(`authSeen`)은 A→B→A 로 제자리에 돌아올 수 있어 증거가 아니다, 잊은 횟수로 가른다(같은 밀리초도)
+            const genAtSend = usageGen.get(id) ?? 0;
             done.disabled = true;
             input.disabled = true;
             try {
@@ -537,9 +645,41 @@ function formatUsageLine(usage, now) {
               showToast(d.message || (d.ok ? i18n("plugins.auth.done") : i18n("plugins.auth.failed")),
                 d.ok ? "good" : "bad");
               if (d.ok) {
-                await fetchAuthProviders();
-                renderPluginsView();
-                return;
+                // ★마무리 응답이 그 provider 의 **지금 상태**를 말한다 — 목록과 같은 «인증됐나 + 자격 표지»(`routes-auth.ts`). 그것을
+                //  기준으로 반영하고(바뀌었으면 그 provider 한도만 잊는다 — 감시가 같은 자격을 먼저 봤으면 이미 같은 기준이라 또 잊지 않는다),
+                //  그보다 **먼저 시작한** 목록 응답은 버린다(늦게 와도 옛 상태로 되돌리지 않게). 목록을 못 읽어도 이 반영은 남는다.
+                //  ★단 보낸 뒤 그 provider 를 **더 새로** 관측했으면(감시·목록이 그사이 다른 자격을 봤다) 이 응답이 더 오래된 것일 수 있다 —
+                //  덮지 않고 목록(지금 상태)에 맡긴다.
+                const applied = authSeen.get(id) === seenAtSend;
+                if (applied) {
+                  authReqApplied = ++authReqSeq;
+                  const info = authState.providers.find((x) => x && x.provider === id);
+                  const now = {
+                    provider: id,
+                    authenticated: typeof d.authenticated === "boolean" ? d.authenticated : info ? info.authenticated : null,
+                    credential: d.credential,
+                  };
+                  if (info) Object.assign(info, { authenticated: now.authenticated, credential: now.credential });
+                  // «인증 직후» 는 감시와 같은 규칙 — 응답을 적용하는 지금 이 provider 의 로그인 칸이 화면에 있을 때만(칸이 사라졌으면 보통 조회).
+                  const live = watchingLogin(id);
+                  noteAuthSeen(now, live);
+                  // 표지가 그대로인 재인증(표지를 안 주는 provider · 같은 토큰을 다시 붙여넣음)도 인증이 끝난 것이다 — 보낸 뒤 아직 안 잊었으면
+                  //  잊는다(감시·위 반영이 그사이 잊었으면 또 잊지 않는다 — 한 번의 로그인에 한 번).
+                  if ((usageGen.get(id) ?? 0) === genAtSend) {
+                    if (live) usageAfterAuth.add(id);
+                    forgetUsage(id);
+                  }
+                  // 확정된 그 provider 는 목록을 기다리지 않고 바로 다시 그린다(새 조회가 여기서 시작된다) — 목록이 늦어도 옛 숫자가 남지 않게.
+                  repaintAuthBox(id);
+                }
+                const listed = await fetchAuthProviders(); // 다른 provider 도 지금 상태로(못 읽으면 마지막 목록 유지) · 칸이 살아 있으면 그 변화는 «인증 직후»
+                // ★응답을 확정으로 못 썼는데(보낸 뒤 감시가 다른 자격을 먼저 봤다 — 저장 순서는 관측 순서로 모른다) 목록도 못 읽었으면 칸과
+                //  감시를 남긴다 — 다음 확인이 지금 자격을 그린다. 그 밖엔 닫는다.
+                if (applied || listed !== null) {
+                  // 새로 묻는 것은 GET 이다(이전 자격의 캐시는 플러그인이 안 쓴다). 다시 그리면 로그인 칸이 사라져 감시도 멈춘다.
+                  renderPluginsView();
+                  return;
+                }
               }
             } catch (e) {
               showToast(i18n("plugins.auth.failed") + ": " + e.message, "bad");
@@ -554,6 +694,8 @@ function formatUsageLine(usage, now) {
           panel.appendChild(form);
         }
         if (plan.needsRestart) line(i18n("plugins.auth.restart"), "plugin-auth-note");
+        // 화면 밖에서 끝나는 인증(자동 콜백·발급기 창·터미널)도 새로고침 없이 상태·한도가 바뀌게 — 칸이 열려 있는 동안만.
+        watchAuthChange(id, panel);
         authState.busy = "";
         btn.disabled = false;
       };
@@ -702,6 +844,24 @@ function formatUsageLine(usage, now) {
           usageEl = u;
         }
         return { refresh, usage: usageEl };
+      };
+      /** 인증 상태 칸의 글·모양 — 카드를 지을 때와 제자리에서 다시 그릴 때(`repaintAuthBox`)가 같이 쓴다. */
+      const paintAuthState = (st, info) => {
+        const authed = info && info.authenticated === true;
+        st.className = "plugin-auth-state" + (authed ? " on" : "");
+        // ★«모른다» 를 «미인증» 으로 적지 않는다 — 서버가 판정을 안 주면(구현 없음·읽기
+        //  실패) 그렇게 말한다. 지어낸 상태 하나가 이 화면의 신뢰를 통째로 깎는다.
+        st.textContent = !info
+          ? i18n("plugins.auth.unknown")
+          : info.authenticated === null
+            ? i18n("plugins.auth.unknown")
+            : i18n(authed ? "plugins.auth.on" : "plugins.auth.off");
+      };
+      /** 지금 화면에 있는 그 provider 의 인증 상태·한도만 다시 그린다 — 열어 둔 로그인 칸·입력칸은 그대로(감시 `watchAuthChange`). */
+      const repaintAuthBox = (id) => {
+        const info = authState.providers.find((x) => x && x.provider === id) || null;
+        for (const st of document.querySelectorAll(`.plugin-auth[data-provider="${CSS.escape(id)}"] .plugin-auth-state`)) paintAuthState(st, info);
+        repaintAuthUsage(id);
       };
       /** 지금 화면에 있는 그 provider 의 한도 블록만 갈아 끼운다(없으면 할 일 없음 — 다음 렌더가 상태를 읽는다). */
       const repaintAuthUsage = (id) => {
@@ -858,15 +1018,7 @@ function formatUsageLine(usage, now) {
           nm.className = "plugin-auth-name";
           nm.textContent = id;
           const st = document.createElement("span");
-          const authed = info && info.authenticated === true;
-          st.className = "plugin-auth-state" + (authed ? " on" : "");
-          // ★«모른다» 를 «미인증» 으로 적지 않는다 — 서버가 판정을 안 주면(구현 없음·읽기
-          //  실패) 그렇게 말한다. 지어낸 상태 하나가 이 화면의 신뢰를 통째로 깎는다.
-          st.textContent = !info
-            ? i18n("plugins.auth.unknown")
-            : info.authenticated === null
-              ? i18n("plugins.auth.unknown")
-              : i18n(authed ? "plugins.auth.on" : "plugins.auth.off");
+          paintAuthState(st, info);
           head.appendChild(nm);
           head.appendChild(st);
           box.appendChild(head);

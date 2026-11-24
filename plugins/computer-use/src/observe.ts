@@ -372,6 +372,12 @@ export interface ControlBackend {
   post(
     events: readonly import("./control.js").LowEvent[],
     signal?: AbortSignal,
+    /**
+     * `stopFile` = Esc 의 멈춤 요청 파일(2026-11-24) — 그 파일이 생기면 실행부가 다음 단계 경계·`wait` 도중에 멈춘다.
+     * ★맥·Windows 실행부 둘 다 본다(Windows 는 11-24 ⑤ 확대부터). 표시가 없는 플랫폼(Linux)은 실행부가 없다.
+     * `dry` = 빈 연습(입력 0) — 검사가 제품 `post` 를 지나 env 전달까지 재게.
+     */
+    opts?: { stopFile?: string; dry?: boolean },
   ): Promise<
     | {
         ok: true;

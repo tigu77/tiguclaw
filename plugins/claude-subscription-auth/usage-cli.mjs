@@ -176,7 +176,7 @@ const resolveClaude = async (log) => {
 
 /**
  * **이 기계 CLI 가 어느 조직으로 로그인돼 있나** (`claude auth status` 의 `orgId`, 2026-10-10 정태님: «cli 로그인이랑 인증된 거랑 다른 걸 알 수 있나?»).
- * `/usage` 는 CLI **자기 로그인 계정**의 한도를 말한다 — 이 설치가 쓰는 토큰과 다른 계정이면 남의 숫자다. 못 알아내면 `undefined`(모름 — 막지 않는다).
+ * `/usage` 는 CLI **자기 로그인 계정**의 한도를 말한다 — 이 설치가 쓰는 토큰과 다른 계정이면 남의 숫자다. 못 알아내면 `undefined`(모름). ★`/usage` 와 별개 프로세스라 그 숫자의 귀속 근거는 못 된다 — 부르는 쪽은 «다른 계정» 문구에만 쓴다.
  */
 export const fetchCliOrgId = async (log) => {
   try {
@@ -218,7 +218,7 @@ export const fetchUsageViaCli = async (log) => {
   }
   const verdict = cliUsageVerdict(text, now);
   if (verdict.needsLogin === true) {
-    log?.("CLI 가 구독으로 로그인돼 있지 않다 — 한도 대신 비용 요약(Total cost)을 줬다. 그 기계에서 `claude` → `/login` 이 필요하다");
+    log?.("CLI 가 구독으로 로그인돼 있지 않다 — 한도 대신 비용 요약(Total cost)을 줬다");
     return { needsLogin: true };
   }
   const windows = verdict.windows ?? [];

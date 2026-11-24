@@ -29,7 +29,7 @@
  * ★★**절대 매달리지 않는다** — mac.ts 와 같은 불변식. MCP `callTool` 천장은 11분이라
  *  우리가 안 끊으면 턴이 그만큼 묶인다.
  */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import os from "node:os";
@@ -40,7 +40,17 @@ import {
   type CheckedTarget,
   type ScreenRect,
 } from "./observe.js";
-import { keyDryEvents, postTimeoutMs, type LowEvent } from "./control.js";
+import {
+  CLICK_HOLD_MS,
+  GLIDE_MAX_MS,
+  GLIDE_MIN_MS,
+  GLIDE_MS_PER_PX,
+  GLIDE_TICK_MS,
+  keyDryEvents,
+  postTimeoutMs,
+  type LowEvent,
+} from "./control.js";
+import { GLOW, watchIndicatorChild, type IndicatorHandle, type PillRect, type StopVia } from "./indicator.js";
 
 /**
  * 탐침 한 줄에서 **화면 사각형 목록**을 읽는다. 못 읽으면 `null` — «모른다» 이고,
@@ -177,14 +187,24 @@ static class TiguclawCapture {
 }
 `;
 
-/** 캡처 프로그램 파일 이름 — **소스 해시**가 들어간다(소스가 바뀌면 새로 컴파일되게). 순수. */
-export const captureExeName = (source: string): string =>
-  `tiguclaw-capture-${createHash("sha256").update(source).digest("hex").slice(0, 12)}.exe`;
+/** 컴파일해 쓰는 프로그램 파일 이름 — **소스 해시**가 들어간다(소스가 바뀌면 새로 컴파일되게). 순수. */
+const exeName = (prefix: string, source: string): string =>
+  `tiguclaw-${prefix}-${createHash("sha256").update(source).digest("hex").slice(0, 12)}.exe`;
 
-/** `csc.exe` 인자 — 순수. System.Drawing·Windows.Forms 만 참조한다. */
-export const cscArgs = (sourcePath: string, outPath: string): string[] => [
+/** 캡처 프로그램 파일 이름. 순수. */
+export const captureExeName = (source: string): string => exeName("capture", source);
+
+/**
+ * **옛 해시의 같은 종류 exe 인가** — 컴파일한 김에 치울 대상. 순수(2026-11-24, ⑤ Windows).
+ * ★접두사가 **같은** 옛 해시만 참이다 — 캡처 컴파일이 표시 도우미 exe 를, 도우미 컴파일이 캡처 exe 를 지우지 않는다.
+ */
+export const staleExe = (name: string, prefix: string, keep: string): boolean =>
+  name !== keep && new RegExp(`^tiguclaw-${prefix}-[0-9a-f]+\\.exe$`).test(name);
+
+/** `csc.exe` 인자 — 순수. System.Drawing·Windows.Forms 만 참조한다. `winexe` = 콘솔 없는 창 프로그램(표시 도우미). */
+export const cscArgs = (sourcePath: string, outPath: string, target: "exe" | "winexe" = "exe"): string[] => [
   "/nologo",
-  "/target:exe",
+  `/target:${target}`,
   "/optimize+",
   `/out:${outPath}`,
   "/r:System.Drawing.dll",
@@ -205,34 +225,56 @@ const cscExe = (): string | null => {
 /** 컴파일 시한 — 실기에서 1초 안팎. 느린 디스크·백신 검사를 감안해 넉넉히. */
 const COMPILE_TIMEOUT_MS = 30_000;
 
-/** 캡처 프로그램 위치 — 사용자별 앱 폴더(없으면 임시 폴더). 설치본·홈과 무관하게 한 벌이면 된다(소스가 같으면 같은 파일). */
-const captureExePath = (): string =>
-  path.join(process.env.LOCALAPPDATA ?? os.tmpdir(), "tiguclaw", captureExeName(CAPTURE_CS));
+/**
+ * **컴파일해 쓰는 프로그램 하나의 정의** (2026-11-24 — 캡처 하나에서 표시 도우미가 붙어 둘이 됐다).
+ * ★`what` 은 사람 문구에 들어가는 **대상 이름(목적격까지)** 이다 — 컴파일러 없음·백신 차단 문구가 이것 하나를 쓴다.
+ *  캡처는 «화면 캡처 프로그램을» 이라 종전 문구가 **바이트 그대로**다.
+ */
+interface ExeSpec {
+  readonly prefix: string;
+  readonly source: string;
+  readonly target: "exe" | "winexe";
+  readonly what: string;
+  /**
+   * 컴파일이 실패했는데 산출물이 없을 때 그것을 «백신이 지웠다» 로 읽나.
+   * ★캡처는 **종전 그대로 참**이다(문구·판정 보존). 새 표시 도우미는 **거짓** — 컴파일 오류(`CS1002` 등)면 산출물은 원래
+   *  안 생기므로, 그것을 백신 차단으로 보고하면 첫 컴파일 오류를 «백신» 으로 오보해 실기 확인을 건너뛰게 한다.
+   *  도우미의 백신 판정은 오류 원문(`CS0016 … virus` 등)과 컴파일 **뒤** 사라짐(옮기기 `ENOENT`)으로만 한다.
+   */
+  readonly missingOutputIsBlock: boolean;
+}
+const CAPTURE_EXE: ExeSpec = { prefix: "capture", source: CAPTURE_CS, target: "exe", what: "화면 캡처 프로그램을", missingOutputIsBlock: true };
 
-let building: Promise<{ ok: true; exe: string } | RunFail> | null = null;
+/** 프로그램 위치 — 사용자별 앱 폴더(없으면 임시 폴더). 설치본·홈과 무관하게 한 벌이면 된다(소스가 같으면 같은 파일). */
+const exePath = (spec: ExeSpec): string =>
+  path.join(process.env.LOCALAPPDATA ?? os.tmpdir(), "tiguclaw", exeName(spec.prefix, spec.source));
+
+/** 진행 중인 컴파일 — **종류마다** 하나(같은 종류의 겹친 요청만 한 빌드를 기다린다). */
+const building = new Map<string, Promise<{ ok: true; exe: string } | RunFail>>();
 
 /**
- * 캡처 프로그램이 있으면 그 경로, 없으면 **한 번** 컴파일한다(동시 호출은 같은 컴파일을 기다린다).
+ * 프로그램이 있으면 그 경로, 없으면 **한 번** 컴파일한다(같은 종류의 동시 호출은 같은 컴파일을 기다린다).
  * ★임시 이름으로 만든 뒤 옮긴다 — 반쯤 쓰인 exe 를 다른 호출이 실행하지 않게.
  */
-const ensureCaptureExe = async (): Promise<{ ok: true; exe: string } | RunFail> => {
-  const exe = captureExePath();
+const ensureExe = async (spec: ExeSpec): Promise<{ ok: true; exe: string } | RunFail> => {
+  const exe = exePath(spec);
   if (existsSync(exe)) return { ok: true, exe };
-  if (building !== null) return building;
-  building = (async (): Promise<{ ok: true; exe: string } | RunFail> => {
+  const running = building.get(spec.prefix);
+  if (running !== undefined) return running;
+  const job = (async (): Promise<{ ok: true; exe: string } | RunFail> => {
     const csc = cscExe();
     if (csc === null) {
-      return { ok: false, reason: "failed", detail: "csc-missing: .NET Framework 4 컴파일러(csc.exe)를 찾지 못했습니다 — 화면 캡처 프로그램을 만들 수 없습니다", stdout: "" };
+      return { ok: false, reason: "failed", detail: `csc-missing: .NET Framework 4 컴파일러(csc.exe)를 찾지 못했습니다 — ${spec.what} 만들 수 없습니다`, stdout: "" };
     }
     const dir = path.dirname(exe);
     const nonce = randomUUID();
-    const src = path.join(dir, `capture-${nonce}.cs`);
-    const tmp = path.join(dir, `capture-${nonce}.tmp.exe`);
+    const src = path.join(dir, `${spec.prefix}-${nonce}.cs`);
+    const tmp = path.join(dir, `${spec.prefix}-${nonce}.tmp.exe`);
     try {
       await fs.mkdir(dir, { recursive: true });
-      await fs.writeFile(src, CAPTURE_CS, "utf8");
+      await fs.writeFile(src, spec.source, "utf8");
       const built = await new Promise<RunOk | RunFail>((resolve) => {
-        execFile(csc, cscArgs(src, tmp), { timeout: COMPILE_TIMEOUT_MS, killSignal: "SIGKILL", windowsHide: true }, (err, stdout) => {
+        execFile(csc, cscArgs(src, tmp, spec.target), { timeout: COMPILE_TIMEOUT_MS, killSignal: "SIGKILL", windowsHide: true }, (err, stdout) => {
           if (err === null) return resolve({ ok: true, stdout: String(stdout) });
           const killed = (err as { killed?: boolean }).killed === true;
           resolve({
@@ -243,13 +285,13 @@ const ensureCaptureExe = async (): Promise<{ ok: true; exe: string } | RunFail> 
           });
         });
       });
-      if (!built.ok) return { ...built, detail: blockedOr(built.detail, !existsSync(tmp)) };
+      if (!built.ok) return { ...built, detail: blockedOr(built.detail, spec.missingOutputIsBlock && !existsSync(tmp), spec.what) };
       // 다른 프로세스가 먼저 만들었으면 그걸 쓴다(같은 소스 = 같은 파일).
       await fs.rename(tmp, exe).catch(async (e: unknown) => { if (!existsSync(exe)) throw e; });
-      // 소스가 바뀌어 이름(해시)이 바뀌면 옛 캡처 프로그램이 쌓인다 — 새 것을 만든 김에 치운다.
+      // 소스가 바뀌어 이름(해시)이 바뀌면 옛 프로그램이 쌓인다 — 새 것을 만든 김에 **같은 종류만** 치운다.
       //  다른 버전 데몬이 실행 중이면 지워지지 않는다(Windows 가 막는다) — 그건 그대로 둔다.
       for (const f of await fs.readdir(dir).catch(() => [] as string[])) {
-        if (/^tiguclaw-capture-[0-9a-f]+\.exe$/.test(f) && f !== path.basename(exe)) {
+        if (staleExe(f, spec.prefix, path.basename(exe))) {
           await fs.rm(path.join(dir, f), { force: true }).catch(() => {});
         }
       }
@@ -257,13 +299,14 @@ const ensureCaptureExe = async (): Promise<{ ok: true; exe: string } | RunFail> 
     } catch (e) {
       // rename 의 ENOENT = 방금 만든 파일이 사라졌다(격리) — 백신 쪽으로 분류한다.
       const msg = `compile: ${e instanceof Error ? e.message : String(e)}`;
-      return { ok: false, reason: "failed", detail: blockedOr(msg, /ENOENT/.test(msg)), stdout: "" };
+      return { ok: false, reason: "failed", detail: blockedOr(msg, /ENOENT/.test(msg), spec.what), stdout: "" };
     } finally {
       await fs.rm(src, { force: true }).catch(() => {});
       await fs.rm(tmp, { force: true }).catch(() => {});
     }
-  })().finally(() => { building = null; });
-  return building;
+  })().finally(() => { building.delete(spec.prefix); });
+  building.set(spec.prefix, job);
+  return job;
 };
 
 /**
@@ -273,9 +316,9 @@ const ensureCaptureExe = async (): Promise<{ ok: true; exe: string } | RunFail> 
  *  오고, 백신 판정이 그걸 못 읽어 «디스플레이 번호를 확인하라» 로 떨어졌다 — `ec68cc1c` 가 고친 사고를 새 기제로 되연 것.
  *  문구로 추측하지 않고 **일어난 자리**(컴파일·실행)에서 표식을 단다.
  */
-export const blockedOr = (detail: string, vanished: boolean): string =>
+export const blockedOr = (detail: string, vanished: boolean, what: string = CAPTURE_EXE.what): string =>
   vanished || /\bCS0016\b.*virus|\bvirus\b|ERROR_VIRUS_INFECTED/i.test(detail)
-    ? `blocked: 화면 캡처 프로그램을 백신·보안 정책이 격리하거나 막았습니다 (${detail.slice(0, 200)})`
+    ? `blocked: ${what} 백신·보안 정책이 격리하거나 막았습니다 (${detail.slice(0, 200)})`
     : detail;
 
 /** 실행 자체가 안 된 것(프로세스가 시작도 못 함) — 우리가 방금 만든 exe 라 백신·정책 차단으로 본다. */
@@ -283,7 +326,7 @@ export const spawnRefused = (detail: string): boolean => /^spawn \S.* (UNKNOWN|E
 
 /** 캡처 전용 래퍼 — 컴파일된 캡처 프로그램에 env 만 바꿔 넣는다(없으면 먼저 컴파일). */
 const run = async (env: Record<string, string>): Promise<RunOk | RunFail> => {
-  const exe = await ensureCaptureExe();
+  const exe = await ensureExe(CAPTURE_EXE);
   if (!exe.ok) return exe;
   const r = await runChild(exe.exe, [], env);
   if (r.ok || r.reason === "timeout") return r;
@@ -459,16 +502,18 @@ const wrapped = (script: string): string =>
  *
  * ★관측만 있을 땐 스크립트가 하나뿐이라 안 받았는데, 조작이 붙으며 셋이 됐다(캡처·유휴·입력).
  *  ★`-EncodedCommand`(UTF-16LE base64)는 **셋 다 그대로** — 명령줄 따옴표 규칙을 아예 안 지난다.
+ *  ★실행 정책은 **그 기계의 것을 상속한다**(2026-11-24 — `-ExecutionPolicy` 를 넘기지 않는다, 데몬 `winPsArgs` 와 같은 꼴).
+ *   정책이 이 실행을 거절하면 그 거절을 그대로 실패로 돌려준다 — 다른 방식으로 다시 띄우지 않는다.
  */
+const psArgs = (script: string): string[] => [
+  "-NoProfile",
+  "-NonInteractive",
+  "-EncodedCommand",
+  Buffer.from(wrapped(script), "utf16le").toString("base64"),
+];
+
 const runScript = (script: string, env: Record<string, string>, timeoutMs: number = CHILD_TIMEOUT_MS, signal?: AbortSignal): Promise<RunOk | RunFail> =>
-  runChild(psExe(), [
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-EncodedCommand",
-    Buffer.from(wrapped(script), "utf16le").toString("base64"),
-  ], env, timeoutMs, signal);
+  runChild(psExe(), psArgs(script), env, timeoutMs, signal);
 
 /**
  * **자식 하나** — PowerShell 이든 컴파일된 캡처 프로그램이든 같은 계약이다: 시한 · stdout 의 `{"error":…}` 가 정본 ·
@@ -675,12 +720,32 @@ const CONTROL_SCRIPT = [
   //  이름이 «보냈다» 라 읽는 쪽을 속인다. 여기서 세면 «부른 횟수» 가 된다.
   //  ★그래도 이것은 **«앱이 받았다» 가 아니다** — 그 판정은 재관측뿐이다.
   "$FIRED = 0",
-  "function Send($i){ if($DRY){ return }; $script:FIRED = $script:FIRED + 1; [void][TC.In]::SendInput(1, @($i), $SZ) }",
+  // ★**«시도» 는 빈 연습에서도 센다** (2026-11-24, ⑤ Esc — 맥 `TRIED` 와 같은 뜻). `$FIRED` 는 빈 연습에서 늘 0 이라
+  //  «멈춘 뒤 입력을 시도하지 않았다» 를 못 보인다. 빈 연습 `return` **앞**에서 센다(실 입력은 그대로 0).
+  "$TRIED = 0",
+  "function Send($i){ $script:TRIED = $script:TRIED + 1; if($DRY){ return }; $script:FIRED = $script:FIRED + 1; [void][TC.In]::SendInput(1, @($i), $SZ) }",
   // ★★**줄마다 flush 해야 도착한다** (2026-09-19 실측: 세 줄을 쓰고 SIGKILL 하면 flush 없이는
   //  **1/3**, `Out.Flush()` 를 붙이면 **3/3**). 없으면 「진행을 흘리고 있다」고 믿는데 실제로는
   //  안 온다 — 성능 문제가 아니라 **계약 3 의 성립 조건**이다.
   "function Emit($o){ [Console]::Out.WriteLine($o); [Console]::Out.Flush() }",
+  // ★**멈춤 요청 파일** (2026-11-24, ⑤ Esc — 맥 `POST_SCRIPT` 와 같은 규칙). 부모가 Esc 를 받으면 이 파일을 만든다.
+  //  실행부는 **키를 읽지 않는다**(감지는 표시 도우미 하나, 결정은 부모 한 곳). 단계 경계(`mark`)와 `wait` 도중에만 본다 —
+  //  단계 **안**(글자별 유니코드·드래그 보간·클릭 down/up)에서 멈추면 버튼·수식키가 눌린 채 남는다. 빈 연습도 같은 코드가 진짜 파일을 본다.
+  "$STOPF = [string]$env:TIGUCLAW_STOP_FILE",
+  "function StopAsked(){ return (($STOPF -ne '') -and [IO.File]::Exists($STOPF)) }",
+  // `wait` 전용 — 기한(스톱워치)까지 ≤10ms 씩 자며 매번 멈춤을 본다. 멈춤이 없으면 **최소 ms** 를 지킨다(종전 `Start-Sleep ms` 한 번과 같은 하한).
+  "function WaitOrStop($ms){",
+  "  $sw = [Diagnostics.Stopwatch]::StartNew()",
+  "  while($sw.ElapsedMilliseconds -lt $ms){",
+  "    if(StopAsked){ return $true }",
+  "    $left = $ms - $sw.ElapsedMilliseconds",
+  "    Start-Sleep -Milliseconds ([int][Math]::Max(1, [Math]::Min(10, $left)))",
+  "  }",
+  "  return $false",
+  "}",
   "$CUR = -1; $STOP = $null",
+  // 미끄러짐 박자 — `control.ts` 의 상수 하나(맥과 공유). 코드 상수라 스크립트에 박는다.
+  `$GLIDE_MAX = ${String(GLIDE_MAX_MS)}; $GLIDE_MIN = ${String(GLIDE_MIN_MS)}; $GLIDE_PER_PX = ${String(GLIDE_MS_PER_PX)}; $GLIDE_TICK = ${String(GLIDE_TICK_MS)}; $CLICK_HOLD = ${String(CLICK_HOLD_MS)}`,
   // ★`0` 은 **«모른다»** 다(데스크톱 없는 세션에서 그렇게 온다) — «같다» 로 읽으면 가드가
   //  조용히 사라진다. 조작은 모르면 안 누른다(§14-7 의 비대칭).
   "function FrontNow(){ $h = [TC.In]::GetForegroundWindow(); if($h -eq [IntPtr]::Zero){ return $null }; return [string]$h.ToInt64() }",
@@ -807,6 +872,7 @@ const CONTROL_SCRIPT = [
   "$last = $null",
   "foreach($e in $evs){",
   "  if($e.t -eq 'mousemove'){ Mouse $e.x $e.y 0 0; $last=@($e.x,$e.y) }",
+  // 누르기·굴리기 **직전**에만 단추를 본다(아직 눌린 것 없음 — 끊어도 남는 것이 없다).
   "  elseif($e.t -eq 'mousedown'){ Mouse $e.x $e.y $BTN[[string]$e.button].d 0; $last=@($e.x,$e.y) }",
   "  elseif($e.t -eq 'mouseup'){",
   // 좌표가 없으면 **마지막으로 간 자리**에서 뗀다(정리 경로 — 맥과 같은 계약).
@@ -826,8 +892,27 @@ const CONTROL_SCRIPT = [
   "  elseif($e.t -eq 'keydown'){ KeyName $e.key $true }",
   "  elseif($e.t -eq 'keyup'){ KeyName $e.key $false }",
   // ★입력이 아닌 원소는 **12ms 지연을 안 태운다** — 64개 열이면 0.77초가 그냥 샌다.
-  "  elseif($e.t -eq 'mark'){ $CUR = [int]$e.i; Emit('{\"step\":' + [int]$e.i + '}'); continue }",
-  "  elseif($e.t -eq 'wait'){ Start-Sleep -Milliseconds ([int]$e.ms); continue }",
+  // 단계 경계 — 멈춤 요청이면 이 단계는 **시작 전**이다(«미실행» 이 정확하다).
+  "  elseif($e.t -eq 'mark'){ if(StopAsked){ $STOP = '{\"stopped\":' + [int]$e.i + ',\"why\":\"user-esc\",\"saw\":\"\"}'; break }; $CUR = [int]$e.i; Emit('{\"step\":' + [int]$e.i + '}'); continue }",
+  // `wait` 도중 멈춤 — 그 `wait` 단계는 다 못 기다렸으므로 그 단계부터 «미실행» 이다.
+  "  elseif($e.t -eq 'wait'){ if(WaitOrStop ([int]$e.ms)){ $STOP = '{\"stopped\":' + $CUR + ',\"why\":\"user-esc\",\"saw\":\"\"}'; break }; continue }",
+  // ★**미끄러짐** (맥과 같은 규칙, 0.1초 후보): 길이는 경과 시간(Stopwatch)으로 · ease-out 3차(목표 직전 감속) · 눌린 것 없음 ·
+  //  도중·끝 멈춤 = 이 단계 «미실행». `Start-Sleep` 이 타이머 해상도로 더 쉬어도 길이는 시간이 정한다(점만 성겨진다).
+  "  elseif($e.t -eq 'glide'){",
+  "    $c0 = [System.Windows.Forms.Cursor]::Position",
+  "    $gdx = [double]$e.x - $c0.X; $gdy = [double]$e.y - $c0.Y; $gd = [Math]::Sqrt($gdx * $gdx + $gdy * $gdy)",
+  "    $gT = 0.0; if($gd -gt 0){ $gT = [Math]::Min([double]$GLIDE_MAX, $GLIDE_MIN + $gd * $GLIDE_PER_PX) }",
+  "    $gu = 0.0; if($gT -le 0){ $gu = 1.0 }; $gstop = $false; $gsw = [Diagnostics.Stopwatch]::StartNew()",
+  "    while($gu -lt 1){",
+  "      if(StopAsked){ $gstop = $true; break }",
+  "      Start-Sleep -Milliseconds $GLIDE_TICK",
+  "      $gu = [Math]::Min(1.0, $gsw.Elapsed.TotalMilliseconds / $gT); $gs = 1 - (1 - $gu) * (1 - $gu) * (1 - $gu)",
+  "      Mouse ([int][Math]::Round($c0.X + $gdx * $gs)) ([int][Math]::Round($c0.Y + $gdy * $gs)) 0 0",
+  "    }",
+  "    if((-not $gstop) -and (StopAsked)){ $gstop = $true }",
+  "    if($gstop){ $STOP = '{\"stopped\":' + $CUR + ',\"why\":\"user-esc\",\"saw\":\"\"}'; break }",
+  "    continue",
+  "  }",
   "  elseif($e.t -eq 'guard'){",
   "    $f = FrontNow",
   "    if($null -eq $f){ $STOP = '{\"stopped\":' + $CUR + ',\"why\":\"front-unknown\",\"saw\":\"(못 읽음)\"}'; break }",
@@ -840,13 +925,14 @@ const CONTROL_SCRIPT = [
   //  `mark` 가 없으니 시한 초과 때 **실행된 step 을 「미실행」으로 보고**해 되돌릴 수 없는
   //  것을 두 번 누르게 한다. 한쪽만 고친 수정이 **조용한** 이유가 바로 이 `else` 부재다.
   "  else { throw ('알 수 없는 입력 원소: ' + [string]$e.t) }",
-  "  Start-Sleep -Milliseconds 12",
+  // ★누른 뒤엔 `$CLICK_HOLD`(표시 도우미가 «눌림» 을 보고 고리를 번쩍인다 — ⑤ r4). 그 밖은 앱이 소화할 최소 틈 12ms.
+  "  Start-Sleep -Milliseconds $(if($e.t -eq 'mousedown'){$CLICK_HOLD}else{12})",
   "}",
   // ★`items` = 받은 항목 수 · `fired` = **실제로 `SendInput` 을 부른 횟수**. 둘은 다르다
   //  (한 항목이 여러 번 쏘기도 하고, 빈 연습이면 0이다).
   //  `ConvertFrom-Json` 은 원소가 하나면 배열이 아니라 객체를 준다 — `@()` 로 감싸 센다.
   "if($null -ne $STOP){ Emit($STOP) }",
-  "Emit('{\"items\":' + @($evs).Count + ',\"fired\":' + $FIRED + ',\"stopped\":' + $(if($null -ne $STOP){$STOP}else{'null'}) + '}')",
+  "Emit('{\"items\":' + @($evs).Count + ',\"fired\":' + $FIRED + ',\"tried\":' + $TRIED + ',\"stopped\":' + $(if($null -ne $STOP){$STOP}else{'null'}) + '}')",
 ].join("\n");
 
 /**
@@ -927,16 +1013,38 @@ export const idleSeconds = async (onFailure?: (diagnostic: string) => void): Pro
  *  시한보다 짧은 시한에 죽었다(집 Windows 전체 회귀에서 «dry 에서 실패: 8000ms 초과» — 기준·최종 양쪽에서 재현). 같은 열은 같은 시한이다.
  * ★`TIGUCLAW_DRY` 는 언제나 명시한다 — 자식은 `process.env` 를 물려받으므로 어디선가 켜져 있으면 **진짜 조작이 조용히 아무것도 안 하게** 된다.
  */
-const runControl = (events: readonly LowEvent[], dry: boolean, signal?: AbortSignal): Promise<RunOk | RunFail> =>
-  runScript(CONTROL_SCRIPT, {
-    TIGUCLAW_EVENTS: JSON.stringify(events),
-    TIGUCLAW_DRY: dry ? "1" : "0",
-  }, postTimeoutMs(events, CHILD_TIMEOUT_MS), signal);
+/**
+ * 조작 스크립트에 넘기는 env — **한 곳**(순수). `TIGUCLAW_DRY`·`TIGUCLAW_STOP_FILE` 은 **언제나 명시**한다(없으면 `"0"`·빈 문자열) —
+ * 자식은 `process.env` 를 물려받으므로 어디선가 켜져 있으면 진짜 조작이 조용히 아무것도 안 하거나 엉뚱한 파일에 멈춘다.
+ */
+export const controlEnv = (events: readonly LowEvent[], dry: boolean, stopFile?: string): Record<string, string> => ({
+  TIGUCLAW_EVENTS: JSON.stringify(events),
+  TIGUCLAW_DRY: dry ? "1" : "0",
+  TIGUCLAW_STOP_FILE: stopFile ?? "",
+});
+
+const runControl = (events: readonly LowEvent[], dry: boolean, signal?: AbortSignal, stopFile?: string): Promise<RunOk | RunFail> =>
+  runScript(CONTROL_SCRIPT, controlEnv(events, dry, stopFile), postTimeoutMs(events, CHILD_TIMEOUT_MS), signal);
+
+/**
+ * 조작 자식을 **흘려 읽으며** 띄울 인자 — 제품과 같은 스크립트·인자·env(2026-11-24). Windows 회귀가 진행 줄(`{"step":i}`)을 본 뒤
+ * 멈춤 요청 파일을 만들어 «`wait` 도중 멈춤» 을 결정적으로 재는 데 쓴다(`post` 는 끝날 때 한 번에 읽는다).
+ */
+export const controlInvocation = (events: readonly LowEvent[], dry: boolean, stopFile?: string): { file: string; args: string[]; env: Record<string, string> } => ({
+  file: psExe(),
+  args: psArgs(CONTROL_SCRIPT),
+  env: controlEnv(events, dry, stopFile),
+});
 
 /** 이벤트를 순서대로 쏜다 — 스크립트는 **고정 리터럴**, 값은 전부 `$env` (관측과 같은 규율). */
 export const post = async (
   events: readonly LowEvent[],
   signal?: AbortSignal,
+  /**
+   * `stopFile` = Esc 의 멈춤 요청 파일(있으면 실행부가 단계 경계·`wait` 도중에 본다 — 2026-11-24, ⑤ Windows) ·
+   * `dry` = 빈 연습(입력 0) — 검사가 제품 `post` 를 지나 env 전달까지 같이 재게 한다(맥 `post` 와 같은 모양).
+   */
+  opts?: { stopFile?: string; dry?: boolean },
 ): Promise<
   | {
       ok: true;
@@ -956,8 +1064,8 @@ export const post = async (
   | { ok: false; reason: "timeout" | "failed"; detail: string; stdout: string }
 > => {
   if (events.length === 0) return { ok: true, fired: 0, stdout: "" };
-  // ★`TIGUCLAW_DRY` 를 **명시적으로 끈다**(`runControl`) — 켜는 쪽이 아니라 **끄는 쪽**을 못 박는다.
-  const r = await runControl(events, false, signal);
+  // ★`TIGUCLAW_DRY` 를 **명시적으로 끈다**(`controlEnv`) — 켜는 쪽이 아니라 **끄는 쪽**을 못 박는다.
+  const r = await runControl(events, opts?.dry === true, signal, opts?.stopFile);
   if (!r.ok) return r;
   try {
     const v = JSON.parse(r.stdout.trim().split("\n").pop() ?? "") as { fired?: number };
@@ -989,6 +1097,8 @@ export const post = async (
  * ★음수 휠이 여기 있는 이유: 그게 실기에서 실제로 던졌다(`[uint32]` 는 음수를 못 받는다).
  */
 const DRY_EVENTS: readonly LowEvent[] = [
+  // ★미끄러짐(⑤ r4)도 밟는다 — 커서 조회·보간·발사 시도가 빈 연습에서 실제로 돈다(독립 검토 R1 검사 부족 7).
+  { t: "glide", x: 0, y: 0 },
   { t: "mousemove", x: 0, y: 0 },
   { t: "mousedown", x: 0, y: 0, button: "left", count: 1 },
   { t: "mousedrag", x: 1, y: 1, button: "left" },
@@ -1086,4 +1196,413 @@ export const frontWindow = async (): Promise<string | null> => {
   } catch {
     return null;
   }
+};
+
+// ─── 제어 표시 도우미 (2026-11-24, ⑤ Windows — 설계 `docs/decisions/2026-11-24-computer-use-indicator-esc-windows.md` §3-3) ──
+
+/**
+ * **표시 도우미 소스(C# 5) — 고정 리터럴.** 변하는 값(문구·빈 연습)은 환경변수로 들어온다. 가장자리 빛 수치만 `indicator.ts` `GLOW` 를 박아 넣는다
+ *  (맥 `GLOW_JS` 와 같은 값 한 곳 — 값이 바뀌면 소스 해시가 바뀌어 exe 도 새로 만든다).
+ *
+ * ★하는 일 넷(맥 `INDICATOR_SCRIPT` 와 같다): ①화면마다 가장자리 주황 빛(가운데 투명 — 픽셀 알파 창 `UpdateLayeredWindow`, 아래 `ShowGlow`) ②주 화면 위쪽 **중지 단추**(누르면 `{"stop":1}`)
+ *  ③**실제 커서** 둘레 고리(가짜 포인터 없음 · 버튼이 눌린 동안 굵게 번쩍임) ④Esc 감시 — `GetAsyncKeyState(VK_ESCAPE)` 최상위 비트의
+ *  위→아래 엣지면 `{"esc":1}` 한 줄. **묻는 키는 Esc 하나뿐**이다(훅·원시 입력·키보드 상태 배열 없음 — 키를 모으지 않는다).
+ *  누른 Esc 는 삼키지 않는다. 표시는 Esc 를 안내하지 않는다(감지 보장이 없다 — 맥 `INDICATOR_SCRIPT` 주석·설계 §11).
+ * ★**원격 화면에도 보인다** (⑤ r4): 캡처 제외(`WDA_EXCLUDEFROMCAPTURE`)를 **걸지 않는다** — 화면 공유 도구는 캡처로 화면을 보내므로
+ *  제외하면 원격으로 보는 사람에게 표시가 안 보인다. 그래서 우리 `look` 그림에도 찍힌다(응답이 그렇게 말한다).
+ * ★단추만 클릭을 받는다(`WS_EX_TRANSPARENT` 없음 · `WM_MOUSEACTIVATE` → `MA_NOACTIVATE`) — **언제나**(통과 모드 없음: 사람의 중지 클릭이
+ *  새면 안 된다). 우리 클릭이 단추에 닿지 않게 하는 것은 **부모**다(맥과 같음): 준비 줄·옮김 응답에 실제 단추 사각형(물리 픽셀 — 실행부와
+ *  같은 DPI v2 좌표)을 싣고, 부모가 발사 전에 겹치면 `TIGUCLAW_INDICATOR_MOVE` 에 요청 → 위↔아래로 옮겨 응답한다.
+ * ★왜 PowerShell 이 아닌가: «PowerShell 이 루프에서 `GetAsyncKeyState` 를 부른다» 는 키로거 스크립트의 모양 그대로라
+ *  AMSI 가 막을 길이 캡처(파일 머리 주석)보다 더 넓다. 캡처와 같은 내장 `csc.exe` 경로로 컴파일한다.
+ * ★창은 전부 활성화되지 않고(`WS_EX_NOACTIVATE`·`ShowWithoutActivation`) 클릭을 통과시키며(`WS_EX_LAYERED|WS_EX_TRANSPARENT`)
+ *  Alt+Tab·작업 표시줄에 안 나온다(`WS_EX_TOOLWINDOW`·`ShowInTaskbar=false`). 맨 위는 확장 스타일·`SWP_NOACTIVATE` 로만 —
+ *  앞 창을 바꾸면 전면 창 가드가 모든 글자 입력을 멈춘다.
+ * ★예외 대화상자(WinForms·WER)는 포커스를 가져간다 — 처리 안 된 예외를 던지게 두고 전부 잡아 `{"error":…}` 한 줄 후 종료 1.
+ * ★고아 방지: 부모가 열어 둔 stdin 이 끝나면(부모 종료로 파이프가 닫힘) 스스로 끝난다(맥 `getppid()===1` 자리).
+ * ★C# 5 다 — .NET Framework 4 `csc.exe` 는 식 본문 멤버(`=>`)·문자열 보간을 거절한다.
+ * ★**실기 미검증**: 컴파일(C# 5)·포커스·단추 클릭과 비활성·표식 통과·클릭 통과·Esc 감지·우리 `esc` 입력이 잡히는 비율·혼합 DPI
+ *  ·원격 표시(설계 §6·§11).
+ */
+export const INDICATOR_CS = String.raw`using System;
+using System.Drawing;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Windows.Forms;
+
+[StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; public POINT(int x, int y) { X = x; Y = y; } }
+[StructLayout(LayoutKind.Sequential)] struct SIZE { public int W, H; public SIZE(int w, int h) { W = w; H = h; } }
+[StructLayout(LayoutKind.Sequential)] struct BLENDFUNCTION { public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat; }
+[StructLayout(LayoutKind.Sequential)] struct BITMAPINFOHEADER { public int biSize, biWidth, biHeight; public short biPlanes, biBitCount; public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant; }
+
+static class TiguclawIndicator {
+  [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+  [DllImport("user32.dll")] static extern IntPtr MonitorFromPoint(POINT pt, uint flags);
+  [DllImport("shcore.dll")] static extern int GetDpiForMonitor(IntPtr mon, int type, out uint dpiX, out uint dpiY);
+  [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+  const int VK_ESCAPE = 0x1B;
+  const double GLOW_W = ${String(GLOW.width)}, GLOW_A = ${String(GLOW.alpha)}, GLOW_P = ${String(GLOW.falloff)};
+  const int GLOW_R = ${String(GLOW.rgb[0])}, GLOW_G = ${String(GLOW.rgb[1])}, GLOW_B = ${String(GLOW.rgb[2])};
+  static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+  const uint SWP_NOSIZE = 0x0001, SWP_NOACTIVATE = 0x0010;
+  static readonly object Gate = new object();
+  static string Env(string k) { return Environment.GetEnvironmentVariable(k) ?? ""; }
+  static string Esc(string s) { return (s ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", " ").Replace("\n", " "); }
+  static void Emit(string line) { lock (Gate) { Console.Out.WriteLine(line); Console.Out.Flush(); } }
+  static void Fail(Exception e) {
+    try { Emit("{\"error\":\"" + Esc(e.Message) + "\",\"type\":\"" + Esc(e.GetType().FullName) + "\"}"); } catch {}
+    Environment.Exit(1);
+  }
+
+  [STAThread]
+  static int Main() {
+    try { Console.OutputEncoding = new UTF8Encoding(false); } catch {}
+    if (Env("TIGUCLAW_DRY") == "1") { Emit("{\"ready\":1,\"dry\":1,\"glow\":" + GlowProbe() + "}"); return 0; }
+    try {
+      Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+      Run();
+    } catch (Exception e) { Fail(e); }
+    return 0;
+  }
+
+  static void Run() {
+    bool v2 = false;
+    try { v2 = SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch {}
+    if (!v2) { try { SetProcessDPIAware(); } catch {} }
+    Thread watch = new Thread(delegate () {
+      try { while (Console.In.Read() >= 0) {} } catch {}
+      Environment.Exit(0);
+    });
+    watch.IsBackground = true;
+    watch.Start();
+    Color tint = Color.FromArgb(255, 140, 0);
+    // 화면 목록·배율 조회까지 빛 쪽 실패는 여기서 끝난다 — 아래 단추·고리·준비 줄은 언제나 간다.
+    try { foreach (Screen s in Screen.AllScreens) ShowGlow(s.Bounds); } catch (Exception) {}
+    string label = Env("TIGUCLAW_INDICATOR_LABEL");
+    string movePath = Env("TIGUCLAW_INDICATOR_MOVE");
+    Size ts = TextRenderer.MeasureText(label, Overlay.LabelFont);
+    Rectangle pb = Screen.PrimaryScreen.Bounds;
+    Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+    int lw = ts.Width + 24, lh = ts.Height + 10;
+    int pillX = pb.X + (pb.Width - lw) / 2, topY = pb.Y + 34, botY = wa.Bottom - lh - 24;
+    Overlay tag = new Overlay(new Rectangle(pillX, topY, lw, lh), Overlay.Kind.Label, tint, label);
+    tag.Clicked = delegate () { Emit("{\"stop\":1}"); };
+    tag.Show();
+    bool pillShown = true;
+    const int R = 18;
+    Overlay halo = new Overlay(new Rectangle(0, 0, R * 2, R * 2), Overlay.Kind.Halo, tint, "");
+    halo.Show();
+    // 준비 줄 = 창을 다 띄운 **뒤**, 실제 단추 사각형과 함께(못 읽으면 단추를 내리고 null). 부모는 이 줄 전엔 누름을 보내지 않는다.
+    Emit("{\"ready\":1,\"pill\":" + PillJson(tag, ref pillShown) + "}");
+    bool wasDown = false;
+    bool atTop = true;
+    string lastMove = "";
+    int flashUntil = Environment.TickCount;
+    System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+    timer.Interval = 20;
+    timer.Tick += delegate (object sender, EventArgs e) {
+      try {
+        bool down = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+        if (down && !wasDown) Emit("{\"esc\":1}");
+        wasDown = down;
+        // 비켜 달라는 요청(부모가 씀) — ';' 로 끝난 새 내용일 때만(반쯤 쓰인 요청·공유 위반은 다음 틱에). 받으면 위↔아래로 옮기고
+        //  **옮긴 뒤 실제 사각형**을 응답한다 — 옮김 실패면 옛 사각형(부모가 다시 겹침을 보고 거절), 사각형을 못 읽으면 단추를 내리고 null.
+        if (pillShown && movePath != "") {
+          string mv = "";
+          try { if (File.Exists(movePath)) mv = File.ReadAllText(movePath); } catch (IOException) {} catch (UnauthorizedAccessException) {}
+          if (mv != lastMove && mv.EndsWith(";")) {
+            lastMove = mv;
+            atTop = !atTop;
+            int y = atTop ? topY : botY;
+            // 옮김이 성공하고 **실제 창 사각형**을 읽었을 때만 새 자리를 알린다 — 실패하면 실행부가 기다리다 «미실행» 으로 끝난다.
+            if (!SetWindowPos(tag.Handle, HWND_TOPMOST, pillX, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)) atTop = !atTop;
+            Emit("{\"pill\":" + PillJson(tag, ref pillShown) + ",\"req\":\"" + Esc(mv) + "\"}");
+          }
+        }
+        Point p = Cursor.Position;
+        SetWindowPos(halo.Handle, HWND_TOPMOST, p.X - R, p.Y - R, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        // 버튼이 눌렸으면(누가 눌렀든) 고리를 잠깐 굵게 — 클릭 자리가 눈에 보이게. 우리 클릭은 CLICK_HOLD_MS 동안 누른다.
+        int now = Environment.TickCount;
+        if (Control.MouseButtons != MouseButtons.None) flashUntil = now + 250;
+        halo.SetFlash(now - flashUntil < 0);
+      } catch (Exception ex) { Fail(ex); }
+    };
+    timer.Start();
+    Application.Run();
+  }
+
+  // 가장자리에서 d 픽셀 안쪽의 미리 곱한 BGRA(int — 리틀엔디언 바이트 B,G,R,A). 거리는 모니터 배율 k 로 나눠 정수로 내린다 —
+  //  맥 고리 j(가장자리에서 j pt)와 같은 계단. 식은 indicator.ts GLOW 그대로.
+  static int GlowPixel(int d, double k) {
+    double t = Math.Floor(d / k);
+    if (t >= GLOW_W) return 0;
+    double a = GLOW_A * Math.Pow(1 - t / GLOW_W, GLOW_P);
+    return ((int)Math.Round(a * 255) << 24) | ((int)Math.Round(GLOW_R * a) << 16) | ((int)Math.Round(GLOW_G * a) << 8) | (int)Math.Round(GLOW_B * a);
+  }
+
+  // 빈 연습 줄에 싣는 표본 — 창 없이 **실제 띠 경로**(GlowBand → GlowParts → GlowStrip)로 합성 화면 300×200 을 배율 1·1.5 로 만들어
+  //  띠 넓이 합과 점별 픽셀([x,y,덮였나,값])을 낸다. 회귀가 GLOW 식으로 기대값을 따로 계산해 대조한다(Windows 기계에서).
+  static string GlowProbe() {
+    Rectangle s = new Rectangle(0, 0, 300, 200);
+    int[,] pts = { { 0, 100 }, { 0, 0 }, { 5, 3 }, { 57, 100 }, { 58, 100 }, { 86, 100 }, { 87, 100 }, { 150, 100 }, { 299, 100 }, { 150, 199 }, { 299, 199 } };
+    double[] ks = { 1.0, 1.5 };
+    StringBuilder b = new StringBuilder("[");
+    for (int i = 0; i < ks.Length; i++) {
+      int band = GlowBand(s, ks[i]);
+      Rectangle[] parts = GlowParts(s, band);
+      int[][] strips = new int[parts.Length][];
+      long area = 0;
+      for (int j = 0; j < parts.Length; j++) { strips[j] = GlowStrip(s, parts[j], ks[i], band); area += strips[j].Length; }
+      if (i > 0) b.Append(',');
+      b.Append("{\"k\":" + ks[i].ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"band\":" + band + ",\"area\":" + area + ",\"px\":[");
+      for (int q = 0; q < pts.GetLength(0); q++) {
+        int x = pts[q, 0], y = pts[q, 1], hits = 0; uint v = 0;
+        for (int j = 0; j < parts.Length; j++) {
+          Rectangle r = parts[j];
+          if (x >= r.X && x < r.Right && y >= r.Y && y < r.Bottom) { hits++; v = (uint)strips[j][(y - r.Y) * r.Width + (x - r.X)]; }
+        }
+        if (q > 0) b.Append(',');
+        b.Append("[" + x + "," + y + "," + hits + "," + v.ToString() + "]");
+      }
+      b.Append("]}");
+    }
+    return b.Append(']').ToString();
+  }
+
+  // 모니터 배율(96dpi = 1). 못 읽으면 1 — 빛의 폭만 달라질 뿐이다.
+  static double ScaleOf(Rectangle s) {
+    try {
+      uint dx, dy;
+      IntPtr m = MonitorFromPoint(new POINT(s.X + s.Width / 2, s.Y + s.Height / 2), 2);
+      if (m != IntPtr.Zero && GetDpiForMonitor(m, 0, out dx, out dy) == 0 && dx > 0) return dx / 96.0;
+    } catch (DllNotFoundException) {} catch (EntryPointNotFoundException) {}
+    return 1.0;
+  }
+
+  // 빛의 폭(물리 픽셀) — 배율을 곱해 올림, 화면 짧은 변의 절반을 넘지 않는다.
+  static int GlowBand(Rectangle s, double k) { return Math.Min((int)Math.Ceiling(GLOW_W * k), Math.Min(s.Width, s.Height) / 2); }
+
+  // 띠 넷(위·아래 = 전체 폭, 왼쪽·오른쪽 = 그 사이) — 겹치지 않아 모서리도 한 번만 칠한다. 화면 전체 크기 창 하나는 4K 에서
+  //  33MB 비트맵이라 띠로 나눈다. 넓이가 0 인 띠는 뺀다.
+  static Rectangle[] GlowParts(Rectangle s, int band) {
+    if (band <= 0) return new Rectangle[0];
+    Rectangle[] all = {
+      new Rectangle(s.X, s.Y, s.Width, band), new Rectangle(s.X, s.Bottom - band, s.Width, band),
+      new Rectangle(s.X, s.Y + band, band, s.Height - 2 * band), new Rectangle(s.Right - band, s.Y + band, band, s.Height - 2 * band) };
+    return Array.FindAll(all, delegate (Rectangle r) { return r.Width > 0 && r.Height > 0; });
+  }
+
+  // 띠 하나의 픽셀 — 거리 = 화면 네 변까지의 최솟값.
+  static int[] GlowStrip(Rectangle s, Rectangle r, double k, int band) {
+    int[] lut = new int[band];
+    for (int d = 0; d < band; d++) lut[d] = GlowPixel(d, k);
+    int[] px = new int[r.Width * r.Height];
+    for (int y = 0; y < r.Height; y++) {
+      for (int x = 0; x < r.Width; x++) {
+        int sx = r.X - s.X + x, sy = r.Y - s.Y + y;
+        int d = Math.Min(Math.Min(sx, sy), Math.Min(s.Width - 1 - sx, s.Height - 1 - sy));
+        px[y * r.Width + x] = d < band ? lut[d] : 0;
+      }
+    }
+    return px;
+  }
+
+  // 화면 하나의 가장자리 빛. ★띠 하나의 준비(픽셀 배열·창 생성)부터 표시까지 **전부** 그 띠의 try 안이다 — 실패하면 그 띠만 없다.
+  //  빛은 장식이고, 단추(확실한 중지 수단)·고리·Esc 를 끌어내리지 않는다(표시 실패가 조작을 막지 않는다와 같은 방향).
+  static void ShowGlow(Rectangle s) {
+    double k = ScaleOf(s);
+    int band = GlowBand(s, k);
+    foreach (Rectangle r in GlowParts(s, band)) {
+      Overlay o = null;
+      try {
+        int[] px = GlowStrip(s, r, k, band);
+        o = new Overlay(r, Overlay.Kind.Glow, Color.Empty, "");
+        o.Show();
+        o.SetPixels(r, px);
+      } catch (Exception) { if (o != null) { try { o.Close(); } catch {} } }
+    }
+  }
+
+  // 단추의 **실제** 사각형(물리 픽셀 — 실행부와 같은 DPI v2 좌표)을 JSON 으로. 못 읽으면 자리 모르는 단추는 두지 않는다 — 내리고 null.
+  static string PillJson(Form tag, ref bool shown) {
+    RECT wr;
+    if (shown && GetWindowRect(tag.Handle, out wr)) return "{\"x\":" + wr.Left + ",\"y\":" + wr.Top + ",\"w\":" + (wr.Right - wr.Left) + ",\"h\":" + (wr.Bottom - wr.Top) + "}";
+    if (shown) { tag.Hide(); shown = false; }
+    return "null";
+  }
+}
+
+class Overlay : Form {
+  public enum Kind { Glow, Label, Halo }
+  public static readonly Font LabelFont = new Font("Segoe UI", 10f, FontStyle.Bold);
+  static readonly Color Key = Color.FromArgb(1, 2, 3);
+  const int WM_MOUSEACTIVATE = 0x0021, MA_NOACTIVATE = 3;
+  [DllImport("user32.dll", SetLastError = true)] static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst, ref POINT pptDst, ref SIZE psize, IntPtr hdcSrc, ref POINT pptSrc, int crKey, ref BLENDFUNCTION pblend, int dwFlags);
+  [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+  [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+  [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
+  [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
+  [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
+  [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
+  [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref BITMAPINFOHEADER bi, uint usage, out IntPtr bits, IntPtr section, uint offset);
+  readonly Kind kind;
+  readonly Color tint;
+  readonly string text;
+  bool flash;
+  public Action Clicked;
+
+  public void SetFlash(bool on) { if (on == flash) return; flash = on; Invalidate(); }
+
+  public Overlay(Rectangle bounds, Kind kind, Color tint, string text) {
+    this.kind = kind; this.tint = tint; this.text = text;
+    FormBorderStyle = FormBorderStyle.None;
+    ShowInTaskbar = false;
+    StartPosition = FormStartPosition.Manual;
+    AutoScaleMode = AutoScaleMode.None;
+    // 빛(Glow)은 픽셀 알파(UpdateLayeredWindow)로 그린다 — 색 키(TransparencyKey)를 걸면 그 창엔 UpdateLayeredWindow 가 실패한다.
+    if (kind != Kind.Glow) {
+      BackColor = kind == Kind.Label ? tint : Key;
+      TransparencyKey = Key;
+    }
+    Bounds = bounds;
+    DoubleBuffered = true;
+  }
+
+  protected override bool ShowWithoutActivation { get { return true; } }
+
+  protected override CreateParams CreateParams {
+    get {
+      CreateParams cp = base.CreateParams;
+      // WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST — 테두리·고리는 + WS_EX_TRANSPARENT(클릭 통과).
+      // 중지 단추(Label)만 클릭을 받는다(표식 동안은 Run 이 WS_EX_TRANSPARENT 를 켠다).
+      cp.ExStyle |= 0x00080000 | 0x08000000 | 0x00000080 | 0x00000008;
+      if (kind != Kind.Label) cp.ExStyle |= 0x00000020;
+      return cp;
+    }
+  }
+
+  // 단추를 눌러도 활성화하지 않는다 — 앞 창이 바뀌면 전면 창 가드가 글자 입력을 멈춘다(WS_EX_NOACTIVATE 와 겹쳐 둔다).
+  protected override void WndProc(ref Message m) {
+    if (m.Msg == WM_MOUSEACTIVATE) { m.Result = new IntPtr(MA_NOACTIVATE); return; }
+    base.WndProc(ref m);
+  }
+
+  protected override void OnMouseDown(MouseEventArgs e) {
+    base.OnMouseDown(e);
+    if (kind == Kind.Label && Clicked != null) Clicked();
+  }
+
+  // 빛 띠의 픽셀(미리 곱한 BGRA)을 창에 올린다 — 이 창은 이후 WM_PAINT 로 그리지 않는다.
+  public void SetPixels(Rectangle r, int[] px) {
+    BITMAPINFOHEADER bi = new BITMAPINFOHEADER();
+    bi.biSize = Marshal.SizeOf(typeof(BITMAPINFOHEADER)); bi.biWidth = r.Width; bi.biHeight = -r.Height; bi.biPlanes = 1; bi.biBitCount = 32;
+    IntPtr screen = GetDC(IntPtr.Zero);
+    IntPtr mem = CreateCompatibleDC(screen);
+    IntPtr bits;
+    IntPtr bmp = CreateDIBSection(screen, ref bi, 0, out bits, IntPtr.Zero, 0);
+    IntPtr old = IntPtr.Zero;
+    try {
+      if (bmp == IntPtr.Zero || bits == IntPtr.Zero) throw new InvalidOperationException("CreateDIBSection");
+      Marshal.Copy(px, 0, bits, px.Length);
+      old = SelectObject(mem, bmp);
+      POINT dst = new POINT(r.X, r.Y), src = new POINT(0, 0);
+      SIZE size = new SIZE(r.Width, r.Height);
+      BLENDFUNCTION bf = new BLENDFUNCTION(); bf.SourceConstantAlpha = 255; bf.AlphaFormat = 1;
+      if (!UpdateLayeredWindow(Handle, screen, ref dst, ref size, mem, ref src, 0, ref bf, 2)) throw new InvalidOperationException("UpdateLayeredWindow " + Marshal.GetLastWin32Error());
+    } finally {
+      if (old != IntPtr.Zero) SelectObject(mem, old);
+      if (bmp != IntPtr.Zero) DeleteObject(bmp);
+      DeleteDC(mem);
+      ReleaseDC(IntPtr.Zero, screen);
+    }
+  }
+
+  protected override void OnPaint(PaintEventArgs e) {
+    base.OnPaint(e);
+    if (kind == Kind.Halo) {
+      using (Pen pen = new Pen(tint, flash ? 7 : 3)) e.Graphics.DrawEllipse(pen, 4, 4, Width - 8, Height - 8);
+    } else if (kind == Kind.Label) {
+      TextRenderer.DrawText(e.Graphics, text, LabelFont, ClientRectangle, Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+    }
+  }
+}
+`;
+
+const INDICATOR_EXE: ExeSpec = { prefix: "indicator", source: INDICATOR_CS, target: "winexe", what: "표시 도우미를", missingOutputIsBlock: false };
+
+/** 도우미 컴파일 경로 실패의 단계 이름 — 기동(`startIndicator`)과 자가 점검(`indicatorSelfCheck`)이 같이 쓴다. */
+const INDICATOR_COMPILE_FAILED = "표시 도우미 컴파일 실패";
+
+/**
+ * **도우미 자가 점검** — 제품이 쓰는 바로 그 소스를 컴파일(없으면)하고 빈 연습(`TIGUCLAW_DRY=1` — 창·키 0)으로 한 번 띄운다.
+ * ★`selfCheck` 와 같은 자리다 — 순수부·원문 검사는 «컴파일이라도 되나» 를 못 본다(C# 5 판정은 대상 기계의 `csc.exe` 만 한다).
+ */
+export const indicatorSelfCheck = async (): Promise<{ ok: true; stdout: string; exe: string } | { ok: false; detail: string }> => {
+  const built = await ensureExe(INDICATOR_EXE);
+  if (!built.ok) return { ok: false, detail: `${INDICATOR_COMPILE_FAILED}: ${built.detail}` };
+  const r = await runChild(built.exe, [], { TIGUCLAW_DRY: "1" });
+  return r.ok ? { ok: true, stdout: r.stdout, exe: built.exe } : { ok: false, detail: `표시 도우미 빈 연습 실패: ${r.detail}` };
+};
+
+/**
+ * **도우미를 띄운다** — `IndicatorBackend.start` 의 Windows 구현(맥 `mac.startIndicator` 의 형제).
+ *
+ * ★**동기로 핸들을 돌려준다**(계약). 처음엔 컴파일이 필요해 실제 기동은 그 뒤다 — 그 사이 `stop()` 이 불렸으면 **띄우지 않는다**
+ *  (내린 표시가 늦은 컴파일로 되살아나지 않게). 컴파일 중에는 표시도 Esc 도 없다(«표시가 Esc 를 말할 때만 Esc 가 있다»).
+ * ★실패 단계 이름은 **여기 한 곳**: 컴파일 경로(컴파일러 없음·백신 차단 포함) = «표시 도우미 컴파일 실패: <원문>» → `onGone` 한 번.
+ *  기동 거부·실행 뒤 종료는 `watchIndicatorChild` 가 같은 이름 규칙으로 말한다. 표시 실패는 조작을 막지 않는다.
+ * ★`windowsHide: false` — 도우미는 `/target:winexe` 라 콘솔이 없고, `true` 면 Node 가 `SW_HIDE` 를 줘 **첫 창이 숨을 수 있다.**
+ * ★stdin 은 파이프로 열어 두기만 한다 — 부모가 죽으면 닫히고, 도우미가 그 EOF 로 스스로 끝난다.
+ */
+export const startIndicator = (o: {
+  label: string;
+  moveFile: string;
+  onStop: (via: StopVia) => void;
+  onGone: (why: string) => void;
+  onReady?: (pill: PillRect | null) => void;
+  onPill?: (pill: PillRect | null, req: string) => void;
+}): IndicatorHandle => {
+  let stopped = false;
+  let inner: IndicatorHandle | null = null;
+  // ★끝남 확인 — 컴파일 중에 멈췄거나 컴파일이 실패했으면 **띄운 적이 없으니** 바로 끝난 것이다. 띄웠으면 그 자식의 `close`.
+  let markClosed: () => void = () => {};
+  const closed = new Promise<void>((resolve) => {
+    markClosed = resolve;
+  });
+  void ensureExe(INDICATOR_EXE).then((r) => {
+    if (stopped) {
+      markClosed();
+      return;
+    }
+    if (!r.ok) {
+      markClosed();
+      o.onGone(`${INDICATOR_COMPILE_FAILED}: ${r.detail.slice(0, 300)}`);
+      return;
+    }
+    inner = watchIndicatorChild(
+      spawn(r.exe, [], {
+        stdio: ["pipe", "pipe", "ignore"],
+        windowsHide: false,
+        env: { ...process.env, TIGUCLAW_DRY: "0", TIGUCLAW_INDICATOR_LABEL: o.label, TIGUCLAW_INDICATOR_MOVE: o.moveFile },
+      }),
+      o,
+    );
+    void inner.closed.then(markClosed);
+  });
+  return {
+    stop(): void {
+      if (stopped) return;
+      stopped = true;
+      // 아직 안 띄웠으면(컴파일 중) 앞으로도 안 띄운다 — 그 자리에서 끝난 것이다(단추가 나타날 수 없다).
+      if (inner === null) markClosed();
+      else inner.stop();
+    },
+    closed,
+  };
 };

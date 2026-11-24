@@ -19,6 +19,14 @@ import type { ProviderUsage } from "../plugins/provider-usage.js";
  * 라이브-리프레시 인증 provider 의 최소 계약.
  * refresh·만료판정·PKCE·토큰저장은 전부 provider 내부 은닉 — 호출자는 fresh 토큰만 받는다.
  */
+/**
+ * 한도 조회의 사정 (2026-11-21). `afterAuth` — 화면이 **인증이 바뀐 직후 저절로** 다시 묻는 조회다. 구현은 이때 자격을 저장하는 일
+ * (토큰 갱신 등)을 일으키지 않는다 — 막 바뀐 자격과 겹쳐 저장이 엇갈리지 않게. 일반 조회·수동 새로고침의 계약은 그대로다.
+ */
+export interface UsageQueryOptions {
+  readonly afterAuth?: boolean;
+}
+
 export interface AuthProvider {
   /** 이 auth 가 서빙하는 provider id (예: "codex"). 레지스트리 키 = 어댑터 자기 정체성. */
   readonly provider: string;
@@ -61,7 +69,16 @@ export interface AuthProvider {
    *  번 여는 동안의 중복 호출을 접는 것» 이므로, 다시 누른 것은 정의상 그 중복이 아니다.
    *  구현은 캐시를 지나되 **연타 하한**은 스스로 지킨다(비공식 경로를 무한히 때리지 않게).
    */
-  getUsage?(force?: boolean): Promise<ProviderUsage | undefined>;
+  getUsage?(force?: boolean, opts?: UsageQueryOptions): Promise<ProviderUsage | undefined>;
+  /**
+   * **지금 자격의 표지** — 옵셔널 (2026-11-21, 인증 후 한도 게이지 갱신).
+   *
+   * ★같은 자격이면 같은 값, 자격이 바뀌면(다시 로그인·계정 교체·갱신) 다른 값이다. 자격이 없거나 표지를 모르면 `""`. 네트워크·부작용 없이 동기로.
+   * ★화면은 «인증됐나» 만으로는 **이미 인증된 provider 의 재인증**을 모른다 — 한도 답이 어느 자격의 것인지 가르려고 쓴다.
+   * ★토큰 값을 그대로 돌려주지 마라(해시 앞부분·만료 시각처럼). 라우트는 이 값도 그대로 내보내지 않는다(`routes-auth.ts`).
+   * 미구현이면 화면은 «인증됐나» 변화와 화면 붙여넣기 성공만으로 판단한다.
+   */
+  credentialTag?(): string;
 }
 
 /**

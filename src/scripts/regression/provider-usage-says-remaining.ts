@@ -91,8 +91,8 @@ const cpCjs = createRequire(import.meta.url)("node:child_process") as { spawn: (
 const realSpawn = cpCjs.spawn;
 let cliSpawnsBlocked = 0;
 let cliSpawnsFaked = 0;
-/** `output` 이 있으면 그 글자를 `/usage` 결과로 돌려주는 가짜 CLI, 없으면 «못 띄움»(ENOENT). */
-const fakeClaudeCli = (output?: string): void => {
+/** `output` 이 있으면 그 글자를 `/usage` 결과로 돌려주는 가짜 CLI, 없으면 «못 띄움»(ENOENT). `authOrg` 가 있으면 `auth status` 는 그 조직으로 답한다. */
+const fakeClaudeCli = (output?: string, authOrg?: string): void => {
   cpCjs.spawn = (...a: unknown[]) => {
     if (!/claude(\.exe)?$/.test(String(a[0]))) return realSpawn(...a);
     const p = new EventEmitter() as EventEmitter & { stdout: EventEmitter; kill: () => void };
@@ -103,8 +103,9 @@ const fakeClaudeCli = (output?: string): void => {
       setImmediate(() => p.emit("error", Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" })));
     } else {
       cliSpawnsFaked += 1;
+      const isAuth = ((a[1] as string[] | undefined) ?? [])[0] === "auth";
       setImmediate(() => {
-        p.stdout.emit("data", JSON.stringify({ result: output }));
+        p.stdout.emit("data", isAuth && authOrg !== undefined ? JSON.stringify({ loggedIn: true, orgId: authOrg }) : JSON.stringify({ result: output }));
         p.emit("close", 0);
       });
     }
@@ -197,8 +198,9 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★`getUsage` 는 옵셔널이다 — 모르는 provider 가 억지로 숫자를 내지 않아도 된다",
-        /getUsage\?\((force\?: boolean)?\)/.test(srcHost),
-        /getUsage\?\((force\?: boolean)?\)/.test(srcHost) ? "옵셔널 선언" : "★필수로 선언됨",
+        // 인자 목록은 보지 않는다(인자가 늘어도 «옵셔널» 은 그대로다 — 2026-11-21 `opts` 추가). 두 선언의 인자 일치는 `usage-is-detail-not-list` 가 본다.
+        /getUsage\?\(/.test(srcHost),
+        /getUsage\?\(/.test(srcHost) ? "옵셔널 선언" : "★필수로 선언됨",
       ),
     );
 
@@ -335,6 +337,8 @@ export const check: RegressionCheck = {
     //   안 묻는지 본다(그게 이 기능의 전부다).
     const os = await import("node:os");
     const fsp = await import("node:fs/promises");
+    // 파일 캐시는 그 답을 얻은 토큰의 표지(해시 앞부분)와 함께 남는다(2026-11-21) — 손으로 만든 «같은 토큰의 이전 기동» 파일도 그 표지를 단다.
+    const fakeTokenKey = (await import("node:crypto")).createHash("sha256").update("sk-ant-regression-fake").digest("hex").slice(0, 12);
     const dataDir = await fsp.mkdtemp(`${os.tmpdir()}/usage-clock-`);
     const modUrl = new URL("../../../plugins/claude-subscription-auth/index.mjs", import.meta.url).href;
     const hostFor = (): { dataDir: string; log: (m: string) => void; registerAuthProvider: (p: Record<string, unknown>) => { ok: true } } & {
@@ -437,6 +441,7 @@ export const check: RegressionCheck = {
       await fsp.writeFile(
         `${stale}/usage-cache.json`,
         JSON.stringify({
+          key: fakeTokenKey,
           notBefore: 0, // 대기 중이 아니다 — 그래서 캐시가 유일한 답변원이다.
           at: Date.now() - 86_400_000,
           value: {
@@ -665,7 +670,7 @@ export const check: RegressionCheck = {
       const boot = async (refused: number): Promise<unknown> => {
         await fsp.writeFile(
           `${gdir}/usage-cache.json`,
-          JSON.stringify({ notBefore: Date.now() - 1000, refusedAfterWaiting: refused, at: 0, value: null }),
+          JSON.stringify({ key: fakeTokenKey, notBefore: Date.now() - 1000, refusedAfterWaiting: refused, at: 0, value: null }),
         );
         const P = (await import(`${modUrl}?gone${refused}`)).default as new () => {
           startService: (b: unknown, h: unknown) => Promise<void>;
@@ -920,8 +925,8 @@ export const check: RegressionCheck = {
 
 
     // ── ★로그인 안 됨 → 로그인함 (2026-10-09 적대 검토 B) — 시계를 돌려 가며 실제로 부른다 ──────────
-    //  ①429 가 로그인 안내를 가리지 않는다 ②문장 언어는 **부를 때의** 설정 ③«로그인 안 됨» 은 CLI 가 있는 것 — 새로고침 없이도
-    //  다시 묻는다(로그인하면 풀린다) ④성공값이 없어도 서버가 연타를 막는다(종전엔 누를 때마다 CLI·엔드포인트를 불렀다).
+    //  ①429 가 «조회할 수 없다» 를 가리지 않는다 ②문장 언어는 **부를 때의** 설정 ③«로그인 안 됨» 은 CLI 가 있는 것 — 새로고침 없이도
+    //  다시 묻는다 ④성공값이 없어도 서버가 연타를 막는다(종전엔 누를 때마다 CLI·엔드포인트를 불렀다) ⑤로그인한 CLI 의 숫자도 쓰지 않는다(2026-11-21).
     const ldir = await fsp.mkdtemp(`${os.tmpdir()}/usage-login-`);
     const realNow = Date.now;
     const steps: Record<string, unknown> = {};
@@ -961,16 +966,22 @@ export const check: RegressionCheck = {
       clock += 1_000;
       await get(true);
       const spawnsAfterForce = cliSpawnsFaked - base;
-      fakeClaudeCli("Current session: 32% used · resets Sep 7 at 5:59pm (Asia/Seoul)");
+      // CLI 가 로그인해 토큰 조직(모델 목록 머리)과 같은 CLI 조직(`auth status`)을 답한다. 한도 엔드포인트는 계속 429 다.
+      fakeClaudeCli("Current session: 32% used · resets Sep 7 at 5:59pm (Asia/Seoul)", "org-same");
+      globalThis.fetch = (async (url: string) =>
+        String(url).includes("/v1/models")
+          ? { status: 200, ok: true, headers: { get: (k: string) => (k.toLowerCase() === "anthropic-organization-id" ? "org-same" : null) } }
+          : { status: 429, ok: false, headers: { get: () => "3600" } }) as never;
       clock += 31_000;
       const r4 = await get();
-      steps.r4 = { windows: r4?.windows?.length, unavailable: r4?.unavailable };
+      steps.r4 = { windows: r4?.windows?.length, unavailable: r4?.unavailable, reason: (r4 as { reason?: string } | undefined)?.reason };
       out.push(
-        assert("★429 가 와도 «로그인이 필요합니다» 는 그대로 — «잠시 뒤 다시» 로 가리지 않는다", /\/login/.test(r1?.reason ?? "") && /[가-힣]/.test(r1?.reason ?? ""), steps.r1),
-        assert("★문장 언어는 부를 때의 설정을 따른다(켤 때 고정 X)", /\/login/.test(r2?.reason ?? "") && !/[가-힣]/.test(r2?.reason ?? ""), steps.r2),
+        assert("★429 가 와도 «조회할 수 없다» 는 그대로 — «잠시 뒤 다시» 로 가리지 않는다 · CLI 로그인을 약속하지 않는다", /조회할 수 없습니다/.test(r1?.reason ?? "") && !/login|로그인/.test(r1?.reason ?? ""), steps.r1),
+        assert("★문장 언어는 부를 때의 설정을 따른다(켤 때 고정 X)", /can't be looked up/.test(r2?.reason ?? "") && !/[가-힣]/.test(r2?.reason ?? ""), steps.r2),
         assert("★«로그인 안 됨» 뒤에도 새로고침 없이 CLI 에 다시 묻는다", spawnsAfter2 === 2, `CLI ${spawnsAfter2}회`),
         assert("★성공값이 없어도 5초 안의 새로고침은 서버가 접는다", spawnsAfterForce === spawnsAfter2, `새로고침 뒤 CLI ${spawnsAfterForce}회`),
-        assert("★로그인하면 다음 조회에서 한도가 나온다", r4?.windows?.length === 1 && r4?.unavailable !== true, steps.r4),
+        // 2026-11-21 정태님 «확인된 값만» — CLI 숫자는 같은 계정으로 답해도 계정 식별자가 없어 쓰지 않는다(대가: CLI 숫자만 있으면 표시 못 함).
+        assert("★CLI 에 로그인해 같은 조직으로 답해도 CLI 숫자는 쓰지 않는다 — «확인할 수 없다»(로그인 안내 아님)", r4?.windows?.length === 0 && r4?.unavailable === true && /Couldn't confirm/.test(String((r4 as { reason?: string } | undefined)?.reason)), steps.r4),
       );
     } finally {
       Date.now = realNow;

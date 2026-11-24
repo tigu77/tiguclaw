@@ -115,7 +115,8 @@ export const check: RegressionCheck = {
     out.push(
       assert(
         "★claude 쪽에도 같은 in-flight 가드가 있다 — 이쪽이 프로세스를 띄우는 쪽이라 피해가 더 크다",
-        /let inflight/.test(claudeSrc) && /if \(inflight !== undefined\) return inflight/.test(claudeSrc),
+        // 같은 자격의 조회만 나눠 쓴다(2026-11-21) — 동작은 `subscription-usage-follows-credential` 이 가짜 CLI 로 잰다.
+        /let inflight/.test(claudeSrc) && /if \(inflight !== undefined && inflight\.key === key\) return inflight\.p/.test(claudeSrc),
         /let inflight/.test(claudeSrc) ? "가드 있음" : "★가드 없음",
       ),
     );

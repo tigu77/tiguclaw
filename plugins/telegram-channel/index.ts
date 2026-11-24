@@ -24,7 +24,7 @@ import { chatIdForChannelMessage, replyTargetInThread } from "../../src/store/ch
 import { withSessionLabel } from "../../src/core/egress-targets.js";
 import { outboundSessionLabel } from "../../src/core/outbound.js";
 import { claimPromptAnswer, promptReplySession } from "../../src/core/prompt-answer-claims.js";
-import { deliverDocument, sendDocumentTo } from "./send-document.js";
+import { cutText, deliverDocument, sendDocumentTo } from "./send-document.js";
 import { ownerCandidateRoutes, recordBlockedSender } from "./owner-candidates.js";
 import { createInboundBatcher } from "./inbound-batch.js";
 import { createPollHealth, type PollHealth } from "./poll-health.js";
@@ -65,9 +65,9 @@ const htmlToPlainText = (html: string): string =>
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&");
 
-// Markdown → Telegram HTML subset 변환 + 4096 분할(라이브러리가 태그 경계 보존).
+// Markdown → Telegram HTML subset 변환 + 4096 분할(라이브러리가 태그 경계 보존) + 분할기가 못 지키는 조각 맞추기(`fitTelegramChunks`).
 const formatForTelegram = (text: string): { chunks: string[]; parseMode?: "HTML" } => ({
-  chunks: splitHtmlForTelegram(telegramFormat(text)),
+  chunks: fitTelegramChunks(splitHtmlForTelegram(telegramFormat(text))),
   parseMode: "HTML",
 });
 
@@ -214,9 +214,31 @@ const extractMessageId = (r: unknown): number | null => {
 };
 
 /**
- * 청크 하나 — HTML 로 보내고, 실패하면 태그를 벗긴 plain 으로 한 번 더. 둘 다 실패면 마지막 에러를 던진다.
+ * 평문 폴백 토막 일부가 간 뒤 실패 (2026-11-23 C2). 같은 조각은 언제나 같은 토막으로 나뉘므로(`splitPlainForTelegram`)
+ * **위치만** 싣는다 — 이어 보낼 땐 `sendChunk(…, fromPiece = delivered)`. 간 통의 id 는 이미 `onSent` 로 넘어갔다.
+ */
+class PartialChunkSend extends Error {
+  readonly original: unknown;
+  /** 앞서 간 토막 수 = 처음 못 간 토막의 0-기준 위치. */
+  readonly delivered: number;
+  readonly total: number;
+  constructor(original: unknown, delivered: number, total: number) {
+    super(`telegram plain fallback stopped at part ${delivered + 1}/${total}`);
+    this.original = original;
+    this.delivered = delivered;
+    this.total = total;
+  }
+}
+
+/**
+ * 청크 하나 — HTML 로 보내고, 실패하면 태그를 벗긴 plain 으로. 통이 하나 **갈 때마다 즉시** `onSent(id | null)`
+ * (`null` = 갔지만 응답에서 id 를 못 읽음) — 카드·뒤 재전송은 간 그때 답글 매핑을 남긴다.
  * HTML 실패(주로 Telegram parse error) → plain 폴백. ★태그를 스트립해 보낸다(raw HTML 그대로 보내면 <b> 등이
  * 노출됨 = 원래 버그). transport 실패였다면 여기 도달 시점엔 이미 재시도가 소진된 상태이나, plain 폴백도 재시도해 본다.
+ * ★plain 이 한 통 상한을 넘으면(링크 URL 을 펼친 긴 한 줄 — HTML 표시는 상한 안이라 분할 직후엔 그대로 둔 조각) 토막으로
+ *  나눠 순서대로 보내고 버튼은 마지막 토막에만 (2026-11-23 C2 — 종전엔 4096 초과 평문을 그대로 보내 서버가 거절, 그 조각부터 유실).
+ * 실패: 이 조각의 첫 통이면 원래 에러를 그대로, 토막 j(≥1)에서면 `PartialChunkSend`. `fromPiece ≥ 1` = 부분 실패를 이어 보냄 —
+ *  HTML 을 다시 시도하지 않고(앞 토막과 같은 평문 표시) 그 토막부터.
  */
 const sendChunk = async (
   send: TgSend,
@@ -224,24 +246,53 @@ const sendChunk = async (
   extra: TgSendExtra,
   htmlDelays: readonly number[],
   plainDelays: readonly number[],
-): Promise<number | null> => {
-  try {
-    return extractMessageId(await sendWithTransportRetry(send, chunk, extra, htmlDelays));
-  } catch (e) {
-    console.error(`telegram formatted send failed, falling back to plain — ${describeTelegramError(e)}`);
-    const plainExtra: TgSendExtra = extra.reply_markup !== undefined ? { reply_markup: extra.reply_markup } : {};
-    return extractMessageId(await sendWithTransportRetry(send, htmlToPlainText(chunk), plainExtra, plainDelays));
+  onSent: (id: number | null) => void,
+  fromPiece = 0,
+): Promise<void> => {
+  if (fromPiece === 0) {
+    // 보낸 결과(id)와 onSent 를 가른다 — onSent 가 던져도 «HTML 실패» 로 읽어 평문으로 한 번 더 보내지 않게.
+    let sent: { id: number | null } | null = null;
+    try {
+      sent = { id: extractMessageId(await sendWithTransportRetry(send, chunk, extra, htmlDelays)) };
+    } catch (e) {
+      console.error(`telegram formatted send failed, falling back to plain — ${describeTelegramError(e)}`);
+    }
+    if (sent !== null) {
+      onSent(sent.id);
+      return;
+    }
+  }
+  const plain = htmlToPlainText(chunk);
+  const pieces = plain.length <= TELEGRAM_TEXT_MAX ? [plain] : splitPlainForTelegram(plain);
+  const plainExtra: TgSendExtra = extra.reply_markup !== undefined ? { reply_markup: extra.reply_markup } : {};
+  for (let j = fromPiece; j < pieces.length; j++) {
+    let r: unknown;
+    try {
+      r = await sendWithTransportRetry(send, pieces[j]!, j === pieces.length - 1 ? plainExtra : {}, plainDelays);
+    } catch (e) {
+      if (j === 0) throw e;
+      throw new PartialChunkSend(e, j, pieces.length);
+    }
+    onSent(extractMessageId(r));
   }
 };
+
+/** 실패 원인 — 부분 실패면 감싼 원래 에러. */
+const sendFailureCause = (e: unknown): unknown => (e instanceof PartialChunkSend ? e.original : e);
 
 /**
  * ★유실을 **판정 수치와 함께** 남긴다 (2026-08-06) — 종전엔 종류만 적혀 있어, 원격 인스턴스(회사 PC 는
  *  접속 불가)에서 "안 왔다" 를 로그로 확인할 수 없었다. 몇 번째 청크가·전체 몇 개 중·얼마짜리가 못 갔는지가 진단의 재료다.
+ *  평문 토막 일부가 갔으면 어느 토막부터 못 갔는지·앞서 몇 통 갔는지까지(2026-11-23 C2).
  */
 const reportChunkLost = (i: number, chunks: readonly string[], e: unknown): void => {
+  const p = e instanceof PartialChunkSend ? e : null;
   console.error(
-    `★telegram 발송 유실 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)가 ` +
-      `HTML·plain 양쪽 다 실패해 **사용자에게 도달하지 않았습니다**. ${describeTelegramError(e)}`,
+    `★telegram 발송 유실 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)` +
+      (p !== null
+        ? ` · 평문 토막 ${p.delivered + 1}/${p.total} 부터 미도달 · 앞 ${p.delivered}통 도달 — 나머지가 **사용자에게 도달하지 않았습니다**. `
+        : `가 HTML·plain 양쪽 다 실패해 **사용자에게 도달하지 않았습니다**. `) +
+      describeTelegramError(sendFailureCause(e)),
   );
 };
 
@@ -311,15 +362,19 @@ export const sendFormatted = async (
   }
   // ★청크 **전부**의 id 를 모은다 — 사용자는 어느 청크에든 답장할 수 있다.
   const messageIds: number[] = [];
+  const collect = (mid: number | null): void => {
+    if (mid !== null) messageIds.push(mid);
+  };
   for (let i = 0; i < chunks.length; i++) {
     try {
-      const mid = await sendChunk(send, chunks[i]!, extraFor(i), opts?.retryDelays ?? TRANSPORT_RETRY_DELAYS_MS, TRANSPORT_RETRY_DELAYS_MS);
-      if (mid !== null) messageIds.push(mid);
+      await sendChunk(send, chunks[i]!, extraFor(i), opts?.retryDelays ?? TRANSPORT_RETRY_DELAYS_MS, TRANSPORT_RETRY_DELAYS_MS, collect);
     } catch (e2) {
       if (opts?.throwOnFail === true) {
         reportChunkLost(i, chunks, e2);
-        throw e2;
+        throw sendFailureCause(e2);
       }
+      // 평문 토막 일부가 이미 갔으면 그 다음 토막부터 잇는다(이미 간 토막은 다시 안 보낸다 — 2026-11-23 C2).
+      const fromPiece = e2 instanceof PartialChunkSend ? e2.delivered : 0;
       // ★대화형 답은 여기서 묻지 않는다 (2026-10-09 적대 검토 P3). 종전엔 로그만 찍고 정상 반환해
       //  코어는 «배달됨» 으로 알았고, 텔레그램이 10초 남짓 흔들리면 본답이 **조용히** 사라졌다 —
       //  같은 장애에 스케줄 알림은 80초 + 5분 재전송으로 살아남는데 사용자가 기다리던 답만 죽었다.
@@ -327,11 +382,12 @@ export const sendFormatted = async (
       //  (대화형 짧은 예산 = 사용자를 오래 붙잡지 않으려는 것이지 포기하려는 게 아니다).
       //  남은 청크를 넘기고 멈춘다 — 이어서 보내면 장애 중에 뒤 청크만 먼저 도착해 순서가 뒤집힌다.
       console.error(
-        `telegram 답 발송 실패 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)부터 ` +
-          `${chunks.length - i}개를 긴 예산으로 뒤에서 다시 보냅니다. ${describeTelegramError(e2)}`,
+        `telegram 답 발송 실패 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)` +
+          `${fromPiece > 0 ? `의 평문 토막 ${fromPiece + 1}` : ""}부터 ` +
+          `${chunks.length - i}개를 긴 예산으로 뒤에서 다시 보냅니다. ${describeTelegramError(sendFailureCause(e2))}`,
       );
-      if (chatKey !== undefined) enqueueBacklog(chatKey, () => resendInBackground(send, chunks, i, extraFor, opts?.onLateIds));
-      else void resendInBackground(send, chunks, i, extraFor, opts?.onLateIds).catch(() => {});
+      if (chatKey !== undefined) enqueueBacklog(chatKey, () => resendInBackground(send, chunks, i, extraFor, opts?.onLateIds, fromPiece));
+      else void resendInBackground(send, chunks, i, extraFor, opts?.onLateIds, fromPiece).catch(() => {});
       break;
     }
   }
@@ -341,7 +397,8 @@ export const sendFormatted = async (
 /**
  * 대화형 답의 남은 청크를 **스케줄 알림과 같은 예산**(`OUTBOUND_RETRY_DELAYS_MS`)으로 보낸다.
  * 그래도 못 가면 로그 + `plugin.error` 로 «미배달» 을 남긴다 — 사용자가 못 받은 답이 흔적 없이 끝나지 않게.
- * 간 청크의 id 는 `onIds` 로 넘긴다 — 호출자가 답장 매핑에 묶는다.
+ * 간 통의 id 는 간 그때 `onIds` 로 넘긴다 — 호출자가 답장 매핑에 묶는다.
+ * `fromPiece` = 첫 청크(`from`)의 평문 토막 일부가 이미 갔을 때 이어 보낼 토막 위치(2026-11-23 C2). 뒤 청크는 처음부터.
  */
 const resendInBackground = async (
   send: TgSend,
@@ -349,20 +406,23 @@ const resendInBackground = async (
   from: number,
   extraFor: (i: number) => TgSendExtra,
   onIds?: (ids: number[]) => void,
+  fromPiece = 0,
 ): Promise<void> => {
+  const bindNow = (mid: number | null): void => {
+    if (mid === null) return;
+    try {
+      onIds?.([mid]);
+    } catch {
+      /* 매핑은 편의 기능 — 배달을 무르지 않는다 */
+    }
+  };
   for (let i = from; i < chunks.length; i++) {
     try {
-      const mid = await sendChunk(send, chunks[i]!, extraFor(i), OUTBOUND_RETRY_DELAYS_MS, OUTBOUND_RETRY_DELAYS_MS);
-      if (mid !== null) {
-        try {
-          onIds?.([mid]);
-        } catch {
-          /* 매핑은 편의 기능 — 배달을 무르지 않는다 */
-        }
-      }
+      await sendChunk(send, chunks[i]!, extraFor(i), OUTBOUND_RETRY_DELAYS_MS, OUTBOUND_RETRY_DELAYS_MS, bindNow, i === from ? fromPiece : 0);
       console.log(`telegram 답 재전송 성공 — 청크 ${i + 1}/${chunks.length}(${chunks[i]!.length}자)`);
     } catch (e) {
       reportChunkLost(i, chunks, e);
+      const p = e instanceof PartialChunkSend ? e : null;
       try {
         getEventBus().publish({
           type: "plugin.error",
@@ -370,7 +430,7 @@ const resendInBackground = async (
           payload: {
             pluginName: "telegram-channel",
             phase: "runtime",
-            error: `reply undelivered — chunk ${i + 1}/${chunks.length} (${chunks[i]!.length} chars) failed after the long retry budget${i + 1 < chunks.length ? `; the remaining ${String(chunks.length - i - 1)} chunk(s) were not sent` : ""}: ${describeTelegramError(e)}`,
+            error: `reply undelivered — chunk ${i + 1}/${chunks.length} (${chunks[i]!.length} chars)${p !== null ? ` from plain part ${p.delivered + 1}/${p.total} (${p.delivered} sent)` : ""} failed after the long retry budget${i + 1 < chunks.length ? `; the remaining ${String(chunks.length - i - 1)} chunk(s) were not sent` : ""}: ${describeTelegramError(sendFailureCause(e))}`,
           },
         });
       } catch {
@@ -545,23 +605,26 @@ export const renderOptions = async (
     const whole = splitHtmlForTelegram(noteHtml !== "" ? `${head}\n\n${noteHtml}` : head);
     // 한 통에 들어가면 종전처럼 한 통(질문 → 설명 → 버튼). 넘치면 설명 조각을 먼저 보내고 **마지막에 질문 + 버튼** —
     //  버튼 바로 위에 그 질문이 있고 설명은 그 앞에 온전히 있다. 설명 조각 하나라도 못 가면 버튼을 보내지 않는다(설명 없는 승인 금지).
-    const chunks = whole.length <= 1
+    const raw = whole.length <= 1
       ? whole
       : [...(noteHtml !== "" ? splitHtmlForTelegram(noteHtml) : []), ...splitHtmlForTelegram(head)];
-    // 분할기는 빈 글에 조각 0개를 준다 — 아무것도 안 보냈는데 성공이 되지 않게(종전엔 빈 글 전송이 실패로 돌아왔다).
-    if (chunks.length === 0) return { ok: false as const, error: "option card has no text to send" };
     // 분할기는 줄 단위라 줄바꿈 없는 긴 줄(한 줄 초안·코드)은 한 조각에 남는다 — 텔레그램이 거절할 조각이면 **아무것도 보내기 전에**
     //  실패로 돌린다(설명 일부만 가고 버튼이 빠지는 것·재시도 때 앞 조각이 겹쳐 나가는 것 방지). 길이는 엔티티 해석 뒤 **보이는** 글자 기준 —
     //  링크 URL 은 세지 않는다(평문 폴백 `htmlToPlainText` 는 URL 을 펼치므로 그 길이로 재면 링크 달린 정상 설명을 막는다, R2).
-    const over = chunks.findIndex((c) => shownTextLength(c) > TELEGRAM_TEXT_MAX);
+    //  ★카드만의 정책이다 — 일반 답은 같은 조각을 평문으로 나눠 보낸다(`fitTelegramChunks`). 그래서 맞추기 **전에** 거른다.
+    const over = raw.findIndex((c) => shownText(c).length > TELEGRAM_TEXT_MAX);
     if (over >= 0) {
-      const len = shownTextLength(chunks[over]!);
-      console.error(`telegram 선택지 미전송 — 조각 ${over + 1}/${chunks.length} 이 ${len}자(상한 ${TELEGRAM_TEXT_MAX}) · 줄바꿈 없는 긴 줄`);
+      const len = shownText(raw[over]!).length;
+      console.error(`telegram 선택지 미전송 — 조각 ${over + 1}/${raw.length} 이 ${len}자(상한 ${TELEGRAM_TEXT_MAX}) · 줄바꿈 없는 긴 줄`);
       return {
         ok: false as const,
-        error: `option card not sent — part ${over + 1}/${chunks.length} is ${len} chars, over Telegram's ${TELEGRAM_TEXT_MAX}-char message limit (a single line or code line is too long to split). Shorten the note: break long lines, keep the key points and link to the full material.`,
+        error: `option card not sent — part ${over + 1}/${raw.length} is ${len} chars, over Telegram's ${TELEGRAM_TEXT_MAX}-char message limit (a single line or code line is too long to split). Shorten the note: break long lines, keep the key points and link to the full material.`,
       };
     }
+    // 빈 조각(코드 블록 경계)은 빼고 빈 라벨 링크는 평문으로 — 일반 답과 같은 맞추기 (2026-11-23 C2).
+    const chunks = fitTelegramChunks(raw);
+    // 분할기는 빈 글에 조각 0개를 준다 — 아무것도 안 보냈는데 성공이 되지 않게(종전엔 빈 글 전송이 실패로 돌아왔다).
+    if (chunks.length === 0) return { ok: false as const, error: "option card has no text to send" };
     let chatOfSent: unknown;
     const sendAndSee: TgSend = async (text, extra) => {
       const r = await send(text, extra);
@@ -576,31 +639,37 @@ export const renderOptions = async (
       return (typeof c === "string" || typeof c === "number") && String(c) !== "" ? String(c) : null;
     };
     const ids: number[] = [];
+    // 실제로 간 통 수 — id 를 못 읽은 통도 센다(평문 폴백이 한 조각을 여러 통으로 보낼 수 있어 조각 수와 다르다, 2026-11-23 C2).
+    let sentCount = 0;
+    const recordNow = (id: number | null): void => {
+      sentCount += 1;
+      if (id === null) return;
+      ids.push(id);
+      const c = chatKey();
+      if (origin !== undefined && c !== null) recordOutboundMessage("telegram", c, id, origin, Date.now());
+    };
     for (let i = 0; i < chunks.length; i++) {
       const last = i === chunks.length - 1;
       try {
-        // 전송 재시도 + HTML 실패 시 평문 폴백(버튼 유지)은 일반 답과 같은 함수.
-        const id = await sendChunk(
+        // 전송 재시도 + HTML 실패 시 평문 폴백(버튼 유지 — 여러 통이면 마지막 통에만)은 일반 답과 같은 함수.
+        await sendChunk(
           sendAndSee,
           chunks[i]!,
           last ? { parse_mode: "HTML", reply_markup: { inline_keyboard } } : { parse_mode: "HTML" },
           TRANSPORT_RETRY_DELAYS_MS,
           TRANSPORT_RETRY_DELAYS_MS,
+          recordNow,
         );
-        if (id !== null) {
-          ids.push(id);
-          const c = chatKey();
-          if (origin !== undefined && c !== null) recordOutboundMessage("telegram", c, id, origin, Date.now());
-        }
       } catch (e) {
-        if (chunks.length === 1) throw e;
-        const why = e instanceof Error ? e.message : String(e);
+        const cause = sendFailureCause(e);
+        if (chunks.length === 1 && sentCount === 0) throw cause;
+        const why = cause instanceof Error ? cause.message : String(cause);
         console.error(
-          `telegram 선택지 미전달 — 메시지 ${i + 1}/${chunks.length}(${chunks[i]!.length}자) 실패, 앞 ${i}개는 보냄 · 버튼 미전송. ${describeTelegramError(e)}`,
+          `telegram 선택지 미전달 — 메시지 ${i + 1}/${chunks.length}(${chunks[i]!.length}자) 실패, 앞 ${sentCount}개는 보냄 · 버튼 미전송. ${describeTelegramError(cause)}`,
         );
         return {
           ok: false as const,
-          error: `option card not delivered — message ${i + 1}/${chunks.length} failed after ${i} sent; the buttons were not delivered: ${why}`,
+          error: `option card not delivered — message ${i + 1}/${chunks.length} failed after ${sentCount} sent; the buttons were not delivered: ${why}`,
         };
       }
     }
@@ -619,13 +688,54 @@ export const renderOptions = async (
 /** 텔레그램 메시지 한 통의 글자 상한(Bot API sendMessage text: 엔티티 해석 뒤 1-4096자). */
 const TELEGRAM_TEXT_MAX = 4096;
 
-/** HTML 모드 메시지의 보이는 글자 수 — 태그를 빼고 이스케이프 세 글자를 되돌린다(링크 URL 은 글자에 안 든다). */
-const shownTextLength = (html: string): number =>
-  html.replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&amp;/g, "&").length;
+/** HTML 모드 메시지의 보이는 글 — 태그를 빼고 이스케이프를 되돌린다(링크 URL 은 글자에 안 든다). 카드 거름과 조각 맞추기가 함께 쓴다. */
+const shownText = (html: string): string =>
+  html.replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&amp;/g, "&");
 
 /** 텔레그램 HTML 모드의 평문 — 이 세 글자만 이스케이프하면 된다(위 «HTML 채택 근거»). */
 const escapeTelegramHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/**
+ * 평문을 한 통 상한 이하 토막으로 — 줄·공백 경계 우선 · 서로게이트 쌍 보존(`cutText`) · 공백뿐인 토막 없음.
+ * ★같은 글엔 언제나 같은 토막이다 — 평문 폴백 부분 실패를 «토막 위치» 만으로 이어 보내는 근거(`PartialChunkSend`).
+ */
+const splitPlainForTelegram = (text: string): string[] => {
+  const out: string[] = [];
+  for (let left = text.trim(); left !== ""; ) {
+    const [piece, rest] = cutText(left, TELEGRAM_TEXT_MAX);
+    if (piece !== "") out.push(piece);
+    left = rest;
+  }
+  return out;
+};
+
+/**
+ * 분할기 조각을 텔레그램이 받는 모양으로 맞춘다 (2026-11-23 C2, 결정 `docs/decisions/2026-11-18-stability-c1-c3-review.md` §8).
+ * 분할기(`splitHtmlForTelegram`)는 줄 단위로만 자르고 결과를 확인하지 않는다 — 실측: 줄바꿈 없는 4096 초과 줄은 한 조각 그대로,
+ *  코드 블록의 긴 줄 앞뒤엔 **빈** `<pre><code></code></pre>` 조각. 서버가 둘 다 거절해 그 조각부터 답이 유실됐다.
+ *  ① 표시도 평문도 공백뿐 → 뺀다 ② 표시가 공백인데 평문엔 내용(빈 라벨 링크 → URL) 또는 표시 4096 초과 → 평문 토막을 이스케이프해
+ *  HTML 조각으로(그 조각만 서식을 잃는다 · 표시 = 평문 폴백 = 토막) ③ 그 밖은 **바이트 그대로** — 평문 폴백이 4096 을 넘는
+ *  링크 든 긴 줄도 HTML 로는 정상이라 두고(카드 «핵심 + 자료 링크» 결정), 넘친 평문은 보낼 때 나눈다(`sendChunk`).
+ */
+const fitTelegramChunks = (chunks: readonly string[]): string[] => {
+  const out: string[] = [];
+  chunks.forEach((chunk, i) => {
+    const shown = shownText(chunk);
+    if (shown.trim() !== "" && shown.length <= TELEGRAM_TEXT_MAX) {
+      out.push(chunk);
+      return;
+    }
+    const plain = htmlToPlainText(chunk);
+    if (plain.trim() === "") return;
+    const pieces = splitPlainForTelegram(plain);
+    console.warn(
+      `telegram 조각 ${i + 1}/${chunks.length} — 표시 ${shown.length}자·평문 ${plain.length}자라 서식 없이 평문 ${pieces.length}통으로 나눠 보냅니다`,
+    );
+    for (const p of pieces) out.push(escapeTelegramHtml(p));
+  });
+  return out;
+};
 
 const yyyymmdd = (epochSeconds: number): string => {
   const d = new Date(epochSeconds * 1000);
@@ -1031,8 +1141,13 @@ export default class TelegramChannel implements Channel {
         throw e;
       }
     });
-    /** 업데이트가 도착한 시각 — 같은 응답의 앞 업데이트(첨부 다운로드)를 기다린 시간은 도착 뒤로 센다. */
-    const arrivedAt = (): number => pollHealth.lastReceivedAt() ?? Date.now();
+    /**
+     * 업데이트가 도착한 시각 — 같은 응답의 앞 업데이트(첨부 다운로드)를 기다린 시간은 도착 뒤로 센다.
+     * ★기록이 없으면(이 인스턴스의 첫 성공 응답이 채널 종료 중에 왔을 때) **폴링 시작 시각** — 이 인스턴스의 어떤 응답보다
+     *  이르다. 종전 `Date.now()`(처리 시각)는 도착보다 **늦을** 수 있었다(2026-11-24 — 선택지 `receivedAt` 가 «도착보다 늦지 않다» 를 지켜야 한다).
+     */
+    const pollStartedAt = Date.now();
+    const arrivedAt = (): number => pollHealth.lastReceivedAt() ?? pollStartedAt;
 
     // 텔레그램 "입력 중…" 표시. 한 번 보내면 5 초 유지 → 4 초 간격 갱신. 턴이 끝나면 묶음기가 끈다(누수 0).
     const startTyping = (ctx: Context): (() => void) => {
@@ -1253,6 +1368,10 @@ export default class TelegramChannel implements Channel {
     // router 로 흘려보낸다(같은 chat=같은 thread·인격 — 새 세션/분기 0). 이는 message:text
     // 핸들러가 텍스트를 router 로 보내는 경로와 동형(비차단 발사 + heartbeat 재배선).
     bot.on("callback_query:data", async (ctx) => {
+      // ★받은 시각 = 이 업데이트를 실은 **폴링 응답의 수신 시각**(첫 `await` 앞에서 잡는다, 2026-11-24). 선택지엔 서버 발신 시각이 없고,
+      //  처리기 시작은 같은 응답의 앞 업데이트(첨부 다운로드) 뒤일 수 있으며, 아래 응답 대기 뒤의 `Date.now()` 는 더 늦다.
+      //  `receivedAt` 와 묶음 부품 `arrivedAt` 둘 다에 쓴다 — 늦은 전달 진단에서 발신=도착, 대기는 도착→전달로 분류된다.
+      const at = arrivedAt();
       // 소유자 게이트는 위 미들웨어 한 곳이다(차단된 버튼의 로딩 해제도 거기서).
       const id = ctx.callbackQuery.data;
       const entry = promptOptionMap.get(id);
@@ -1307,7 +1426,7 @@ export default class TelegramChannel implements Channel {
           ...(callbackSession !== undefined ? { explicitSessionId: callbackSession, fromPromptAnswer: true as const } : {}),
         },
         text: value,
-        receivedAt: Date.now(),
+        receivedAt: at,
         // 답글 송신 — 공통 흐름(이 경로는 답글 대상 미부착).
         reply: async (out: string, _opts?: ReplyOptions): Promise<ChannelMessageRef> =>
           replyAndRecord((chunk, extra) => ctx.reply(chunk, extra), sessionId, chatId, out, { repliedSession: routedSession }),
@@ -1317,7 +1436,7 @@ export default class TelegramChannel implements Channel {
         presentOptions: buildPresentOptions(ctx, callbackSession ?? null, routedSession, sessionId),
       };
       // 버튼 답은 기다리지 않는다 — 쌓인 묶음을 먼저 보내 순서는 지킨다. typing 은 후속 턴 동안 살아있음 신호.
-      batcher.now(chatId, { msg: Promise.resolve(msg), replyTo: undefined, stopTyping: startTyping(ctx) });
+      batcher.now(chatId, { msg: Promise.resolve(msg), replyTo: undefined, stopTyping: startTyping(ctx), arrivedAt: at });
     });
 
     bot.catch((err) => {

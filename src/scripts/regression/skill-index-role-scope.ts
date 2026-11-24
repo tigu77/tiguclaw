@@ -356,7 +356,9 @@ export const check: RegressionCheck = {
     const WIRES = [
       { what: "인덱스", re: /formatSkillIndex\(\s*skills\s*,\s*turnKindOf\(input\)\s*\)/,
         callRe: /formatSkillIndex\(/g },
-      { what: "find_skills", re: /turn:\s*turnKindOf\(input\)/,
+      // ★2026-11-24 ⑥: 어댑터가 `{ cwd, turn: turnKind }` 를 한 번 만들어 스킬 서버·find_capabilities 둘에 넘긴다 —
+      //  `turn: skillScope.turn` 은 그 값이 `turnKind`(=`turnKindOf(input)`)일 때만 인정한다.
+      { what: "find_skills", re: /turn:\s*turnKindOf\(input\)|const turnKind = turnKindOf\(input\);.*const skillScope = \{ cwd(?:: discoveryCwd)?, turn: turnKind \};.*turn:\s*skillScope\.turn\b/,
         callRe: /createSkillInvokeMcpServer\(/g },
     ];
     for (const a of ADAPTERS) {

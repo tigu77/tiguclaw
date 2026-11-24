@@ -47,6 +47,9 @@ import { translate } from "../../src/core/i18n.js";
 import { claimPromptAnswer, promptReplySession } from "../../src/core/prompt-answer-claims.js";
 
 export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
+  // ★받은 시각은 **처리기 첫 줄에서** 잡는다(2026-11-24) — 본문 읽기·첨부 저장을 기다린 뒤에 찍으면 도착보다 늦다.
+  //  `receivedAt` 는 «도착보다 늦지 않다» 를 지켜야 한다(소비처: computer-use 의 «Esc 뒤에 받은 메시지» 판정).
+  const receivedAt = Date.now();
   const { req, res } = ctx;
   if (ctx.channelHandler === null) {
     writeJson(res, 503, { error: "channel not started" });
@@ -194,7 +197,7 @@ export const handleMessages = async (ctx: RouteCtx): Promise<void> => {
       channelAddress: threadKey,
     },
     text,
-    receivedAt: Date.now(),
+    receivedAt,
     ...(replyToText !== "" ? { replyToText } : {}),
     ...(replyToRef !== undefined ? { replyToRef } : {}),
     ...(replyToAt !== undefined ? { replyToAt } : {}),

@@ -96,17 +96,35 @@ export interface ChannelOutbound {
 }
 
 const registry = new Map<string, ChannelOutbound>();
+/** 이름마다 «지금 등록» 의 표 — 등록할 때마다 새로 만든다(아래 반환값이 이것으로 자기 등록인지 가린다). */
+const registrations = new Map<string, object>();
 
-/** 채널 아웃바운드 등록(부팅 채널 로딩 시점 — switch 가 존재하던 것과 동일 시점). */
+/**
+ * 채널 아웃바운드 등록(부팅 채널 로딩 시점 — switch 가 존재하던 것과 동일 시점).
+ *
+ * ★반환값 = **이 등록만** 해제하는 함수 (2026-11-20, C1 R2). 같은 이름으로 뒤에 다른 등록이 들어왔으면
+ *  아무것도 안 한다 — 이름이나 값으로 가리면, 종료가 채널을 꺼낸 뒤 같은 채널 이름으로 붙은 다른 플러그인
+ *  (같은 outbound 객체를 쓰더라도)의 등록을 옛 인스턴스의 끄기가 지웠다.
+ */
 export const registerChannelOutbound = (
   name: string,
   o: ChannelOutbound,
-): void => {
+): (() => boolean) => {
+  const mine = {};
   registry.set(name, o);
+  registrations.set(name, mine);
+  return () => {
+    if (registrations.get(name) !== mine) return false;
+    registrations.delete(name);
+    return registry.delete(name);
+  };
 };
 
-/** 등록 해제 (2026-08-28) — 플러그인 제거가 실제로 배달을 멈추게 한다. */
-export const unregisterChannelOutbound = (name: string): boolean => registry.delete(name);
+/** 등록 해제 (2026-08-28) — 플러그인 제거가 실제로 배달을 멈추게 한다. 누가 등록했든 지운다. */
+export const unregisterChannelOutbound = (name: string): boolean => {
+  registrations.delete(name);
+  return registry.delete(name);
+};
 
 /**
  * 등록된 채널 아웃바운드 조회. `undefined` = 미등록(현행 switch default = "unsupported" warn).

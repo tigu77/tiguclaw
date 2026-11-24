@@ -142,13 +142,18 @@ export const parseRateLimit = (raw: unknown): RateLimitView => {
  *  하나라도 있을 때만 기억한다(«모름» 을 0 으로 덮지 않는다). 메모리에만 둔다 — 재시작 뒤엔 다음 턴이 다시 채운다.
  */
 let lastTurnUsage: { readonly token: string; readonly windows: ReadonlyMap<string, { readonly w: RateLimitWindow; readonly at: number }> } | undefined;
-/** 지금 쓰는 토큰의 표지(해시 앞부분) — 토큰을 바꾸면 옛 계정의 사용률을 «최신» 으로 보이지 않게(적대 검토 F5). 값 자체는 안 둔다. */
-const tokenKey = (): string =>
-  createHash("sha256").update(process.env.CLAUDE_CODE_OAUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? "").digest("hex").slice(0, 12);
-export const noteTurnRateLimit = (view: RateLimitView, at: number = Date.now()): void => {
+/**
+ * 지금 쓰는 토큰의 표지(해시 앞부분) — 토큰을 바꾸면 옛 계정의 사용률을 «최신» 으로 보이지 않게(적대 검토 F5). 값 자체는 안 둔다.
+ * ★어댑터는 **턴을 시작할 때** 이 값을 잡아 `noteTurnRateLimit` 에 넘긴다(2026-11-21) — 이벤트가 온 순간의 env 로 붙이면, A 로 돌던 턴의
+ *  늦은 이벤트가 그사이 B 로 다시 인증한 계정의 값이 된다(한도 게이지가 B 자리에 A 숫자를 보인다).
+ */
+export const turnCredentialKey = (env: Readonly<Record<string, string | undefined>> = process.env): string =>
+  createHash("sha256").update(env.CLAUDE_CODE_OAUTH_TOKEN ?? env.ANTHROPIC_API_KEY ?? "").digest("hex").slice(0, 12);
+export const noteTurnRateLimit = (view: RateLimitView, at: number = Date.now(), token: string = turnCredentialKey()): void => {
   const fresh = view.windows.filter((w) => w.utilization !== undefined);
   if (fresh.length === 0) return;
-  const token = tokenKey();
+  // 지금 자격이 아닌 턴의 이벤트(다시 인증하기 전에 띄운 턴이 늦게 보낸 것)는 기록하지 않는다 — 지금 자격의 값을 덮어 지우지 않게.
+  if (token !== turnCredentialKey()) return;
   // ★일부 창만 담긴 이벤트가 앞 창들을 지우지 않게 이름별로 합친다(적대 검토 F9 — 각 창은 선택 항목이다). 토큰이 바뀌었으면 새로 시작.
   //  ★측정 시각은 **창마다** 둔다 — 하나만 두면 합친 옛 창도 «방금 잰 값» 이 됐다(릴리스 검토 F1).
   const merged = new Map(lastTurnUsage !== undefined && lastTurnUsage.token === token ? lastTurnUsage.windows : []);
@@ -164,7 +169,7 @@ export const turnRateLimitSnapshot = (
   now: number = Date.now(),
   only?: readonly string[],
 ): { readonly at: number; readonly windows: readonly RateLimitWindow[] } | undefined => {
-  if (lastTurnUsage === undefined || lastTurnUsage.token !== tokenKey()) return undefined;
+  if (lastTurnUsage === undefined || lastTurnUsage.token !== turnCredentialKey()) return undefined;
   const kept = [...lastTurnUsage.windows.values()].filter(
     (x) => (only === undefined || only.includes(x.w.name)) && (x.w.resetsAt === undefined || x.w.resetsAt.getTime() > now),
   );

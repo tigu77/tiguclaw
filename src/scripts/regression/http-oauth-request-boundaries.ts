@@ -44,6 +44,8 @@ export const check: RegressionCheck = {
     const host = await import("../../core/net/host-guard.js");
     let calls: boolean[] = [];
     const auth = evaluate(source("plugins/http-bridge/routes-auth.ts"), {
+      // 자격 따라가기·표지 감추기는 이 검사의 경계 밖이다(`auth-route-follows-credentials` 가 잰다) — 합성 경계로만 둔다.
+      createHash, followHomeCredentials: () => {},
       writeJson: json, getAuthProvider: (name: string) => name === "synthetic" ? { getUsage: async (force: boolean) => { calls.push(force); return { windows: [], measuredAt: 1 }; } } : undefined,
     });
     const bridgeSource = source("plugins/http-bridge/index.ts");
@@ -169,7 +171,8 @@ export const check: RegressionCheck = {
     const fetchBody = ui.slice(ui.indexOf('const r = await fetch(\n            "/api/auth-usage'), ui.indexOf('const d = await r.json();', ui.indexOf('const r = await fetch(\n            "/api/auth-usage')));
     for (const force of [false, true]) {
       let method = "";
-      await evaluate(`exports.run = async () => { ${fetchBody} };`, { force, provider: "synthetic", fetch: async (_: string, options: any) => { method = options.method ?? "GET"; } }).run();
+      // `afterAuth` — 인증 직후 조회 표시(그 화면 지역값). 이 검사는 메서드만 본다.
+      await evaluate(`exports.run = async () => { ${fetchBody} };`, { force, afterAuth: false, provider: "synthetic", fetch: async (_: string, options: any) => { method = options.method ?? "GET"; } }).run();
       out.push(assert(`UI force=${force} method`, method === (force ? "POST" : "GET"), method));
     }
 

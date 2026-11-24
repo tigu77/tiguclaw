@@ -16,7 +16,7 @@ export const check: RegressionCheck = {
       out.push(assert(`${signal}: 후속 정리 도달·신규 접속 거절·중복 종료 완료`, r.status === 0 && got.refused && got.accepted === 1 && JSON.stringify(got.events) === JSON.stringify([signal, "unsubscribe", "next-service-stop"]), got));
     }
     const daemon = readFileSync(new URL("../../index.ts", import.meta.url), "utf8");
-    out.push(assert("실제 데몬은 채널 종료 후 서비스 종료를 기다림", /for \(const ch of channels\)[\s\S]*?await ch.stop\(\)[\s\S]*?for \(const svc of serviceStops\)[\s\S]*?await svc.stop\(\)/.test(daemon), daemon.match(/for \(const ch of channels\)[\s\S]*?await svc.stop\(\);/)?.[0]));
+    out.push(assert("실제 데몬은 채널 종료 후 서비스 종료를 기다림", /await drainStops\(\s*channels,[\s\S]*?\);\s*await drainStops\(\s*serviceStops,/.test(daemon), daemon.match(/await drainStops\(\s*channels,[\s\S]*?await drainStops\(\s*serviceStops,[\s\S]*?\);/)?.[0]));
     return out;
   },
 };

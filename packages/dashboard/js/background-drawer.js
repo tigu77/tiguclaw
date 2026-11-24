@@ -175,7 +175,11 @@
       window.addEventListener("pointermove", () => { if (bgScrollbarDrag) bgArmScrollInput(); }, { passive: true });
       window.addEventListener("pointerup", () => { if (bgScrollbarDrag) { bgScrollbarDrag = false; bgGeometryChanged(); } }, { passive: true });
       // 카드별 + viewport 크기 변경. observer 이벤트 자체를 사용자 입력으로 보지 않는다.
-      const bgCardRO = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => { bgGeometryChanged(); bgPin(); });
+      //  카드 폭이 바뀌면(서랍 열림·창 크기) 접힌 할 일 머리 줄의 제목도 다시 맞춘다(fitTodoNow — 글자만 바꿔 카드 크기는 안 변한다).
+      const bgCardRO = typeof ResizeObserver === "undefined" ? null : new ResizeObserver((records) => {
+        for (const r of records) { const jid = r.target.dataset ? r.target.dataset.jobId : null; const e = jid ? jobCards.get(jid) : null; if (e) fitTodoNow(e); }
+        bgGeometryChanged(); bgPin();
+      });
       const bgViewportRO = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => { bgGeometryChanged(); bgPin(); });
       if (bgViewportRO) bgViewportRO.observe(bgScroll);
       const bgObserveCard = (el) => { if (bgCardRO) bgCardRO.observe(el); };
@@ -445,8 +449,40 @@
       // ★할 일 목록 (2026-10-12 정태님: «LLM 없이 지금 뭘 하는지» → «여러 줄로 다 나오게» → «화살표로 접고 펴게») —
       //  모델이 `update_todos` 로 직접 적은 필드만 읽는다(문장 해석 0). 머리 줄 «▾ 📋 완료/전체» 를 누르면 항목 전부가
       //  한 줄씩 펼쳐진다: ✓ 끝남 · ▶ 진행(activeForm, 없으면 content) · ○ 대기. 기본은 접힘이고, 접혀 있을 땐 머리 줄에
-      //  지금 하는 일 하나를 붙인다(접어도 «지금» 은 보인다). 할 일을 안 쓴 작업은 안 그린다. 본문은 모델 글이라 textContent 로만.
+      //  지금 하는 일을 붙인다(접어도 «지금» 은 보인다). 할 일을 안 쓴 작업은 안 그린다. 본문은 모델 글이라 textContent 로만.
+      //  ★진행 중이 둘 이상이면 «▶ N개 진행 · A · B · 외 K개» (2026-11-20 정태님 관측: 접으면 둘 중 하나만 보여 병행이 숨었다) —
+      //   머리 글은 네 조각: 완료/전체 · 진행 개수 · 제목들 · 생략 개수. 제목은 **실제 폭에 들어가는 만큼만** 앞에서부터 두고
+      //   못 둔 수를 «외 K개» 로 남긴다(fitTodoNow). 좁으면 제목 → 완료/전체 순으로 말줄임되고 진행 개수·생략 수는 줄지 않는다.
+      //   전체 제목은 툴팁(title)에. 진행 0·1개는 종전 글자 그대로(제목 조각에 원문 하나).
       const todoNowText = (t) => (t.status === "in_progress" ? t.activeForm || t.content : t.content) || "";
+      // 여럿일 때 셀 제목 — 공백뿐인 activeForm 은 없는 것으로 보고 content 로, 둘 다 비면 보일 제목이 없으니 null(생략 수로 센다).
+      //  앞뒤 공백은 벗긴다 — nowrap 이 못 접는 공백(NBSP 등)이 앞에 길게 있으면 제목 글자가 칸 밖으로 밀려 안 보이는데 «보였다» 고
+      //  셌다(GPT R2). 공백 제목을 세면 «보인 제목 + 생략 수 = 진행 수» 가 깨진다(GPT R1 #2). 0·1개·펼친 줄은 todoNowText 원문 그대로.
+      const todoCountedTitle = (t) => {
+        const a = typeof t.activeForm === "string" && t.activeForm.trim() !== "" ? t.activeForm : t.content;
+        return typeof a === "string" && a.trim() !== "" ? a.trim() : null;
+      };
+      /**
+       * 진행이 둘 이상인 접힌 머리 줄의 제목을 실제 폭에 맞춘다 — 전부 넣어 보고 넘치면 뒤에서부터 하나씩 «외 K개» 로 돌린다.
+       * 하나만 남아도 넘치면 그 제목을 말줄임으로 두되, 제목 칸이 «· 첫 글자 …» 도 못 담을 만큼(3em 미만, 0 포함) 좁으면 0개·전부 생략 수로 —
+       * 안 보이는 제목을 «보였다» 고 세지 않는다. 폭을 모르면(숨김 · 레이아웃 없음) 전부 두고 끝낸다 — 보이게 되면 카드 크기 감시
+       * (bgCardRO)가 다시 부른다. 글자만 바꾸고 상자 폭은 머리 줄이 정하므로(flex:1) 다시 맞춰도 카드 크기는 안 변한다(되먹임 없음).
+       */
+      const fitTodoNow = (entry) => {
+        const p = entry && entry.todoParts;
+        if (!p || !(entry.todoNowTotal > 1)) return; // 0·1개는 renderTodos 가 종전 글자를 그대로 넣는다.
+        const titles = entry.todoNowTitles || [];
+        const total = entry.todoNowTotal;
+        const put = (k) => {
+          p.now.textContent = k > 0 ? " · " + titles.slice(0, k).join(" · ") : "";
+          p.more.textContent = k < total ? " · " + i18n("bg.todo.more", { n: total - k }) : "";
+        };
+        let k = titles.length;
+        put(k);
+        if (k === 0 || !(entry.todoSumEl.clientWidth > 0)) return;
+        while (k > 1 && p.now.scrollWidth > p.now.clientWidth) put(--k);
+        if (p.now.scrollWidth > p.now.clientWidth && p.now.clientWidth < 3 * parseFloat(getComputedStyle(p.now).fontSize)) put(0);
+      };
       // ★머리 줄은 **한 번 만들고 계속 쓴다** (2026-10-12 아스트라 P3, 헤드리스 재현) — 렌더마다 새로 만들어 갈아 끼우면
       //  포커스된 버튼이 DOM 에서 빠져 포커스가 body 로 날아갔다: Enter 로 펼친 뒤 두 번째 Enter·Space 가 안 먹고, 갱신
       //  (SSE·복원)만 와도 포커스를 잃었다. 그래서 노드는 두고 글자·aria·목록만 바꾼다. 처리기는 «그때의» entry.todoOpen 을 읽는다.
@@ -458,6 +494,9 @@
         head.tabIndex = 0;
         const chev = makeCardCaret(); // 도구·채팅 카드와 같은 캐럿(util.js) — 펼침/접힘은 CSS 회전이 말한다.
         const sum = document.createElement("span");
+        sum.className = "bg-job-todo-sum";
+        const part = (cls) => { const s = document.createElement("span"); s.className = cls; sum.appendChild(s); return s; };
+        entry.todoParts = { progress: part("bg-job-todo-progress"), count: part("bg-job-todo-count"), now: part("bg-job-todo-now"), more: part("bg-job-todo-more") };
         head.append(chev, sum);
         const toggle = () => { entry.todoOpen = entry.todoOpen !== true; renderTodos(entry); };
         onToggleClick(head, toggle);
@@ -472,14 +511,21 @@
         const el = entry && entry.todoEl;
         if (!el) return;
         const todos = Array.isArray(entry.todos) ? entry.todos : [];
-        if (todos.length === 0) { el.style.display = "none"; el.replaceChildren(); return; }
+        if (todos.length === 0) { el.style.display = "none"; el.replaceChildren(); entry.todoNowTotal = 0; return; }
         const open = entry.todoOpen === true;
         const done = todos.filter((t) => t.status === "completed").length;
         const head = todoHead(entry);
         head.classList.toggle("expanded", open); // 카드 펼침(.open, setJobOpen 소관)과 다른 이름 — 할 일 머리 줄만의 상태.
         head.setAttribute("aria-expanded", open ? "true" : "false");
-        const now = todos.find((t) => t.status === "in_progress");
-        entry.todoSumEl.textContent = i18n("bg.todo.progress", { done, total: todos.length }) + (!open && now ? " · " + todoNowText(now) : "");
+        const nowTodos = open ? [] : todos.filter((t) => t.status === "in_progress");
+        const many = nowTodos.length > 1;
+        const p = entry.todoParts;
+        p.progress.textContent = i18n("bg.todo.progress", { done, total: todos.length });
+        p.count.textContent = many ? " · " + i18n("bg.todo.nowCount", { n: nowTodos.length }) : "";
+        entry.todoNowTotal = nowTodos.length;
+        entry.todoNowTitles = many ? nowTodos.map(todoCountedTitle).filter((x) => x !== null) : [];
+        if (!many) { p.now.textContent = nowTodos.length === 1 ? " · " + todoNowText(nowTodos[0]) : ""; p.more.textContent = ""; }
+        entry.todoSumEl.title = many ? entry.todoNowTitles.join("\n") : ""; // 머리 줄과 같은 제목 — 생략된 제목을 여기서 본다
         // 머리 줄은 그 자리에 두고(포커스 유지) 그 뒤의 항목 줄만 바꾼다.
         if (head.parentNode !== el) el.insertBefore(head, el.firstChild);
         while (el.lastChild && el.lastChild !== head) el.removeChild(el.lastChild);
@@ -491,6 +537,7 @@
           el.appendChild(row);
         }
         el.style.display = "";
+        fitTodoNow(entry); // 머리 줄이 붙고 보인 뒤에 잰다.
       };
       // ★작업자 알림 «막힘» 줄(2026-10-25, `notify_owner` 설계 §7.1) — 재료는 서버 잡 레코드·`worker.notice` payload·목록 응답의
       //  `activity.notice` 와 **같은 이름 같은 모양** `{noticeId, text, at, answeredAt?}`. «답 받음» 은 `answeredAt` 만 본다

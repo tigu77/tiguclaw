@@ -133,7 +133,10 @@ sandbox, "who wrote this" is the only thing a person can judge at install time.
 Whatever the kind, these are called **if present** (duck typing):
 
 - `start()` — once, right after load
-- `stop()` / `dispose()` — on disable or removal. **Clean up timers and subscriptions here**
+- `stop()` — once, on disable, removal or reinstall, and when the daemon shuts down (only for
+  plugins that have a start hook such as `start()` or `start<Kind>()`). **Clean up timers and subscriptions here.** `stop()` is
+  the only cleanup hook the core calls — it never calls `dispose()`. It can be called even after
+  your start failed partway, so don't throw if some timers or subscriptions were never created
 - `getMcpServer()` — tools for the model (§3)
 - `getDataRoutes()` — values for widgets (§6)
 
@@ -438,7 +441,7 @@ one of `"llm-not-declared"`, `"profile"`, `"timeout"`, `"cancelled"`, `"model"`.
   repeatedly in one tool call, and don't put it after long work.
 
 **Want to do something periodically?** Just use `setInterval`. Nothing stops you — clean it up
-in `stop()` / `dispose()`.
+in `stop()`.
 
 ---
 

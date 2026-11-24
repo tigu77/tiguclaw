@@ -108,7 +108,10 @@ const run = async (): Promise<Assertion[]> => {
   //  ★막기와 주기는 한 쌍 — `invoke_skill` 은 **lean 이 아닌 일반 경로**에 등록돼야 한다.
   {
     const blocksSkill = /\.\.\.SDK_SKILL_TOOL_NAMES,/.test(claude);
-    const givesSkill = /skills: createSkillInvokeMcpServer\(cwd, \{/.test(claude);
+    // ⑥: 스킬 서버 cwd 는 `skillScope.cwd` 로 올 수 있다 — 그때는 그 scope 가 `cwd` 로 만들어졌는지까지 본다.
+    const givesSkill =
+      /skills: createSkillInvokeMcpServer\(cwd, \{/.test(claude) ||
+      (/const skillScope = \{ cwd, turn: turnKind \};/.test(claude) && /skills: createSkillInvokeMcpServer\(skillScope\.cwd, \{/.test(claude));
     out.push(
       assert(
         "★SDK Skill 을 막고 invoke_skill 을 준다(경계 복원 + 대체 제공)",

@@ -11,10 +11,13 @@
  * ★**토큰은 절대 안 나간다.** 응답에 실리는 것은 «인증됐나» 라는 불리언과 사람이 읽는 안내
  *  뿐이다. `getAccessToken` 은 여기서 부르지 않는다 — 그건 refresh 부작용까지 있다.
  */
+import { createHash } from "node:crypto";
 import {
   listAuthProviders,
   getAuthProvider,
+  type AuthProvider,
 } from "../../src/core/llm-runtime/auth-registry.js";
+import { followHomeCredentials } from "../../src/core/llm-runtime/index.js";
 import { writeJson } from "../../src/core/net/write-json.js";
 import { readJsonBody } from "./http-body.js";
 import type { RouteCtx } from "./route-ctx.js";
@@ -40,11 +43,28 @@ import { translate } from "../../src/core/i18n.js";
  *  읽어야 하고, 0% 로 뭉개면 안 된다.
  * ★한 provider 가 느리거나 실패해도 나머지는 그린다 — `allSettled` 로 서로를 안 막는다.
  */
+/**
+ * 화면에 내보내는 자격 표지 — 미구현 `null` · 자격 없음 `""` · 그 밖은 provider 표지의 해시(표지를 그대로 내보내지 않는다 — 화면은
+ * «바뀌었나» 만 알면 된다). ★데몬을 다시 켜도 같은 자격이면 같은 값이다 — 재시작이 «자격이 바뀌었다» 로 읽혀 열린 화면이 한도를
+ * 다시 묻고(그게 토큰 갱신을 일으킬 수 있다) 하지 않게.
+ */
+const credentialStampOf = (p: AuthProvider): string | null => {
+  if (p.credentialTag === undefined) return null;
+  const tag = p.credentialTag();
+  if (tag === "") return "";
+  return createHash("sha256").update(`${p.provider}\n${tag}`).digest("hex").slice(0, 16);
+};
+
 export const handleAuthProviders = async (ctx: RouteCtx): Promise<void> => {
+  // ★다른 프로세스가 홈 `.env` 에 쓴 자격(터미널 `npm run claude-auth`·`codex-auth`)을 먼저 따라간다 — 메시지 입구와 같은 공용 경로다.
+  //  안 그러면 «인증됐나» 가 다음 메시지가 올 때까지 옛 값이라, 화면 밖에서 끝난 인증을 화면이 못 본다(2026-11-21).
+  followHomeCredentials();
   const providers = listAuthProviders();
   const items = providers.map((p) => ({
     provider: p.provider,
     authenticated: p.isAuthenticated === undefined ? null : p.isAuthenticated(),
+    /** 지금 자격의 표지(비밀 아님) — 화면이 «이미 인증된 provider 의 재인증» 을 알아보고 한도를 다시 묻는다. */
+    credential: credentialStampOf(p),
     login: p.login === undefined ? null : { label: p.login.label, canFinish: p.login.finish !== undefined },
     /** 이 provider 가 한도를 **말해줄 수 있나** — 화면이 조회를 걸지 말지 정한다. */
     hasUsage: p.getUsage !== undefined,
@@ -70,6 +90,9 @@ export const handleAuthUsage = async (ctx: RouteCtx): Promise<void> => {
   }
   const provider = (ctx.url.searchParams.get("provider") ?? "").trim();
   const force = ctx.req.method === "POST";
+  // 화면이 인증이 바뀐 직후 저절로 다시 묻는 조회 — provider 는 이때 자격 저장(토큰 갱신)을 일으키지 않는다(`UsageQueryOptions`).
+  const afterAuth = ctx.url.searchParams.get("after") === "auth";
+  followHomeCredentials(); // 한도도 지금 자격으로 묻는다(위 목록과 같은 이유).
   const p = provider === "" ? undefined : getAuthProvider(provider);
   if (p === undefined || p.getUsage === undefined) {
     writeJson(ctx.res, 200, { ok: true, provider, usage: null });
@@ -77,7 +100,7 @@ export const handleAuthUsage = async (ctx: RouteCtx): Promise<void> => {
   }
   let u;
   try {
-    u = await p.getUsage(force);
+    u = await p.getUsage(force, afterAuth ? { afterAuth: true } : undefined);
   } catch {
     u = undefined; // 조용히 «모름» — 비공식 경로는 언제든 막힌다.
   }
@@ -139,6 +162,8 @@ export const handleAuthLoginFinish = async (ctx: RouteCtx): Promise<void> => {
       ok: r.ok,
       message: r.message,
       authenticated: p.isAuthenticated === undefined ? null : p.isAuthenticated(),
+      // 목록과 **같은** 자격 표지 — 화면이 이 마무리를 «그 provider 의 지금 상태» 로 반영하고, 늦게 온 목록·감시와 같은 자격인지 가른다.
+      credential: credentialStampOf(p),
     });
   } catch (e) {
     writeJson(ctx.res, 200, { ok: false, message: e instanceof Error ? e.message : String(e) });

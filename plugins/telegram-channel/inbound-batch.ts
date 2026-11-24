@@ -109,7 +109,8 @@ export const createInboundBatcher = (fire: (msg: IncomingMessage) => Promise<voi
         if (firedAt - sentAt > LATE_DELIVERY_MS) {
           console.log(
             `telegram: 늦은 전달 — 메시지 ${msgs.length}건, 발신→도착 ${Math.round((arrivedAt - sentAt) / 1000)}초 · ` +
-              `도착→전달 ${Math.round((firedAt - arrivedAt) / 1000)}초(발신 시각은 텔레그램 기준·초 단위)`,
+              // ★발신 시각의 출처는 하나가 아니다 — 글·첨부는 텔레그램 서버의 초 단위 발신 시각, 버튼 답은 받은 시각(서버 발신 시각이 없다, 2026-11-24).
+              `도착→전달 ${Math.round((firedAt - arrivedAt) / 1000)}초(발신 시각: 글·첨부는 텔레그램 기준 초 단위, 버튼 답은 받은 시각)`,
           );
         }
         // 발사만 하고 기다리지 않는다(폴러·다음 묶음을 막지 않게) — «입력 중» 은 턴이 끝날 때 끈다.

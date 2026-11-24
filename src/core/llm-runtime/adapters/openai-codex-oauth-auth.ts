@@ -284,6 +284,16 @@ const refreshOnce = async (refresh: string): Promise<string> => {
   }
 };
 
+/**
+ * 지금 쥔 access 토큰을 **갱신 없이** 들여다본다(부작용 0) — 구독 한도 게이지가 «인증 직후 자동 조회» 에서 토큰 갱신(=자격 저장)을
+ * 일으키지 않으려고 쓴다(2026-11-21). 일반 조회·만료 복구는 종전대로 `ensureFreshAccessToken`.
+ */
+export const peekCodexAccessToken = (): { token: string; expiringSoon: boolean } | undefined => {
+  const token = process.env.OPENAI_CODEX_OAUTH_TOKEN;
+  if (token === undefined || token === "") return undefined;
+  return { token, expiringSoon: isExpiringSoon(process.env.OPENAI_CODEX_OAUTH_EXPIRES) };
+};
+
 export const ensureFreshAccessToken = async (): Promise<string> => {
   const currentAccess = process.env.OPENAI_CODEX_OAUTH_TOKEN;
   const expiresEnv = process.env.OPENAI_CODEX_OAUTH_EXPIRES;

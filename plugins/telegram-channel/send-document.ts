@@ -32,12 +32,16 @@ export interface DocumentSession {
   labelSession?: string | null;
 }
 
-/** 한도 안에서 자른다 — 가능하면 줄·공백 경계에서(단어 중간을 끊지 않게). */
-const cut = (s: string, max: number): [string, string] => {
+/**
+ * 한도 안에서 자른다 — 가능하면 줄·공백 경계에서(단어 중간을 끊지 않게). 글 답의 평문 토막(`index.ts`)도 이 함수를 쓴다.
+ * 경계가 없어 한도에서 자를 땐 서로게이트 쌍(이모지 등)을 가르지 않게 한 칸 앞에서 자른다(2026-11-23 C2).
+ */
+export const cutText = (s: string, max: number): [string, string] => {
   if (s.length <= max) return [s, ""];
   const head = s.slice(0, max);
   const at = Math.max(head.lastIndexOf("\n"), head.lastIndexOf(" "));
-  const n = at > max / 2 ? at : max;
+  let n = at > max / 2 ? at : max;
+  if (n === max && /[\uD800-\uDBFF]/.test(s[n - 1]!)) n -= 1;
   return [s.slice(0, n).trimEnd(), s.slice(n).trimStart()];
 };
 
@@ -50,13 +54,13 @@ export const sendDocumentTo = async (
 ): Promise<{ ok: true } | { ok: false; error: string }> => {
   // 라벨은 글과 같은 함수·같은 판정(이름 규칙은 코어 한 곳, 중복 접두 금지).
   const full = withSessionLabel(outboundSessionLabel(opts?.labelSession), opts?.caption ?? "");
-  const [caption, rest] = cut(full, CAPTION_MAX);
+  const [caption, rest] = cutText(full, CAPTION_MAX);
   const ids: number[] = [];
   try {
     const m = await api.sendDocument(chatId, new InputFile(filePath), caption !== "" ? { caption } : undefined);
     if (typeof (m as { message_id?: unknown })?.message_id === "number") ids.push((m as { message_id: number }).message_id);
     for (let left = rest; left !== ""; ) {
-      const [chunk, more] = cut(left, TEXT_MAX);
+      const [chunk, more] = cutText(left, TEXT_MAX);
       const t = await api.sendMessage(chatId, chunk);
       if (typeof (t as { message_id?: unknown })?.message_id === "number") ids.push((t as { message_id: number }).message_id);
       left = more;

@@ -70,10 +70,20 @@ const LIVE = new Map<string, LivePlugin>();
 export const pluginCommandHandler = (
   command: { pluginName?: string; pluginDir?: string; handler?: string },
 ): PluginCommandHandlerCall | undefined => {
-  if (command.pluginName === undefined || command.pluginDir === undefined || command.handler === undefined) return undefined;
-  const live = LIVE.get(command.pluginName);
-  if (live === undefined || path.resolve(live.dir) !== path.resolve(command.pluginDir)) return undefined;
-  return live.commandHandlers.get(command.handler);
+  if (command.handler === undefined) return undefined;
+  return liveOwnerOf(command)?.commandHandlers.get(command.handler);
+};
+
+/**
+ * **이 자산의 폴더가 지금 이 데몬에 로드된 그 플러그인인가** — 이름 + 폴더 대조(위 `pluginCommandHandler` 주석의 이유 그대로).
+ * LIVE 는 이름당 하나라 «지금 그 이름을 대표하는 폴더» 와 맞을 때만 돌려준다. 커맨드 처리기와 `find_capabilities` 의 플러그인 스킬
+ * 소속 표시가 같이 쓴다(2026-11-24 ⑥ — 같은 판단 한 자리).
+ */
+export const liveOwnerOf = (asset: { pluginName?: string; pluginDir?: string }): LivePlugin | undefined => {
+  if (asset.pluginName === undefined || asset.pluginDir === undefined) return undefined;
+  const live = LIVE.get(asset.pluginName);
+  if (live === undefined || path.resolve(live.dir) !== path.resolve(asset.pluginDir)) return undefined;
+  return live;
 };
 
 /**

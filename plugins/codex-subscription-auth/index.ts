@@ -20,12 +20,13 @@ import type { PluginHost } from "../../src/core/plugins/host.js";
 import {
   codexAuthAvailable,
   ensureFreshAccessToken,
+  peekCodexAccessToken,
 } from "../../src/core/llm-runtime/adapters/openai-codex-oauth-auth.js";
 import {
   beginCodexLogin,
   finishCodexLogin,
 } from "../../src/core/llm-runtime/adapters/openai-codex-oauth-login.js";
-import { fetchCodexUsage, setUsageLogSink } from "./usage.js";
+import { codexTokenTag, fetchCodexUsage, setUsageLogSink } from "./usage.js";
 
 /** 사용자에게 보이는 문구 — 설정 언어(`host.locale`)로(2026-10-01, 종전엔 한국어 고정). 모르는 언어는 영어. */
 const TEXT = {
@@ -42,6 +43,10 @@ const TEXT = {
     hint: "Full browser address after sign-in (including code=…)",
   },
 } as const;
+/** 지금 쥔 access 토큰(갱신 없이) — 한도 캐시·자격 표지가 «지금 자격» 을 가를 때 쓴다. */
+const currentAccess = (): string | undefined => peekCodexAccessToken()?.token;
+/** 지금 자격의 표지 — 토큰의 해시 앞부분(`usage.ts` 의 캐시 귀속과 **같은 함수**). 없으면 `""`. */
+const codexCredentialTag = (): string => codexTokenTag(currentAccess());
 const say = (host: { locale?: string }, key: keyof typeof TEXT.ko): string =>
   (String(host.locale ?? "").toLowerCase().startsWith("ko") ? TEXT.ko : TEXT.en)[key];
 
@@ -56,10 +61,24 @@ export default class CodexSubscriptionAuth {
       //  ★주석이 «30분» 이라고 적혀 있었는데 실제는 5분이었다 — 숫자를 주석에 두 번
       //   적으면 갈린다. 값은 `usage.ts` 의 `CACHE_MS` 하나가 정본이다.
       //  provider 지식이 provider 플러그인에 사는 자리다(`usage.ts` 주석 참조).
-      getUsage: (force) => {
+      getUsage: (force, opts) => {
         setUsageLogSink((m) => host.log(m)); // 왜 사용량이 비었는지는 **로그에만** 남는다.
-        return fetchCodexUsage(ensureFreshAccessToken, force);
+        // ★인증 직후 자동 조회는 토큰을 **갱신하지 않는다**(2026-11-21) — 막 바뀐 자격과 겹친 갱신 저장이 새 로그인을 덮는 일을 이 조회가
+        //  일으키지 않게. 지금 토큰이 그대로 쓸 만하면 그것으로 묻고, 없거나 만료 임박이면 이번엔 묻지 않고 «대기» 만 답한다 — 캐시에도
+        //  안 남겨 다음 일반 조회·🔄 는 종전대로 갱신해서 묻는다.
+        if (opts?.afterAuth === true) {
+          const p = peekCodexAccessToken();
+          if (p === undefined || p.expiringSoon) {
+            const now = Date.now();
+            return Promise.resolve({ windows: [], measuredAt: now, retryAt: now + 30_000 });
+          }
+          return fetchCodexUsage(async () => p.token, force, currentAccess);
+        }
+        // 다시 로그인하면 이전 자격의 캐시·진행 중 조회를 쓰지 않는다(`usage.ts` — 답은 실제로 보낸 토큰에 묶인다).
+        return fetchCodexUsage(ensureFreshAccessToken, force, currentAccess);
       },
+      // 화면이 «이미 인증된 상태의 재로그인» 을 알아보는 표지(비밀 아님) — 한도 캐시와 **같은 함수**다(두 판단이 갈리지 않게).
+      credentialTag: codexCredentialTag,
       /**
        * ★**화면에서 끝까지 된다** (2026-09-05). 순수 웹 OAuth(PKCE) 라 브라우저 한 번이면
        *  된다 — 종전엔 발급 수단이 `npm run codex-auth` **터미널 안에만** 있어서, 폰이나

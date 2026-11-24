@@ -1265,6 +1265,8 @@ export const check: RegressionCheck = {
 
     // 실제 native post 배선, execFile만 합성한다. kill 요청과 자식 종료를 구분한다.
     const req = createRequire(import.meta.url);
+    // 도우미 원문이 모듈 초기화 때 가장자리 빛 값(`GLOW`)을 박아 넣는다 — 빈 자리 대신 실제 값을 준다(⑤ 외형 확정).
+    const { GLOW } = await loadPluginModule<{ GLOW: unknown }>("../../../plugins/computer-use/src/indicator.ts");
     for (const platform of ["mac", "win"]) {
       const filename = new URL(`../../../plugins/computer-use/src/${platform}.ts`, import.meta.url);
       const source = await fs.readFile(filename, "utf8");
@@ -1278,7 +1280,8 @@ export const check: RegressionCheck = {
         return { kill: () => { kills++; return true; } };
       };
       const exports: Rec = {};
-      runInNewContext(js, { exports, require: (id: string) => id === "node:child_process" ? { execFile: mockExec } : id === "./control.js" ? { postTimeoutMs: () => 8000, keyDryEvents: () => [] } : id === "./observe.js" ? {} : req(id), process, Buffer, console, setTimeout, clearTimeout });
+      // `./indicator.js` — 표시 도우미 감시기(2026-11-24 ⑤ Windows 확대로 mac·win 둘 다 import). 이 검사는 발사 배선만 보므로 빈 자리로 둔다.
+      runInNewContext(js, { exports, require: (id: string) => id === "node:child_process" ? { execFile: mockExec } : id === "./control.js" ? { postTimeoutMs: () => 8000, keyDryEvents: () => [] } : id === "./observe.js" ? {} : id === "./indicator.js" ? { watchIndicatorChild: () => ({ stop: () => {} }), GLOW } : req(id), process, Buffer, console, setTimeout, clearTimeout });
       const post = exports["post"] as (events: Rec[], signal?: AbortSignal) => Promise<Rec>;
       const before = new AbortController(); before.abort();
       const pre = post([{ t: "wait", ms: 100 }], before.signal);

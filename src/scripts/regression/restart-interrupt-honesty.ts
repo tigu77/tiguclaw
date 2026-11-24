@@ -208,8 +208,9 @@ export const check: RegressionCheck = {
       /const shutdown = async \(signal: string\): Promise<void> => \{\s*if \(shuttingDown\) return;\s*shuttingDown = true;\s*shutdownProgress\.step\(/,
       /shutdownProgress\.step\("외부 MCP 정리"\);\s*try \{\s*const \{ closeAllExternalMcp \}/,
       /shutdownProgress\.step\("백그라운드 셸 정리"\);\s*try \{/,
-      /for \(const ch of channels\) \{\s*shutdownProgress\.step\(`채널 \$\{ch\.name\} 정지`\);\s*try \{\s*await ch\.stop\(\);/,
-      /for \(const svc of serviceStops\) \{\s*shutdownProgress\.step\(`서비스 \$\{svc\.name\} 정지`\);\s*try \{\s*await svc\.stop\(\);/,
+      // 채널·서비스는 `drainStops` 가 항목마다 onStep → stop 순으로 부른다(그 순서는 plugin-wiring-stop-ownership 이 동작으로 본다).
+      /await drainStops\(\s*channels,\s*\(name\) => shutdownProgress\.step\(`채널 \$\{name\} 정지`\),/,
+      /await drainStops\(\s*serviceStops,\s*\(name\) => shutdownProgress\.step\(`서비스 \$\{name\} 정지`\),/,
     ]);
     out.push(
       assert(

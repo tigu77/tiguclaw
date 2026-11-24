@@ -1461,7 +1461,17 @@
       .bg-job-notice.answered { color:var(--text-dim); }
       .bg-job-report { font-size:0.6875rem; color:var(--text-dim); margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; }
       .bg-job-todo-head { font-weight:700; cursor:pointer; user-select:none; display:flex; align-items:baseline; gap:4px; min-width:0; }
-      .bg-job-todo-head > span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      /* 머리 글 = 완료/전체 · 진행 개수 · 제목들 · «외 K개». 상자 폭은 머리 줄이 정하고(flex:1 — 글자를 바꿔도 폭 불변),
+         줄어드는 순서는 제목 → 완료/전체이고 **진행 개수·생략 수는 줄지 않는다**. 제목은 기준 폭 0 에서 남는 폭만 받아
+         (grow, 상한 = 제 글자 폭) 모자람을 나눠 지지 않는다 — 비율로 같이 줄면 소수점 폭만 잃어도 «▶ 2개 …» 로 개수 글자가
+         먹혔다(헤드리스 실측). 조각마다 nowrap 이라 조각 맨 앞 « · » 의 공백은 화면에서 접히므로 그 한 칸을 여백으로 되돌린다
+         (글자는 종전 그대로 · 모델 글의 줄바꿈도 종전처럼 nowrap 이 접는다). 제목 맞춤은 fitTodoNow. */
+      .bg-job-todo-sum { flex:1 1 auto; min-width:0; display:flex; overflow:hidden; }
+      .bg-job-todo-sum > span { white-space:nowrap; }
+      .bg-job-todo-sum > span + span:not(:empty) { margin-left:.25em; }
+      .bg-job-todo-progress { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+      .bg-job-todo-count, .bg-job-todo-more { flex:none; }
+      .bg-job-todo-now { flex:1 1 0; max-width:max-content; min-width:0; overflow:hidden; text-overflow:ellipsis; }
       .bg-job-todo-head:hover { color:var(--text); }
       /* 캐럿은 공용 .card-caret(기본 = 펼침 90°) — 접힌 할 일만 회전을 푼다. */
       .bg-job-todo-head:not(.expanded) .card-caret { transform:none; }

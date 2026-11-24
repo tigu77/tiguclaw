@@ -17,9 +17,11 @@
  */
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { promises as fs } from "node:fs";
+import { promises as fs, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
+import { translate } from "../../../src/core/i18n.js";
 import { sealSavedScreen, readSavedScreen } from "./saved-screen.js";
 import { SAVED_SCREEN_META, savedScreenNote } from "../../../src/core/llm-runtime/adapters/_saved-screen-reference.js";
 // ★**번들 플러그인은 `@tiguclaw/plugin` 을 쓰지 않는다** (2026-09-16, 데브싱크가 잡았다).
@@ -65,13 +67,30 @@ import {
   beginRejection,
   stepsOutcome,
   mergeHeld,
+  userStopped,
+  resumeByHuman,
   STEPS_MAX,
   SCROLL_MAX,
   type Button,
+  type CallStop,
   type Desktop,
   type Step,
   type StepsOutcome,
 } from "./control.js";
+import {
+  newIndicator,
+  showIndicator,
+  settleIndicator,
+  hideIndicator,
+  humanReceivedAt,
+  clearPillFor,
+  settleZombies,
+  indicatorMark,
+  indicatorMaybeInShot,
+  type Indicator,
+  type IndicatorBackend,
+  type StopVia,
+} from "./indicator.js";
 
 /**
  * **이 플랫폼의 실행부** — 없으면 도구를 아예 안 낸다.
@@ -122,23 +141,53 @@ export interface Wiring {
   control: ControlBackend | null;
   /** ★**데스크톱당 싱글턴**(§3-3) — 실제 배선은 모듈 전역 하나를 공유한다. */
   desktop: Desktop;
+  /**
+   * **제어 표시·Esc** (2026-11-24, ⑤) — 표시 도우미가 있는 플랫폼(mac·Windows)만. 없으면 표시도 Esc 도 없다(Linux — 지금과 같다).
+   * ★데스크톱과 같이 **싱글턴**이다 — 서비스(이벤트 구독)와 턴별 도구가 같은 것을 써야 한다.
+   */
+  indicator?: Indicator;
 }
 
+/** **표시 도우미 실행부** — 관측·조작과 같은 모양으로 플랫폼마다 고른다(2026-11-24, ⑤ Windows 확대). 없으면 null. */
+export const indicatorBackendFor = (platform: string): IndicatorBackend["start"] | null =>
+  platform === "darwin" ? mac.startIndicator : platform === "win32" ? win.startIndicator : null;
+
+/** 표시 — **플랫폼마다 하나**(처음 요청 때 만든다 · 제품은 한 플랫폼만 요청한다). 만들기만 하고 띄우지 않는다(띄우는 건 `beginAction` 통과 때). */
+const sharedIndicators = new Map<string, Indicator>();
+const indicatorFor = (platform: string): Indicator | undefined => {
+  const start = indicatorBackendFor(platform);
+  if (start === null) return undefined;
+  let ind = sharedIndicators.get(platform);
+  if (ind === undefined) {
+    ind = newIndicator({ start }, { stopDir: os.tmpdir() });
+    sharedIndicators.set(platform, ind);
+  }
+  return ind;
+};
+
 /**
- * **실제 배선** — 플러그인 본체가 매번 이것으로 도구를 만든다.
+ * **배선 조립 — 한 곳** (2026-11-24). 플랫폼 선택은 여기에만 있다(`realWiring` 은 지금 플랫폼으로 이것을 부를 뿐).
  *
  * ★`desktop` 은 **모듈 전역 하나**를 돌려준다 — 이게 «데스크톱당 싱글턴»(§3-3)의 구현이다.
  *  여기서 `newDesktop()` 을 부르면 도구를 새로 만들 때마다 **프레임과 입력 장부가 사라진다**
  *  (그러면 `look` 이 준 화면 id 를 `do` 가 모른다). 회귀가 그 동일성을 잰다.
+ * ★검사는 다른 플랫폼 이름으로 이 조립을 불러 **제품이 붙이는 표시부**를 그대로 잰다(관측·실행부만 바꿔 끼운다).
  */
-export const realWiring = (): Wiring => ({
-  platform: process.platform,
-  observe: backendFor(process.platform),
-  control: controlFor(process.platform),
-  // ★**데스크톱당 싱글턴**(§3-3) — 실제 배선은 모듈 전역 하나를 공유한다. 커서가 하나라는
-  //  물리와 맞는다. 검사는 자기 것을 끼워 **입력 0 으로** 상태 전이를 잰다.
-  desktop: sharedDesktop,
-});
+export const wiringFor = (platform: string): Wiring => {
+  const indicator = indicatorFor(platform);
+  return {
+    platform,
+    observe: backendFor(platform),
+    control: controlFor(platform),
+    // ★**데스크톱당 싱글턴**(§3-3) — 실제 배선은 모듈 전역 하나를 공유한다. 커서가 하나라는
+    //  물리와 맞는다. 검사는 자기 것을 끼워 **입력 0 으로** 상태 전이를 잰다.
+    desktop: sharedDesktop,
+    ...(indicator !== undefined ? { indicator } : {}),
+  };
+};
+
+/** **실제 배선** — 플러그인 본체가 이것으로 도구를 만든다. */
+export const realWiring = (): Wiring => wiringFor(process.platform);
 
 const textOnly = (text: string): { content: Array<{ type: "text"; text: string }> } => ({
   content: [{ type: "text", text }],
@@ -210,6 +259,15 @@ export const nextAfterCapture = (frameId: string | undefined, hasImage: boolean)
       : " ★다만 **그림을 못 실었습니다** — 좌표를 새로 읽어야 하면 `region` 을 좁혀 `look` 하세요. 옛 좌표를 그대로 쓰지 마세요.";
   return idPart + coordPart;
 };
+
+/**
+ * 우리 그림에 찍혔을 수 있는 조작 표시 안내 — 모델이 표시를 화면 내용으로 읽지 않게(⑤ r4, 설계 §11-1).
+ * ★«보이면» 으로 말한다 — 찍힌 순간의 표시 여부를 확정할 수 없다(촬영과 표시 기동·내림이 겹친다). 거짓 양성은 무해, 거짓 음성은 아니다.
+ * ★가려진 것은 추측하지 않게 한다 — 단추 아래 대상은 그림에 없다.
+ */
+export const INDICATOR_IN_SHOT =
+  "\n\n표시 참고: 화면 가장자리의 주황 빛(안쪽으로 옅어짐), 위쪽(또는 아래쪽) 가운데 주황 단추(중지), 커서 둘레 주황 고리가 보이면 티구클로가 그린 조작 표시입니다 — " +
+  "화면 내용이 아닙니다. 단추에 가려 안 보이는 것은 추측해서 누르지 마세요. 단추 자리를 누르는 조작은 단추를 반대쪽으로 비킨 것을 확인한 뒤에만 보냅니다(확인하지 못하면 보내지 않습니다).";
 
 const captureScene = async (
   w: Wiring,
@@ -295,6 +353,8 @@ const captureScene = async (
   //  그대로 더해지는데, 병렬이면 캡처(수백 ms) 안에 묻힌다.
   //  ★조작 실행부가 없는 플랫폼에선 기준을 못 만든다 — 그때는 `null` 이고, 가드도 없다.
   const ctlForFront = w.control;
+  // 촬영 앞뒤 표본(세대·떠 있나) — 한쪽이라도 떠 있거나 세대가 바뀌었으면(도중에 떴다 내려감) 찍혔을 수 있다(⑤ r4, 독립 검토 R2).
+  const indicatorBefore = indicatorMark(w.indicator);
   const [shot, front] = await Promise.all([
     backend.capture(okTarget.target, outPath),
     ctlForFront === null ? Promise.resolve(null) : ctlForFront.frontWindow(),
@@ -394,9 +454,11 @@ const captureScene = async (
         "이 안내는 차단이나 실패 판정이 아닙니다.";
     }
   }
+  // ★표시는 우리 그림에도 찍힌다(⑤ r4 — 원격에 보이려면 캡처에서 빼지 않는다). 그림을 실을 때만, 촬영 앞뒤에 표시가 있었을 때만 말한다.
+  const indicatorNote = indicatorMaybeInShot(indicatorBefore, indicatorMark(w.indicator)) ? INDICATOR_IN_SHOT : "";
   return {
     content: [
-      { type: "text" as const, text: meta + repetition + savedNote },
+      { type: "text" as const, text: meta + repetition + indicatorNote + savedNote },
       {
         type: "image" as const,
         data,
@@ -431,7 +493,12 @@ const makeTool = (w: Wiring, host?: PluginHost) =>
       //  좌표계는 부수 정보가 아니라 **쓰는 법 그 자체**다.
       "★**좌표는 언제나 «직전 관측 그림의 픽셀»입니다** — 화면 좌표(전역 데스크톱 좌표)가 " +
       "아닙니다. `region` 도 클릭도 같은 기준이고, 그래서 그림을 가리키는 `frameId` 를 같이 줍니다. " +
-      "보조 모니터도 마찬가지입니다 — 그 화면을 찍은 그림의 왼쪽 위가 (0,0) 입니다.",
+      "보조 모니터도 마찬가지입니다 — 그 화면을 찍은 그림의 왼쪽 위가 (0,0) 입니다." +
+      // ★표시가 있는 플랫폼만 (2026-11-24, ⑤). 캡처 제외(`sharingType=None`)가 지켜지는지 **모르므로** 어느 쪽이어도 맞는 문장.
+      (w.indicator !== undefined
+        ? "\n★화면 가장자리 주황 빛·포인터 둘레 고리·위쪽 «제어 중» 문구는 **티구클로 자신의 표시**입니다 — " +
+          "화면에 찍혀도 앱의 일부로 읽지 마세요."
+        : ""),
     {
       saved: z.string().min(1).max(4096).optional().describe("과거 화면 결과의 저장본 참조. 다른 인자와 함께 쓰지 않습니다. 파일이 지워지거나 바뀌면 실패합니다."),
       display: z
@@ -480,7 +547,8 @@ const makeTool = (w: Wiring, host?: PluginHost) =>
         try {
           const original = await readSavedScreen(host.dataDir, host.turn.threadKey, args.saved);
           return { content: [
-            { type: "text" as const, text: `과거 화면 저장본(${original.at})입니다. 현재 화면을 관측하지 않았으며 조작용 frameId를 발급하지 않습니다.\n${savedScreenNote([args.saved])}` },
+            // 저장본에는 찍힐 때의 표시 여부가 없다 — 조건문 안내(«보이면»)만 붙인다(⑤ r4, 독립 검토 R1 결함 5).
+            { type: "text" as const, text: `과거 화면 저장본(${original.at})입니다. 현재 화면을 관측하지 않았으며 조작용 frameId를 발급하지 않습니다.\n${savedScreenNote([args.saved])}${INDICATOR_IN_SHOT}` },
             { type: "image" as const, data: original.bytes.toString("base64"), mimeType: original.mimeType, _meta: { [SAVED_SCREEN_META]: args.saved } },
           ] };
         } catch (e) {
@@ -666,7 +734,10 @@ const reportSteps = (describes: readonly string[], oc: StepsOutcome): string => 
       ? oc.status.every((s) => s === "완료")
         ? "열을 끝까지 실행했습니다."
         : "★**도중에 멈췄습니다.**"
-      : stopped.why === "front-unknown"
+      : stopped.why === "user-esc"
+        ? // ★Esc 의 «제어 반환» 안내는 마무리(`withEscHead`)가 한 번 붙인다 — 여기는 **어디서 멈췄나**만 말한다.
+          `★**${String(stopped.i + 1)}번째부터 입력을 보내지 않았습니다 — 중지 요청을 받았습니다.**`
+        : stopped.why === "front-unknown"
         ? `★**${String(stopped.i + 1)}번째 직전에 멈췄습니다 — 전면 창을 읽을 수 없었습니다.** ` +
           "모르는 상태에서는 누르지 않습니다."
         : `★**${String(stopped.i + 1)}번째 직전에 멈췄습니다 — 전면 창이 바뀌었습니다** ` +
@@ -693,16 +764,98 @@ const reportSteps = (describes: readonly string[], oc: StepsOutcome): string => 
  * ★그래서 **사본을 하나 더 만들지 않고 판정을 올렸다.** 그림이 실렸는지는 부르는 쪽만 안다.
  */
 
+/** `do` 의 반환 — ★**그림이 든다**(행동 뒤 «지금 상태», 사후 장면). Esc 가 겹친 본체 예외만 `isError`. */
+type RunResult = {
+  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string; _meta?: Record<string, unknown> }>;
+  isError?: boolean;
+};
+
+/**
+ * Esc 머리 — 기본(멈춤을 전했거나 전할 필요가 없었다) / 발사 중 멈춤 요청 파일을 못 만들었다.
+ * ★**«사용자가 눌렀다» 고 단정하지 않는다** (2026-11-24, ⑤ Windows 확대 — 설계 `…-indicator-esc-windows.md` §3-5). 감지는 키 상태
+ *  하나라 이 조작이 보낸 `esc` 키와 사람의 Esc 를 못 가른다(Windows `GetAsyncKeyState` 는 `SendInput` 도 본다 · 맥은 미검증).
+ *  가르려면 모든 키를 받아야 해서 하지 않고, 감지된 Esc 는 언제나 멈춤이다(물리 사용자 중단 우선) — 대신 문구가 정직하다.
+ */
+const ESC_HEAD =
+  "★**중지 요청이 감지되어 조작을 멈췄습니다 — 제어는 사용자에게 돌아갔습니다.** (화면 표시의 중지 단추이거나 Esc 입니다. " +
+  "Esc 는 이 조작이 보낸 `esc` 키일 수도 있습니다 — 둘은 구별되지 않습니다.) 아래 안내에 «다시 시도» 가 있어도 " +
+  "**다시 시도하지 마세요** — 사용자가 새 메시지를 보낼 때까지 `do` 는 거절됩니다. 어디까지 했는지 알리고 지시를 기다리세요.";
+const ESC_HEAD_UNDELIVERED =
+  "★**중지 요청이 감지됐지만 진행 중이던 입력에 멈춤을 전하지 못했습니다** — 아래 단계 상태대로 남은 단계가 " +
+  "실행됐을 수 있습니다. 제어는 사용자에게 돌아갔습니다. **다시 시도하지 마세요** — 사용자가 새 메시지를 보낼 때까지 " +
+  "`do` 는 거절됩니다. 어디까지 했는지 알리고 지시를 기다리세요.";
+
+/**
+ * **마무리 — Esc 머리를 한 번** (2026-11-24, ⑤). `beginAction` 을 통과한 호출이면 어느 반환 경로든 여기를 지난다.
+ * ★머리는 `call.requested` 로만 붙인다(`stoppedAt.why === "user-esc"` 는 **멈춘 단계**의 근거일 뿐 — 같은 판단 두 자리 금지).
+ */
+const withEscHead = (res: RunResult, call: CallStop): RunResult => {
+  if (!call.requested) return res;
+  const head = call.delivered === false ? ESC_HEAD_UNDELIVERED : ESC_HEAD;
+  const i = res.content.findIndex((c) => c.type === "text");
+  if (i < 0) return { ...res, content: [{ type: "text", text: head }, ...res.content] };
+  const content = [...res.content];
+  const first = content[i] as { type: "text"; text: string };
+  content[i] = { type: "text", text: `${head}\n\n${first.text}` };
+  return { ...res, content };
+};
+
+/** 행동 사이 중지 정리의 점유 이름 — 그 사이 다른 `do` 는 `busy-other` 로 막히고 이 이름이 그 거절문에 보인다(그래서 사람을 주어로 안 쓴다). */
+const ESC_RELEASE_OWNER = "중지 뒤 입력 정리";
+
+/**
+ * **중지 — 결정 한 곳** (2026-11-24, ⑤ 설계 §3-3 · r4 §11-2). 감지는 표시 도우미 하나(Esc 키 상태 · 중지 단추 클릭), 결정은 여기,
+ *  실행부는 멈춤 요청 파일만 따른다. 어디서 왔든(`via`) 결정은 같다 — 로그와 내림 사유만 다르다.
+ *
+ *  잠금(모든 소유자) · 리스 해제 → 표시 내림 → A. 진행 중 호출마다 `requested`, 발사 중이면 멈춤 요청 파일 생성
+ *  → B. 입력 점유가 없고 장부가 남았으면 그 자리에서 해제(점유를 쥔 채 — 사람 메시지로 잠금이 풀려도 새 `do` 가 겹치지 않게).
+ */
+const onUserStop = async (w: Wiring, host: PluginHost | undefined, via: StopVia): Promise<void> => {
+  const d = w.desktop;
+  const log = (m: string): void => host?.log(m);
+  const what = via === "button" ? "중지 단추" : "Esc";
+  userStopped(d, Date.now());
+  if (w.indicator !== undefined) hideIndicator(w.indicator, what, log);
+  log(`${what} 감지 — 제어를 사용자에게 돌려줌(사람이 새 메시지를 보낼 때까지 조작 잠금)`);
+  for (const c of d.calls) {
+    c.requested = true;
+    if (c.posting && c.file !== undefined && c.delivered === undefined) {
+      try {
+        writeFileSync(c.file, "");
+        c.delivered = true;
+      } catch (e) {
+        c.delivered = false;
+        log(`${what} 멈춤 요청을 실행부에 전하지 못함 — ${String(e).slice(0, 160)}`);
+      }
+    }
+  }
+  const ctl = w.control;
+  if (ctl === null || d.active !== null || (d.held.keys.length === 0 && d.held.buttons.length === 0)) return;
+  d.active = { owner: ESC_RELEASE_OWNER, startedMs: Date.now() };
+  try {
+    const released = await ctl.post(releasePlan(d));
+    if (released.ok) forgetHeld(d);
+    else log(`${what} 정리 — 눌린 입력 해제 실패(${released.reason}: ${released.detail})`);
+  } catch (e) {
+    log(`${what} 정리 — 눌린 입력 해제 실패(${String(e).slice(0, 160)})`);
+  } finally {
+    // ★정리 입력도 «우리 입력» 이다 — 안 찍으면 다음 행동이 그걸 사람으로 오인한다.
+    d.lastSelfInputMs = Date.now();
+    if (d.active !== null && d.active.owner === ESC_RELEASE_OWNER) d.active = null;
+  }
+};
+
+/** 표시 문구 — 사용자 화면에 닿는 글이라 카탈로그로(설정 언어). */
+const indicatorLabel = (host: PluginHost | undefined): string =>
+  translate("srv.computerUse.indicator", undefined, host?.locale);
+
 const runSteps = async (
   w: Wiring,
   frameId: string,
   raw: readonly RawStep[],
   host: PluginHost | undefined,
   signal?: AbortSignal,
-  // ★반환에 **그림이 든다** — `do` 는 행동 뒤 «지금 상태» 를 같이 돌려준다(사후 장면).
-): Promise<{
-  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string; _meta?: Record<string, unknown> }>;
-}> => {
+): Promise<RunResult> => {
   const cancelled = (): boolean => signal?.aborted === true;
   const cancelledBeforeInput = () => textOnly("조작이 취소되었습니다 — 새 입력을 보내지 않았습니다.");
   if (cancelled()) return cancelledBeforeInput();
@@ -774,6 +927,39 @@ const runSteps = async (
   // ★한 번이라도 통과했으면 **그 소유자의** 연속은 끊긴 것이다 — 남의 것은 안 건드린다.
   w.desktop.blocked.delete(owner);
 
+  // ★★**호출 기록 — `beginAction` 통과 직후 동기로** (2026-11-24, ⑤ 설계 §3-3). 이 뒤 어느 순간의 Esc 도
+  //  «플래그(`requested`)를 보거나 멈춤 요청 파일을 만나거나» 둘 중 하나다. 입력 점유(`active`)는 `endAction` 에서
+  //  끝나지만 이 기록은 **사후 관측까지 다 끝난 뒤** 뺀다 — 그 사이 온 Esc 도 이 호출의 보고에 실린다.
+  const call: CallStop = {
+    requested: false,
+    posting: false,
+    ...(w.indicator !== undefined ? { file: path.join(w.indicator.stopDir, `tiguclaw-cu-stop-${randomUUID()}`) } : {}),
+  };
+  w.desktop.calls.add(call);
+  if (w.indicator !== undefined) {
+    // 앞서 내린 표시가 끝나기를 잠깐 기다린 뒤 띄운다(정상은 수 ms) — 안 끝났으면 `showIndicator` 가 새로 띄우지 않고, 누름은 `clearPillFor` 가 막는다.
+    if (w.indicator.zombies.size > 0) await settleZombies(w.indicator, signal);
+    // 기다리는 사이 중지·취소됐으면 띄우지 않는다(중지로 내린 표시가 리스 없이 되살아나지 않게 — R6). 플러그인 종료는 `halted` 가 막는다.
+    if (!call.requested && !cancelled()) {
+      showIndicator(w.indicator, owner, indicatorLabel(host), (via) => void onUserStop(w, host, via), (m) => host?.log(m));
+    }
+  }
+  try {
+    return withEscHead(await afterBegin(), call);
+  } catch (e) {
+    // ★Esc 가 겹친 본체 예외 — 오류 상태는 지키고(`isError`), 잠금이 걸린 뒤라 «오류 → 재시도» 로 가지 않게 머리가 먼저 말한다.
+    //  Esc 가 없으면 **종전처럼 그대로 던진다**(MCP 서버가 오류 결과로 바꾼다 — 동작 무변).
+    if (!call.requested) throw e;
+    return { ...withEscHead(textOnly(`조작 도중 오류가 났습니다: ${String(e).slice(0, 200)}`), call), isError: true };
+  } finally {
+    w.desktop.calls.delete(call);
+    if (call.file !== undefined) await fs.rm(call.file, { force: true }).catch(() => {});
+  }
+
+  async function afterBegin(): Promise<RunResult> {
+    // `ctl` 은 위에서 null 을 걸렀다 — 이 함수는 그 뒤에서만 불린다.
+    const ctl = w.control as NonNullable<Wiring["control"]>;
+
   // ★★**이전 정리 실패분을 먼저 갚는다** (2026-09-19, 아스트라 외부 검토 ⑩).
   //  잔여가 있으면 화면 상태가 **이미 오염**돼 있다(shift 가 눌린 채라면 다음 클릭이
   //  범위 선택이 된다). 그 위에서 새 열을 쏘면 결과가 달라진다.
@@ -843,17 +1029,42 @@ const runSteps = async (
     //  것 전부**를 올린다.
     //  ★**대입이 아니라 병합**이다 — 대입은 이전 정리 실패분을 잃는다(위에서 갚았으므로
     //   보통 비어 있지만, 비어 있음에 기대지 않는다).
+    // ★**표시의 중지 단추를 우리 누름이 누르지 않게 — 발사 전에 부모가 한 곳에서**(⑤ r4, 독립 검토 R1~R4 · 설계 §11-3).
+    //  누름 점(`mousedown`·`scroll`)이 단추 자리에 걸리면 비키게 하고 응답(실제 새 자리)을 받은 뒤에만, 준비·응답이 없으면 그 세대를
+    //  내리고 종료를 확인한 뒤에만 보낸다. 발사 도중엔 단추가 움직이지 않는다(요청은 여기서만). 실행부는 단추를 모른다.
+    if (w.indicator !== undefined) {
+      const points = p.events.flatMap((e) => (e.t === "mousedown" || e.t === "scroll" ? [{ x: e.x, y: e.y }] : []));
+      const clear = await clearPillFor(w.indicator, points, (m) => host?.log(m), signal);
+      if (!clear.ok) {
+        if (clear.why === "cancelled") return cancelledBeforeInput();
+        host?.log(`조작 거절 — 표시의 중지 단추(${clear.why})`);
+        return textOnly(
+          clear.why === "pill-in-both"
+            ? "입력을 보내지 않았습니다 — 이 열이 누를 자리가 화면 표시의 중지 단추의 **위·아래 두 자리 모두**에 걸립니다" +
+                "(단추를 누르면 조작이 «중지» 됩니다). 열을 나눠(위쪽 자리와 아래쪽 자리를 따로) 다시 보내세요."
+            : "입력을 보내지 않았습니다 — 화면 표시의 중지 단추가 누를 자리와 겹치지 않는지 확인하지 못했습니다" +
+                "(표시를 내렸지만 꺼진 것을 확인하지 못함). 잠시 뒤 `look` 으로 다시 보고 시도하세요.",
+        );
+      }
+    }
     if (cancelled()) return cancelledBeforeInput();
+    // ★사용자 Esc — MCP 취소와 **따로** 본다(문구가 다르다). 이 검사와 `posting = true` 사이에 `await` 가 없다.
+    if (call.requested) return textOnly("중지 요청이 감지되어 입력을 보내지 않았습니다.");
     w.desktop.held = mergeHeld(w.desktop.held, p.touched);
     fired = true;
+    call.posting = true;
     let postThrew = false;
     let sent: Awaited<ReturnType<ControlBackend["post"]>>;
     try {
-      sent = await ctl.post(p.events, signal);
+      // 멈춤 요청 파일은 **본 입력에만** — 해제 post 는 멈추면 안 된다.
+      sent = await ctl.post(p.events, signal, call.file !== undefined ? { stopFile: call.file } : undefined);
     } catch (e) {
       postThrew = true;
       // 실행부의 예상 밖 거부도 정리와 현재 결과를 건너뛰지 않는다. 진행은 알 수 없다.
       sent = { ok: false, reason: "failed", detail: String(e), stdout: "" };
+    } finally {
+      // ★성공·거부 어느 쪽이든 본 발사가 끝난 순간 내린다 — 그 뒤(해제 대기·사후 관측)의 Esc 는 파일을 안 만든다.
+      call.posting = false;
     }
     w.desktop.lastSelfInputMs = Date.now();
     // ★★**판독이 먼저다 — 그 다음에 장부를 줄인다** (2026-09-20, 회사돌쇠 독립 검토).
@@ -926,6 +1137,8 @@ const runSteps = async (
     //  ★★단 **프레임은 «쐈을 때만» 버린다** — 계획 단계 거절은 화면을 안 바꿨으므로,
     //   거절 문구가 말하는 *"좌표를 고쳐 다시"* 가 실제로 가능해야 한다.
     endAction(w.desktop, owner, Date.now(), { keepFrames: !fired });
+    // 표시 수명 = 리스 유효성 — 행동이 끝날 때마다 유휴 타이머를 다시 건다.
+    if (w.indicator !== undefined) settleIndicator(w.indicator, w.desktop, (m) => host?.log(m));
   }
 
   // ★★**사후 장면** — 행동이 끝나면 **지금 상태를 돌려준다**(§15-23·§15-26).
@@ -954,6 +1167,7 @@ const runSteps = async (
     return textOnly(
       `${report}\n${nextAfterCapture(undefined, false)}\n\n★사후 화면을 찍지 못했습니다(${String(e).slice(0, 80)}).`,
     );
+  }
   }
 };
 
@@ -1035,7 +1249,12 @@ const actionTools = (w: Wiring, host?: PluginHost) => [
                   "★★`home`·`end`·`pageup`·`pagedown` 은 **쓰지 마세요 — 두 플랫폼에서 뜻이 다릅니다.** " +
                   "Windows 는 캐럿을 옮기지만 **맥은 화면만 스크롤하고 삽입점은 그대로**입니다(2026-09-19 실측). " +
                   "줄 맨 앞/끝은 맥에서 `cmd`+`left`/`right` 입니다. 받아는 주지만 **결과가 갈립니다.**\n" +
-                  "★**누른 것은 반드시 이 열 안에서 뗍니다** — 짝이 안 맞으면 거절합니다",
+                  "★**누른 것은 반드시 이 열 안에서 뗍니다** — 짝이 안 맞으면 거절합니다" +
+                  // ★표시가 있는 플랫폼만 (2026-11-24, ⑤ Windows 확대 §3-5) — 감지가 키 상태 하나라 우리 `esc` 와 사람의 Esc 를 못 가른다.
+                  (w.indicator !== undefined
+                    ? "\n★제어 표시가 떠 있는 동안 보낸 `esc` 는 사용자의 Esc(멈춤·제어 반환)와 구별되지 않을 수 있습니다 — " +
+                      "메뉴·대화상자는 닫기 단추 등 다른 길이 있으면 그쪽을 쓰세요."
+                    : ""),
               ),
             ms: z.number().int().min(0).max(5_000).optional().describe("wait 이 보낼 시간(ms)"),
           }),
@@ -1064,14 +1283,47 @@ export const createTools = (
 ];
 
 export default class ComputerUsePlugin {
-  /** 상시 돌 것이 없다 — 캡처는 도구 호출 때만 일어난다. */
-  async startService(): Promise<void> {}
+  /**
+   * ★**배선 하나** (2026-11-24, ⑤) — 서비스(이벤트 구독)와 턴별 도구(`getMcpServer`)가 **같은** 데스크톱·표시를 쓴다.
+   *  로더는 인자 없이 `new` 한 번 하므로(`src/core/plugins/loader.ts`) 제품은 `realWiring()`(모듈 싱글턴들)이고,
+   *  검사는 자기 배선을 넣어 같은 인스턴스로 서비스와 두 턴의 도구를 부른다.
+   */
+  private readonly w: Wiring;
+  private unsubscribe: (() => void) | null = null;
+
+  constructor(w: Wiring = realWiring()) {
+    this.w = w;
+  }
+
+  /**
+   * 캡처는 도구 호출 때만 일어난다. 상시로 하는 일은 하나 — **사람의 새 메시지가 Esc 잠금을 푸는지** 본다(⑤).
+   * ★채널이 찍은 수신 시각(`receivedAt`)이 잠금 시각보다 엄격히 클 때만 푼다(`resumeByHuman`).
+   */
+  async startService(_bus?: unknown, host?: PluginHost): Promise<void> {
+    if (host === undefined || this.unsubscribe !== null) return;
+    const d = this.w.desktop;
+    if (this.w.indicator !== undefined) this.w.indicator.halted = false;
+    this.unsubscribe = host.on("channel.message.in", (ev) => {
+      const at = humanReceivedAt(ev);
+      if (at !== null && resumeByHuman(d, at)) host.log("사람의 새 메시지 — Esc 조작 잠금을 풀었습니다");
+    });
+  }
+
+  async stop(): Promise<void> {
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    if (this.w.indicator !== undefined) {
+      // 먼저 멈춤을 세운다 — 진행 중 호출이 그 뒤에 표시를 다시 띄우지 않게(누름은 `clearPillFor` 가 잔존 끝남을 확인해야 보낸다).
+      this.w.indicator.halted = true;
+      hideIndicator(this.w.indicator, "플러그인 종료", (m) => console.log(`[plugin:computer-use] ${m}`));
+    }
+  }
 
   getMcpServer(host?: PluginHost): McpSdkServerConfigWithInstance | undefined {
     // ★실행부가 없는 플랫폼에선 **도구를 아예 안 낸다** — 있는 척하고 실패하는 것보다 없는
     //  게 낫다(모델이 «되는데 잘못했나» 를 시도하지 않는다). 지금은 mac·Windows 둘이고,
     //  Linux(X11/Wayland)는 구현이 없다.
-    const w = realWiring();
+    const w = this.w;
     if (w.observe === null) return undefined;
     return createSdkMcpServer({
       name: "computer-use",

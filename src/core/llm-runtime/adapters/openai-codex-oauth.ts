@@ -691,6 +691,8 @@ export const runOpenAiCodex = async (
   const depth = input.subagentDepth ?? 0;
   // ★도구 노출 사다리 — 판정은 `capability-reach.ts` 한 곳(claude·openai 와 같은 표).
   const turnKind = turnKindOf(input);
+  // 스킬 서버(`invoke_skill`·`find_skills`)와 `find_capabilities` 의 플러그인 스킬 항목이 **같은** cwd·칸을 쓴다 — 한 번 만들어 둘에 넘긴다(⑥).
+  const skillScope = { cwd: discoveryCwd, turn: turnKind };
   const agentIndex =
     depth === 0
       ? formatAgentIndex(await discoverAgents(discoveryCwd))
@@ -833,12 +835,12 @@ export const runOpenAiCodex = async (
   // V9.3 — 싱글톤 → factory. cwd 는 위 스킬 인덱스(discoverSkills(discoveryCwd))와
   // 동일 소스로 호출 → 인덱스↔invoke cwd 정합(비대칭 해소). β: discoveryCwd = home 폴백.
   const skillBridge = await adaptClaudeMcpServer(
-    createSkillInvokeMcpServer(discoveryCwd, {
+    createSkillInvokeMcpServer(skillScope.cwd, {
       channel: input.channel,
       threadKey: input.threadKey,
       adapter: "codex",
           // 이 턴의 칸 — find_skills 가 자기 칸 스킬만 돌려주게(인덱스와 같은 규칙).
-          turn: turnKindOf(input),
+          turn: skillScope.turn,
     }),
     "skills",
   );
@@ -1168,6 +1170,7 @@ export const runOpenAiCodex = async (
         capabilityActiveNames,
         undefined,
         input.extraMcpServers,
+        skillScope,
       ),
       "find-capabilities",
     );

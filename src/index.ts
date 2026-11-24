@@ -79,7 +79,7 @@ import {
   listLivePlugins,
   trackPlugin,
 } from "./core/plugins/manager.js";
-import { channelPluginName, wirePlugin } from "./core/plugins/wire.js";
+import { channelPluginName, drainStops, wirePlugin } from "./core/plugins/wire.js";
 import {
   startSelfMaintenance,
   stopSelfMaintenance,
@@ -707,6 +707,7 @@ const publishInboundEcho = (
     replyToText?: string;
     replyToRef?: IncomingMessage["replyToRef"];
     replyToAt?: number;
+    receivedAt?: number;
   },
   /** `ephemeral: true` = 발행은 하되 **적재는 안 한다**(event-persist 가 판정). */
   opts?: { ephemeral?: boolean },
@@ -760,6 +761,9 @@ const publishInboundEcho = (
       ...(msg.correlationId !== undefined && msg.correlationId !== ""
         ? { correlationId: msg.correlationId }
         : {}),
+      // 채널이 받은 시각(2026-11-24) — 발행 시각(`ts`)과 다르다(줄에 섰거나 묶였던 메시지는 늦게 발행된다). 실시간 구독자용이고
+      //  적재엔 안 간다(`event-persist` 는 이 이벤트를 선별 필드로만 적재). 소비처: computer-use 의 Esc 잠금 해제(«Esc 뒤에 받은 메시지»).
+      ...(typeof msg.receivedAt === "number" ? { receivedAt: msg.receivedAt } : {}),
     },
   });
 };
@@ -1913,24 +1917,18 @@ const shutdown = async (signal: string): Promise<void> => {
       `bg-shells kill failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  for (const ch of channels) {
-    shutdownProgress.step(`채널 ${ch.name} 정지`);
-    try {
-      await ch.stop();
-    } catch (e) {
-      const err = e instanceof Error ? e.message : String(e);
-      console.error(`${ch.name} stop failed: ${err}`);
-    }
-  }
-  for (const svc of serviceStops) {
-    shutdownProgress.step(`서비스 ${svc.name} 정지`);
-    try {
-      await svc.stop();
-    } catch (e) {
-      const err = e instanceof Error ? e.message : String(e);
-      console.error(`service ${svc.name} stop failed: ${err}`);
-    }
-  }
+  // 채널 → 서비스. ★항목을 배열에서 **꺼낸 뒤** 부른다(`drainStops`) — 끄기·제거와 겹쳐도 stop 1회, 순회 중
+  //  앞 항목이 빠져도 뒤를 안 건너뛴다(2026-11-20, C1). 채널 소비가 끝난 뒤 새로 붙은 채널은 보지 못한다(한계).
+  await drainStops(
+    channels,
+    (name) => shutdownProgress.step(`채널 ${name} 정지`),
+    (name, err) => console.error(`${name} stop failed: ${err}`),
+  );
+  await drainStops(
+    serviceStops,
+    (name) => shutdownProgress.step(`서비스 ${name} 정지`),
+    (name, err) => console.error(`service ${name} stop failed: ${err}`),
+  );
   // (자식 정리는 위로 옮겼다 — force-exit 백스톱에 잘리지 않게. 아래 exit 훅이 최후 그물.)
   process.exit(0);
 };

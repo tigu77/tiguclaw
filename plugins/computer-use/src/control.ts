@@ -46,6 +46,15 @@ export type Button = "left" | "right" | "middle";
  */
 export type LowEvent =
   | { t: "mousemove"; x: number; y: number }
+  /**
+   * **실제 포인터를 목표까지 미끄러뜨린다** (2026-11-24, ⑤ r4 — 설계 `…-indicator-esc.md` §11).
+   *
+   * ★사람(원격 포함)이 «어디로 가서 누르나» 를 눈으로 따라가게 한다 — 가짜 포인터가 아니라 **OS 커서 자체**가 움직인다.
+   *  출발점은 실행부가 그 순간 읽은 커서 자리다(계획기는 모른다). 중간점은 `mousemove` 와 같은 이벤트라 버튼·키를 누르지 않는다.
+   * ★포인터 동작(클릭·스크롤·드래그 시작) **앞에만** 온다. 미끄러지는 도중과 끝에 멈춤 요청을 본다(눌린 것이 없어 끊어도
+   *  남는 것이 없다). 표시의 중지 단추를 피하는 것은 실행부가 아니라 **부모가 발사 전에** 한다(`clearPillFor` — 설계 §11-3).
+   */
+  | { t: "glide"; x: number; y: number }
   | { t: "mousedown"; x: number; y: number; button: Button; count: number }
   /**
    * ★좌표가 **선택**이다 — 없으면 실행부가 «지금 커서 자리» 에서 뗀다. 정리(`releasePlan`)는
@@ -278,6 +287,32 @@ export interface Desktop {
    *  연속까지 지웠다.** 소유자별로 들면 둘 다 없어진다.
    */
   blocked: Map<string, { reason: string; n: number }>;
+  /**
+   * **사용자가 Esc 로 제어를 돌려받았다** (2026-11-24, 설계 `docs/decisions/2026-11-24-computer-use-indicator-esc.md`).
+   *
+   * ★데스크톱 전체다(소유자 무관) — Esc 는 «이 기계에서 손 떼라» 이고 사람은 한 명이다. 풀리는 것은
+   *  잠금 뒤에 **받은** 사람 메시지 하나뿐이다(`resumeByHuman`). 데몬 재시작은 메모리라 푼다.
+   */
+  handback: { atMs: number } | null;
+  /**
+   * **`beginAction` 을 통과한 `do` 호출들의 보고 수명** — 입력 점유(`active`)와 **별개**다.
+   *
+   * ★`active` 는 `endAction` 에서 끝나고 그 **뒤에** 사후 관측이 돈다(프레임 무효화 계약). 그 사이에 온
+   *  Esc 도 그 호출의 보고에 실려야 해서, 호출이 완전히 반환될 때까지 따로 든다.
+   */
+  calls: Set<CallStop>;
+}
+
+/** `do` 호출 하나의 Esc 기록 — `onUserEsc` 가 쓰고, 그 호출의 마무리가 읽는다. */
+export interface CallStop {
+  /** Esc 가 이 호출 도중에 왔다. */
+  requested: boolean;
+  /** 본 입력 `post` 가 지금 돌고 있다(실행부에 멈춤 요청 파일을 전할 수 있는 유일한 구간). */
+  posting: boolean;
+  /** 실행부가 볼 멈춤 요청 파일(표시가 있는 플랫폼만). */
+  file?: string;
+  /** 발사 중 Esc 에서 그 파일을 만들었나 — `false` 면 실행부에 멈춤을 **못 전했다**. */
+  delivered?: boolean;
 }
 
 export const newDesktop = (): Desktop => ({
@@ -287,12 +322,45 @@ export const newDesktop = (): Desktop => ({
   frames: new Map(),
   lastSelfInputMs: null,
   blocked: new Map(),
+  handback: null,
+  calls: new Set(),
 });
 
 export const LEASE_IDLE_MS = 60_000;
 
+/**
+ * **리스가 아직 유효한가** — 만료 판정 한 곳. `beginAction` 과 표시 수명(`indicator.ts`)이 같이 부른다.
+ * ★두 자리에서 식을 따로 쓰면 «리스는 살았는데 표시는 내렸다» 가 생긴다.
+ */
+export const leaseLive = (d: Desktop, nowMs: number, leaseIdleMs: number = LEASE_IDLE_MS): boolean =>
+  d.lease !== null && nowMs - d.lease.lastTouchedMs < leaseIdleMs;
+
+/**
+ * **사용자가 Esc 로 멈췄다** — 잠금을 걸고 리스를 놓는다(모든 소유자). 진행 중 호출의 기록·해제는
+ * 부르는 쪽(`onUserEsc`)이 한다 — 여기는 상태 전이만.
+ */
+export const userStopped = (d: Desktop, nowMs: number): void => {
+  d.handback = { atMs: nowMs };
+  d.lease = null;
+};
+
+/**
+ * **사람의 새 메시지로 잠금을 푼다** — `receivedAt` 가 잠금 시각보다 **엄격히** 클 때만.
+ *
+ * ★엄격 비교는 **여기 한 곳**이다. 채널의 `receivedAt` 는 실제 도착보다 이를 수는 있어도 늦지 않으므로
+ *  Esc 전에 보낸 메시지(줄에 섰다·묶였다 Esc 뒤 발행돼도)는 풀지 못한다. 이르면 잠금이 더 갈 뿐이다.
+ * @returns 풀었나
+ */
+export const resumeByHuman = (d: Desktop, receivedAtMs: number): boolean => {
+  if (d.handback === null || !(receivedAtMs > d.handback.atMs)) return false;
+  d.handback = null;
+  return true;
+};
+
 export type Begin =
   | { ok: true }
+  /** ★사용자가 Esc 로 제어를 돌려받았다 — 사람이 새 메시지를 보낼 때까지 아무도 못 한다. */
+  | { ok: false; reason: "user-stopped" }
   | { ok: false; reason: "busy-other"; heldBy: string }
   | { ok: false; reason: "busy-self" }
   | { ok: false; reason: "user-active" }
@@ -323,6 +391,8 @@ export const beginAction = (
   idleSeconds: number | null,
   opts?: { leaseIdleMs?: number; userWindowMs?: number },
 ): Begin => {
+  // ★**사람이 Esc 로 멈췄으면 맨 먼저 막는다** — 유휴를 못 읽어도 «사람이 멈췄다» 가 더 정확한 사유다.
+  if (d.handback !== null) return { ok: false, reason: "user-stopped" };
   // ★**모르면 막는다 — 다만 «모른다» 고 말한다.** 판정 불가를 «사람이 쓰는 중» 으로
   //  보고하면 원인이 가려진다(실행부 실패가 그렇게 숨었다).
   if (idleSeconds === null || !Number.isFinite(idleSeconds)) {
@@ -338,8 +408,7 @@ export const beginAction = (
       ? { ok: false, reason: "busy-self" }
       : { ok: false, reason: "busy-other", heldBy: d.active.owner };
   }
-  const expired = d.lease !== null && nowMs - d.lease.lastTouchedMs >= (opts?.leaseIdleMs ?? LEASE_IDLE_MS);
-  if (d.lease !== null && !expired && d.lease.owner !== owner) {
+  if (d.lease !== null && leaseLive(d, nowMs, opts?.leaseIdleMs) && d.lease.owner !== owner) {
     return { ok: false, reason: "busy-other", heldBy: d.lease.owner };
   }
   d.lease = { owner, lastTouchedMs: nowMs };
@@ -521,6 +590,13 @@ export const BLOCKED_ASK_USER_AT = 3;
 
 export const beginRejection = (b: Exclude<Begin, { ok: true }>, streak = 1): string => {
   switch (b.reason) {
+    case "user-stopped":
+      return (
+        // ★«사용자가 눌렀다» 고 단정하지 않는다 — 이 조작이 보낸 `esc` 키와 구별되지 않는다(2026-11-24, ⑤ Windows 확대 §3-5).
+        "중지 요청(화면 표시의 중지 단추 또는 Esc)으로 조작이 멈추고 제어가 사용자에게 돌아갔습니다. 사용자가 새 메시지를 보낼 때까지 조작(`do`)은 " +
+        "거절됩니다 — **다시 시도하지 말고**, 어디까지 했는지 사용자에게 알리고 지시를 기다리세요. " +
+        "화면 보기(`look`)는 됩니다."
+      );
     case "user-active":
       // ★★**«기다려라» 에 끝을 붙인다.** 사용자가 계속 쓰고 있으면 기다림은 안 풀린다 —
       //  그때 필요한 것은 더 기다리는 게 아니라 **사람에게 말하는 것**이다.
@@ -744,7 +820,13 @@ export const supportedKey = (rawName: string, platform?: string): boolean => {
  */
 export const postTimeoutMs = (events: readonly LowEvent[], baseMs: number): number => {
   let ms = baseMs;
-  for (const e of events) ms += e.t === "wait" ? e.ms : e.t === "unicode" ? 500 : 20;
+  for (const e of events)
+    ms +=
+      e.t === "wait" ? e.ms
+      : e.t === "unicode" ? 500
+      : e.t === "glide" ? GLIDE_MAX_MS + GLIDE_TICK_MS + 40
+      : e.t === "mousedown" ? CLICK_HOLD_MS + 20
+      : 20;
   return ms;
 };
 
@@ -760,6 +842,23 @@ export const postTimeoutMs = (events: readonly LowEvent[], baseMs: number): numb
  *  그만큼 굴렸으면 화면이 완전히 달라져 있다.
  */
 export const SCROLL_MAX = 6_000;
+
+/**
+ * **미끄러짐 박자** (2026-11-24, ⑤ r4) — 두 실행부가 같은 수를 쓴다(값은 env 로 넘기지 않고 이 상수를 스크립트에 박는다).
+ *
+ * ★**시간으로 정한다**(0.1초 후보, 2026-11-24) — 길이 = `min(GLIDE_MAX_MS, GLIDE_MIN_MS + 거리 × GLIDE_MS_PER_PX)`(400px 이상 = 100ms,
+ *  짧을수록 짧게). 실행부는 **경과 시간**으로 진행도를 구해 점을 찍는다. r4 는 «중간점 수 × 박자» 였는데 박자마다 실행부 오버헤드가
+ *  붙어 맥 빈 연습 실측 긴 이동이 216ms 가 아니라 ~309ms 였다 — 박자를 세면 기계마다 길이가 갈린다.
+ * ★진행 곡선 = ease-out 3차(`1-(1-u)^3`) — 출발은 빠르고 **목표 직전에 감속**한다. 끝점은 곡선이 아니라 뒤따르는 `mousemove` 가 정확히 찍는다.
+ * ★`GLIDE_TICK_MS` 는 점 사이 쉼(밀도)일 뿐 길이를 정하지 않는다(Windows `Start-Sleep` 은 타이머 해상도로 더 쉬어도 길이는 같다).
+ * ★`CLICK_HOLD_MS` — 버튼을 누른 채 두는 시간. 표시 도우미가 «눌렸다» 를 보고 고리를 번쩍이게 할 만큼(맥 도우미 주기 실측 ~38ms 의
+ *  2배 이상), 사람의 보통 클릭(80~120ms) 수준. 더블클릭 간격(기본 500ms)에 넉넉히 든다.
+ */
+export const GLIDE_MAX_MS = 100;
+export const GLIDE_MIN_MS = 30;
+export const GLIDE_MS_PER_PX = 0.175;
+export const GLIDE_TICK_MS = 8;
+export const CLICK_HOLD_MS = 80;
 
 /**
  * **열 → 이벤트 목록** — 순수. 좌표 변환도 장부 계산도 여기서 **한 번만** 일어난다.
@@ -811,6 +910,7 @@ export const planSteps = (
         const button = st.button ?? "left";
         const count = st.count ?? 1;
         touchButton(button);
+        events.push({ t: "glide", x: pt.x, y: pt.y });
         events.push({ t: "mousemove", x: pt.x, y: pt.y });
         for (let n = 1; n <= count; n += 1) {
           events.push({ t: "mousedown", x: pt.x, y: pt.y, button, count: n });
@@ -835,6 +935,7 @@ export const planSteps = (
         const first = pts[0];
         const last = pts[pts.length - 1];
         if (first === undefined || last === undefined) return { ok: false, why: "empty" };
+        events.push({ t: "glide", x: first.x, y: first.y });
         events.push({ t: "mousemove", x: first.x, y: first.y });
         events.push({ t: "mousedown", x: first.x, y: first.y, button, count: 1 });
         // ★★**구간마다 «사이» 를 채운다** — 준 점만 쏘면 두 점짜리 경로가 **한 번에 튄다.**
@@ -871,6 +972,7 @@ export const planSteps = (
         if (st.dx === 0 && st.dy === 0) return { ok: false, why: "empty" };
         const pt = imagePointToScreen({ x: st.x, y: st.y }, frame.geometry);
         if (pt === null) return { ok: false, why: "offscreen" };
+        events.push({ t: "glide", x: pt.x, y: pt.y });
         events.push({ t: "mousemove", x: pt.x, y: pt.y });
         events.push({ t: "scroll", x: pt.x, y: pt.y, dx: st.dx, dy: st.dy });
         describes.push(`그림 (${st.x},${st.y}) 에서 dx=${st.dx} dy=${st.dy} 만큼 굴렸습니다`);
@@ -930,8 +1032,11 @@ export type StepStatus = "완료" | "불명" | "미실행";
 
 export interface StepsOutcome {
   status: StepStatus[];
-  /** 가드가 멈춘 자리(있으면). `saw` 는 그때 실제 전면 창. */
-  stoppedAt?: { i: number; why: "front-changed" | "front-unknown"; saw: string };
+  /**
+   * 가드가 멈춘 자리(있으면). `saw` 는 그때 실제 전면 창.
+   * `user-esc` = 사용자 Esc 의 멈춤 요청을 실행부가 단계 경계(또는 `wait` 도중)에서 받았다 — `saw` 는 비어 있다.
+   */
+  stoppedAt?: { i: number; why: "front-changed" | "front-unknown" | "user-esc"; saw: string };
 }
 
 /**
@@ -967,7 +1072,7 @@ export const stepsOutcome = (
       continue;
     }
     if (typeof v.step === "number") lastMark = v.step;
-    if (typeof v.stopped === "number" && (v.why === "front-changed" || v.why === "front-unknown")) {
+    if (typeof v.stopped === "number" && (v.why === "front-changed" || v.why === "front-unknown" || v.why === "user-esc")) {
       stopped = { i: v.stopped, why: v.why, saw: typeof v.saw === "string" ? v.saw : "(못 읽음)" };
     }
   }

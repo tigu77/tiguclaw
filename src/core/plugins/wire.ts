@@ -22,7 +22,6 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import type { Channel, MessageHandler } from "../../channels/types.js";
 import {
   registerChannelOutbound,
-  unregisterChannelOutbound,
   type ChannelOutbound,
 } from "../channel-outbound.js";
 import { buildToolServer, readCommandHandlers, readToolSpecs } from "./tools.js";
@@ -378,18 +377,21 @@ export const wirePlugin = async (
             : async (): Promise<void> => {
                 /* no-op */
               };
+        const wrapper: (typeof channels)[number] = { name: channelName, start: startFn, stop: stopFn };
+        // ★**이 래퍼**를 찾는다 — 이름이 아니다 (2026-11-20, C1 R1). 종료(`drainStops`)가 래퍼를 먼저 꺼내면 그
+        //  채널 이름이 비어 다른 플러그인이 같은 이름으로 붙을 수 있다 — 이름으로 찾으면 옛 인스턴스의 끄기가
+        //  **새 채널을** 빼고 멈췄다. 서비스 쪽 되돌림(`indexOf(entry)`)과 같은 규칙.
         undo.push(async () => {
-          const i = channels.findIndex((c) => c.name === channelName);
+          const i = channels.indexOf(wrapper);
           if (i >= 0) {
-            const [removed] = channels.splice(i, 1);
+            channels.splice(i, 1);
             try {
-              await removed?.stop();
+              await wrapper.stop();
             } catch {
               /* 이미 죽었을 수 있다 — 제거는 계속한다 */
             }
           }
         });
-        const wrapper: (typeof channels)[number] = { name: channelName, start: startFn, stop: stopFn };
         // presence 상태 forward(D1(b), §12.3) — 플러그인 채널은 wrapper 로 push 되므로 인스턴스가 선언한 status 를 실어야
         // presence 루프가 본다. 미선언 = 미포함 → presence `?? "up"`(회귀 0).
         // ★값이 아니라 **지금 값을 읽는다** (2026-10-09 적대 검토) — 종전엔 로드 시점 값을 복사해, 폴링이 죽어 채널이 status 를
@@ -402,17 +404,19 @@ export const wirePlugin = async (
         //  필요하다. 지금은 채널 이름과 같은 경우가 많지만 **유추하지 않는다**: 한 플러그인이
         //  다른 이름의 채널을 제공할 수 있고, 그때 «같겠지» 는 조용히 틀린다.
         channelPlugins.set(channelName, lp.manifest.name);
+        // 이름 기반 부속 등록은 **아직 내 것일 때만** 지운다 — 위 래퍼와 같은 이유(뒤에 붙은 같은 채널명의 것을 지우지 않게).
         undo.push(() => {
-          channelPlugins.delete(channelName);
+          if (channelPlugins.get(channelName) === lp.manifest.name) channelPlugins.delete(channelName);
         });
         // 아웃바운드 능력 등록(ADR 2026-07-16 §D1/§D3) — plugin 이 `outbound` 를 표명하면
         // 덕 타이핑으로 읽어 코어 레지스트리에 등록(startChannel 과 동형, §0 준수:
         // core→plugin import 0). http-bridge = 관측-전용(deliver 없음) 이지만 *등록*은 한다
         // ("미등록/unsupported" 과 구분). 코어 채널은 index.ts 의 start 루프가 등록.
         if (inst.outbound !== undefined) {
-          registerChannelOutbound(channelName, inst.outbound);
+          // 해제는 **이 등록만** — 같은 채널 이름으로 뒤에 붙은 등록은 건드리지 않는다(반환된 해제 함수가 가린다).
+          const release = registerChannelOutbound(channelName, inst.outbound);
           undo.push(() => {
-            unregisterChannelOutbound(channelName);
+            release();
           });
         }
         result.wired.push("channel");
@@ -442,89 +446,88 @@ export const wirePlugin = async (
       },
     ];
 
-    /** 이 호출이 `serviceStops` 에 건 항목 — 인스턴스당 하나(아래 판정 참조). */
-    let serviceStopEntry: { name: string; stop: () => Promise<void> } | undefined;
-    for (const { capability, hook, specific } of immediate) {
-      if (!lp.capabilities.includes(capability)) continue;
-      const startFn = resolveStartHook<EventBus>(inst, specific);
-      if (startFn === undefined) {
-        // ★**이미 무언가를 냈으면 그게 곧 그 capability 다** (2026-08-29). 종전엔 도구·
-        //  데이터 라우트를 다 등록해놓은 플러그인에게 *"아무것도 없습니다"* 라고 경고했다.
-        //  실측: 레포 밖에서 가이드대로 만든 플러그인이 첫 부팅에서 이 경고를 받았고,
-        //  작성자 입장에선 **뭘 잘못했는지 알 수 없는 거짓 신호**다(아무것도 안 틀렸다).
-        //  `service` 는 원래 "낼 것을 내는" 종류라 수명주기 훅이 필요 없다.
-        const alreadyProvides =
-          capability === "service" &&
-          (result.wired.includes("mcp") ||
-            result.wired.includes("tools") ||
-            result.wired.includes("data-routes") ||
-            result.wired.includes("command-handlers"));
-        if (!alreadyProvides) skip(capability, missingHook(capability, hook));
-        continue;
-      }
-      try {
-        // ★턴은 **없다** — 부팅 시점이라 `postCard` 처럼 대화 좌표가 필요한 것은 못 쓴다.
-        //  `createPluginHost` 가 `turn` 을 옵션으로 받으므로 그대로 두면 그 자리만 비고
-        //  나머지(설정·fetch·log·registerAuthProvider)는 그대로 온다.
-        await startFn(
-          bus,
-          createPluginHost(
-            lp.manifest.name,
-            lp.manifest.needs ?? {},
-            undefined,
-            lp.manifest.settings ?? [],
-          ),
-        );
-        // ★**`service` 뿐 아니라 `trigger`·`observer` 도 멈춘다** (2026-08-29, 적대 검토 A).
-        //  종전엔 `service`·`channel` 에만 `stop` 을 걸어서, 대시보드에서 스케줄러를 끄면
-        //  *"끔"* 이 뜨고 목록에서 사라지는데 **cron 은 계속 돌아 계속 발화했다**(실측:
-        //  dispose 전 tick 4 → 후 9). 번들 `scheduler`·`file-watch` 가 둘 다 `trigger` 이고
-        //  `stop()` 을 구현해 뒀는데 그게 한 번도 안 불렸다.
-        // ★**플러그인당 한 번만** `stop()` 을 받는다 (2026-08-29, 2R P-2 · 3R G-5).
-        //
-        //  등록이 capability 루프 안에 있어서 다중 선언 플러그인은 `stop()` 을 **N번**
-        //  받았다(실측 2·3회). 2라운드에서 `serviceStops` 안의 중복만 막았는데, **그건
-        //  내가 예시로 든 실물을 안 고쳤다** — `http-bridge`(`kind:["channel","observer"]`)
-        //  의 2회는 `channels` 와 `serviceStops` **두 배열**에서 오기 때문이다(3라운드가
-        //  실측으로 잡았다: 고친 뒤에도 여전히 2회).
-        // ★그래서 **두 배열을 다 본다.** 이미 어느 쪽에 등록됐으면 다시 안 넣는다.
-        // ★★단, 묻는 것은 **«이 인스턴스»** 의 stop 이다 — «이 이름» 이 아니다 (2026-10-09,
-        //  전체 적대 검토 P3). 종전 판정은 배열에서 **이름**을 찾았는데, 같은 이름의 다른
-        //  인스턴스(동시 설치·재설치 중 아직 안 걷힌 옛것)가 있으면 «이미 있다» 로 읽고 새
-        //  인스턴스의 stop 을 **아무 데도 안 걸었다.** 실측: 같은 이름 두 번 동시 설치 →
-        //  observer 2개 시작·stop 1개 → 제거 뒤에도 running=2(영구 누수). 되돌림도 이름으로
-        //  찾아서 **남의 stop** 을 뺄 수 있었다 — 그래서 둘 다 이 호출이 만든 것만 본다.
-        if (
-          typeof inst.stop === "function" &&
-          serviceStopEntry === undefined &&
-          !result.wired.includes("channel")
-        ) {
-          const entry = { name: lp.manifest.name, stop: inst.stop.bind(inst) };
-          serviceStopEntry = entry;
-          undo.push(async () => {
-            const i = serviceStops.indexOf(entry);
-            if (i >= 0) {
-              serviceStops.splice(i, 1);
-              try {
-                await entry.stop();
-              } catch {
-                /* 이미 죽었을 수 있다 */
-              }
-            }
-          });
-          serviceStops.push(entry);
+    /** 즉시 시작 훅을 하나라도 불렀나 — 정리(`stop`) 등록의 기준(아래 `finally`). */
+    let startAttempted = false;
+    try {
+      for (const { capability, hook, specific } of immediate) {
+        if (!lp.capabilities.includes(capability)) continue;
+        const startFn = resolveStartHook<EventBus>(inst, specific);
+        if (startFn === undefined) {
+          // ★**이미 무언가를 냈으면 그게 곧 그 capability 다** (2026-08-29). 종전엔 도구·
+          //  데이터 라우트를 다 등록해놓은 플러그인에게 *"아무것도 없습니다"* 라고 경고했다.
+          //  실측: 레포 밖에서 가이드대로 만든 플러그인이 첫 부팅에서 이 경고를 받았고,
+          //  작성자 입장에선 **뭘 잘못했는지 알 수 없는 거짓 신호**다(아무것도 안 틀렸다).
+          //  `service` 는 원래 "낼 것을 내는" 종류라 수명주기 훅이 필요 없다.
+          const alreadyProvides =
+            capability === "service" &&
+            (result.wired.includes("mcp") ||
+              result.wired.includes("tools") ||
+              result.wired.includes("data-routes") ||
+              result.wired.includes("command-handlers"));
+          if (!alreadyProvides) skip(capability, missingHook(capability, hook));
+          continue;
         }
-        result.wired.push(capability);
-        console.log(
-          `loaded ${capability} plugin: ${lp.manifest.name} (from ${relDir})`,
-        );
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        result.skipped.push({ capability, reason });
-        console.error(
-          `[plugin-loader] ${capability} ${lp.manifest.name} start failed: ${reason}`,
-        );
-        publishPluginError(bus, lp.manifest.name, "start", reason);
+        startAttempted = true;
+        try {
+          // ★턴은 **없다** — 부팅 시점이라 `postCard` 처럼 대화 좌표가 필요한 것은 못 쓴다.
+          //  `createPluginHost` 가 `turn` 을 옵션으로 받으므로 그대로 두면 그 자리만 비고
+          //  나머지(설정·fetch·log·registerAuthProvider)는 그대로 온다.
+          await startFn(
+            bus,
+            createPluginHost(
+              lp.manifest.name,
+              lp.manifest.needs ?? {},
+              undefined,
+              lp.manifest.settings ?? [],
+            ),
+          );
+          result.wired.push(capability);
+          console.log(
+            `loaded ${capability} plugin: ${lp.manifest.name} (from ${relDir})`,
+          );
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e);
+          result.skipped.push({ capability, reason });
+          console.error(
+            `[plugin-loader] ${capability} ${lp.manifest.name} start failed: ${reason}`,
+          );
+          publishPluginError(bus, lp.manifest.name, "start", reason);
+        }
+      }
+    } finally {
+      // ★**즉시 시작 훅을 하나라도 불렀으면 성공·실패와 무관하게**, 그리고 **마지막 훅이 끝난 뒤** 정리를
+      //  한 번 건다 (2026-11-20, C1 · R1). 종전엔 `await startFn` 이 성공한 뒤에만 걸어서, 타이머·구독을 만든
+      //  뒤 던진 인스턴스는 끄기·제거·재설치·종료 어디서도 `stop()` 을 못 받았다(11-04 E2: dispose 뒤에도
+      //  tick 증가). channel 은 이미 «시작 전 등록» 이라 같은 판단이 두 규칙이었다.
+      // ★루프 안(훅마다)에서 걸지 않는다 — 첫 훅 뒤에 걸면 다음 훅이 `await` 하는 사이 종료가 그 항목을 꺼내
+      //  `stop()` 하고, 그 뒤 재개한 훅이 만든 구독은 아무도 안 푼다(R1 지적). 여기서 걸면 이 인스턴스의
+      //  `start*()` 와 `stop()` 이 겹치지 않는다. `finally` 라 루프가 예기치 않게 던져도 건다.
+      // ★**`service` 뿐 아니라 `trigger`·`observer` 도 멈춘다** (2026-08-29, 적대 검토 A).
+      //  종전엔 `service`·`channel` 에만 `stop` 을 걸어서, 대시보드에서 스케줄러를 끄면
+      //  *"끔"* 이 뜨고 목록에서 사라지는데 **cron 은 계속 돌아 계속 발화했다**(실측:
+      //  dispose 전 tick 4 → 후 9). 번들 `scheduler`·`file-watch` 가 둘 다 `trigger` 이고
+      //  `stop()` 을 구현해 뒀는데 그게 한 번도 안 불렸다.
+      // ★**플러그인당 한 번만** `stop()` 을 받는다 (2026-08-29, 2R P-2 · 3R G-5). 다중 선언
+      //  플러그인이 `stop()` 을 N번 받았고, `http-bridge`(`kind:["channel","observer"]`)의 2회는
+      //  `channels` 와 `serviceStops` **두 배열**에서 왔다 — 그래서 채널로 이미 걸렸으면 여기선 안 건다.
+      // ★★묻는 것은 **«이 인스턴스»** 의 stop 이다 — «이 이름» 이 아니다 (2026-10-09, 전체 적대 검토 P3).
+      //  이름으로 찾으면 같은 이름의 다른 인스턴스(동시 설치·재설치 중 아직 안 걷힌 옛것) 때문에 새
+      //  인스턴스의 stop 을 안 걸었고(실측 제거 뒤 running=2), 되돌림이 **남의 stop** 을 뺄 수 있었다.
+      if (startAttempted && typeof inst.stop === "function" && !result.wired.includes("channel")) {
+        const entry = { name: lp.manifest.name, stop: inst.stop.bind(inst) };
+        // ★정리 권한은 **배열에서 꺼낸 쪽만** 쓴다 — 종료(`drainStops`)와 같은 규칙이라 둘이 겹쳐도 1회.
+        undo.push(async () => {
+          const i = serviceStops.indexOf(entry);
+          if (i >= 0) {
+            serviceStops.splice(i, 1);
+            try {
+              await entry.stop();
+            } catch {
+              /* 이미 죽었을 수 있다 */
+            }
+          }
+        });
+        serviceStops.push(entry);
       }
     }
   } catch (e) {
@@ -537,4 +540,30 @@ export const wirePlugin = async (
   }
 
   return result;
+};
+
+/**
+ * 종료가 정리 항목(`channels`·`serviceStops`)을 소비한다 (2026-11-20, C1).
+ *
+ * ★**한 항목씩 배열에서 먼저 꺼내고** 그 뒤 `stop()` 을 부른다 — 끄기·제거의 되돌림(`dispose`)과 같은
+ *  규칙이다. 종전 종료는 배열을 빼지 않고 `for…of` 로 돌며 불러서, ①종료가 어떤 `stop()` 을 기다리는 사이
+ *  같은 인스턴스의 끄기·제거가 그 항목을 찾아 **한 번 더** 불렀고 ②순회 중 앞 항목이 끄기로 빠지면 배열이
+ *  당겨져 **뒤 항목을 건너뛰었다.** 지금은 먼저 꺼낸 쪽만 부른다.
+ * ★한꺼번에 비워 가져오지 않는다 — 소비 도중(앞 `stop()` 을 기다리는 사이) 켜기·재설치가 새로 건 항목도
+ *  **배열이 빌 때까지** 이어서 꺼낸다. 이 호출이 끝난 뒤 그 배열에 붙는 것은 이 호출이 보지 못한다.
+ * ★던져도 다음 항목으로 간다(종전 종료와 같음).
+ */
+export const drainStops = async <T extends { name: string; stop: () => Promise<void> }>(
+  list: T[],
+  onStep: (name: string) => void,
+  onError: (name: string, error: string) => void,
+): Promise<void> => {
+  for (let item = list.shift(); item !== undefined; item = list.shift()) {
+    onStep(item.name);
+    try {
+      await item.stop();
+    } catch (e) {
+      onError(item.name, e instanceof Error ? e.message : String(e));
+    }
+  }
 };

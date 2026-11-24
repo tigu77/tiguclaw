@@ -9,6 +9,7 @@ import { EventEmitter } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 
 const req = createRequire(import.meta.url);
 const cp = req("node:child_process") as Record<string, unknown>;
@@ -26,7 +27,15 @@ type Compile = { args: string[]; cb: (e: unknown, so: string, se: string) => voi
 const compiles: Compile[] = [];
 const spawns: Array<{ file: string; args: string[]; opts: { stdio?: unknown; windowsHide?: unknown; env?: Record<string, string> } }> = [];
 
-fsm.existsSync = (p: string): boolean => (cscPresent && String(p).endsWith("csc.exe")) || existing.has(String(p));
+// ★레포 안 경로는 진짜로 답한다 — 로더(tsx)가 같은 `existsSync` 로 `./x.js`→`x.ts` 를 해석하는 판(Node 22.23·24 의 동기 훅)이
+//  있어, 통째로 가짜면 `win.ts` 의 import 가 `observe.js` 를 못 찾는다(공개 CI 2026-11-24 실측). 제품이 보는 경로(csc·임시 exe)는 레포 밖이다.
+const realExists = fsm.existsSync as (p: unknown) => boolean;
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..") + path.sep;
+const pathOf = (p: unknown): string => (p instanceof URL ? fileURLToPath(p) : String(p).startsWith("file:") ? fileURLToPath(String(p)) : String(p));
+fsm.existsSync = (p: unknown): boolean => {
+  const at = pathOf(p);
+  return at.startsWith(repoRoot) ? realExists(at) : (cscPresent && String(p).endsWith("csc.exe")) || existing.has(String(p));
+};
 fsm.promises.mkdir = async (): Promise<void> => {};
 fsm.promises.writeFile = async (p: string, data: string): Promise<void> => { writes.push({ p: String(p), data: String(data) }); };
 fsm.promises.rename = async (a: string, b: string): Promise<void> => { renames.push([String(a), String(b)]); existing.add(String(b)); };

@@ -230,7 +230,8 @@ export const check: RegressionCheck = {
       const shape = {
         // 화면 공유·원격 접속이 쓰는 캡처에 창이 보인다(None=0 이면 원격에 안 보였다).
         sharedReadOnly: /p\.setSharingType\(1\);/.test(s) && !/setSharingType\(0\)/.test(s),
-        buttonEmitsStop: /'mouseDown:': \{ types: \['void', \['id'\]\], implementation: function \(ev\) \{ emit\(\{stop: 1\}\); \} \}/.test(s) &&
+        // 보이는 캡슐 안의 누름이 중지다(판정 `stopClick` 의 실제 이벤트 동작은 `computer-use-user-stop` #P1 이 잰다 — 2026-11-25).
+        buttonEmitsStop: /'mouseDown:': \{ types: \['void', \['id'\]\], implementation: function \(ev\) \{ if \(stopClick\(ev, tag\.frame\.size\.width, tag\.frame\.size\.height\)\) \{ emit\(\{stop: 1\}\); \} \} \}/.test(s) &&
           /'acceptsFirstMouse:'/.test(s) && /tag\.setIgnoresMouseEvents\(false\);/.test(s),
         // 단추는 사람 클릭을 언제나 받는다 — 통과 모드가 없다(사람의 중지가 새면 안 된다).
         neverPassThrough: (s.match(/tag\.setIgnoresMouseEvents\(/g) ?? []).length === 1,

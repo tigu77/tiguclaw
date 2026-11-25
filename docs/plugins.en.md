@@ -369,6 +369,25 @@ How a hook behaves (input JSON, blocking with exit code 2, stdout as context) is
 - See which plugin hooks are running in the Plugin hooks line of `/status`, in `/plugins`, and in the dashboard inventory.
 - ★A plugin folder without code can't be turned off from the screen. To stop it, delete the folder or add its name to `modules.disabled` in your home `settings.json`.
 
+## 6-3. Skills — procedures that come with a plugin
+
+Put `skills/<skill name>/SKILL.md` in a plugin folder and the assistant uses that skill while the plugin is enabled. The `SKILL.md` format is
+the same as a home skill (front matter `name` and `description`, the body is the procedure). Both the plugin folder that ships with the app and
+the `plugins/` folder in your home are read.
+★To ship several skills, put each in its own subfolder — if a valid `skills/SKILL.md` sits directly in `skills/`, only that one is read and the
+subfolders are not.
+
+- **Found without knowing the name.** The assistant finds it with `find_skills` (search by words) and opens the body with `invoke_skill`.
+  `find_capabilities` also lists it under that plugin's entry, marked `[스킬]` (skills) (loaded plugins only).
+- **Skills of a disabled plugin are not visible** (search, the always-on list and opening by name alike).
+- In the front matter, `reach: main` shows it only in the main conversation's list and search (a sub-agent can still open it by name), and
+  `disable-model-invocation: true` keeps it out of search so it is used only when opened by name (same as home skills).
+- **When names collide, one survives in this order: project skill > home skill > plugin skill > the app's built-in skill.** Between plugin
+  skills with the same name, the first one found wins (plugins shipped with the app, then home plugins). When a plugin skill hides a built-in
+  skill, one line goes to the daemon log.
+- ★Skills in a plugin folder that is enabled but failed to load, or was not loaded, can currently still show in `find_skills` (not in
+  `find_capabilities`). Cleaning this up is a follow-up.
+
 ---
 
 ## 7. `host` — everything a plugin can touch

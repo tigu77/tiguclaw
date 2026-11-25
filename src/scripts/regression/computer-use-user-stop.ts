@@ -41,6 +41,7 @@ interface MacModule {
   POST_SCRIPT: string;
   INDICATOR_SCRIPT: string;
   GLOW_JS: string;
+  PILL_JS: string;
   post: (events: Rec[], signal?: AbortSignal, opts?: { stopFile?: string; dry?: boolean }) => Promise<Rec>;
   dryPost: (events: Rec[], opts?: { stopFile?: string }) => Promise<Rec>;
 }
@@ -218,6 +219,11 @@ export const check: RegressionCheck = {
       const emit = (payload: Rec): void => {
         for (const h of [...handlers]) h({ type: "channel.message.in", ts: Date.now(), payload });
       };
+      /** 코어의 턴 종료 이벤트(2026-11-25) — 기본 `llm.turn_done` · 지금 시각. 제품 버스처럼 **동기로** 구독자에게 간다. */
+      const endTurn = (threadKey: string, o2: { type?: "llm.turn_done" | "llm.turn_error"; ts?: number; payload?: Rec } = {}): void => {
+        const ev = { type: o2.type ?? "llm.turn_done", ts: o2.ts ?? Date.now(), payload: { threadKey, channel: "dashboard", ...(o2.payload ?? {}) } };
+        for (const h of [...handlers]) h(ev);
+      };
       const esc = (): void => {
         const last = starts[starts.length - 1];
         if (last === undefined) throw new Error("표시가 안 떴다");
@@ -231,7 +237,7 @@ export const check: RegressionCheck = {
       };
       /** 가짜 도우미 i 의 종료(`close`)를 지금 일으킨다 — `stuck` 일 때 지연 종료를 만든다. */
       const closeStart = (i: number): void => closers[i]?.();
-      return { w, desktop, indicator, plugin, svcHost, posts, lines, starts, requests, tools, frame, emit, esc, button, closeStart, extra, captures: () => captures };
+      return { w, desktop, indicator, plugin, svcHost, posts, lines, starts, requests, tools, frame, emit, endTurn, esc, button, closeStart, extra, captures: () => captures };
     };
     type Arena = Awaited<ReturnType<typeof arena>>;
     const mainPosts = (a: Arena): PostRec[] => a.posts.filter((p) => !p.release);
@@ -301,6 +307,102 @@ export const check: RegressionCheck = {
       const hidden = await until(() => a.starts[0]!.stopped === true, 1500);
       out.push(assert("#2 유휴: 울렸을 때 리스가 아직 살아 있으면(시계 뒤로) 남은 만큼 다시 걸어 리스가 끝나면 내린다", firstFire === false && hidden, { firstFire, hidden }));
       await a.plugin.stop();
+    }
+
+    // ── #T 작업 끝 — 정상 종료면 유휴(60초)를 기다리지 않고 바로 내림 · 다른 작업·늦은 끝남·행동 중은 안 내림 (2026-11-25) ──────
+    const leaseOf = (a: Arena): { owner: string; lastTouchedMs: number } | null => a.desktop["lease"] as { owner: string; lastTouchedMs: number } | null;
+    {
+      // T1 — 유휴는 제품값(60초) 그대로. 연속 do·look 사이엔 유지, 그 소유자의 턴 종료에서 즉시(동기) 내림 · 리스 반납 · 다음 턴의 do 가 다시 띄운다.
+      const a = await arena();
+      const T = a.tools("dashboard:t1");
+      await T.doTool.handler({ frameId: await a.frame(T.look), steps: CLICK }, a.extra());
+      await T.look.handler({}, a.extra());
+      await T.doTool.handler({ frameId: await a.frame(T.look), steps: CLICK }, a.extra());
+      const keptBetween = a.starts.length === 1 && a.starts[0]!.stopped === false;
+      const t0 = performance.now();
+      a.endTurn("dashboard:t1");
+      const hideMs = performance.now() - t0;
+      const hidden = a.starts[0]!.stopped === true;
+      const released = leaseOf(a) === null && (a.indicator as { current: unknown }).current === null && (a.indicator as { timer: unknown }).timer === null;
+      const B = a.tools("dashboard:t1"); // 같은 대화의 다음 턴
+      await B.doTool.handler({ frameId: await a.frame(B.look), steps: CLICK }, a.extra());
+      out.push(assert(
+        "★#T1 작업 끝: 연속 do·look 사이엔 표시 유지(기동 1) · 그 소유자의 `llm.turn_done` 에서 유휴(60초)를 기다리지 않고 **즉시** 내림(테두리·고리·단추 = 도우미 하나) · 리스 반납 · 유휴 타이머 해제 · 로그 · 다음 턴의 do 가 다시 띄운다",
+        keptBetween && hidden && hideMs < 50 && released && a.lines.some((l) => l.includes("제어 표시 내림 — 작업 종료")) && a.starts.length === 2 && a.starts[1]!.stopped === false,
+        { keptBetween, hidden, hideMs, released, starts: a.starts.length },
+      ));
+      await a.plugin.stop();
+    }
+    {
+      // T2 — 다른 작업(다른 소유자)의 끝 · 늦게 온 옛 끝남 · 다음 모델이 이어 하는 실패는 지금 조작 표시를 지우지 않는다.
+      const a = await arena();
+      const T = a.tools("worker:job-1");
+      await T.doTool.handler({ frameId: await a.frame(T.look), steps: CLICK }, a.extra());
+      a.endTurn("dashboard:main"); // 이 매니저를 띄운 메인 대화의 끝
+      a.endTurn("agent:other");
+      const otherKept = a.starts[0]!.stopped === false && leaseOf(a)?.owner === "worker:job-1";
+      a.endTurn("worker:job-1", { ts: (leaseOf(a)?.lastTouchedMs ?? 0) - 1 }); // 마지막 조작 **전**에 끝난 옛 실행
+      const lateKept = a.starts[0]!.stopped === false && leaseOf(a) !== null;
+      a.endTurn("worker:job-1", { type: "llm.turn_error", payload: { hasFallback: true } });
+      const fallbackKept = a.starts[0]!.stopped === false && leaseOf(a) !== null;
+      a.endTurn("worker:job-1", { type: "llm.turn_error", payload: { hasFallback: false } });
+      const errorHidden = a.starts[0]!.stopped === true && leaseOf(a) === null;
+      out.push(assert(
+        "★#T2 작업 끝 판정: 다른 소유자의 끝(메인·다른 서브) · 마지막 조작보다 이른 옛 끝남 · `hasFallback` 실패는 안 내림 · 그 소유자(매니저 `worker:`)의 다음 모델 없는 실패는 내림",
+        otherKept && lateKept && fallbackKept && errorHidden,
+        { otherKept, lateKept, fallbackKept, errorHidden },
+      ));
+      await a.plugin.stop();
+    }
+    {
+      // T3 — 행동 중에 온 끝남은 입력을 끊지도 표시를 내리지도 않는다 · 그 뒤엔 유휴 안전망이 내린다(종료 신호 누락과 같은 길).
+      const gate = deferred<Rec>();
+      let hold = false;
+      const a = await arena({
+        idleMs: 150,
+        post: (r) => (hold && !r.release ? gate.promise : Promise.resolve({ ok: true, fired: r.events.length, stdout: "" })),
+      });
+      const T = a.tools("dashboard:t1");
+      hold = true;
+      const p = T.doTool.handler({ frameId: await a.frame(T.look), steps: CLICK }, a.extra());
+      await until(() => mainPosts(a).length === 1);
+      a.endTurn("dashboard:t1");
+      const duringKept = a.starts[0]!.stopped === false && leaseOf(a) !== null && mainPosts(a)[0]!.signal?.aborted !== true;
+      gate.resolve({ ok: true, fired: 2, stdout: "" });
+      const r = await p;
+      const afterKept = a.starts[0]!.stopped === false;
+      const tEnd = Date.now();
+      const idleHidden = await until(() => a.starts[0]!.stopped === true, 1500);
+      const idleMs = Date.now() - tEnd;
+      out.push(assert(
+        "#T3 행동 중 끝남: 입력·표시 그대로(신호 안 끊음) · 보고 정상 · 끝난 뒤엔 유휴 안전망(150ms 판)이 내린다",
+        duringKept && afterKept && !textOf(r).includes(HEAD) && idleHidden && idleMs >= 100,
+        { duringKept, afterKept, idleHidden, idleMs },
+      ));
+      await a.plugin.stop();
+    }
+    {
+      // T4 — 신호가 없으면(턴 이벤트 없음 — /stop·잡 취소) 종전 유휴가 그대로 내린다 · Esc 잠금은 작업 끝으로 풀리지 않는다 · 종료 뒤엔 구독 해지.
+      const a = await arena({ idleMs: 120 });
+      const T = a.tools("dashboard:t1");
+      await T.doTool.handler({ frameId: await a.frame(T.look), steps: CLICK }, a.extra());
+      const idleHidden = await until(() => a.starts[0]!.stopped === true, 1500);
+      await T.doTool.handler({ frameId: await a.frame(T.look), steps: CLICK }, a.extra());
+      a.esc();
+      a.endTurn("dashboard:t1");
+      const lockKept = handback(a) !== null;
+      a.emit({ channel: "dashboard", threadKey: "dashboard:t1", text: "계속", receivedAt: Date.now() + 1 });
+      const C = a.tools("dashboard:t1");
+      await C.doTool.handler({ frameId: await a.frame(C.look), steps: CLICK }, a.extra());
+      const shown = a.starts.length === 3 && a.starts[2]!.stopped === false;
+      await a.plugin.stop();
+      a.endTurn("dashboard:t1");
+      const unsubscribed = leaseOf(a)?.owner === "dashboard:t1"; // 구독이 남았으면 여기서 리스를 놓았을 것이다
+      out.push(assert(
+        "#T4 종료 신호 없음 → 유휴 안전망 그대로 · Esc 잠금은 작업 끝으로 안 풀림(사람 메시지만) · 플러그인 종료 뒤 끝남 구독 해지",
+        idleHidden && lockKept && shown && unsubscribed,
+        { idleHidden, lockKept, shown, unsubscribed },
+      ));
     }
 
     // ── #3 Esc(실행 중) — 두 반환 형태 · 해제 · 파일 생성·삭제 ─────────────────────────
@@ -735,8 +837,50 @@ export const check: RegressionCheck = {
         out.push(assert(
           "#13 도우미는 그 조각을 그대로 싣고 화면마다 창 레이어에 빛을 쌓는다 · 옛 4pt 단색 테두리 없음 · 단추·고리 주황(TINT)은 그대로",
           s.includes(mac.GLOW_JS) && /glowInto\(b\.contentView\.layer, f\.size\.width, f\.size\.height\);/.test(s) && !/setBorderWidth\(4\)/.test(s) &&
-            /tag\.contentView\.layer\.setBackgroundColor\(TINT\.CGColor\)/.test(s) && /halo\.contentView\.layer\.setBorderColor\(TINT\.CGColor\)/.test(s),
-          { hasGlow: s.includes(mac.GLOW_JS) },
+            s.includes(mac.PILL_JS) && /pillInto\(tag\.contentView\.layer, lh\);/.test(s) && /halo\.contentView\.layer\.setBorderColor\(TINT\.CGColor\)/.test(s),
+          { hasGlow: s.includes(mac.GLOW_JS), hasPill: s.includes(mac.PILL_JS) },
+        ));
+      }
+      // #P1 중지 단추 캡슐(2026-11-25 «너무 사각형») — 도우미가 쓰는 **그 조각**(`PILL_JS`)을 창 없이 화면 밖 비트맵에 그려 모서리·반원 밖은 투명,
+      //  안쪽·양끝 반원 안은 단추 주황인지 잰다(사각 배경 없음). 크기는 새 문구의 실측 단추(136×26pt) 그대로.
+      {
+        const W = 136, H = 26;
+        const probe = [
+          "ObjC.import('Foundation'); ObjC.import('AppKit'); ObjC.import('QuartzCore');",
+          mac.PILL_JS,
+          `var W = ${String(W)}, H = ${String(H)}; var L = $.CALayer.layer; L.setFrame($.NSMakeRect(0, 0, W, H)); pillInto(L, H);`,
+          "var rep = $.NSBitmapImageRep.alloc.initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(null, W, H, 8, 4, true, false, $.NSDeviceRGBColorSpace, 0, 0);",
+          "var g = $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep); L.renderInContext(g.CGContext); g.flushGraphics;",
+          "function a(x, y){ return Number(rep.colorAtXY(x, y).alphaComponent); }",
+          "function rgb(x, y){ var c = rep.colorAtXY(x, y); return [Number(c.redComponent), Number(c.greenComponent), Number(c.blueComponent)]; }",
+          // 중지 판정(`stopClick`) — 실제 NSEvent(창 번호 0 = 준 좌표가 곧 창 안 좌표)로 제품 조각을 부른다. 화면·입력 0.
+          "function ev(x, y){ return $.NSEvent.mouseEventWithTypeLocationModifierFlagsTimestampWindowNumberContextEventNumberClickCountPressure(1, $.NSMakePoint(x, y), 0, 0, 0, $(), 0, 1, 1); }",
+          "var CLICK = {center: stopClick(ev(W/2, H/2), W, H), ends: [stopClick(ev(2, H/2), W, H), stopClick(ev(W-2, H/2), W, H)], corners: [stopClick(ev(1, 1), W, H), stopClick(ev(W-1, 1), W, H), stopClick(ev(1, H-1), W, H), stopClick(ev(W-1, H-1), W, H)], outside: stopClick(ev(W+5, H/2), W, H), unreadable: stopClick(null, W, H)};",
+          // 네 모서리 · 반원 바깥(모서리 대각선 2px — 화소 중심이 반원에서 1.8px 밖: 경계 안티에일리어싱 화소가 아니다) · 반원 안 양끝 가운데 · 가운데 ·
+          //  위·아래 가장자리 가운데(직선 구간)
+          "JSON.stringify({corners: [a(0,0), a(W-1,0), a(0,H-1), a(W-1,H-1)], outside: [a(2,2), a(W-3,2), a(2,H-3), a(W-3,H-3)], ends: [a(1,H/2), a(W-2,H/2)], center: a(W/2,H/2), edges: [a(W/2,0), a(W/2,H-1)], rgb: rgb(W/2,H/2), click: CLICK});",
+        ].join("\n");
+        const rp = await new Promise<{ err: string | null; so: string }>((resolve) =>
+          execFile("/usr/bin/osascript", ["-l", "JavaScript", "-e", probe], { timeout: 8000 }, (e, so) => resolve({ err: e === null ? null : String(e).slice(0, 160), so: String(so) })),
+        );
+        type PillProbe = {
+          corners: number[]; outside: number[]; ends: number[]; center: number; edges: number[]; rgb: number[];
+          click: { center: boolean; ends: boolean[]; corners: boolean[]; outside: boolean; unreadable: boolean };
+        };
+        const m = ((): PillProbe | null => { try { return JSON.parse(rp.so) as PillProbe; } catch { return null; } })();
+        const opaque = (v: number | undefined): boolean => typeof v === "number" && v > 0.8;
+        out.push(assert(
+          "★#P1 중지 단추 캡슐(맥): 도우미 조각을 화면 밖에 그리면 네 모서리·반원 바깥은 투명(뒤 사각 배경 없음) · 양끝 반원 안·가운데·위아래 직선 가장자리는 단추 주황(0.9)",
+          rp.err === null && m !== null && m.corners.every((v) => v === 0) && m.outside.every((v) => v === 0) &&
+            m.ends.every(opaque) && opaque(m.center) && m.edges.every(opaque) &&
+            Math.abs((m.rgb[0] ?? 0) - 1) < 0.02 && Math.abs((m.rgb[1] ?? 0) - 0.55) < 0.02 && (m.rgb[2] ?? 1) < 0.02,
+          rp.err ?? m,
+        ));
+        out.push(assert(
+          "★#P1 중지 판정 = 보이는 캡슐(맥, 독립 검토 R1-3): 실제 마우스 이벤트로 가운데·양끝 반원 안은 중지 · 투명 네 모서리·창 밖은 중지 아님 · 좌표를 못 읽으면 중지(사람의 중지 우선) · 도우미의 누름 처리기가 이 판정을 쓴다",
+          m !== null && m.click.center && m.click.ends.every((v) => v) && m.click.corners.every((v) => !v) && !m.click.outside && m.click.unreadable &&
+            /'mouseDown:': \{ types: \['void', \['id'\]\], implementation: function \(ev\) \{ if \(stopClick\(ev, tag\.frame\.size\.width, tag\.frame\.size\.height\)\) \{ emit\(\{stop: 1\}\); \} \} \}/.test(mac.INDICATOR_SCRIPT),
+          m?.click ?? rp.err,
         ));
       }
     }
@@ -1501,10 +1645,35 @@ export const check: RegressionCheck = {
       const ko = await cat("ko");
       const en = await cat("en");
       out.push(assert(
-        "#W9 표시 문구(ko·en): 단추를 누르라는 안내만 · 대화창 «/stop» 안내는 없다 · Esc 는 안내하지 않는다(원격 Esc 는 HID 상태에 안 남아 감지 보장이 없다) · «누르면 멈춥니다» 같은 결과 보장이 아니다",
+        "#W9 표시 문구(ko·en): ko 는 짧은 캡슐 문구 «조작 중 · 눌러서 중지» 그대로 · 단추를 누르라는 안내만 · 대화창 «/stop» 안내는 없다 · Esc 는 안내하지 않는다(원격 Esc 는 HID 상태에 안 남아 감지 보장이 없다) · «누르면 멈춥니다» 같은 결과 보장이 아니다",
+        // ★ko 는 정확히 그 문구(2026-11-25 정태님 승인 — 맥은 문구 폭이 곧 단추 폭이라 긴 문구로 되돌아가면 «긴 막대» 가 재발한다, 독립 검토 R1-4).
+        ko === "조작 중 · 눌러서 중지" &&
         ko.includes("눌러") && !ko.includes("/stop") && !ko.includes("대화창") && !/esc/i.test(ko) && !ko.includes("누르면 멈춥니다") &&
           /\bclick here\b/.test(en) && !en.includes("/stop") && !/\bchat\b/.test(en) && !/esc/i.test(en) && !/press Esc to stop/.test(en),
         { ko, en },
+      ));
+    }
+
+    // ── #P2 Windows 중지 단추 캡슐 — **원문 검사**(이 기계에서 WinForms 를 못 그린다). 실제 모양·모서리 클릭 통과는 Windows 인계 항목이다 ──
+    {
+      const { INDICATOR_CS } = await loadPluginModule<{ INDICATOR_CS: string }>("../../../plugins/computer-use/src/win.ts");
+      out.push(assert(
+        "#P2 Windows 원문: 중지 단추 창(Label)에만 캡슐 창 영역(지름 = 높이, 양끝 반원) — 보이는 곳 = 클릭 받는 곳 · 실기 렌더·클릭은 미검증(인계)",
+        // ★창에 대입되는 영역이 **그 경로에서** 만들어지는지까지 — 메서드 본문을 통째로 대조한다(호를 남기고 반환만 사각형으로 바꾸면 빨강, 독립 검토 R1-5).
+        /if \(kind == Kind\.Label\) Region = Capsule\(bounds\.Width, bounds\.Height\);/.test(INDICATOR_CS) &&
+          INDICATOR_CS.split("Region = ").length === 2 && INDICATOR_CS.includes("using System.Drawing.Drawing2D;") &&
+          INDICATOR_CS.includes(
+            "  public static System.Drawing.Region Capsule(int w, int h) {\n" +
+              "    int d = Math.Min(w, h);\n" +
+              "    using (GraphicsPath p = new GraphicsPath()) {\n" +
+              "      p.AddArc(0, 0, d, d, 90, 180);\n" +
+              "      p.AddArc(w - d, 0, d, d, 270, 180);\n" +
+              "      p.CloseFigure();\n" +
+              "      return new System.Drawing.Region(p);\n" +
+              "    }\n" +
+              "  }\n",
+          ),
+        { has: INDICATOR_CS.includes("Capsule(") },
       ));
     }
 

@@ -492,6 +492,26 @@ export const releaseLease = (d: Desktop, owner: string): void => {
   d.frames.delete(owner);
 };
 
+/**
+ * **소유자의 작업(턴)이 끝났다 — 리스를 반납한다** (2026-11-25, 정태님 «다 끝났는데 조작표시가 바로 사라지지 않고»).
+ *
+ * ★종전엔 «정상 종료는 신호를 안 쏜다 → 유휴(60초)가 맡는다»(설계 2026-09-15 §14-1)였다. 그래서 작업이 끝난 뒤에도 표시가 최대 60초
+ *  남았다. 끝남은 코어의 턴 종료 이벤트(`llm.turn_done`·`llm.turn_error`)가 이미 말한다 — 그것을 «소유자 반납» 으로 받는다. 유휴는
+ *  종료 신호가 오지 않을 때(`/stop`·잡 취소처럼 턴 이벤트가 없는 끝)의 안전망으로 그대로 남는다.
+ * ★놓지 않는 경우 셋 — 여기 한 곳에서 가른다:
+ *  - 리스가 그 소유자 것이 아니다(다른 작업의 끝은 지금 조작에 닿지 않는다).
+ *  - 행동이 돌고 있다(`active` — 입력 중인 것을 끝남으로 끊지 않는다. 그 행동이 끝나면 유휴 안전망이 건다).
+ *  - 그 끝남 **뒤에** 리스를 다시 만졌다(`lastTouchedMs > endedAtMs` — 늦게 온 옛 끝남이 새 조작을 지우지 않게).
+ * @returns 놓았나 — 참이면 부르는 쪽이 표시를 내린다.
+ */
+export const releaseAtTurnEnd = (d: Desktop, owner: string, endedAtMs: number): boolean => {
+  if (d.lease === null || d.lease.owner !== owner) return false;
+  if (d.active !== null) return false;
+  if (d.lease.lastTouchedMs > endedAtMs) return false;
+  d.lease = null;
+  return true;
+};
+
 // ─── §3-4 사용자 충돌 가드 ────────────────────────────────────────────────────
 
 /**

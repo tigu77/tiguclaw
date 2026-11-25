@@ -29,6 +29,8 @@
  *         ㉓ 같은 토큰 표지라도 «엔드포인트 값» 표식이 없는 파일의 숫자는 되살리지 않는다(CLI 숫자였을 수 있다)
  *         ㉔ CLI 주기(10분)는 재시작 너머로 — 재시작 직후 조회·🔄 가 CLI 를 다시 띄우지 않는다
  *         ㉕ 같은 조직 CLI 응답 뒤에도 지금 토큰의 엔드포인트 성공값을 그대로 쓴다
+ *         ㉖ 첫 CLI 가 «확인 불가» 였어도 그 뒤 도착한 **같은 자격의 턴 값**은 🔄 로 바로 보인다 — CLI 를 더 띄우지 않고(주기 10분 그대로),
+ *            🔄 는 연타 하한 뒤 열린다 · 이전 자격의 값은 거절(2026-11-25 아스트라 종합 인계 1-1). 실제 답을 실제 화면(mini-DOM)에 넣어 버튼·표시까지 본다
  *  core   ⑮ 턴 한도 이벤트는 **그 질의를 띄운 자격**에 붙고, 지금 자격이 아니면 기록하지 않는다 — 늦은 옛 이벤트가 새 계정 값이 되거나
  *            지우지 않는다(`rate-limit-view.ts`)
  *
@@ -39,7 +41,8 @@ import { EventEmitter } from "node:events";
 import fsp from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import os from "node:os";
-import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
+import { assert, i18nForContext, type Assertion, type RegressionCheck } from "./_framework.js";
+import { bootDashboard, jsonResponse, makeClock, type MElement } from "./_mini-dom.js";
 
 const cpCjs = createRequire(import.meta.url)("node:child_process") as { spawn: (...a: unknown[]) => unknown };
 const realSpawn = cpCjs.spawn;
@@ -831,13 +834,164 @@ export const check: RegressionCheck = {
         );
         out.push(
           assert(
-            "★claude ⑳ 확인할 근거가 없는 주기 안에서는 CLI 를 띄우지 않고(🔄 도 그 주기 뒤에야 열린다) · 엔드포인트도 새로 두드리지 않는다",
-            spawnsInCadence === 0 && cliSpawnsUsage === 1 && endpointCalls === 0 && refreshAfter > realNow() + 9 * 60_000,
+            "★claude ⑳ 확인할 근거가 없는 주기 안에서는 CLI 를 띄우지 않고 · 엔드포인트도 새로 두드리지 않는다 — 🔄 는 연타 하한 뒤 열린다(주기 안 🔄 는 CLI 없이 확인된 값만 다시 읽는다, 인계 1-1)",
+            spawnsInCadence === 0 && cliSpawnsUsage === 1 && endpointCalls === 0 && refreshAfter <= realNow() + 31_000 + 6_000 + 5_000 + 1_000,
             { 주기안CLI: spawnsInCadence, CLI: cliSpawnsUsage, 엔드포인트: endpointCalls, 새로고침열림: Math.round((refreshAfter - realNow()) / 1000) + "초 뒤" },
           ),
         );
         turns = undefined;
         cliOrg = "org-same";
+      }
+      // ㉖ 첫 CLI «확인 불가» → 같은 자격의 턴 값 도착 → 🔄 (인계 1-1)
+      {
+        cliMissing = false;
+        cliOrg = "org-same";
+        turns = undefined;
+        cliSpawnsUsage = 0;
+        endpointCalls = 0;
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-regression-g26";
+        const { getUsage } = await startClaude("turn-after-unknown");
+        const realNow = Date.now;
+        let shift = 0;
+        const at = async (ms: number, force: boolean): Promise<Usage | undefined> => {
+          shift += ms;
+          Date.now = () => realNow() + shift;
+          try {
+            return await getUsage(force);
+          } finally {
+            Date.now = realNow;
+          }
+        };
+        const ra = (u: unknown): number => (u as { refreshAfter?: number } | undefined)?.refreshAfter ?? Number.POSITIVE_INFINITY;
+        const a = await at(0, true); // 첫 CLI — 숫자는 쓰지 않는다 → «확인 불가»
+        const aAt = realNow() + shift;
+        const spawnsFirst = cliSpawnsUsage;
+        turns = { measuredAt: realNow() + shift + 1_000, windows: [{ windowSeconds: 18_000, remainingPercent: 64 }] }; // 같은 자격의 턴이 끝났다
+        const b = await at(6_000, true); // 🔄
+        const bAt = realNow() + shift;
+        const spawnsTurn = cliSpawnsUsage;
+        turns = undefined;
+        const c = await at(6_000, true); // 주기(10분) 안 🔄 — 턴 값이 없으면 «확인 불가», CLI 는 안 띄운다
+        const cAt = realNow() + shift;
+        const spawnsCadence = cliSpawnsUsage;
+        await at(10 * 60_000, true); // 주기 뒤에는 CLI 를 다시 띄운다(주기 그대로)
+        const spawnsAfter = cliSpawnsUsage;
+        turns = { measuredAt: realNow() + shift - 1_000, windows: [{ windowSeconds: 18_000, remainingPercent: 64 }] };
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-regression-g26-other"; // 자격이 바뀌었다 — 코어는 새 자격의 턴만 주므로(여기선 없음)
+        turns = undefined;
+        const e = await at(6_000, true);
+        out.push(
+          assert(
+            "★★claude ㉖ 첫 CLI «확인 불가» 뒤 같은 자격의 턴 값은 🔄 로 바로 보인다(CLI 추가 0) · 🔄 는 연타 하한(5초) 뒤 열린다 · 주기 안 CLI 0·주기 뒤 1 · 엔드포인트 0 · 이전 자격 값 거절",
+            // 해제 시각은 **그 응답 기준 5초**(위아래 둘 다) — 로컬 값을 돌려준 🔄 뒤에도 하한이 다시 걸린다(구현 검토 G1).
+            unv(a) && spawnsFirst === 1 && ra(a) >= aAt + 5_000 - 50 && ra(a) <= aAt + 5_000 + 1_000 && first(b) === 64 && spawnsTurn === 1 &&
+              ra(b) >= bAt + 5_000 - 50 && ra(b) <= bAt + 5_000 + 1_000 && ra(c) >= cAt + 5_000 - 50 && ra(c) <= cAt + 5_000 + 1_000 &&
+              unv(c) && spawnsCadence === 1 && spawnsAfter === 2 && endpointCalls === 0 && unv(e) && first(e) === undefined,
+            { a: unv(a), 새로고침열림_초: [Math.round((ra(a) - aAt) / 1000), Math.round((ra(b) - bAt) / 1000), Math.round((ra(c) - cAt) / 1000)], b: first(b), c: unv(c), CLI: [spawnsFirst, spawnsTurn, spawnsCadence, spawnsAfter], 엔드포인트: endpointCalls, 다른자격: first(e) },
+          ),
+        );
+        // 같은 답을 실제 화면에 — 첫 답(«확인 불가»+refreshAfter) 뒤 🔄 가 하한 뒤 풀리고, 누르면 턴 값이 그려진다.
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-regression-g26b";
+        turns = undefined;
+        cliSpawnsUsage = 0;
+        // ★한 가상 시계 — 플러그인·화면(`Date.now`)·화면 타이머가 같은 시각을 본다(구현 검토 G2: 타이머만 밀면 하한을 무시해도 화면 단언이 통과했다).
+        const clock = makeClock();
+        const realDateNow = Date.now;
+        const base = realDateNow();
+        Date.now = () => base + clock.now();
+        try {
+        const fresh = await startClaude("turn-after-unknown-ui");
+        const first1 = await fresh.getUsage(true);
+        turns = { measuredAt: Date.now() + 1_000, windows: [{ windowSeconds: 18_000, remainingPercent: 57 }] };
+        let posts = 0;
+        const dash = bootDashboard({
+          clock,
+          i18n: i18nForContext,
+          ids: ["plugins-list", "plugins-count", "plugins-search"],
+          fetch: async (url: string, init?: { method?: string }) => {
+            if (url.startsWith("/api/plugins")) return jsonResponse({ items: [{ name: "claude-sub", enabled: true, needsFacts: [{ kind: "auth", value: "claude" }] }] });
+            if (url.startsWith("/api/auth-providers")) return jsonResponse({ providers: [{ provider: "claude", authenticated: true, hasUsage: true, login: { label: "login" } }] });
+            if (url.startsWith("/api/auth-usage")) {
+              if (init?.method === "POST") {
+                posts += 1;
+                return jsonResponse({ usage: await fresh.getUsage(true) });
+              }
+              return jsonResponse({ usage: first1 });
+            }
+            return jsonResponse({}, 404);
+          },
+          stubs: "const setChatPanel = () => {};",
+        });
+        const root = dash.document.getElementById("detail-panel") as MElement;
+        dash.run("showPlugins()");
+        await clock.advance(10);
+        const btn = (): MElement | null => root.querySelector(".usage-refresh");
+        const lockedAtFirst = btn()?.disabled === true;
+        await clock.advance(4_800);
+        const lockedBeforeFloor = btn()?.disabled === true;
+        await clock.advance(500);
+        const openAfterFloor = btn()?.disabled === false;
+        if (btn()?.disabled === false) btn()?.click(); // 잠긴 단추는 브라우저에서 눌리지 않는다(mini-DOM 은 눌러 준다)
+        await clock.advance(10);
+        for (let i = 0; i < 50 && !(root.querySelector(".plugin-auth-usage")?.textContent ?? "").includes("57"); i += 1) {
+          await tick();
+          await clock.advance(10);
+        }
+        const shown = root.querySelector(".plugin-auth-usage")?.textContent ?? "";
+        const relockedAfterClick = btn()?.disabled === true;
+        await clock.advance(4_600);
+        const stillLocked = btn()?.disabled === true;
+        await clock.advance(700);
+        const reopened = btn()?.disabled === false;
+        out.push(
+          assert(
+            "★★claude ㉖ 화면: 첫 «확인 불가» 뒤 🔄 는 하한 동안만 잠기고 풀린다 → 누르면 CLI 추가 없이 같은 자격의 턴 값이 그려진다",
+            lockedAtFirst && lockedBeforeFloor && openAfterFloor && posts === 1 && shown.includes("57") && relockedAfterClick && stillLocked && reopened && cliSpawnsUsage === 1 && clock.errors.length === 0,
+            { 첫잠김: lockedAtFirst, 하한직전잠김: lockedBeforeFloor, 하한뒤열림: openAfterFloor, POST: posts, 표시: shown.slice(0, 80), 누른뒤다시잠김: relockedAfterClick, 다시하한직전잠김: stillLocked, 하한뒤다시열림: reopened, CLI: cliSpawnsUsage, 예외: clock.errors.join(" | ") },
+          ),
+        );
+        } finally {
+          Date.now = realDateNow;
+        }
+        turns = undefined;
+        // CLI 가 실패하는(실행 불가) 기계 — 🔄 는 CLI 재시도를 위해 하한 뒤 열리지만(종전 그대로), 엔드포인트 백오프(성공 뒤 5분 · 429 의 서버 대기)는
+        //  조회 안에서 그대로 지켜 다시 눌러도 엔드포인트를 두드리지 않는다. (번들 실행기 자체가 없는 기계의 해제 시각 분기 `refreshAfterNow` 끝 줄은
+        //  이번 변경이 건드리지 않았다 — 이 고정 환경은 번들 실행기를 늘 찾아 그 분기를 만들 수 없다.)
+        cliMissing = true;
+        endpointOkUsed = 0.3;
+        endpointCalls = 0;
+        const later2 = async (g: (f?: boolean) => Promise<Usage | undefined>, ms: number): Promise<Usage | undefined> => {
+          const base = Date.now;
+          Date.now = () => base() + ms;
+          try {
+            return await g(true);
+          } finally {
+            Date.now = base;
+          }
+        };
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-regression-g26-nocli";
+        const nc = await startClaude("turn-after-unknown-nocli");
+        const okNoCli = await nc.getUsage(true);
+        const okAgain = await later2(nc.getUsage, 6_000);
+        const callsOk = endpointCalls;
+        endpointOkUsed = undefined;
+        endpointFailStatus = 429;
+        endpointRetryAfter = 900;
+        endpointCalls = 0;
+        process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-regression-g26-nocli2";
+        const n2 = await startClaude("turn-after-unknown-nocli2");
+        await n2.getUsage(true);
+        await later2(n2.getUsage, 6_000);
+        const calls429 = endpointCalls;
+        endpointRetryAfter = 60;
+        cliMissing = false;
+        out.push(
+          assert(
+            "claude ㉖ CLI 가 실패하는 기계 — 🔄 를 다시 눌러도 엔드포인트 백오프(성공 뒤 5분 · 429 의 서버 대기)를 지켜 다시 두드리지 않는다",
+            first(okNoCli) === 70 && first(okAgain) === 70 && callsOk === 1 && calls429 === 1,
+            { 성공값: first(okNoCli), 다시: first(okAgain), 성공뒤호출: callsOk, 거절뒤호출: calls429 },
+          ),
+        );
       }
       // ㉑ 조직 확인을 기다리는 사이 지금 토큰의 턴 값이 왔다 — 판정하는 순간의 턴 값을 쓴다(G5)
       {

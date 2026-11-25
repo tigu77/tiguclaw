@@ -744,7 +744,7 @@ export const frontWindow = async (): Promise<string | null> => {
 /**
  * **제어 표시 도우미** — 리스를 쥔 동안만 사는 `osascript` 자식 하나.
  *
- * ★하는 일 넷: ①화면마다 가장자리 주황 빛(`GLOW_JS` — 가운데는 투명) ②주 화면 위쪽 **중지 단추**(«티구클로 조작 중 · 눌러서 중지») ③**실제 커서** 둘레 고리
+ * ★하는 일 넷: ①화면마다 가장자리 주황 빛(`GLOW_JS` — 가운데는 투명) ②주 화면 위쪽 가운데 **중지 단추**(캡슐 «조작 중 · 눌러서 중지» — `PILL_JS`) ③**실제 커서** 둘레 고리
  *  (가짜 포인터 없음 · 버튼이 눌린 동안 채워 번쩍임 — 클릭 자리) ④멈춤 감지 — 단추 클릭이면 `{"stop":1}`, HID 키 상태
  *  (`CGEventSourceKeyState(1, 53)`)의 위→아래 엣지면 `{"esc":1}`. **감지는 여기 하나**이고 결정은 부모(`onUserStop`)가 한다.
  * ★**원격 화면에도 보인다** (⑤ r4, 설계 §11-1). 창의 `sharingType` 을 `ReadOnly(1)` 로 둔다 — 종전 `None(0)` 은 화면 공유·원격
@@ -774,6 +774,23 @@ export const GLOW_JS = [
   "function glowInto(root, w, h){ for (var j = 0; j < GLOW_W && 2 * j < Math.min(w, h); j++) { var L = $.CALayer.layer; L.setFrame($.NSMakeRect(j, j, w - 2 * j, h - 2 * j)); L.setBorderWidth(1); L.setBorderColor(GLOW_C[j].CGColor); root.addSublayer(L); } }",
 ].join("\n");
 
+/**
+ * **중지 단추의 색·모양** — 양끝이 반원인 캡슐(반지름 = 높이/2, 2026-11-25 정태님 «너무 사각형»). 레이어 배경이 모서리 반지름 안만 칠하므로
+ * 창(투명) 뒤에 사각 배경이 남지 않는다. ★맥 단추는 이미 이 모양이었다 — «사각형» 으로 보인 것은 긴 문구로 306×26pt 막대가 된 탓이라
+ * 문구를 줄였다(`srv.computerUse.indicator`). ★따로 내보내는 이유: 회귀가 이 조각 그대로를 창 없이 화면 밖 비트맵에 그려 모서리·안쪽을 잰다.
+ * ★**중지는 보이는 캡슐 안의 클릭만**(`inCapsule` — 독립 검토 R1-3). 창은 사각형이라 모서리 바깥의 클릭도 이 창이 받는데, 그건 중지로 치지 않고
+ *  버린다(아래 앱으로 넘기지도 않는다 — 클릭 받는 창을 바꾸는 것은 실화면 확인 없이 하지 않는다). 판정이 실패하면 중지로 본다(사람의 중지 우선).
+ *  부모의 누름 회피(`clearPillFor`)는 그대로 창 사각형 전체로 본다(보수 쪽).
+ */
+export const PILL_JS = [
+  "var TINT = $.NSColor.colorWithSRGBRedGreenBlueAlpha(1.0, 0.55, 0.0, 0.9);",
+  "function pillInto(L, h){ L.setBackgroundColor(TINT.CGColor); L.setCornerRadius(h / 2); }",
+  // 창 안 좌표(x,y)가 w×h 캡슐(양끝 반지름 h/2) 안인가 — 가운데 선분까지의 거리 ≤ 반지름.
+  "function inCapsule(x, y, w, h){ var r = h / 2; if (x < 0 || y < 0 || x > w || y > h) { return false; } var cx = Math.min(Math.max(x, r), w - r); var dx = x - cx, dy = y - r; return dx * dx + dy * dy <= r * r; }",
+  // 단추 창의 마우스 누름이 중지인가 — 창 안 좌표로 캡슐 판정. 좌표를 못 읽으면 중지(참).
+  "function stopClick(ev, w, h){ try { var q = ev.locationInWindow; return inCapsule(Number(q.x), Number(q.y), w, h); } catch (e) { return true; } }",
+].join("\n");
+
 export const INDICATOR_SCRIPT = [
   "ObjC.import('Foundation'); ObjC.import('AppKit'); ObjC.import('CoreGraphics'); ObjC.import('QuartzCore'); ObjC.import('unistd');",
   "var ENV = $.NSProcessInfo.processInfo.environment;",
@@ -787,10 +804,10 @@ export const INDICATOR_SCRIPT = [
   "if (DRY) { emit({ready: 1, dry: 1, orphan: orphan()}); }",
   "else {",
   "  var app = $.NSApplication.sharedApplication; app.setActivationPolicy(1);",
-  "  var TINT = $.NSColor.colorWithSRGBRedGreenBlueAlpha(1.0, 0.55, 0.0, 0.9);",
+  PILL_JS,
   // 중지 단추 — 클릭을 받아 `{"stop":1}`. 첫 클릭도 받는다(`acceptsFirstMouse`) — 비활성 패널이라 앱은 앞으로 안 나온다.
   "  ObjC.registerSubclass({ name: 'TiguclawStopView', superclass: 'NSView', methods: {",
-  "    'mouseDown:': { types: ['void', ['id']], implementation: function (ev) { emit({stop: 1}); } },",
+  "    'mouseDown:': { types: ['void', ['id']], implementation: function (ev) { if (stopClick(ev, tag.frame.size.width, tag.frame.size.height)) { emit({stop: 1}); } } },",
   "    'acceptsFirstMouse:': { types: ['bool', ['id']], implementation: function (ev) { return true; } }",
   "  } });",
   "  function panel(x, y, w, h){",
@@ -819,7 +836,7 @@ export const INDICATOR_SCRIPT = [
   "  var TOPY = main.origin.y + main.size.height - lh - 34; var BOTY = main.origin.y + 110; var atTop = true;",
   "  var tag = panel(main.origin.x + (main.size.width - lw) / 2, TOPY, lw, lh);",
   "  function pillRect(){ var f = tag.frame; return {x: f.origin.x, y: main.origin.y + main.size.height - (f.origin.y + f.size.height), w: f.size.width, h: f.size.height}; }",
-  "  tag.contentView.layer.setBackgroundColor(TINT.CGColor); tag.contentView.layer.setCornerRadius(lh / 2);",
+  "  pillInto(tag.contentView.layer, lh);",
   "  label.setFrameOrigin($.NSMakePoint(12, 5)); tag.contentView.addSubview(label);",
   // 글자 위를 덮는 투명 단추 뷰 — 맨 위 형제라 클릭이 글자칸이 아니라 여기로 온다.
   "  var stopView = $.TiguclawStopView.alloc.initWithFrame($.NSMakeRect(0, 0, lw, lh)); tag.contentView.addSubview(stopView);",

@@ -280,17 +280,24 @@ let inflight; // { key, p } — 그 조회의 자격 표지와 약속
 
 /**
  * **새로고침이 실제로 새로 묻는 시각** (2026-10-09 정태님: «그동안은 안 눌리게 막는 게 낫겠다»).
- * ★CLI 가 있으면 누를 때마다 CLI 에 다시 묻는다(로그인 직후에도 바로) — 연타 하한만. CLI 가 없으면 남는 건 조여 있는
- *  엔드포인트뿐이라, 서버가 정한 대기 시각과 5분 간격까지는 눌러도 같은 값이다.
+ * ★CLI 가 있으면 연타 하한만 건다. CLI 를 다시 띄우는 주기(`CLI_ORG_EVERY_MS`)는 **조회 안에서** 지킨다 — 주기 안의 🔄 는 CLI 를 띄우지 않고
+ *  지금 자격의 확인된 값(턴 실측·엔드포인트 성공값)만 다시 읽는다(`fetchClaudeUsageInner` 의 주기 분기). 그래서 버튼까지 주기만큼 막을 이유가 없다 —
+ *  막으면 그 사이 도착한 같은 자격의 턴 값도 못 읽었다(2026-11-25 아스트라 종합 인계 1-1: 첫 CLI «확인 불가» 뒤 최대 10분).
+ *  CLI 가 없으면 남는 건 조여 있는 엔드포인트뿐이라, 서버가 정한 대기 시각과 5분 간격까지는 눌러도 같은 값이다(종전 그대로).
  */
 let lastAttemptAt = 0;
+/**
+ * 마지막으로 🔄(강제 조회)를 **받아들인** 시각 — 연타 하한은 외부 조회 시각(`lastAttemptAt`)이 아니라 이 시각에서도 잰다(2026-11-25 구현 검토 G1).
+ * 주기 안 🔄 는 CLI·엔드포인트를 안 부르고 확인된 값만 읽어 `lastAttemptAt` 이 안 바뀐다 — 그 값만 보면 두 번째 🔄 부터 하한이 이미 지나 있었다.
+ * `lastAttemptAt` 은 접기(`lastAnswer`)도 정하므로 여기서 덮지 않고 따로 둔다.
+ */
+let lastForceAt = 0;
 /** 마지막으로 돌려준 답(성공이 아니어도) — 서버 쪽 연타 하한. 성공값이 없으면 `lastOk` 하한이 안 걸려 누를 때마다 CLI·엔드포인트를 다시 불렀다. */
 let lastAnswer;
 let cliModRef;
 const refreshAfterNow = () => {
-  const floor = lastAttemptAt + FORCE_MIN_GAP_MS;
-  // CLI 는 `CLI_ORG_EVERY_MS` 에 한 번 띄운다 — 그 전엔 눌러도 같은 값이다(아래 CLI 분기).
-  if (cliModRef?.cliAvailable?.() ?? true) return Math.max(floor, cliOrgMemo !== undefined ? cliOrgMemo.at + CLI_ORG_EVERY_MS : 0);
+  const floor = Math.max(lastAttemptAt, lastForceAt) + FORCE_MIN_GAP_MS;
+  if (cliModRef?.cliAvailable?.() ?? true) return floor;
   return Math.max(floor, notBefore, lastOk !== undefined ? lastOk.at + MIN_GAP_MS : 0);
 };
 const withRefreshAfter = (v) => (v === undefined ? v : { ...v, refreshAfter: refreshAfterNow() });
@@ -309,6 +316,7 @@ const forgetIfCredentialChanged = (key) => {
   lastOk = undefined;
   lastAnswer = undefined;
   lastAttemptAt = 0;
+  lastForceAt = 0;
   refusedAfterWaiting = 0;
   // 옛 자격에서 CLI 가 실패·«로그인 필요» 였다는 기억도 그 시도의 것이다 — 새 자격은 CLI 를 다시 묻는다(실행기가 정말 없으면 한 번 더 실패할 뿐).
   cliDead = false;
@@ -323,6 +331,7 @@ const forgetIfCredentialChanged = (key) => {
 const fetchClaudeUsage = async (force = false) => {
   const key = credentialKey();
   forgetIfCredentialChanged(key);
+  if (force) lastForceAt = Date.now();
   // ★**같은 자격의** 조회만 나눠 쓴다 — 다시 인증한 뒤의 요청이 옛 토큰으로 돌던 조회의 답을 받지 않게.
   if (inflight !== undefined && inflight.key === key) return inflight.p;
   const p = fetchClaudeUsageInner(force, key)

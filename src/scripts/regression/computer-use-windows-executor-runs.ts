@@ -378,6 +378,9 @@ export const check: RegressionCheck = {
         indicatorFail: { plain: string[]; virus: string[] };
         capture: { missing: { ok: boolean; detail?: string }; virus: { ok: boolean; detail?: string }; plain: { ok: boolean; detail?: string } };
         indicatorMissing: { gone: string[]; spawns: number };
+        backoff: { steps: Record<string, number>; gone: string[]; spawnsOk: number; selfCheck: boolean; first: number; lastGone: string };
+        backoffRecover: { compiles: number; spawns: number; afterReset: number; gone: string[] };
+        captureNoBackoff: { capFirst: number; capSecond: number };
       };
       const g = line === undefined ? null : (JSON.parse(line.slice(8)) as Ind);
       const diag = g === null ? { stderr: child.err.slice(-600), timedOut: child.timedOut } : null;
@@ -428,6 +431,26 @@ export const check: RegressionCheck = {
             g.indicatorMissing.gone[0]!.includes("표시 도우미 컴파일 실패: csc-missing") && g.indicatorMissing.gone[0]!.includes("표시 도우미를 만들 수 없습니다") &&
             !g.indicatorMissing.gone[0]!.includes("화면 캡처"),
           diag ?? g!.indicatorMissing,
+        ),
+      );
+      const st = g?.backoff.steps ?? {};
+      out.push(
+        assert(
+          "★★W4(g) 표시 도우미 반복 실패(인계 2-3): 간격 1분·2분·…·상한 30분의 **직전엔 컴파일 0 · 도달하면 1** · 시스템 시계를 되돌려도 간격이 늘지 않음(단조 시계) · 간격 중엔 **직전** 실패 원문 + 앞머리 «이번엔 컴파일하지 않음» 안내(긴 오류에서도 300자 안) · 진단은 간격 무시 · 성공한 컴파일 뒤 한 번 띄움",
+          g !== null && g.backoff.first === 60_000 && st.c1 === 1 && st.at59 === 1 && st.at60 === 2 && st.at119 === 2 && st.at120 === 3 && st.before6 === 6 && st.cap29 === 6 && st.cap30 === 7 &&
+            st.diag === 8 && g.backoff.selfCheck === true && st.okCompile === 11 && st.afterOk === 11 && g.backoff.spawnsOk === 1 &&
+            g.backoff.gone.every((x) => x.includes("표시 도우미 컴파일 실패")) &&
+            g.backoff.gone.some((x) => /^표시 도우미 컴파일 실패: \(직전 실패 6회 — 이번엔 컴파일하지 않음, \d+초 뒤 다시\) compile: x\.cs\(1,1\): error CS1006: 실패-6$/.test(x)) &&
+            g.backoff.gone.some((x) => /^표시 도우미 컴파일 실패: \(직전 실패 2회 — 이번엔 컴파일하지 않음, \d+초 뒤 다시\) compile: x\.cs\(1,1\): error CS1002: 실패-2 긴 오류/.test(x)),
+          diag ?? g!.backoff,
+        ),
+      );
+      out.push(
+        assert(
+          "★W4(g) 복구하면 연속 실패 수가 지워진다 — 진단 성공 직후(다른 호출 없이) exe 가 없어져 다시 실패하면 간격은 다시 1분(정각에 재컴파일) · exe 등장으로도 같다 · 간격 중 exe 가 생기면 바로 씀 · **캡처는 간격 없음**(실패 직후 다시 부르면 바로 재컴파일)",
+          g !== null && st.reAfterOk === 9 && st.oneMinAgain === 10 && g.backoffRecover.compiles === 1 && g.backoffRecover.spawns === 1 && g.backoffRecover.afterReset === 3 &&
+            g.captureNoBackoff.capFirst === 1 && g.captureNoBackoff.capSecond === 2,
+          diag ?? { steps: st, recover: g!.backoffRecover, capture: g!.captureNoBackoff },
         ),
       );
       const missing = g?.capture.missing.detail ?? "";

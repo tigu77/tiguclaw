@@ -69,6 +69,7 @@ import {
   mergeHeld,
   userStopped,
   resumeByHuman,
+  releaseAtTurnEnd,
   STEPS_MAX,
   SCROLL_MAX,
   type Button,
@@ -1282,6 +1283,30 @@ export const createTools = (
   ...(w.control === null ? [] : actionTools(w, host)),
 ];
 
+/** 코어의 턴 종료 이벤트 — 어댑터 실행 한 번이 끝날 때 성공(`turn_done`) 또는 실패(`turn_error`) 중 정확히 하나가 난다. */
+const TURN_END_EVENTS = ["llm.turn_done", "llm.turn_error"] as const;
+
+/**
+ * **작업이 끝나면 표시를 바로 내린다** (2026-11-25, 정태님 «다 끝났는데 조작표시가 바로 사라지지 않고»).
+ *
+ * ★이벤트의 `threadKey` 는 조작 소유자(`host.turn.threadKey`)와 **같은 값**이다 — 둘 다 같은 `runRegionA` 입력에서 온다
+ *  (메인 대화 · 매니저 `worker:<id>` · 서브 `agent:<id>`, `src/core/llm-runtime/index.ts` 의 MCP 좌표와 턴 이벤트 발행).
+ * ★`llm.turn_error` 중 `hasFallback: true` 는 끝이 아니다 — 같은 일을 다음 모델이 이어 한다.
+ * ★놓을지(다른 작업의 끝·행동 중·늦게 온 옛 끝남)는 `releaseAtTurnEnd` 한 곳이 정한다. 놓았을 때만 그 소유자의 표시를 내린다 —
+ *  테두리·고리·중지 단추는 도우미 하나라 함께 내려간다.
+ */
+const onTurnEnd = (
+  w: Wiring,
+  ev: { type: string; ts: number; payload: Readonly<Record<string, unknown>> },
+  log: (m: string) => void,
+): void => {
+  const owner = ev.payload["threadKey"];
+  if (typeof owner !== "string") return;
+  if (ev.type === "llm.turn_error" && ev.payload["hasFallback"] === true) return;
+  if (!releaseAtTurnEnd(w.desktop, owner, ev.ts)) return;
+  if (w.indicator !== undefined && w.indicator.owner === owner) hideIndicator(w.indicator, "작업 종료", log);
+};
+
 export default class ComputerUsePlugin {
   /**
    * ★**배선 하나** (2026-11-24, ⑤) — 서비스(이벤트 구독)와 턴별 도구(`getMcpServer`)가 **같은** 데스크톱·표시를 쓴다.
@@ -1296,17 +1321,25 @@ export default class ComputerUsePlugin {
   }
 
   /**
-   * 캡처는 도구 호출 때만 일어난다. 상시로 하는 일은 하나 — **사람의 새 메시지가 Esc 잠금을 푸는지** 본다(⑤).
+   * 캡처는 도구 호출 때만 일어난다. 상시로 하는 일은 둘 — **사람의 새 메시지가 Esc 잠금을 푸는지** 본다(⑤) · **작업이 끝나면
+   * 리스를 놓고 표시를 내린다**(`onTurnEnd`).
    * ★채널이 찍은 수신 시각(`receivedAt`)이 잠금 시각보다 엄격히 클 때만 푼다(`resumeByHuman`).
    */
   async startService(_bus?: unknown, host?: PluginHost): Promise<void> {
     if (host === undefined || this.unsubscribe !== null) return;
     const d = this.w.desktop;
     if (this.w.indicator !== undefined) this.w.indicator.halted = false;
-    this.unsubscribe = host.on("channel.message.in", (ev) => {
-      const at = humanReceivedAt(ev);
-      if (at !== null && resumeByHuman(d, at)) host.log("사람의 새 메시지 — Esc 조작 잠금을 풀었습니다");
-    });
+    const offs = [
+      host.on("channel.message.in", (ev) => {
+        const at = humanReceivedAt(ev);
+        if (at !== null && resumeByHuman(d, at)) host.log("사람의 새 메시지 — Esc 조작 잠금을 풀었습니다");
+      }),
+      // 작업이 끝나면 표시를 바로 내린다(유휴 60초는 종료 신호가 없을 때의 안전망) — `onTurnEnd`.
+      ...TURN_END_EVENTS.map((type) => host.on(type, (ev) => onTurnEnd(this.w, ev, (m) => host.log(m)))),
+    ];
+    this.unsubscribe = () => {
+      for (const off of offs) off();
+    };
   }
 
   async stop(): Promise<void> {

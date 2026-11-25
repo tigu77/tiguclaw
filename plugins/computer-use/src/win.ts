@@ -242,6 +242,13 @@ interface ExeSpec {
    *  도우미의 백신 판정은 오류 원문(`CS0016 … virus` 등)과 컴파일 **뒤** 사라짐(옮기기 `ENOENT`)으로만 한다.
    */
   readonly missingOutputIsBlock: boolean;
+  /**
+   * 실패한 컴파일을 **바로 다시 하지 않는다**(2026-11-25 아스트라 종합 인계 2-3) — 표시 도우미만 켠다. 표시는 조작마다 다시 띄우므로, 컴파일이 계속
+   *  실패하는 기계(백신·정책·컴파일러 문제 — 원인은 단정하지 않는다)에서 조작마다 `csc` 를 새로 돌렸다. 실패하면 1분부터 두 배씩(최대 30분) 그 종류의
+   *  컴파일을 쉬고 직전 실패를 그대로 돌려준다. 영구 포기는 아니다 — 간격이 지나면 다시 하고, 그 사이 exe 가 생기면(다른 프로세스·사람이 만듦) 바로 쓰며,
+   *  성공하면 간격을 지운다. 진단(`indicatorSelfCheck`)은 간격을 무시한다. ★캡처는 켜지 않는다 — 막히면 `look` 이 실패하므로 고친 즉시 다시 해 봐야 한다.
+   */
+  readonly retryBackoff?: boolean;
 }
 const CAPTURE_EXE: ExeSpec = { prefix: "capture", source: CAPTURE_CS, target: "exe", what: "화면 캡처 프로그램을", missingOutputIsBlock: true };
 
@@ -253,14 +260,31 @@ const exePath = (spec: ExeSpec): string =>
 const building = new Map<string, Promise<{ ok: true; exe: string } | RunFail>>();
 
 /**
+ * 실패 뒤 다시 컴파일하는 간격(`ExeSpec.retryBackoff`) — 1분부터 두 배씩, 최대 30분. 종류마다 연속 실패 수와 다음 시도 시각·직전 실패.
+ * ★시각은 **단조 시계**(`performance.now()`)다 — 이 간격은 프로세스 안에서만 살므로, 시스템 시계를 되돌려도 늘어나지 않게(구현 검토 C1 ①).
+ */
+export const COMPILE_RETRY_FIRST_MS = 60_000;
+export const COMPILE_RETRY_MAX_MS = 30 * 60_000;
+const compileBackoff = new Map<string, { failures: number; until: number; last: RunFail }>();
+
+/**
  * 프로그램이 있으면 그 경로, 없으면 **한 번** 컴파일한다(같은 종류의 동시 호출은 같은 컴파일을 기다린다).
  * ★임시 이름으로 만든 뒤 옮긴다 — 반쯤 쓰인 exe 를 다른 호출이 실행하지 않게.
  */
-const ensureExe = async (spec: ExeSpec): Promise<{ ok: true; exe: string } | RunFail> => {
+const ensureExe = async (spec: ExeSpec, o: { ignoreBackoff?: boolean } = {}): Promise<{ ok: true; exe: string } | RunFail> => {
   const exe = exePath(spec);
-  if (existsSync(exe)) return { ok: true, exe };
+  if (existsSync(exe)) {
+    compileBackoff.delete(spec.prefix);
+    return { ok: true, exe };
+  }
   const running = building.get(spec.prefix);
   if (running !== undefined) return running;
+  const held = spec.retryBackoff === true && o.ignoreBackoff !== true ? compileBackoff.get(spec.prefix) : undefined;
+  if (held !== undefined && performance.now() < held.until) {
+    const secs = Math.ceil((held.until - performance.now()) / 1000);
+    // 안내를 **앞에** 둔다 — 부르는 쪽이 문장을 잘라도(도우미는 300자) «이번엔 컴파일하지 않았다» 가 남게(C1 ②).
+    return { ...held.last, detail: `(직전 실패 ${held.failures}회 — 이번엔 컴파일하지 않음, ${secs}초 뒤 다시) ${held.last.detail}` };
+  }
   const job = (async (): Promise<{ ok: true; exe: string } | RunFail> => {
     const csc = cscExe();
     if (csc === null) {
@@ -304,7 +328,17 @@ const ensureExe = async (spec: ExeSpec): Promise<{ ok: true; exe: string } | Run
       await fs.rm(src, { force: true }).catch(() => {});
       await fs.rm(tmp, { force: true }).catch(() => {});
     }
-  })().finally(() => { building.delete(spec.prefix); });
+  })().then((r) => {
+    if (spec.retryBackoff === true) {
+      if (r.ok) compileBackoff.delete(spec.prefix);
+      else {
+        const failures = (compileBackoff.get(spec.prefix)?.failures ?? 0) + 1;
+        const wait = Math.min(COMPILE_RETRY_FIRST_MS * 2 ** (failures - 1), COMPILE_RETRY_MAX_MS);
+        compileBackoff.set(spec.prefix, { failures, until: performance.now() + wait, last: r });
+      }
+    }
+    return r;
+  }).finally(() => { building.delete(spec.prefix); });
   building.set(spec.prefix, job);
   return job;
 };
@@ -1226,6 +1260,7 @@ export const frontWindow = async (): Promise<string | null> => {
  */
 export const INDICATOR_CS = String.raw`using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -1471,7 +1506,20 @@ class Overlay : Form {
       TransparencyKey = Key;
     }
     Bounds = bounds;
+    // 중지 단추는 양끝이 반원인 캡슐이다(2026-11-25) — 창 영역으로 걸어 **보이는 곳 = 클릭 받는 곳**: 모서리 밖은 그리지도 받지도 않는다.
+    if (kind == Kind.Label) Region = Capsule(bounds.Width, bounds.Height);
     DoubleBuffered = true;
+  }
+
+  // 지름 = 높이(짧은 변)인 반원 둘 + 그 사이 직사각형. 위치를 옮겨도(SetWindowPos) 창 기준이라 그대로 따라간다.
+  public static System.Drawing.Region Capsule(int w, int h) {
+    int d = Math.Min(w, h);
+    using (GraphicsPath p = new GraphicsPath()) {
+      p.AddArc(0, 0, d, d, 90, 180);
+      p.AddArc(w - d, 0, d, d, 270, 180);
+      p.CloseFigure();
+      return new System.Drawing.Region(p);
+    }
   }
 
   protected override bool ShowWithoutActivation { get { return true; } }
@@ -1534,7 +1582,7 @@ class Overlay : Form {
 }
 `;
 
-const INDICATOR_EXE: ExeSpec = { prefix: "indicator", source: INDICATOR_CS, target: "winexe", what: "표시 도우미를", missingOutputIsBlock: false };
+const INDICATOR_EXE: ExeSpec = { prefix: "indicator", source: INDICATOR_CS, target: "winexe", what: "표시 도우미를", missingOutputIsBlock: false, retryBackoff: true };
 
 /** 도우미 컴파일 경로 실패의 단계 이름 — 기동(`startIndicator`)과 자가 점검(`indicatorSelfCheck`)이 같이 쓴다. */
 const INDICATOR_COMPILE_FAILED = "표시 도우미 컴파일 실패";
@@ -1544,7 +1592,8 @@ const INDICATOR_COMPILE_FAILED = "표시 도우미 컴파일 실패";
  * ★`selfCheck` 와 같은 자리다 — 순수부·원문 검사는 «컴파일이라도 되나» 를 못 본다(C# 5 판정은 대상 기계의 `csc.exe` 만 한다).
  */
 export const indicatorSelfCheck = async (): Promise<{ ok: true; stdout: string; exe: string } | { ok: false; detail: string }> => {
-  const built = await ensureExe(INDICATOR_EXE);
+  // 진단은 재시도 간격을 무시한다 — 사람이 고친 뒤 점검하면 바로 새로 컴파일해 본다.
+  const built = await ensureExe(INDICATOR_EXE, { ignoreBackoff: true });
   if (!built.ok) return { ok: false, detail: `${INDICATOR_COMPILE_FAILED}: ${built.detail}` };
   const r = await runChild(built.exe, [], { TIGUCLAW_DRY: "1" });
   return r.ok ? { ok: true, stdout: r.stdout, exe: built.exe } : { ok: false, detail: `표시 도우미 빈 연습 실패: ${r.detail}` };

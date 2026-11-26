@@ -8,8 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-11-26
+
 ### Added
-- While the assistant controls your macOS or Windows screen, a soft orange glow along the screen edges, a stop button at the top center, and a ring around the real pointer are shown. Clicking the button stops the current action, and the assistant won't control the screen again until you send a new message. The pointer moves briefly to its target (at most about 0.1 seconds) before clicking.
+- While the assistant controls your macOS or Windows screen, a soft orange glow along the screen edges, a stop button at the top center, and a ring around the real pointer are shown. Clicking the button stops the current action, and the assistant won't control the screen again until you send a new message. The pointer moves briefly to its target before clicking.
 - Skills that come with an active plugin can now be found and used through `find_skills` and `find_capabilities` without knowing their names.
 - In the dashboard, a background job card's to-do list shows how many items are in progress, and their titles, in its header even when collapsed.
 
@@ -1367,7 +1369,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.86.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.87.0...HEAD
+[0.87.0]: https://github.com/tigu77/tiguclaw/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/tigu77/tiguclaw/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...v0.84.0

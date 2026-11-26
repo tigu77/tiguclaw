@@ -8,8 +8,10 @@
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-11-26
+
 ### 추가
-- 비서가 macOS·Windows 화면을 조작하는 동안 화면 가장자리의 부드러운 주황 빛, 위쪽 가운데 중지 단추, 실제 포인터 둘레 고리가 표시됩니다. 단추를 누르면 진행 중인 조작이 멈추고, 새 메시지를 보낼 때까지 다시 조작하지 않습니다. 포인터는 목표까지 짧게(길어야 약 0.1초) 움직인 뒤 누릅니다.
+- 비서가 macOS·Windows 화면을 조작하는 동안 화면 가장자리의 부드러운 주황 빛, 위쪽 가운데 중지 단추, 실제 포인터 둘레 고리가 표시됩니다. 단추를 누르면 진행 중인 조작이 멈추고, 새 메시지를 보낼 때까지 다시 조작하지 않습니다. 포인터는 목표까지 짧게 움직인 뒤 누릅니다.
 - 활성화한 플러그인에 딸린 스킬을 이름을 몰라도 `find_skills`·`find_capabilities`로 찾아 쓸 수 있습니다.
 - 대시보드 백그라운드 작업 카드의 할 일 목록을 접어도 머리 줄에 동시에 진행 중인 항목 수와 제목이 보입니다.
 
@@ -2917,7 +2919,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.86.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.87.0...HEAD
+[0.87.0]: https://github.com/tigu77/tiguclaw/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/tigu77/tiguclaw/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/tigu77/tiguclaw/compare/v0.83.0...v0.84.0

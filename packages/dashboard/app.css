@@ -517,6 +517,12 @@
          붙었다. 목록이 전체 폭일 땐 덜 보였는데 상세 패널로 옮기자 바로 드러났다.
          행을 감싸게 하고 폭을 100% 로 — 이제 이름/동작 **아래**로 내려간다. */
       .plugin-row { flex-wrap:wrap; }
+      /* ★메타 칸에도 **기준 폭**을 준다 (2026-11-26, 공개 v0.87.0 재현). `.settings-meta` 의 기준 폭이 0이라
+         줄을 나눌 때 메타는 자리를 안 차지한 셈이 되고, 긴 인증 안내(최대 폭 약 712px)가 같은 줄에 들어와
+         메타가 남는 폭만 받았다 — 1440 화면 카드 890px 에서 48px, 자연 폭 846px 에서 4px(사실 값이 글자 단위로 섰다).
+         기준 폭을 받으면 메타+인증이 한 줄에 안 들어갈 때 **인증이 아랫줄로** 가고, 들어가면 나란히 남는다.
+         값은 좁은 화면 규칙(아래 `max-width:900px` 의 220px)과 같다 — 넓은 화면에서도 카드는 좁을 수 있다. */
+      .plugin-row > .settings-meta { flex-basis:220px; }
       /* 상세의 사실 목록 — 아는 것만 줄로 생긴다(없는 줄은 안 만든다). */
       .plugin-facts { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin-top:8px; font-size:.75rem; }
       .plugin-fact { display:contents; }

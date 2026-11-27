@@ -14,7 +14,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { runSelfUpdate } from "../../core/self-update.js";
+import { endBootUpdateResults, runSelfUpdate } from "../../core/self-update.js";
 import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const git = (args: readonly string[], cwd: string): Promise<string> =>
@@ -52,6 +52,7 @@ export const check: RegressionCheck = {
         // npm 이 다시 쓴 lock + 사용자가 고친 진짜 파일.
         await writeFile(path.join(clone, "package-lock.json"), '{"rewritten":true}\n');
         await writeFile(path.join(clone, "a.txt"), "user edit\n");
+        endBootUpdateResults(); // 데몬 부팅이 아니다 — 부팅 결과 처리 구간(기본 «처리 중», §15)을 끝낸다
         const r = await runSelfUpdate({ cwd: clone, restart: () => {} });
         const lock = await readFile(path.join(clone, "package-lock.json"), "utf8");
         const userEdit = await readFile(path.join(clone, "a.txt"), "utf8");

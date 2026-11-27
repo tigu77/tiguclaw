@@ -17,9 +17,11 @@
  * 실패는 전부 `SelfUpdateResult` 상태 객체로 수렴. 깨진 코드(typecheck 실패)는 절대 재시작
  * 트리거 안 함(먹통 = respawn 루프 방지) — 대신 작업트리를 `git reset --hard` 로 롤백한다.
  */
-import { execFileSync, execFile, spawn } from "node:child_process";
-import { telegramTargetFor } from "../store/sessions.js";
-import { promises as fs, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, execFile, spawn, type SpawnOptions } from "node:child_process";
+import net from "node:net";
+import { notifySessionThreadKey, telegramTargetFor } from "../store/sessions.js";
+import { randomUUID } from "node:crypto";
+import { promises as fs, existsSync, lstatSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { appRoot, sourceRoot, getPaths } from "./paths.js";
 import { ensureRipgrep } from "./ripgrep.js";
@@ -28,13 +30,11 @@ import { redactSecrets } from "./outbound-sanitize.js";
 import { translate } from "./i18n.js";
 const { getProcessIdentity, setBootRevision } = await import(new URL("../../bin/runtime-identity.mjs", import.meta.url).href);
 export const { UPDATE_PENDING_MARKER } = await import(new URL("../../bin/update-marker.mjs", import.meta.url).href);
-
-/** 마커파일 — 부팅 시 1회 소비되는 "업데이트 완료" 통지 좌표 (architect §4). */
-export const UPDATE_COMPLETE_MARKER = ".update-complete";
+const { updateSlotState, updateRunPipeName, updateHandoffPipeName } = await import(new URL("../../bin/update-marker.mjs", import.meta.url).href);
 
 /** 마커파일 — 위임 CLI update(telegram /update) 가 실패·롤백했을 때의 "업데이트 실패"
  *  통지 좌표. 위임 실행은 stdio 가 버려져 실패가 조용히 사라졌다 → 롤백 후 재가동한 데몬이
- *  부팅 시 1회 소비해 요청자에게 실패 단계+로그 경로를 통지한다. UPDATE_COMPLETE_MARKER 와 대칭. */
+ *  부팅 시 1회 소비해 요청자에게 실패 단계+로그 경로를 통지한다. (옛 `.update-complete` 는 성공 근거가 아니다 — `bin/update-marker.mjs`.) */
 export const UPDATE_FAILED_MARKER = ".update-failed";
 
 /**
@@ -86,7 +86,13 @@ export const updateFailedText = (m: { stage?: string; outcome?: string; detail?:
         ? "srv.update.outcome.rolledBack"
         : m.outcome === "needs-check"
           ? "srv.update.outcome.needsCheck"
-          : "srv.update.outcome.unknown",
+          : m.outcome === "restart-unconfirmed"
+            ? "srv.update.outcome.restartUnconfirmed"
+            : m.outcome === "restart-error"
+              ? "srv.update.outcome.restartError"
+              : m.outcome === "not-started"
+                ? "srv.update.outcome.notStarted"
+                : "srv.update.outcome.unknown",
   );
   // 줄 단위로 잇는다 — 상세는 CLI 가 남긴 원문, 로그 줄은 경로만 끼운다.
   const lines = [translate("srv.update.failedNotice", { stage, what })];
@@ -99,7 +105,8 @@ export type SelfUpdateStatus =
   | "up-to-date" // 변경 0 — 재시작 X
   | "updating" // 게이트 통과 → 통지 적재 + 분리 재시작 트리거됨
   | "failed" // 어느 단계 실패 → 롤백됨(있다면) — 재시작 X
-  | "busy"; // 동시 가드 — 이미 다른 업데이트 진행 중
+  | "busy" // 동시 가드 — 이번 요청은 시작하지 않았다(사유 `reason`)
+  | "unconfirmed"; // Windows 위임 — 업데이트 프로세스에 넘겼지만 시작을 확인하지 못했다(결과는 그 프로세스의 알림이 잇는다 — §15)
 
 /** 부팅 완료 통지를 보낼 generic 좌표 (worker-jobs 의 WorkerNotifyDest 와 동형 — 단방향). */
 export interface SelfUpdateNotifyDest {
@@ -107,7 +114,68 @@ export interface SelfUpdateNotifyDest {
   channel: string;
   /** 채널 내 목적지(telegram=chatId, cli=무시). null = 채널 디폴트/무시. */
   target: string | null;
+  /**
+   * 업데이트를 요청한 세션(threadKey) — 결과 통지를 그 대화에 귀속한다(2026-11-25 Windows 관측: 실패가 `dashboard:default` 에 기록됐다).
+   * 없으면(옛 데몬·옛 마커) 소비자는 종전대로 기본 세션에 둔다 — 지어내지 않는다. 판정은 `updateOriginSession` 하나.
+   */
+  threadKey?: string;
 }
+
+/**
+ * 업데이트 결과 통지의 **발원 세션** — 부팅 성공·실패 통지와 직접 모드 즉시 통지가 같이 쓴다(같은 판단을 한 곳에).
+ * 세션 판정은 매니저 통지와 같은 `notifySessionThreadKey`(내부·서브 키는 기본 세션). 좌표에 세션이 없으면 undefined.
+ */
+export const updateOriginSession = (notify: unknown): string | undefined => {
+  const key = (notify as { threadKey?: unknown } | null | undefined)?.threadKey;
+  return typeof key === "string" && key !== "" ? notifySessionThreadKey(key) : undefined;
+};
+
+/**
+ * Windows 위임 CLI 를 띄우는 인자 — **요청 좌표(`deps.notify`)를 env 로 옮기는 자리가 여기 하나**다(구현 검토 I2 #4: 호출부에서 좌표 전달만
+ *  빠져도 검사가 몰랐다). `runSelfUpdate` 는 이 결과를 그대로 `spawn` 에 넘긴다. ★고아화(`cmd /c start /b`)는 아래 호출부 주석.
+ */
+export const delegatedUpdateSpawnArgs = (
+  deps: Pick<SelfUpdateDeps, "notify">,
+  prevSha: string,
+  reportFrom: string,
+  base: NodeJS.ProcessEnv = process.env,
+  token?: string,
+) => ({
+  command: "cmd",
+  // ★`update-delegated` — 인계 규약을 아는 CLI 만 받는 명령(§15). 옛 CLI(디스크 소스가 실행 빌드보다 옛것)는 모르는 명령이라 아무것도 안 한다.
+  //  토큰이 없으면(회귀의 옛 모양 호출) 종전 `update`.
+  args: ["/c", "start", "/b", "", process.execPath, path.join(sourceRoot(), "bin", "daemon.mjs"), token !== undefined ? "update-delegated" : "update"],
+  options: {
+    cwd: sourceRoot(),
+    env: updateDelegationEnv(base, { prevSha, reportFrom, ...(deps.notify !== undefined ? { notify: deps.notify } : {}), ...(token !== undefined ? { token } : {}) }),
+    detached: true,
+    stdio: "ignore" as const,
+    windowsHide: true,
+  },
+});
+
+/**
+ * Windows 위임 CLI 에 넘기는 환경 — spawn 과 검사가 같은 함수를 쓴다(이음매를 검사가 본다).
+ * ★좌표가 있으면 세 키를 **언제나** 함께 쓴다(빈 값 포함) — 데몬 자신의 환경에 남은 값이 새어 들지 않게.
+ */
+export const updateDelegationEnv = (
+  base: NodeJS.ProcessEnv,
+  a: { prevSha: string; reportFrom: string; notify?: SelfUpdateNotifyDest; token?: string },
+): NodeJS.ProcessEnv => ({
+  // ★일회성 위임 키는 **이번 요청 값만** 싣는다 (2026-11-25 구현 검토 I1 #2). 위임 CLI 가 띄운 감독자·데몬은 그 환경을 물려받아
+  //  `TIGUCLAW_UPDATE_*` 를 지닌 채 돈다 — 그대로 퍼뜨리면 좌표 없는 다음 요청(HTTP `/update`)의 결과가 이전 대화로 갔다.
+  ...Object.fromEntries(Object.entries(base).filter(([k]) => !k.startsWith("TIGUCLAW_UPDATE_"))),
+  TIGUCLAW_UPDATE_PREV_SHA: a.prevSha,
+  TIGUCLAW_UPDATE_REPORT_FROM: a.reportFrom,
+  ...(a.token !== undefined ? { TIGUCLAW_UPDATE_HANDOFF_TOKEN: a.token } : {}),
+  ...(a.notify !== undefined
+    ? {
+        TIGUCLAW_UPDATE_NOTIFY_CHANNEL: a.notify.channel,
+        TIGUCLAW_UPDATE_NOTIFY_TARGET: a.notify.target ?? "",
+        TIGUCLAW_UPDATE_NOTIFY_THREAD: a.notify.threadKey ?? "",
+      }
+    : {}),
+});
 
 /**
  * 현재 turn 의 채널/threadKey(+캡처 좌표)에서 완료 통지 좌표를 도출 — update_self·매니저
@@ -126,12 +194,13 @@ export const notifyDestFromCoords = (
 ): SelfUpdateNotifyDest => {
   const captured = channelAddress?.trim();
   if (captured !== undefined && captured !== "") {
-    return { channel, target: captured };
+    return { channel, target: captured, threadKey };
   }
   return {
     channel,
     target:
       channel === "telegram" ? telegramTargetFor(threadKey) : null,
+    threadKey,
   };
 };
 
@@ -163,6 +232,13 @@ export interface SelfUpdateDeps {
   runningBuild?: string | null;
   /** 테스트·격리용 — 이 프로세스를 KeepAlive 서비스가 관리하는가. 미지정이면 측정(`keepAliveServiceOwnsProcess`). */
   keepAlive?: boolean;
+  /** 테스트·격리용 — 플랫폼·런타임·소켓·자식 실행(Windows 인계를 맥에서 실행해 본다). */
+  platform?: NodeJS.Platform;
+  builtRuntime?: boolean;
+  net?: Pick<typeof net, "createServer" | "connect">;
+  spawnChild?: (command: string, args: string[], options: SpawnOptions) => { unref: () => void; once?: (ev: "error", fn: (e: Error) => void) => unknown };
+  pipeNames?: { run: string; handoff: string };
+  handoffWaitMs?: number;
 }
 
 export interface SelfUpdateResult {
@@ -180,7 +256,37 @@ export interface SelfUpdateResult {
   error?: string;
   /** updating 시 = restartDelayMs. */
   restartInMs?: number;
+  /** busy 의 사유 — 문구 함수(`selfUpdateBusyText`)가 고른다. 없으면 프로세스 안 잠금(종전). */
+  reason?: SelfUpdateBusyReason;
 }
+
+/**
+ * busy 사유 (2026-11-27 §15) — running = 다른 업데이트가 실행 중 · results = 이 데몬이 직전 업데이트 결과를 아직 처리 중 ·
+ * slot = 이전 결과 기록이 남아 있거나 확인 불가 · lock = 업데이트 잠금을 만들 수 없음 · child = 넘겨받은 프로세스가 설치를 시작하지 않음(`detail`).
+ */
+export type SelfUpdateBusyReason = "running" | "results" | "slot" | "lock" | "child";
+
+/** busy 한 문장 — 슬래시(/update)·도구(update_self)·HTTP(대시보드)가 같이 쓴다(판단 한 곳). */
+export const selfUpdateBusyText = (r: Pick<SelfUpdateResult, "reason" | "error">): string =>
+  r.reason === "results"
+    ? translate("srv.update.busyResults")
+    : r.reason === "slot"
+      ? translate("srv.update.busyUndelivered")
+      : r.reason === "lock"
+        ? translate("srv.update.busyLock")
+        : r.reason === "child"
+          ? translate("srv.update.busyChild", { detail: r.error ?? "" })
+          : translate("srv.update.busy");
+
+// ── 부팅 결과 처리 구간 (2026-11-27 §15 G1 (2)) ─────────────────────────────────
+// ★기본값이 «처리 중» 이다 — 부팅 통지 영역(`index.ts`)이 옆 보존 쓸기 직후 한 번 «끝» 으로 바꾼다(단조). 시작 표지를 둘 자리가 없게 해
+//  놓쳐도 «막힌 쪽» 으로 실패한다. 그 사이 `/update` 를 받으면 새 실행이 데몬을 멈춰 배달 중인 선점본을 남기거나 직전 CLI 꼬리를 깬다.
+//  `/health` 가 이 값을 싣고, 터미널 CLI 는 정지·재시작 직전에 본다. `runSelfUpdate` 를 직접 부르는 회귀는 먼저 끝낸다.
+let bootUpdateResultsDone = false;
+export const endBootUpdateResults = (): void => {
+  bootUpdateResultsDone = true;
+};
+export const bootUpdateResultsPending = (): boolean => !bootUpdateResultsDone;
 
 /**
  * `updating` 의 «언제 재시작하나» 한 문장 — 슬래시(/update)와 도구(update_self)가 같이 쓴다(판단·카탈로그 한 곳).
@@ -196,7 +302,10 @@ export const restartNotice = (r: Pick<SelfUpdateResult, "restartInMs">): string 
 // 2026-10-30 index.ts 에서 옮김 — 회귀가 문구를 실행으로 재도록). status 4종 each. updating 은 from→to·파일수·"곧 재시작" 고지.
 export const formatSelfUpdateResult = (r: SelfUpdateResult): string => {
   if (r.status === "busy") {
-    return translate("srv.update.busy");
+    return selfUpdateBusyText(r);
+  }
+  if (r.status === "unconfirmed") {
+    return translate("srv.update.handoffUnconfirmed");
   }
   if (r.status === "up-to-date") {
     return translate("srv.update.upToDate");
@@ -513,6 +622,123 @@ const ensureRipgrepBestEffort = async (): Promise<void> => {
   }
 };
 
+
+// ── Windows 실행권·인계 (2026-11-27 §15) ────────────────────────────────────────
+// ★한 홈에 업데이트 실행은 하나 — 실행 파이프(OS 보장: 두 번째 `listen` 은 EADDRINUSE, 주인이 죽으면 즉시 회수)를 쥔 프로세스만 설치를 바꾼다.
+//  이 데몬은 위임 전 단계(pull 등) 동안 쥐고, 인계 파이프를 먼저 연 뒤 놓고 자식을 `update-delegated` 로 띄운다. 자식이 쥐고 보고하면 `ok` 로 받는다 —
+//  `ok` 를 보냈으면 응답은 이 데몬이, `ok` 없이 끊겼으면 자식이 진다(그때 자식은 실행하지 않고 `not-started` 기록을 남긴다). 판정은 `bin/daemon.mjs` `runUpdateCommand` 와 짝.
+// ★거절(`refused`)엔 `ok` 를 쓰지 않는다 (2026-11-27 §16). `ok` 가 자식에게 닿았는지는 어느 쪽도 확정하지 못해(로컬 송신 완료 ≠ 수신) 둘 다 살아 있어도
+//  거절 통지가 0 이 되는 순서가 있었다. 자식은 보고 **전에** `not-started` 기록을 남기고 그 이름(`record`)을 싣는다 — 이 데몬은 그 기록을 **선점했을 때만**
+//  직접 거절을 알리고(rename 한 번 — 결과를 이 프로세스가 안다), 못 했으면 기록이 다음 부팅에 그 요청 좌표로 나간다.
+//  record: 이름 = 놓였거나 놓였을 수 있는 곳 · null = 쓸기 대상에 기록이 없음이 확실 · undefined = 필드 없음(모르는 보고 — 단정하지 않는다).
+type HandoffReport = { result: "acquired" } | { result: "refused"; reason: string; record: string | null | undefined };
+/** 자식이 남긴 거절 기록을 가져간다 — true = 선점해 지웠다(이 데몬이 거절을 알린다) · false = 못 가져갔다(형식 밖·없음·오류 — 놓였으면 다음 부팅이 보낸다).
+ *  선점 이름은 요청마다 고유하고 쓸기 제외(`.claim-`)다 — 남은 선점본을 대체하지 않고, 지우지 못해도 다시 나가지 않는다. */
+const takeRefusalRecord = (home: string, name: string): boolean => {
+  if (!/^\.update-failed\.unsent-[0-9A-Za-z-]+$/.test(name)) return false;
+  const claim = path.join(home, `${UPDATE_FAILED_MARKER}.claim-${process.pid}-${Date.now()}-r-${randomUUID().slice(0, 8)}`);
+  try {
+    renameSync(path.join(home, name), claim);
+  } catch {
+    return false;
+  }
+  // 지우기는 부팅 소비와 같은 규칙(`src/index.ts` `deliverUpdateFailure`) — 파일 · 디렉터리 기록이면 `record.json` 뒤 빈 디렉터리만.
+  try {
+    if (lstatSync(claim).isDirectory()) {
+      unlinkSync(path.join(claim, "record.json"));
+      rmdirSync(claim);
+    } else unlinkSync(claim);
+  } catch (e) {
+    console.error(`self-update: 가져간 거절 기록을 지우지 못했습니다(${claim} 에 남음, 다시 보내지 않음): ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return true;
+};
+const listenPipe = (netApi: Pick<typeof net, "createServer">, name: string, onConn?: (sock: net.Socket) => void): Promise<net.Server> =>
+  new Promise((resolve, reject) => {
+    const server = netApi.createServer((sock) => {
+      sock.on("error", () => undefined);
+      if (onConn !== undefined) onConn(sock);
+      else sock.end();
+    });
+    server.once("error", reject);
+    server.listen(name, () => resolve(server));
+  });
+/** 인계 파이프 — 자기 토큰의 첫 보고 하나만 받는다(빈 연결·다른 토큰·두 번째 보고는 그 연결만 `ok` 없이 닫는다). */
+const openHandoff = async (netApi: Pick<typeof net, "createServer">, name: string, token: string) => {
+  const sockets = new Set<net.Socket>();
+  let accepted: { report: HandoffReport; sock: net.Socket } | null = null;
+  let acked = false;
+  /** `ok` 가 로컬에서 끝까지 나갔다 — 닫을 때 그 연결만 남긴다(나가지 못했으면 끊어 자식이 «끊김» 으로 보게). */
+  let ackedOk = false;
+  let closed = false;
+  const waiters: Array<(a: typeof accepted) => void> = [];
+  const server = await listenPipe(netApi, name, (sock) => {
+    sockets.add(sock);
+    sock.on("close", () => sockets.delete(sock));
+    let buf = "";
+    sock.on("data", (d) => {
+      buf += String(d);
+      const nl = buf.indexOf("\n");
+      if (nl < 0) return;
+      type Wire = { token?: unknown; result?: unknown; reason?: unknown; record?: unknown };
+      let msg: Wire | null = null;
+      try {
+        msg = JSON.parse(buf.slice(0, nl)) as Wire;
+      } catch {
+        /* 깨진 보고 — 아래에서 닫는다 */
+      }
+      const ok = msg !== null && msg.token === token && accepted === null && !closed && (msg.result === "acquired" || msg.result === "refused");
+      if (!ok) {
+        sock.destroy();
+        return;
+      }
+      accepted = {
+        report: msg!.result === "acquired"
+          ? { result: "acquired" }
+          : { result: "refused", reason: typeof msg!.reason === "string" ? msg!.reason : "unknown", record: msg!.record === null ? null : typeof msg!.record === "string" ? msg!.record : undefined },
+        sock,
+      };
+      for (const w of waiters.splice(0)) w(accepted);
+    });
+  });
+  return {
+    /** 기한까지 자기 토큰의 보고를 기다린다 — null = 기한. */
+    wait: (ms: number): Promise<{ report: HandoffReport; ack: () => Promise<boolean> } | null> =>
+      new Promise((resolve) => {
+        // `ack` 는 `ok` 의 **로컬 송신 결과**를 돌려준다(I1 #1) — 쓰기가 끝나기 전에 연결이 끊기거나 오류면 false(그때 책임은 자식에게 간다).
+        const ack = (sock: net.Socket) => (): Promise<boolean> =>
+          new Promise((res) => {
+            if (closed || acked) return res(false);
+            acked = true;
+            let done = false;
+            const finish = (v: boolean) => { if (!done) { done = true; if (v) ackedOk = true; res(v); } };
+            sock.once("error", () => finish(false));
+            sock.once("close", () => finish(false));
+            // 종료 콜백이 오류를 받는 순서(오류 콜백 → error)도 실패다 — 오류 없는 로컬 완료만 성공(I2 #1).
+            sock.end("ok\n", (err?: Error | null) => finish(err === undefined || err === null));
+          });
+        const give = (a: typeof accepted) => resolve(a === null ? null : { report: a.report, ack: ack(a.sock) });
+        if (accepted !== null) return give(accepted);
+        const t = setTimeout(() => {
+          const i = waiters.indexOf(give);
+          if (i >= 0) waiters.splice(i, 1);
+          resolve(null);
+        }, ms);
+        waiters.push((a) => {
+          clearTimeout(t);
+          give(a);
+        });
+      }),
+    /** 닫는다 — `ok` 송신이 로컬에서 끝난 연결만 남기고 나머지는 끊는다. 송신을 **시작하지 않은** 연결은 `ok` 없이 끊겨 자식이 책임을 진다 ·
+     *  시작했지만 완료를 못 본 연결은 자식이 `ok` 를 읽었을 수도 있다(결과 불명 — §15-7 ②, I5). */
+    close: (): void => {
+      closed = true;
+      server.close();
+      for (const sock of sockets) if (!(ackedOk && accepted?.sock === sock)) sock.destroy();
+    },
+  };
+};
+
 /**
  * 단일 결정론 자가 업데이트 루틴 — architect §2 9단계.
  *
@@ -525,6 +751,40 @@ export const runSelfUpdate = async (
   // ── 단계 1: 동시 가드 ──────────────────────────────────────────────────────
   if (updating) {
     return { status: "busy" };
+  }
+  // ★부팅 결과 처리 중 · 결과 기록이 남은 슬롯이면 아무것도 바꾸기 전에 거절한다 (2026-11-27 §15 G1 (2)(4)).
+  //  고정 슬롯의 기록은 그 시도의 것이다 — 이 데몬의 부팅 소비는 이미 지나 그 기록은 다음 부팅까지 안 나간다. 새 실행을 들이면 그 슬롯을 두 시도가 나눈다.
+  if (bootUpdateResultsPending()) return { status: "busy", reason: "results" };
+  const isWinHost = (deps.platform ?? process.platform) === "win32";
+  const netApi = deps.net ?? net;
+  const pipes = deps.pipeNames ?? { run: updateRunPipeName(getPaths().home), handoff: updateHandoffPipeName(getPaths().home) };
+  // ★Windows: 실행 파이프를 쥐고 인계 파이프를 먼저 연다(§15 G1 (3)) — 다른 CLI 가 돌고 있으면 EADDRINUSE. 이 뒤의 판정·변경은 모두 쥔 채 한다.
+  let runLock: net.Server | null = null;
+  let handoff: Awaited<ReturnType<typeof openHandoff>> | null = null;
+  const handoffToken = randomUUID();
+  if (isWinHost) {
+    try {
+      runLock = await listenPipe(netApi, pipes.run);
+    } catch (e) {
+      return { status: "busy", reason: (e as NodeJS.ErrnoException).code === "EADDRINUSE" ? "running" : "lock" };
+    }
+    try {
+      handoff = await openHandoff(netApi, pipes.handoff, handoffToken);
+    } catch {
+      runLock.close();
+      return { status: "busy", reason: "lock" };
+    }
+  }
+  const releasePipes = (): void => {
+    handoff?.close();
+    handoff = null;
+    runLock?.close();
+    runLock = null;
+  };
+  // 고정 슬롯 판정은 실행 파이프를 쥔 뒤(Windows) — 판정 뒤 다른 생산자가 끼지 못한다.
+  if (updateSlotState(getPaths().home) !== "empty") {
+    releasePipes();
+    return { status: "busy", reason: "slot" };
   }
   updating = true;
 
@@ -690,37 +950,65 @@ export const runSelfUpdate = async (
     //    동반살해 → cmd 중간프로세스로 재부모화해 데몬 프로세스트리 밖으로.
     //    unix 는 위임 안 함(mac in-process 검증됨 · linux systemd cgroup 이 detached 도 kill).
     //    완료 통지: CLI 가 build 성공 후 마커 write(notify 좌표는 아래 env 2키). 계약 §2·§4·§5.
-    if (process.platform === "win32" && isBuiltRuntime()) {
+    if (isWinHost && (deps.builtRuntime ?? isBuiltRuntime())) {
       try {
-        const daemonMjs = path.join(sourceRoot(), "bin", "daemon.mjs");
-        const child = spawn(
-          "cmd",
-          ["/c", "start", "/b", "", process.execPath, daemonMjs, "update"],
-          {
-            cwd: sourceRoot(),
-            env: {
-              ...process.env,
-              // ★**pull 이전 SHA 를 넘긴다** (2026-08-22). 여기까지 오는 동안 이미
-              //  `git pull` 을 했으므로(단계 3), CLI 가 스스로 읽는 HEAD 는 *갱신된* SHA 다.
-              //  그걸 롤백 앵커로 쓰면 `git reset --hard <새 SHA>` = 아무것도 안 되돌린다 —
-              //  빌드가 깨졌을 때 되돌아갈 곳이 사라진다. 롤백은 그때만 쓰이므로 이 결함은
-              //  **조용했다**(실측 로그가 `X → X · 코드 변경 없음` 인데 HEAD 는 옮겨져 있었다).
-              TIGUCLAW_UPDATE_PREV_SHA: prevSha,
-              // 완료 로그·마커의 «무엇에서» — 빌드가 뒤처졌으면 돌고 있던 빌드(위 즉시 응답과 같은 값). **표시 전용**, 앵커는 위 값이다.
-              TIGUCLAW_UPDATE_REPORT_FROM: reportFrom,
-              ...(deps.notify !== undefined
-                ? {
-                    TIGUCLAW_UPDATE_NOTIFY_CHANNEL: deps.notify.channel,
-                    TIGUCLAW_UPDATE_NOTIFY_TARGET: deps.notify.target ?? "",
-                  }
-                : {}),
-            },
-            detached: true,
-            stdio: "ignore",
-            windowsHide: true,
-          },
-        );
+        // ★**pull 이전 SHA 를 넘긴다** (2026-08-22). 여기까지 오는 동안 이미
+        //  `git pull` 을 했으므로(단계 3), CLI 가 스스로 읽는 HEAD 는 *갱신된* SHA 다.
+        //  그걸 롤백 앵커로 쓰면 `git reset --hard <새 SHA>` = 아무것도 안 되돌린다 —
+        //  빌드가 깨졌을 때 되돌아갈 곳이 사라진다. 롤백은 그때만 쓰이므로 이 결함은
+        //  **조용했다**(실측 로그가 `X → X · 코드 변경 없음` 인데 HEAD 는 옮겨져 있었다).
+        // 완료 로그·마커의 «무엇에서»(reportFrom) — 빌드가 뒤처졌으면 돌고 있던 빌드(위 즉시 응답과 같은 값). **표시 전용**, 앵커는 prevSha 다.
+        const d = delegatedUpdateSpawnArgs(deps, prevSha, reportFrom, process.env, handoffToken);
+        // 인계 파이프는 이미 열려 있다 — 이제 실행 파이프를 놓고 자식을 띄운다(현 판 터미널은 인계 파이프를 보고 물러난다).
+        runLock?.close();
+        runLock = null;
+        const child = (deps.spawnChild ?? spawn)(d.command, d.args, d.options);
         child.unref();
+        // ★띄우기 실패가 `error` 이벤트로 늦게 와도(다음 턴) 데몬을 죽이지 않고 인계 판정으로 모은다(I1 #3) — 안 그러면 처리되지 않은 오류로 종료한다.
+        let spawnFailed: Error | null = null;
+        const spawnError = new Promise<"spawn-error">((res) => {
+          child.once?.("error", (e: Error) => {
+            spawnFailed = e;
+            res("spawn-error");
+          });
+        });
+        // 기한은 하나 — 자식을 띄운 때부터, **단조 시계**로(I3 #1: 벽시계는 시각 조정에 따라 기한을 늘리거나 기한 안의 보고를 버렸다).
+        //  보고 대기와 `ok` 송신이 같은 마감을 나눠 쓴다(I2 #2).
+        const handoffDeadline = performance.now() + (deps.handoffWaitMs ?? 20000);
+        const left = () => handoffDeadline - performance.now();
+        const waited = handoff !== null ? await Promise.race([handoff.wait(Math.max(0, left())), spawnError]) : null;
+        if (waited === "spawn-error") {
+          releasePipes();
+          return {
+            status: "failed",
+            from: reportFrom,
+            error: redactSecrets(translate("srv.update.err.handoff", { error: (spawnFailed as Error | null)?.message ?? "spawn error" })),
+          };
+        }
+        const got = waited;
+        // 거절 — `ok` 를 쓰지 않고(연결은 닫는다) 자식이 먼저 남긴 기록을 선점해 응답 책임을 정한다(§16): 선점했거나 기록이 없음이 확실하면(`null`)
+        //  이 데몬이 즉시 응답으로 알리고, 못 했으면(없음·형식 밖·오류·필드 없음) 단정하지 않는다 — 놓인 기록이 다음 부팅에 그 요청 좌표로 나간다.
+        //  즉시 응답의 채널 송달은 다른 즉시 응답(busy·최신·미커밋)과 같은 성질이다(§15-7 ①).
+        //  보고가 **마감 안에 관측됐을 때만** 판정한다 — 루프가 밀려 마감 뒤에 처리된 보고는 그 기록에 손대지 않는다(놓인 기록은 다음 부팅이 보낸다 — §16 I1 #1).
+        if (got !== null && got.report.result === "refused") {
+          releasePipes();
+          const rec = got.report.record;
+          if (left() >= 0 && (rec === null || (rec !== undefined && takeRefusalRecord(getPaths().home, rec)))) return { status: "busy", reason: "child", from: reportFrom, error: got.report.reason };
+          return { status: "unconfirmed", from: reportFrom, to: newSha, changedFiles: changed.length };
+        }
+        // `ok` 송신(acquired) — 마감이 남았을 때만 **시작**하고(안 남았으면 보내지 않는다: 연결은 `ok` 없이 끊겨 자식이 실행 0·`not-started` 를 진다),
+        //  시작했으면 남은 시간까지만 기다리고 그 완료도 **마감 안에 관측돼야** 인정한다(I3 #1). 그 밖(보고 없음·송신 실패·송신 결과 불명)은
+        //  자식이 돌았는지 이 데몬이 단정할 수 없으니 단정하지 않는 상태로 답한다(I1 #1) — 결과는 자식의 실행 결과나 `not-started` 기록이 잇는다.
+        let acked = false;
+        if (got !== null && left() > 0) {
+          const sent = await Promise.race([got.ack(), new Promise<boolean>((res) => setTimeout(() => res(false), Math.max(0, left())).unref())]);
+          acked = sent && left() >= 0;
+        }
+        if (got === null || !acked) {
+          releasePipes();
+          return { status: "unconfirmed", from: reportFrom, to: newSha, changedFiles: changed.length };
+        }
+        releasePipes();
         return {
           status: "updating",
           from: reportFrom,
@@ -903,6 +1191,8 @@ export const runSelfUpdate = async (
     await ensureRipgrepBestEffort();
 
     // ── 단계 7: 완료 마커 작성 (부팅 통지용, best-effort) ───────────────────────
+    // 이번 요청의 시도 id — 다른 시도의 실패 마커가 이 성공을 막지 않게(`sameUpdateAttempt`), 재시작 실패 표시도 이 시도의 것만 바꾼다.
+    const attempt = randomUUID();
     try {
       const marker = path.join(getPaths().home, UPDATE_PENDING_MARKER);
       const payload = {
@@ -912,6 +1202,7 @@ export const runSelfUpdate = async (
         ts: Date.now(),
         mode: "direct",
         state: "ready",
+        attempt,
         expected: { instanceId: getUpdateBoot().instanceId, notBefore: Date.now(), oldBootIds: [getUpdateBoot().bootId], revision: newSha },
         ...(deps.notify !== undefined ? { notify: deps.notify } : {}),
       };
@@ -934,7 +1225,7 @@ export const runSelfUpdate = async (
       try {
         const marker = path.join(getPaths().home, UPDATE_PENDING_MARKER);
         const data = JSON.parse(readFileSync(marker, "utf8"));
-        if (data.mode === "direct" && data.expected?.oldBootIds?.includes(getUpdateBoot().bootId)) {
+        if (data.mode === "direct" && data.attempt === attempt && data.expected?.oldBootIds?.includes(getUpdateBoot().bootId)) {
           writeFileSync(marker, JSON.stringify({ ...data, state: "failed" }));
         }
       } catch { /* failure remains unconfirmed */ }
@@ -958,11 +1249,14 @@ export const runSelfUpdate = async (
               void (async () => {
                 try {
                   const { deliverOutbound } = await import("./outbound.js");
+                  // 요청한 세션에 귀속 — 세션을 모르면(옛 좌표) 종전대로 물리 채널 키.
+                  const origin = updateOriginSession(dest);
                   await deliverOutbound({
                     channel: dest.channel,
                     target: dest.target,
                     label: "self-update",
                     text: translate("srv.update.restartUnavailable"),
+                    ...(origin !== undefined ? { observeThreadKey: origin, originThreadKey: origin } : {}),
                   });
                 } catch {
                   // 통지 실패는 치명 아님 — 위 console.error 가 이미 남겼다.
@@ -1008,6 +1302,8 @@ export const runSelfUpdate = async (
     // 락 해제 — updating(재시작 예약됨) 경로는 프로세스가 곧 죽지만, 5s 창에서의 중복
     // 호출도 막아야 하므로 *재시작을 예약한 경우엔 락을 유지* 한다(죽을 때까지). 그 외
     // (up-to-date·failed·예약 전 throw) 경로는 즉시 해제해 다음 시도를 허용.
+    // Windows 실행·인계 파이프도 여기서 놓는다(위임 갈래는 이미 놓았다 — 두 번 놓아도 무해).
+    releasePipes();
     if (!triggeredRestart) {
       updating = false;
     }

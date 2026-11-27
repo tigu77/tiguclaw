@@ -27,6 +27,17 @@ import { assert, type Assertion, type RegressionCheck } from "./_framework.js";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
+/** `open` 자리의 `{` 와 짝이 맞는 `}` 의 위치(없으면 끝). 미디어 블록의 범위를 재는 곳이 이 하나다. */
+const blockEnd = (src: string, open: number): number => {
+  let depth = 0;
+  let i = open;
+  for (; i < src.length; i += 1) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}" && --depth === 0) break;
+  }
+  return i;
+};
+
 export const check: RegressionCheck = {
   name: "mobile-text-does-not-stand-up",
   guards:
@@ -59,6 +70,49 @@ export const check: RegressionCheck = {
         "★★그 규칙이 기본 `.settings-meta` 정의보다 **뒤**에 있다 — 앞에 적으면 조용히 덮인다",
         baseAt >= 0 && wrapAt > baseAt,
         `기본=${baseAt} 모바일=${wrapAt}` + (wrapAt > baseAt ? " (뒤)" : " ★앞이라 무효"),
+      ),
+    );
+
+    // ── ②′ ★넓은 화면의 좁은 카드도 같은 병이다 (2026-11-26, 공개 v0.87.0 재현) ─────────
+    //  ①의 기준 폭은 `max-width:900px` 안에만 있어서, 1440 화면의 플러그인 상세 카드(846~943px)에서
+    //  긴 계정 불일치 안내가 메타와 같은 줄에 들어와 메타가 4~101px 로 눌렸다(CDP 실측). 그래서 플러그인
+    //  카드의 메타 기준 폭은 **미디어 블록 밖**에 있어야 한다 — 좁은 화면 블록으로 옮기면 그대로 재발한다.
+    //  ★값은 ①의 기준 폭과 **같아야** 한다(같은 «메타가 읽히는 최소 폭» 정책). «양수» 만 보면 1px(=수정 전처럼
+    //   같은 줄에 남는다)도 1000px(짧은 안내까지 아래로 간다)도 통과했다(독립 검토 R1). 둘 다 같은 줄바꿈이
+    //   전역이어야 뜻이 있으므로 `.plugin-row` 의 flex-wrap 도 함께 본다.
+    //  ★값 자체도 못 박는다(독립 검토 R2: 두 곳을 **함께** 1000px 로 바꾸면 «같다» 는 참인데 짧은 안내까지
+    //   아래로 간다). 220px 의 실측(1440 화면, 카드 폭 400~1500 스윕): 짧은 안내는 카드 580(ko)/640(en)px
+    //   부터 나란히, 긴 안내는 1060(ko)/1360(en)px 까지 아래 — 대상 폭 890·943 이 그 사이에 든다.
+    //   값을 바꾸려면 그 스윕을 다시 돌리고 여기를 고친다.
+    const READ_MIN_PX = "220";
+    const pluginBasis = /\.plugin-row > \.settings-meta \{ flex-basis:(\d+)px; \}/.exec(bare);
+    const pluginWrap = bare.indexOf(".plugin-row { flex-wrap:wrap; }");
+    const insideMedia = (at: number): boolean => {
+      const re = /@media[^{]*\{/g;
+      for (let m = re.exec(bare); m !== null; m = re.exec(bare)) {
+        if (at > m.index && at < blockEnd(bare, m.index + m[0].length - 1)) return true;
+      }
+      return false;
+    };
+    const basisGlobal = pluginBasis !== null && !insideMedia(pluginBasis.index);
+    const sameAsNarrow =
+      pluginBasis !== null && basis !== null && pluginBasis[1] === basis[1] && basis[1] === READ_MIN_PX;
+    out.push(
+      assert(
+        "★플러그인 카드의 메타 칸은 **모든 폭에서** 좁은 화면과 같은 기준 폭을 받는다 — 긴 인증 안내가 같은 줄에서 메타를 누르지 않고 아랫줄로 간다",
+        basisGlobal && sameAsNarrow,
+        pluginBasis === null
+          ? "★없음"
+          : `기준폭=${pluginBasis[1]}px(좁은 화면 ${basis?.[1] ?? "★없음"}px)` +
+              (basisGlobal ? " 전역" : " ★미디어 블록 안이라 넓은 화면에서 무효") +
+              (sameAsNarrow ? "" : ` ★값이 갈렸거나 실측한 ${READ_MIN_PX}px 가 아니다`),
+      ),
+    );
+    out.push(
+      assert(
+        "플러그인 카드 행은 **모든 폭에서** 줄을 바꾼다 — 기준 폭이 있어도 줄을 못 바꾸면 메타가 다시 눌린다",
+        pluginWrap >= 0 && !insideMedia(pluginWrap),
+        pluginWrap < 0 ? "★없음" : insideMedia(pluginWrap) ? "★미디어 블록 안" : "전역",
       ),
     );
 
@@ -123,17 +177,8 @@ export const check: RegressionCheck = {
       for (let m = re.exec(bare); m !== null; m = re.exec(bare)) {
         if (Number(m[1]) > 900) continue;
         // 여는 중괄호부터 짝이 맞는 닫는 중괄호까지.
-        let depth = 0;
-        let i = m.index + m[0].length - 1;
-        const from = i;
-        for (; i < bare.length; i += 1) {
-          if (bare[i] === "{") depth += 1;
-          else if (bare[i] === "}") {
-            depth -= 1;
-            if (depth === 0) break;
-          }
-        }
-        parts.push(bare.slice(from, i + 1));
+        const from = m.index + m[0].length - 1;
+        parts.push(bare.slice(from, blockEnd(bare, from) + 1));
       }
       return parts.join("\n");
     })();

@@ -40,6 +40,7 @@ export const handleHealth = async (ctx: RouteCtx): Promise<void> => {
   //  재시작 전 확인용. 미등록이면 null 로 답한다(0 과 구분 — 모르는 걸 안전으로 읽으면
   //  그게 사고의 형상이었다).
   const inflight = getInflightTurns();
+  const { bootUpdateResultsPending } = await import("../../src/core/self-update.js");
   writeJson(res, 200, {
     ok: true,
     ...getProcessIdentity({ home: resolveHome(), repoRoot: sourceRoot(), runtime: process.env.TIGUCLAW_RUNTIME ?? "built" }),
@@ -55,6 +56,9 @@ export const handleHealth = async (ctx: RouteCtx): Promise<void> => {
     // ★실행형 커맨드(`run:`)는 턴이 아니라 따로 센다 (2026-10-08). 턴에 섞으면 `run: npm run deploy:dev` 처럼 **자기
     //  인스턴스를 배포하는 실행**이 배포 가드에 자기 자신으로 걸려 영영 못 지나간다. 가드는 막지 않고 경고만 한다.
     active_runs: listProjectRuns(),
+    // ★이 부팅이 직전 업데이트 결과(실패 선점·성공 대기·옆 보존 쓸기)를 아직 처리 중인가 — 단조(한 번 false 면 이 부팅에선 다시 true 가 안 된다).
+    //  터미널 `tiguclaw update` 가 데몬을 멈추기 직전에 보고, 처리 중이면 기다린다(2026-11-27 §15 — 배달 중 정지로 결과를 끊지 않게).
+    updateResultsPending: bootUpdateResultsPending(),
     // ★**첨부 상한을 화면에 알려준다** (2026-09-15 정태님 신고: 대시보드에서 10MB 넘는
     //  파일이 안 올라갔다). 바로 위 `version` 과 같은 이유다 — 주석이 "하드코딩 stale
     //  방지" 라고 적어놓은 그 기제인데, 첨부 상한엔 안 적용돼 있었다.
@@ -121,13 +125,24 @@ export const handleUpdateChangelog = async (ctx: RouteCtx): Promise<void> => {
   return;
 };
 
+/**
+ * `/api/self-update` 응답 본문 — 거절(busy)·미확인(unconfirmed)은 사유 문장(`message`)을 싣는다(2026-11-27 §15). 칩이 «이미 다른 업데이트가
+ *  진행 중» 하나로 덮던 사유를 서버 문구(슬래시와 같은 렌더)로 띄운다. 그 밖은 결과 그대로.
+ */
+export const selfUpdateHttpBody = async (result: { status: string }): Promise<Record<string, unknown>> => {
+  const { formatSelfUpdateResult } = await import("../../src/core/self-update.js");
+  return result.status === "busy" || result.status === "unconfirmed"
+    ? { ...result, message: formatSelfUpdateResult(result as Parameters<typeof formatSelfUpdateResult>[0]) }
+    : { ...result };
+};
+
 export const handleSelfUpdate = async (ctx: RouteCtx): Promise<void> => {
   const { res } = ctx;
   const { runSelfUpdate } = await import("../../src/core/self-update.js");
   // restart 는 부팅 시 박힌 전역 레지스트리(setSelfUpdateRestart)가 처리한다 —
   // 도구(update_self) 경로와 같은 배선.
   const result = await runSelfUpdate({});
-  writeJson(res, 200, result);
+  writeJson(res, 200, await selfUpdateHttpBody(result));
   return;
 };
 

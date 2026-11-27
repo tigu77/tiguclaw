@@ -62,6 +62,33 @@
        */
       const updateNotesVisible = (availability) => updateChipView(availability).kind === "ready";
 
+      /**
+       * `/api/self-update` 응답 → 칩이 할 일 (2026-11-27 §15). 화면은 성패를 재판정하지 않는다 — 코어가 낸 status 와 문구(`message`)를 그대로 쓴다.
+       * ★`unconfirmed` 는 «넘겼지만 시작을 확인 못 함» 이다 — 재기동 대기(`reloadWhenBack`)에 들어가면 별도의 재시작을 «완료» 로 읽는다.
+       * ★busy 는 사유가 여럿이다(다른 실행 · 결과 처리 중 · 남은 기록) — 서버 문구가 있으면 그것을, 없으면(옛 서버) 종전 문구.
+       * @param {{status?: string, message?: string, error?: string}} data @param {number} httpStatus
+       * @returns {{ text: string, tone: "good" | "warn" | "bad", then: "reload" | "refresh" | null }}
+       */
+      const selfUpdateToast = (data, httpStatus) => {
+        if (data.status === "updating") return { text: i18n("upd.applying"), tone: "good", then: "reload" };
+        if (data.status === "unconfirmed") return { text: data.message || i18n("upd.failed", { err: data.status }), tone: "warn", then: "refresh" };
+        if (data.status === "busy") return { text: data.message || i18n("upd.busy"), tone: "warn", then: null };
+        if (data.status === "up-to-date") return { text: i18n("upd.upToDate"), tone: "good", then: "refresh" };
+        return { text: i18n("upd.failed", { err: data.error || data.status || ("HTTP " + httpStatus) }), tone: "bad", then: "refresh" };
+      };
+
+      /**
+       * 응답을 받은 뒤 칩이 하는 일 전부 — 토스트 하나와 그다음(재기동 대기·새로 읽기·없음). 클릭 처리기는 fetch 와 이것만 부른다(검사가 이걸 실행한다).
+       * @param {{status?: string, message?: string, error?: string}} data @param {number} httpStatus
+       * @param {{ showToast: (t: string, tone: string) => void, reloadWhenBack: () => Promise<void>, refresh: () => Promise<void> }} fx
+       */
+      const handleSelfUpdateResponse = async (data, httpStatus, fx) => {
+        const t = selfUpdateToast(data, httpStatus);
+        fx.showToast(t.text, t.tone);
+        if (t.then === "reload") await fx.reloadWhenBack();
+        else if (t.then === "refresh") await fx.refresh();
+      };
+
       const updateChip = (() => {
         // ★판정이 도착했을 때 알릴 곳 — **직접 부르지 않는다** (2026-08-21 적대 검토 F1).
         //  이 파일은 index.html 에서 `view-overview.js` 보다 **두 칸 먼저** 로드된다. 그래서
@@ -191,19 +218,8 @@
           try {
             const r = await fetch("/api/self-update", { method: "POST" });
             const data = await r.json().catch(() => ({}));
-            // 코어가 낸 status 를 그대로 해석한다 — 화면이 성패를 재판정하지 않는다.
-            if (data.status === "updating") {
-              showToast(i18n("upd.applying"), "good");
-              await reloadWhenBack();
-            } else if (data.status === "busy") {
-              showToast(i18n("upd.busy"), "warn");
-            } else if (data.status === "up-to-date") {
-              showToast(i18n("upd.upToDate"), "good");
-              await refresh();
-            } else {
-              showToast(i18n("upd.failed", { err: data.error || data.status || ("HTTP " + r.status) }), "bad");
-              await refresh();
-            }
+            // 코어가 낸 status 를 그대로 해석한다 — 화면이 성패를 재판정하지 않는다(`selfUpdateToast`).
+            await handleSelfUpdateResponse(data, r.status, { showToast, reloadWhenBack, refresh });
           } catch {
             // 재시작이 응답보다 빠르면 연결이 끊긴다 — 실패가 아니라 정상 흐름이다.
             showToast(i18n("upd.disconnected"), "warn");

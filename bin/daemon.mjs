@@ -1,6 +1,6 @@
 // @ts-check
 import { instanceIdFor } from "./runtime-identity.mjs";
-import { UPDATE_PENDING_MARKER, updateBootMatches, updateMarkerMatches } from "./update-marker.mjs";
+import { UPDATE_PENDING_MARKER, UPDATE_SLOT_WAIT_MS, homePipeHash, updateBootMatches, updateHandoffPipeName, updateMarkerMatches, updateRunPipeName, updateSlotState } from "./update-marker.mjs";
 // bin/daemon.mjs
 /**
  * daemon — tiguclaw 데몬 관리 CLI (크로스플랫폼: macOS / Linux / Windows).
@@ -55,6 +55,7 @@ applyWindowsTools();
 import {
   appendFileSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -63,12 +64,13 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   unlinkSync,
   watchFile,
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import * as nodeUtil from "node:util";
@@ -428,6 +430,7 @@ const runtimeMode = () =>
  * @property {string} logsDir
  * @property {string} label
  * @property {{notBefore: number, oldBootIds: string[], instanceId?: string, revision?: string}} [launchExpectation]
+ * @property {boolean} [deferLaunchVerdict] 업데이트 `resumeDaemon` 이 start/restart 를 부르는 동안만 true — 안쪽 대기의 미확인은 실패 코드가 아니다
  * @property {NodeJS.ProcessEnv} [launchEnv] 붙잡은 Windows 값을 채우기 전의 실행 환경(감독자가 기동마다 다시 계산).
  * @property {string} [winEnvError] Windows 저장본을 못 읽은 사유 — 있으면 라벨·포트가 틀릴 수 있다.
  */
@@ -953,7 +956,7 @@ const sleepSync = (ms) => {
  * Freshness is checked separately by waitForListening against the launch cutoff and prior boot IDs.
  * A legacy ok-only reply is not sufficient evidence; PID lookup is independent observation.
  * @param {Ctx} c
- * @returns {{ ok: boolean, why: string, absent?: boolean, instanceId?: string, bootId?: string, startedAt?: number, revision?: string }}
+ * @returns {{ ok: boolean, why: string, absent?: boolean, instanceId?: string, bootId?: string, startedAt?: number, revision?: string, updateResultsPending?: boolean }}
  */
 const healthSaysOurs = (c) => {
   const port = winPort(c);
@@ -972,7 +975,9 @@ const healthSaysOurs = (c) => {
   if (body.instanceId !== instanceIdFor({ home: c.homeAbs, repoRoot: c.repoRoot, runtime: c.runtime })) {
     return { ok: false, why: "health belongs to another instance" };
   }
-  return { ok: true, why: "", instanceId: body.instanceId, bootId: body.bootId, startedAt: body.startedAt, revision: body.revision };
+  // `updateResultsPending` — 그 부팅이 직전 업데이트 결과를 아직 처리 중(단조: 한 번 거짓이면 그 부팅에선 다시 참이 안 된다 — §15). 옛 판엔 없다(undefined).
+  return { ok: true, why: "", instanceId: body.instanceId, bootId: body.bootId, startedAt: body.startedAt, revision: body.revision,
+    updateResultsPending: typeof body.updateResultsPending === "boolean" ? body.updateResultsPending : undefined };
 };
 
 /** @param {Ctx} c @param {string[]} [oldBootIds] */
@@ -1060,6 +1065,13 @@ const reportLaunch = (c, w, verb, hint) => {
   }
   const port = winPort(c);
   const secs = Math.round(w.waitedMs / 1000);
+  // ★업데이트의 재가동 안쪽 대기는 **최종 판정이 아니다** (2026-11-25 Windows 운영 관측). start/restart 안의 20초가 끝난 7초 뒤
+  //  `resumeDaemon` 의 최종 대기가 새 부팅을 확인했는데, 여기서 세운 exitCode 1 이 그 확인을 덮어 업데이트가 실패로 끝났다.
+  //  판정은 최종 대기 하나가 한다 — 안쪽 미확인은 사실만 남기고 실패 코드를 세우지 않는다. 런처 오류(직접 세우는 1·예외)는 그대로다.
+  if (c.deferLaunchVerdict === true) {
+    console.warn(`⏳ not confirmed yet after ${secs}s (${w.healthWhy}) — the update keeps checking before it decides.`);
+    return;
+  }
   // ★«Not installed» 라고 하지 않는다 — install 이면 등록은 됐고 데몬만 안 뜬 것이다(동사를 명사로: installed→install).
   const noun = verb.replace(/ed$/, "");
   /** @param {string[]} pids */
@@ -1278,6 +1290,36 @@ const winPs = (script) => {
       : (r.stderr ?? "").trim() || (r.error === undefined ? "" : r.error.message),
   };
 };
+
+/** PowerShell 에 문자열을 소스가 아닌 데이터로 넘긴다(UTF-8 base64) — 어떤 따옴표·문자가 있어도 구분자로 읽히지 않는다. @param {string} s */
+const psUtf8 = (s) => `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(s, "utf8").toString("base64")}'))`;
+
+/**
+ * 완성된 파일을 **기존 파일을 대체하지 않고** 새 이름으로 옮기는 스크립트(Windows) — .NET `File.Move(a, b)` = `MoveFileEx` 를 REPLACE_EXISTING 없이.
+ * 자리가 차 있으면(ERROR_FILE_EXISTS 80 · ERROR_ALREADY_EXISTS 183) `EXISTS` 를 내고, 그 밖의 오류는 그대로 던진다.
+ * ★경로는 스크립트 소스가 아니라 **데이터**(UTF-8 base64)로 넘긴다 — PowerShell 은 굽은 작은따옴표(`’` `‘`)도 문자열 구분자로 읽어, `psq` 로 감싼
+ *  `O’Brien` 같은 홈 경로가 스크립트를 깨뜨렸다(§13 구현 검토 I1).
+ * ★Node 의 rename 은 언제나 대체(libuv 가 REPLACE_EXISTING 을 건다)라, hard link 를 못 쓰는 볼륨(FAT32·exFAT·일부 공유)에서 «비대체 + 완성본» 으로
+ *  공개할 수단이 이것뿐이다(2026-11-25 §13 — v4 의 «잠금 안 비어 있을 때 rename» 을 대신한다).
+ * @param {string} from @param {string} to
+ */
+export const winMoveNoReplaceScript = (from, to) =>
+  `$ErrorActionPreference = 'Stop'\n` +
+  `try { [System.IO.File]::Move(${psUtf8(from)}, ${psUtf8(to)}); 'MOVED' }\n` +
+  `catch { $e = $_.Exception; while ($null -ne $e.InnerException) { $e = $e.InnerException }; if (($e.HResult -band 0xFFFF) -in 80, 183) { 'EXISTS' } else { throw $e } }`;
+/**
+ * 그 스크립트의 결과 읽기 — 정상 종료의 마지막 줄만 믿는다.
+ * @param {{status: number | null, stdout: string, stderr: string}} r
+ * @returns {"moved" | "exists" | string} 문자열 = 옮기지 못한 사유(옮겨졌는데 응답만 못 받았을 수도 있다 — 호출자가 원본 존재로 가른다)
+ */
+export const winMoveNoReplaceResult = (r) => {
+  const last = r.stdout.split(/\r?\n/).pop()?.trim();
+  if (r.status === 0 && last === "MOVED") return "moved";
+  if (r.status === 0 && last === "EXISTS") return "exists";
+  return `${psErrorText(r)} (exit ${r.status ?? "none"})`;
+};
+/** @param {string} from @param {string} to */
+const winMoveNoReplace = (from, to) => winMoveNoReplaceResult(winPs(winMoveNoReplaceScript(from, to)));
 
 /**
  * 시작프로그램 폴더 폴백 경로 — 예약작업 생성이 **막힌 환경**(그룹정책)에서 쓴다.
@@ -1644,8 +1686,7 @@ export const winPortDaemonPids = ({ netstat, procsCsv, port }) => {
  *  뜰 수 있는 완화책이었다. 이름 = 홈 경로(소문자·정규화)의 해시 — 같은 홈만 겹친다.
  * @param {string} homeAbs
  */
-export const winSupervisorPipeName = (homeAbs) =>
-  `\\\\.\\pipe\\tiguclaw-supervisor-${createHash("sha256").update(path.win32.resolve(String(homeAbs)).toLowerCase()).digest("hex").slice(0, 16)}`;
+export const winSupervisorPipeName = (homeAbs) => `\\\\.\\pipe\\tiguclaw-supervisor-${homePipeHash(homeAbs)}`;
 
 /**
  * 감독자 목록 질의 — `pid,시작시각(FILETIME),명령줄` 한 줄씩. 감독자 중복 판정(`winSupervisorIsDuplicate`)의 재료.
@@ -2625,7 +2666,7 @@ const runSupervise = (c) => {
 
 // ───────────────────────────── dispatch ─────────────────────────────────────
 
-/** @typedef {"install" | "uninstall" | "repair" | "restart" | "stop" | "start" | "status" | "logs" | "print" | "update" | "supervise"} Cmd */
+/** @typedef {"install" | "uninstall" | "repair" | "restart" | "stop" | "start" | "status" | "logs" | "print" | "update" | "update-delegated" | "supervise"} Cmd */
 
 /**
  * ★`stop` 은 **멈췄는지** 를 돌려준다(true/false) — 업데이트가 그걸 보고 설치 전에 멈춘다(2026-10-08 외부 검토 F2).
@@ -2752,11 +2793,213 @@ export const activeUpdateLock = (c, now = Date.now(), bootedAt = now - os.uptime
   }
 };
 
-/** @param {Ctx} c */
-const runUpdate = (c) => {
+/** 단조 시계(ms) — 대기 상한은 조회·수면에 걸린 실제 경과로 센다(§15 I1 #4: 횟수로 세면 느린 조회만큼 상한을 넘는다). */
+const monoNow = () => performance.now();
+
+/**
+ * **업데이트 실행의 문** (2026-11-27 §15 G2) — `update`(터미널 · 옛 판 데몬이 띄운 자식) · `update-delegated`(현 판 데몬이 넘긴 요청).
+ *
+ * ★한 홈에 업데이트 실행은 하나 — Windows 는 **실행 파이프**(OS 가 보장: 두 번째 `listen` 은 `EADDRINUSE`, 주인이 죽으면 즉시 회수 — 감독자 배타와
+ *  같은 관례)를 쥔 프로세스만 설치를 바꾼다. 파일 표식이 아니라 낡음 판정·회수가 없다. 현 판 데몬은 위임 전 단계(pull 등) 동안 이 파이프를 쥐고,
+ *  **인계 파이프**를 먼저 연 뒤 놓고 자식을 `update-delegated` 로 띄운다(옛 CLI 는 모르는 명령이라 아무것도 안 한다).
+ * ★응답 책임은 한 규칙: 자식의 보고에 데몬이 `ok` 를 보내면 데몬이 요청에 답하고, `ok` 없이 끊기면(기한·정지·`/restart`) 자식이 진다 — 그때 자식은
+ *  **실행하지 않고** 이 요청 좌표로 `not-started` 기록 하나를 남긴다(늦게 뜬 자식이 다른 실행 뒤에 다시 설치하지 않는다).
+ * ★`TIGUCLAW_UPDATE_*` 는 **읽어 둔 뒤 이 프로세스 환경에서 지운다** — 이 CLI 가 띄우는 감독자·데몬(`winLaunchSupervisor` 는 env 를 넘기지 않는 spawn)이
+ *  이번 요청 좌표를 물려받으면 옛 판 데몬이 그 값을 다음 위임에 퍼뜨린다.
+ * POSIX 엔 위임 CLI 가 없어(`self-update.ts` 는 win32+built 만 위임) 실행 파이프를 두지 않는다 — 만드는 주체가 여럿인 소켓 파일은 회수가 필요하다.
+ * @param {Ctx} c @param {"update" | "update-delegated"} cmd
+ * @param {{ net?: Pick<typeof net, "createServer" | "connect">, platform?: string, health?: (c: Ctx) => { ok: boolean, absent?: boolean }, slot?: (home: string) => string,
+ *   sleep?: (ms: number) => Promise<void>, now?: () => number, run?: (c: Ctx, gate?: Parameters<typeof runUpdate>[1]) => void, runName?: string, handoffName?: string }} [io] 검사 주입
+ */
+export const runUpdateCommand = async (c, cmd, io = {}) => {
+  /** @type {Record<string, string | undefined>} */
+  const env = {};
+  for (const k of Object.keys(process.env)) {
+    if (!k.startsWith("TIGUCLAW_UPDATE_")) continue;
+    env[k] = process.env[k];
+    delete process.env[k];
+  }
+  const netApi = io.net ?? net;
+  const isWin = (io.platform ?? process.platform) === "win32";
+  const health = io.health ?? healthSaysOurs;
+  const slot = io.slot ?? updateSlotState;
+  const sleep = io.sleep ?? ((/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms)));
+  const run = io.run ?? runUpdate;
+  const now = io.now ?? monoNow;
+  const runName = io.runName ?? updateRunPipeName(c.homeAbs);
+  const handoffName = io.handoffName ?? updateHandoffPipeName(c.homeAbs);
+  const delegatedChild = cmd === "update-delegated";
+  // 옛 판 부모는 `update` 로 띄우고 앵커(`PREV_SHA`)만 넘긴다 — 인계 파이프도 토큰도 없다.
+  const oldParentChild = !delegatedChild && env.TIGUCLAW_UPDATE_PREV_SHA !== undefined;
+  /** @type {import("node:net").Server | undefined} 쥔 실행 파이프 — 끝나면(실행·거절 모두) 닫는다(프로세스가 끝날 때 OS 도 놓지만, 남은 일이 없으면 먼저). */
+  let held;
+  /** @param {string} reason @param {boolean} [record] */
+  const refuse = (reason, record = false) => {
+    held?.close();
+    held = undefined;
+    return run(c, { env, refused: { reason, record }, dropThread: oldParentChild });
+  };
+  /** @param {Parameters<typeof runUpdate>[1]} gate */
+  const runHeld = (gate) => {
+    try {
+      return run(c, gate);
+    } finally {
+      held?.close();
+      held = undefined;
+    }
+  };
+  /** @param {string} name @returns {Promise<{ server?: import("node:net").Server, error?: NodeJS.ErrnoException }>} */
+  const listen = (name) =>
+    new Promise((resolve) => {
+      const server = netApi.createServer((sock) => {
+        sock.on("error", () => undefined);
+        sock.end();
+      });
+      server.once("error", (e) => resolve({ error: /** @type {NodeJS.ErrnoException} */ (e) }));
+      server.listen(name, () => {
+        server.unref(); // 프로세스 수명이 곧 소유 — 끝나면 OS 가 놓는다
+        resolve({ server });
+      });
+    });
+  /** @param {string} name @returns {Promise<import("node:net").Socket | null>} */
+  const connect = (name) =>
+    new Promise((resolve) => {
+      const sock = netApi.connect(name);
+      const t = setTimeout(() => {
+        sock.destroy();
+        resolve(null);
+      }, 2000);
+      sock.once("connect", () => {
+        clearTimeout(t);
+        resolve(sock);
+      });
+      sock.once("error", () => {
+        clearTimeout(t);
+        resolve(null);
+      });
+    });
+  /** 현 판 데몬이 지금 업데이트를 넘기는 중인가 — 빈 연결로 본다(데몬은 토큰 없는 연결을 `ok` 없이 닫는다). */
+  const handingOff = async () => {
+    const sock = await connect(handoffName);
+    if (sock === null) return false;
+    sock.destroy();
+    return true;
+  };
+  /**
+   * 인계 파이프로 결과를 보내고 데몬의 `ok` 를 기다린다. true = 데몬이 받았다(응답 책임은 데몬) · false = `ok` 없이 끊겼다(책임은 이 실행).
+   *  시한은 데몬 쪽 하나다 — 데몬은 기한이면 이 연결을 `ok` 없이 닫고, 죽으면 OS 가 닫는다(여기 두 번째 시계를 두지 않는다 — §15 I1 #1).
+   * ★거절은 `ok` 를 기다리지 않는다(§16) — 기록이 이미 남았고 책임은 그 기록을 데몬이 선점했는가가 정한다(쓰고 닫는다).
+   * @param {{ result: "acquired" } | { result: "refused", reason: string, record: string | null }} msg
+   */
+  const report = async (msg) => {
+    const sock = await connect(handoffName);
+    if (sock === null) return false;
+    const line = `${JSON.stringify({ token: env.TIGUCLAW_UPDATE_HANDOFF_TOKEN ?? "", ...msg })}\n`;
+    if (msg.result === "refused") {
+      return new Promise((resolve) => {
+        sock.once("error", () => resolve(false));
+        sock.end(line, () => resolve(true));
+      });
+    }
+    return new Promise((resolve) => {
+      let buf = "";
+      let done = false;
+      /** @param {boolean} v */
+      const finish = (v) => {
+        if (done) return;
+        done = true;
+        sock.destroy();
+        resolve(v);
+      };
+      sock.on("data", (d) => {
+        buf += String(d);
+        if (buf.split("\n").includes("ok")) finish(true);
+      });
+      sock.once("close", () => finish(false));
+      sock.once("error", () => finish(false));
+      sock.write(line);
+    });
+  };
+  /**
+   * 넘겨받은 요청의 거절(§16) — 이 요청 좌표로 `not-started` 기록을 **먼저** 남기고, 놓였거나 놓였을 수 있는 이름을 실어 보고한다
+   *  (쓸기 대상에 기록이 없음이 확실하면 null). 데몬은 그 기록을 선점했을 때만 직접 알리고, 못 했으면 기록이 다음 부팅에 그 요청 좌표로 나간다.
+   * @param {string} reason
+   */
+  const refuseReported = async (reason) => {
+    const kept = refuse(reason, true);
+    await report({ result: "refused", reason, record: typeof kept === "string" ? path.basename(kept) : null });
+  };
+
+  if (isWin) {
+    for (;;) {
+      const r = await listen(runName);
+      if (r.server !== undefined) {
+        held = r.server;
+        break;
+      }
+      const code = r.error?.code ?? "unknown";
+      if (code === "EADDRINUSE") {
+        // 넘겨받는 자식: 데몬이 인계 중이면(인계 파이프가 살아 있으면) 다른 현 판 실행이 잠깐 쥔 것일 수 있다 — 기한(데몬 쪽)까지 다시 해 본다.
+        if (delegatedChild && (await handingOff())) {
+          await sleep(250);
+          continue;
+        }
+        if (delegatedChild) return refuseReported("another update is already running in this home");
+        return refuse("another update is already running in this home");
+      }
+      // ★배타 없이 진행하는 예외는 **터미널 복구**에만, 그리고 데몬이 없다는 증거(연결 거부)가 있을 때만(§15 D5 #6).
+      if (delegatedChild) return refuseReported(`could not create the update lock (${code})`);
+      if (oldParentChild) return refuse(`could not create the update lock (${code})`);
+      const h = health(c);
+      if (h.absent === true) {
+        console.warn(`   ⚠ could not create the update lock (${code}); the daemon is not running, so continuing as a recovery update — another update started now would not be kept out.`);
+        break;
+      }
+      return refuse(`could not create the update lock (${code}) while the daemon ${h.ok ? "is running" : "could not be ruled out"} — stop the daemon first to run a recovery update`);
+    }
+    // 현 판 터미널: 데몬이 넘기는 중이면 쥔 파이프를 놓고 물러난다(그 요청의 자식이 쥘 자리).
+    if (held !== undefined && !delegatedChild && (await handingOff())) {
+      return refuse("the daemon is handing an update over right now — try again in a moment");
+    }
+  }
+
+  if (delegatedChild) {
+    const st = slot(c.homeAbs);
+    if (st !== "empty") {
+      return refuseReported(st === "occupied" ? "an earlier update's result is still waiting to be delivered" : "the update result slot could not be checked");
+    }
+    if (await report({ result: "acquired" })) return runHeld({ env });
+    return refuse("the daemon stopped waiting for this update process before it could start", true);
+  }
+
+  // 옛 판 데몬이 띄운 자식: 옛 판 소비자는 배달이 끝나야 고정 기록을 지운다 — 비기를 기다리고, 끝까지 차 있으면 거절(데몬을 멈추지 않는다).
+  if (oldParentChild) {
+    const deadline = now() + UPDATE_SLOT_WAIT_MS;
+    for (;;) {
+      const st = slot(c.homeAbs);
+      const left = deadline - now();
+      // 마감 뒤에 본 «비어 있음» 은 진행 근거가 아니다(I2 #5).
+      //  사유도 관측한 만큼만 — 기한 안에 슬롯이 비었음을 확인하지 못했다(I3 #2).
+      if (left <= 0) return refuse(`could not confirm within ${UPDATE_SLOT_WAIT_MS / 1000} seconds that an earlier update's result had been delivered`);
+      if (st === "empty") break;
+      await sleep(Math.min(250, left));
+    }
+  }
+  return runHeld({ env, dropThread: oldParentChild });
+};
+
+/**
+ * @param {Ctx} c
+ * @param {{ env?: Record<string, string | undefined>, refused?: { reason: string, record: boolean }, dropThread?: boolean }} [gate]
+ *  §15 G2 — `runUpdateCommand` 가 넘긴다. env = 시작 때 읽어 두고 `process.env` 에서 지운 `TIGUCLAW_UPDATE_*`(없으면 종전대로 `process.env` — 회귀 실행기).
+ *  refused = 실행권을 못 얻었다(아무것도 바꾸기 전에 끝낸다 — record 면 이 요청 좌표로 `not-started` 기록). dropThread = 옛 판 부모의 자식 — 세션 키는 물려받은 값이다.
+ */
+export const runUpdate = (c, gate = {}) => {
+  const env = gate.env ?? process.env;
   const legacyComplete = path.join(c.homeAbs, ".update-complete");
   const pendingPath = path.join(c.homeAbs, UPDATE_PENDING_MARKER);
-  if (existsSync(legacyComplete)) {
+  // ★거절된 실행은 옛 표식 격리·pending 잇기도 하지 않는다(§15 — 변경 전에 끝낸다).
+  if (gate.refused === undefined && existsSync(legacyComplete)) {
     // Quarantine before any intermediate generation can start. Never republish.
     if (existsSync(pendingPath)) {
       renameSync(legacyComplete, pendingPath + ".legacy");
@@ -2764,11 +3007,18 @@ const runUpdate = (c) => {
     }
     renameSync(legacyComplete, pendingPath);
   }
-  /** @type {{channel?: string, target?: string | null} | undefined} */
+  /** @type {{channel?: string, target?: string | null, threadKey?: string} | undefined} */
   let inheritedNotify;
-  if (existsSync(pendingPath)) {
+  /** @type {unknown} */
+  let inheritedAttempt;
+  let inheritedLive = false;
+  if (gate.refused === undefined && existsSync(pendingPath)) {
     const inherited = JSON.parse(readFileSync(pendingPath, "utf8"));
-    inheritedNotify = inherited.notify;
+    // ★좌표·시도는 **아직 살아 있는 직접 모드 요청**(완료 대기 `ready`)에서만 잇는다 (2026-11-25 구현 검토 I2 #1). 실패·확정·옛 CLI pending 은
+    //  소비된 뒤에도 남는다 — 좌표 없는 새 위임(HTTP `/update`)이 그것을 이으면 새 결과가 옛 대화로 갔다. (표식 덮기 자체는 아래 그대로 — 옛 컷오프 무효화.)
+    inheritedLive = inherited?.mode === "direct" && inherited?.state === "ready";
+    inheritedNotify = inheritedLive ? inherited.notify : undefined;
+    inheritedAttempt = inheritedLive ? inherited.attempt : undefined;
     // Claim direct-ready before work: its earlier cutoff must not authorize an
     // intermediate boot. Final-build expectation is installed just before start.
     const staged = pendingPath + ".next";
@@ -2776,11 +3026,34 @@ const runUpdate = (c) => {
     renameSync(staged, pendingPath);
   }
   const isWin = process.platform === "win32";
+  // ★이번 요청의 «누구에게» 와 «어느 시도» 는 한 묶음이다 (2026-11-25). 위임 env 가 좌표를 주면 새 요청 = 새 시도 id,
+  //  env 없이 남은 pending 의 좌표를 이어받을 때만 그 id 를 이어받는다(없으면 새로 — 옛 마커의 id 를 지어내지 않는다).
+  //  실패 마커·완료 pending 이 이 하나를 쓴다(종전엔 두 자리가 좌표를 따로 정했다).
+  //  threadKey = 요청한 세션(옛 데몬은 넘기지 않는다 — 없으면 소비자가 종전대로 기본 세션에 둔다).
+  const envNotifyChannel = env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL;
+  // ★옛 판 부모(`4c8bd246:src/core/self-update.ts:701-716`)는 세션 키를 쓰지 않는다 — 그 자식에게 있다면 물려받은 묵은 값이다(§15 G2, D3 #6).
+  const envNotifyThread = gate.dropThread === true ? undefined : env.TIGUCLAW_UPDATE_NOTIFY_THREAD;
+  const origin = envNotifyChannel
+    ? {
+        notify: {
+          channel: envNotifyChannel,
+          target: env.TIGUCLAW_UPDATE_NOTIFY_TARGET || null,
+          ...(envNotifyThread ? { threadKey: envNotifyThread } : {}),
+        },
+        attempt: randomUUID(),
+      }
+    : inheritedLive
+      ? { notify: inheritedNotify, attempt: typeof inheritedAttempt === "string" && inheritedAttempt !== "" ? inheritedAttempt : randomUUID() }
+      : { notify: undefined, attempt: randomUUID() };
 
+  // 실패 기록의 «무엇에서»(짧은 SHA) — 단계 2 의 앵커가 정해지면 채운다. 거절된 실행은 그 전에 기록하므로 부모가 넘긴 앵커(있으면)로.
+  const handoffAnchor = env.TIGUCLAW_UPDATE_PREV_SHA?.trim();
+  /** @type {string | null} */
+  let recordFrom = handoffAnchor !== undefined && /^[0-9a-f]{7,40}$/i.test(handoffAnchor) ? handoffAnchor.slice(0, 7) : null;
   // notify 없는 dashboard 위임도 stdio가 버려진다. 모든 실행에 진단 로그를 남긴다.
   // 자식 출력은 최대 32MB를 받아 비밀을 지운 뒤 저장한다. 터미널에는 단계 종료 때도 출력한다.
   // 로그를 열 수 없으면 변경 전에 실패한다. notify는 통지 마커만 결정한다.
-  const delegated = !!process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL || !!inheritedNotify?.channel;
+  const delegated = !!env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL || !!inheritedNotify?.channel;
   // 대시보드는 notify 없이 위임한다. 로그 수명은 알림 목적지와 무관하다.
   /** @type {number | null} */
   let logFd = null;
@@ -2791,8 +3064,10 @@ const runUpdate = (c) => {
       const logsDir = path.join(c.homeAbs, "logs");
       mkdirSync(logsDir, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      updateLogPath = path.join(logsDir, `update-${stamp}.log`);
-      logFd = openSync(updateLogPath, "a");
+      // 경로는 열린 뒤에만 확정한다 — 못 열었는데 기록에 실으면 사용자에게 없는 로그를 안내한다(I2 #3).
+      const logAt = path.join(logsDir, `update-${stamp}.log`);
+      logFd = openSync(logAt, "a");
+      updateLogPath = logAt;
       /** @type {(orig: (...args: unknown[]) => void, level: string) => (...a: unknown[]) => void} */
       const tee = (orig, level) => (...a) => {
         try {
@@ -2812,12 +3087,16 @@ const runUpdate = (c) => {
     } catch (error) {
       console.error(`update: cannot open the diagnostic log, aborting — ${redactUpdateLog(String(error))}`);
       // 위임이면 호출자가 이미 pull 했다 — 코드만 새것인 채로 두면 다음 `/update` 가 «이미 최신» 으로 끝난다.
-      const handoff = process.env.TIGUCLAW_UPDATE_PREV_SHA?.trim();
-      if (handoff !== undefined && /^[0-9a-f]{7,40}$/i.test(handoff)) {
+      const handoff = env.TIGUCLAW_UPDATE_PREV_SHA?.trim();
+      // 거절된 실행은 되돌리지 않는다 — 작업 트리는 쥔 실행의 것이다(§15).
+      if (gate.refused === undefined && handoff !== undefined && /^[0-9a-f]{7,40}$/i.test(handoff)) {
         spawnSync("git", ["reset", "--keep", handoff], { cwd: c.repoRoot, stdio: "ignore" });
       }
-      process.exitCode = 1;
-      return;
+      // 거절된 실행은 로그를 못 열어도 거절 기록은 남긴다(§15 I1 #2) — 아래 거절 처리로.
+      if (gate.refused === undefined) {
+        process.exitCode = 1;
+        return;
+      }
     }
   }
 
@@ -2827,33 +3106,173 @@ const runUpdate = (c) => {
   // ★`outcome` = 실제로 일어난 일 (2026-10-05 적대 검토). 통지가 늘 «이전 판으로 되돌리고 다시 띄웠다» 라고 말했는데,
   //  손대기 전에 멈춘 경로·롤백을 건너뛴 경로에선 거짓이었다. unchanged = 아무것도 안 바뀜(데몬은 그대로) ·
   //  rolled-back = 이전 판으로 되돌리고 다시 띄움 · needs-check = 되돌리기를 못 했거나 일부만 했다.
-  /** @type {(stage: string, detail: string, outcome: "unchanged" | "rolled-back" | "needs-check") => void} */
-  const writeFailedMarker = (stage, detail, outcome) => {
-    if (!delegated) return;
+  // ★restart-unconfirmed = 새 판은 적용, 되돌리기는 시도 안 함, 최종 확인에서 새 부팅을 못 봤다 ·
+  //  restart-error = 새 판은 최종 확인됐지만 기동 명령이 오류를 냈다(자동 시작 등록 확인 필요), 되돌리기 시도 안 함 (2026-11-25 — 둘 다 종전엔 needs-check 로
+  //  «이전 버전을 완전히 되돌리지 못했다» 였다).
+  // ★not-started = 이 요청은 설치를 시작하지 않았다(겹친 실행·인계 뒤 트리 변경) — 부모 데몬이 받아 둔 코드가 있으면 디스크에 있고 설치되지 않았다 (2026-11-27 §15).
+  /** @type {(stage: string, detail: string, outcome: "unchanged" | "rolled-back" | "needs-check" | "restart-unconfirmed" | "restart-error" | "not-started", opts?: { asideOnly?: boolean, candidate?: { to?: string } }) => string | null} */
+  // 돌려주는 값 = 기록이 놓인 곳(고정 슬롯·옆 보존) · null = 놓지 못했다/놓였는지 모른다/기록 대상 아님 — 호출부가 «다음 부팅에 전달» 을 말할지 가른다(§15 D7 #5).
+  //  opts.candidate = 놓였는지 모를 때 그 후보 경로를 받아 갈 자리(§16 — 거절 보고는 «놓였을 수 있는» 이름도 실어야 데몬의 선점이 이중 통지를 막는다).
+  const writeFailedMarker = (stage, detail, outcome, opts = {}) => {
+    if (!delegated) return null;
+    const failedPath = path.join(c.homeAbs, ".update-failed");
+    // ★완성된 기록만 공개한다 — 같은 폴더 임시 파일에 **먼저 다 쓴 뒤** 공개. 고정 경로에 바로 쓰면 부팅 소비자가 빈/반쯤 쓴 원문을 선점해
+    //  «깨짐» 으로 지울 수 있다(설계 R3-1). 임시 이름은 쓰기마다 고유·배타 생성 — PID 가 재사용되면 앞서 남은 보존본을 잘라냈다(I2 #3).
+    const unique = () => `${Date.now()}-${process.pid}-${randomUUID().slice(0, 8)}`;
+    const staged = `${failedPath}.next-${unique()}`;
     try {
       writeFileSync(
-        path.join(c.homeAbs, ".update-failed"),
+        staged,
         `${JSON.stringify(
           {
             stage,
             outcome,
             detail: redactUpdateLog(String(detail ?? "")).slice(0, 500),
             logPath: updateLogPath,
-            from: prevSha?.slice(0, 7) ?? null,
+            from: recordFrom,
             ts: Date.now(),
-            notify: {
-              channel: process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL || inheritedNotify?.channel,
-              target: process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL ? process.env.TIGUCLAW_UPDATE_NOTIFY_TARGET || null : inheritedNotify?.target ?? null,
-            },
+            attempt: origin.attempt,
+            notify: origin.notify ?? { target: null },
           },
           null,
           2,
         )}\n`,
+        { flag: "wx" },
       );
-    } catch {
-      /* 마커 best-effort */
+    } catch (e) {
+      console.error(`update: could not write the failure notice (${e instanceof Error ? e.message : String(e)}) — the requester will not be told.`);
+      return null;
+    }
+    // ★다른 기록은 **옮기지도 덮지도 않는다** (2026-11-27 §15 G3). 고정 경로의 기록은 그 시도와 그것을 읽는 소비자(옛 판 포함)의 것이다 —
+    //  §14 까지는 자리가 차 있으면 앞선 기록을 옆으로 옮기고 다시 공개했는데, 옛 판 소비자가 그 기록을 읽는 도중이면 옛 판은 그것을 보내고
+    //  새로 공개된 기록을 지웠고 현 판이 옮긴 것을 또 보냈다(A 2회·B 0회 — `c6-old-consumer.log` overlap). 이제 차 있으면 **이번 것을** 옆에 둔다.
+    // ★수단은 대체하지 않는 공개 하나(`place`): link → (Windows) 비대체 이동(§13) · POSIX 는 대체 rename 을 하지 않는다(§14 ㉠ 은 미소비 기록을 덮었다).
+    /**
+     * 완성본을 `to` 에 **대체하지 않고** 놓아 본다. "placed" = 놓였다 · "occupied" = 그 이름이 차 있다 · "unsupported" = POSIX 에서 link 를 못 쓴다.
+     * 던짐 = 놓지 못했다(임시본 보존) · `unconfirmed` 표시 = 놓였는지 모른다.
+     * @param {string} to @returns {"placed" | "occupied" | "unsupported"}
+     */
+    const place = (to) => {
+      try {
+        linkSync(staged, to);
+      } catch (e) {
+        if (/** @type {NodeJS.ErrnoException} */ (e).code === "EEXIST") return "occupied";
+        if (!isWin) return "unsupported";
+        const moved = winMoveNoReplace(staged, to);
+        if (moved === "exists") return "occupied";
+        if (moved === "moved") return "placed";
+        // 이동은 됐는데 응답만 못 받았을 수 있다(시한) — 임시 이름은 이 실행만 쓰니, **없다고 확인되면**(ENOENT) 옮겨진 것이다.
+        //  확인 자체가 실패하면(공유 끊김·권한) 놓였는지 모른다 — 성공으로도 «보존·미발송» 으로도 단정하지 않는다(§13 구현 검토 I1).
+        const why = `${e instanceof Error ? e.message : String(e)}; the no-replace move did not report success: ${moved}`;
+        try {
+          lstatSync(staged);
+        } catch (se) {
+          if (/** @type {NodeJS.ErrnoException} */ (se).code === "ENOENT") return "placed";
+          throw Object.assign(new Error(`${why}; the staged notice could not be checked (${se instanceof Error ? se.message : String(se)})`), { unconfirmed: true, to });
+        }
+        throw new Error(why);
+      }
+      try { unlinkSync(staged); } catch { /* 임시 이름이 남을 뿐 — 공개는 됐다 */ }
+      return "placed";
+    };
+    /**
+     * 이번 것을 **옆 보존**(`.update-failed.unsent-<토큰>`)에 둔다 — 이 판 이상의 부팅 쓸기가 그 좌표로 한 번 보낸다(§14).
+     *  쓸기 대상 이름엔 완성본만 나타난다(빈 예약 파일 없음 — §15 D1 #8). POSIX 에서 link 를 못 쓰면 **디렉터리 기록**: 이 실행만 쓰는
+     *  임시 디렉터리 안에 완성본을 넣고 디렉터리를 그 이름으로 rename — 대상이 비지 않은 디렉터리면 ENOTEMPTY, 파일이면 ENOTDIR 라 대체하지 않는다.
+     * @returns {string} 놓인 곳
+     */
+    const putAside = () => {
+      /** @type {string | null} 디렉터리 기록의 임시 디렉터리(한 번 만들면 이름만 바꿔 다시 시도) */
+      let dir = null;
+      for (let k = 0; k < 3; k++) {
+        const name = `${failedPath}.unsent-${unique()}`;
+        if (dir === null) {
+          const r = place(name);
+          if (r === "placed") return name;
+          if (r === "occupied") continue;
+          dir = `${staged}.d`;
+          mkdirSync(dir);
+          renameSync(staged, path.join(dir, "record.json")); // 방금 만든 이 실행의 빈 디렉터리 안 — 대체할 것이 없다
+        }
+        try {
+          renameSync(dir, name);
+          return name;
+        } catch (e) {
+          const code = /** @type {NodeJS.ErrnoException} */ (e).code;
+          if (code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOTDIR") throw Object.assign(e instanceof Error ? e : new Error(String(e)), { keptAt: dir });
+        }
+      }
+      throw Object.assign(new Error("no free name for the notice"), { keptAt: dir ?? staged });
+    };
+    /** @param {unknown} e */
+    const keptAt = (e) => /** @type {{keptAt?: string}} */ (e)?.keptAt ?? (existsSync(staged) ? staged : `${staged}.d`);
+    if (opts.asideOnly !== true) {
+      let r;
+      try {
+        r = place(failedPath);
+      } catch (e) {
+        if (/** @type {{unconfirmed?: boolean}} */ (e).unconfirmed === true && opts.candidate !== undefined) opts.candidate.to = failedPath;
+        console.error(
+          /** @type {{unconfirmed?: boolean}} */ (e).unconfirmed === true
+            ? `update: could not confirm whether the failure notice was published (${e instanceof Error ? e.message : String(e)}) — check ${failedPath} and ${staged}.`
+            : `update: could not publish the failure notice (${e instanceof Error ? e.message : String(e)}) — it is kept at ${staged} (not sent).`,
+        );
+        return null;
+      }
+      if (r === "placed") return failedPath;
+      // ★POSIX 에서 link 를 못 쓰면 **상대 symlink** 로 고정 슬롯에 놓아 본다 (2026-11-27 §16 b). symlink(2) 는 이름이 있으면 EEXIST 라 대체하지 않고,
+      //  대상은 이미 다 쓴 임시본이라 완성본만 보인다 — 고정 슬롯만 읽는 옛 판 소비자(롤백 부팅)도 링크를 따라 읽고 링크만 지운다(대상 임시본은 남는다).
+      //  macOS FAT32·exFAT 는 link 가 ENOTSUP 이어도 symlink 는 된다(`evidence/c8-fs-probe.log`). 안 되면 종전 디렉터리 옆 보존(현 판 부팅이 늦게 보낸다).
+      if (r === "unsupported") {
+        try {
+          symlinkSync(path.basename(staged), failedPath);
+          return failedPath;
+        } catch (e) {
+          if (/** @type {NodeJS.ErrnoException} */ (e).code === "EEXIST") r = "occupied";
+        }
+      }
+      console.warn(
+        r === "occupied"
+          ? "   ⚠ the failure notice slot holds another update's notice — left as it is (it belongs to that update)."
+          : "   ⚠ this home can neither hard-link nor symlink — the notice cannot be put in the shared slot without replacing whatever is there.",
+      );
+    }
+    try {
+      const kept = putAside();
+      console.warn(`   ⚠ this notice is kept at ${kept}; a daemon of this version or later picks it up and tries to send it to its requester.`);
+      return kept;
+    } catch (e) {
+      if (/** @type {{unconfirmed?: boolean}} */ (e).unconfirmed === true && opts.candidate !== undefined) opts.candidate.to = /** @type {{to?: string}} */ (e).to ?? failedPath;
+      console.error(
+        /** @type {{unconfirmed?: boolean}} */ (e).unconfirmed === true
+          ? `update: could not confirm whether the failure notice was kept (${e instanceof Error ? e.message : String(e)}) — check ${/** @type {{to?: string}} */ (e).to ?? failedPath} and ${staged}.`
+          : `update: could not keep the failure notice aside (${e instanceof Error ? e.message : String(e)}) — it is kept at ${keptAt(e)} (not sent).`,
+      );
+      return null;
     }
   };
+
+  // ── §15 G2 — 실행권을 못 얻은 실행은 여기서 끝난다: git·정지·재시작·되돌리기 0 (로그·git 에 기대지 않는다 — I1 #2).
+  //  위임받은 요청이면 그 좌표로 `not-started` 기록(옆 보존 — 고정 슬롯은 쥔 실행·앞선 기록의 자리다).
+  if (gate.refused !== undefined) {
+    console.error(`update: ${gate.refused.reason} — this update was not started; nothing was changed.`);
+    // 돌려주는 값(§16) = 놓인 곳 → 없으면 놓였는지 모르는 후보 → 둘 다 없을 때만 null(쓸기 대상에 기록이 없음이 확실) — 거절 보고의 `record`.
+    /** @type {string | null} */
+    let kept = null;
+    if (gate.refused.record) {
+      /** @type {{ to?: string }} */
+      const candidate = {};
+      kept = writeFailedMarker(
+        "start",
+        `this request's update process did not start the install: ${gate.refused.reason}` +
+          (recordFrom !== null ? ` (the daemon's checkout was at ${recordFrom} before it fetched for this request)` : ""),
+        "not-started",
+        { asideOnly: true, candidate },
+      ) ?? candidate.to ?? null;
+    }
+    process.exitCode = 1;
+    return kept;
+  }
 
   // spawnSync 래퍼 — 자식 stdout/stderr를 비밀 제거 후 진단 로그에 보관한다.
   //   cwd=repoRoot. npm 은 Windows 에서 npm.cmd(배치)라
@@ -2918,7 +3337,7 @@ const runUpdate = (c) => {
   //  빌드가 깨졌을 때 되돌아갈 곳이 사라지는 건데, 롤백은 그때만 쓰이므로 **조용히** 죽어
   //  있었다(실측: 로그가 `2af6ee0 → 2af6ee0 · 코드 변경 없음` 인데 HEAD 는 옮겨져 있었다).
   //  → 호출자가 pull *이전* SHA 를 넘기면 그걸 앵커로 쓴다. 없으면 종전대로 HEAD.
-  const handoffSha = process.env.TIGUCLAW_UPDATE_PREV_SHA?.trim();
+  const handoffSha = env.TIGUCLAW_UPDATE_PREV_SHA?.trim();
   const headAtStart = prev.stdout.trim();
   const prevSha =
     handoffSha !== undefined && /^[0-9a-f]{7,40}$/i.test(handoffSha)
@@ -2929,9 +3348,30 @@ const runUpdate = (c) => {
   // ★완료 표시의 «무엇에서» 는 앵커와 다른 값이다 (2026-10-30 v0.79.1 잔여 P2). 받을 커밋 없이 빌드만 뒤처져 위임되면 pull 전 HEAD == 새 HEAD 라
   //  완료 로그·마커가 «B → B» 였다(호출자의 즉시 응답은 실행 빌드 기준 «A → B»). 호출자가 실제로 돌던 빌드를 따로 주면 **표시에만** 쓴다 —
   //  롤백·되돌리기 앵커는 언제나 `prevSha`(pull 전 HEAD)다. 없거나 형식이 틀리면 종전대로 `prevSha`.
-  const reportFromEnv = process.env.TIGUCLAW_UPDATE_REPORT_FROM?.trim();
+  const reportFromEnv = env.TIGUCLAW_UPDATE_REPORT_FROM?.trim();
   const reportFrom = reportFromEnv !== undefined && /^[0-9a-f]{7,40}$/i.test(reportFromEnv) ? reportFromEnv : prevSha;
+  recordFrom = prevSha.slice(0, 7);
   const table = handlers[process.platform];
+
+  /**
+   * ★정지·재시작 직전 확인 (§15 — 단계 5 의 `stop` 과 `abortBeforeStop` 의 `restart` 둘 다). 데몬이 직전 업데이트 결과를 처리 중이면(`/health` 의
+   *  `updateResultsPending`, 단조) 끝날 때까지 최대 `UPDATE_SLOT_WAIT_MS` 기다린다 — 배달 중에 멈추면 선점본이 `.claim-*` 로 남아 그 결과가 0 이 된다.
+   *  응답이 없거나 필드가 없으면(옛 판) 기다리지 않는다. 확인과 정지는 원자적이지 않다(§15-7). @returns {boolean} 멈춰도 된다
+   */
+  const resultsSettled = () => {
+    const deadline = monoNow() + UPDATE_SLOT_WAIT_MS;
+    for (let first = true; ; first = false) {
+      const h = healthSaysOurs(c);
+      // 마감 뒤에 끝난 관측은 진행 근거가 아니다(I2 #5) — 그 사이 무엇이 바뀌었는지 모른다.
+      const left = deadline - monoNow();
+      if (left <= 0) return false;
+      if (!h.ok || h.updateResultsPending !== true) return true;
+      if (first) console.log("   The daemon is still delivering the previous update's results — waiting before stopping it.");
+      sleepSync(Math.min(250, left));
+    }
+  };
+  /** 이 실행이 감독자 표식(`.update-in-progress`)을 썼나 — 단계 5 전 중단이면 쓰지 않았다(남의 표식을 지우지 않는다 — §15 D5 #5). */
+  let wroteUpdateLock = false;
 
   /**
    * 데몬을 멈추기 **전**에 그만둘 때. ★위임이면 HEAD 를 되돌린다 (2026-10-05 적대 검토) — 안 그러면 코드만 새것이고
@@ -2950,9 +3390,23 @@ const runUpdate = (c) => {
         console.error(`update: could not return the code to ${prevSha.slice(0, 7)} — run \`tiguclaw update\` in a terminal.`);
       }
     }
-    writeFailedMarker(stage, detail, outcome);
-    rmSync(updateLockPath(c), { force: true });
-    if (delegated && opts.restart !== false && isDaemonRunning(c)) table?.restart?.(c);
+    const kept = writeFailedMarker(stage, detail, outcome);
+    if (wroteUpdateLock) rmSync(updateLockPath(c), { force: true });
+    if (delegated && opts.restart !== false && isDaemonRunning(c)) {
+      // 데몬이 직전 결과를 배달 중이면 재시작하지 않는다 — 그 배달을 끊으면 다른 요청의 결과가 사라진다(이 기록은 늦을 뿐이다).
+      //  사유는 관측한 만큼만 — «배달 중» 이 아니라 «기한 안에 끝났음을 확인하지 못했다»(I3 #2).
+      if (resultsSettled()) table?.restart?.(c);
+      else {
+        const why = `   ⚠ not restarting the daemon: could not confirm within ${UPDATE_SLOT_WAIT_MS / 1000} seconds that it had finished delivering earlier results`;
+        console.warn(
+          kept === null
+            ? `${why} — where this notice is (or why it could not be kept) is logged above.`
+            : kept.endsWith(`${path.sep}.update-failed`)
+              ? `${why} — this notice (${kept}) is tried for delivery when the daemon next starts.`
+              : `${why} — this notice (${kept}) is tried for delivery when a daemon of this version or later next starts.`,
+        );
+      }
+    }
     process.exitCode = 1;
   };
 
@@ -3098,11 +3552,17 @@ const runUpdate = (c) => {
     // Capture after the final build/rollback restoration, before releasing the supervisor.
     if (!c.launchExpectation?.revision) expectFreshLaunch(c, updateOldBootIds);
     rmSync(updateLockPath(c), { force: true }); // 표식을 지워야 감독자가 데몬을 띄운다
-    if (isDaemonRunning(c)) {
-      console.warn("   ⚠ The daemon came back while the update was running (before the new build) — restarting it so the current build loads.");
-      table?.restart?.(c);
-    } else {
-      table?.start?.(c);
+    // start/restart 안쪽 대기의 미확인은 판정이 아니다(`reportLaunch` 주석) — 판정은 아래 최종 대기 하나.
+    c.deferLaunchVerdict = true;
+    try {
+      if (isDaemonRunning(c)) {
+        console.warn("   ⚠ The daemon came back while the update was running (before the new build) — restarting it so the current build loads.");
+        table?.restart?.(c);
+      } else {
+        table?.start?.(c);
+      }
+    } finally {
+      c.deferLaunchVerdict = false;
     }
     const final = waitForListening(c, listeningOnBridge);
     reportLaunch(c, final, "resumed", "Check daemon logs before retrying the update.");
@@ -3182,13 +3642,32 @@ const runUpdate = (c) => {
     // 의존성이 깨진 채 띄우면 부팅마다 죽는다. (`skipped` 는 종전대로 — 옮겨 둔 트리가 없는 설치에서 데몬이 돌던 경우다.)
     const startIt = wasRunning && deps !== "restore-failed" && deps !== "reinstall-failed";
     writeFailedMarker(stage, deps === "restore-failed" ? `${detail} — previous dependencies kept at ${depsBackup ?? "?"}` : detail, outcome);
-    if (startIt) resumeDaemon();
+    // ★재가동 결과를 버리지 않는다 (2026-11-25). 마커는 다시 뜬 데몬이 읽으므로 재가동 **전**에 쓰고(위), 재가동 확인 여부는 여기 로그로 가른다
+    //  — 마커를 다시 쓰면 이미 읽힌 뒤일 수 있어 다음 부팅에 낡은 실패가 또 나간다. 명령 예외(launchctl·systemctl)도 CLI 밖으로 던지지 않는다.
+    if (startIt) {
+      const after = rolledBack ? `rolled back to ${prevSha.slice(0, 7)}` : "the rollback was incomplete";
+      try {
+        if (!resumeDaemon().verified) console.error(`update: ${after}, but the restart was not confirmed in the final check — check the daemon log.`);
+      } catch (e) {
+        console.error(`update: ${after}, but the restart command failed: ${e instanceof Error ? e.message : String(e)}`);
+        process.exitCode = 1;
+      }
+    }
   };
 
   // ── 단계 5: (돌고 있으면) 데몬 정지 — npm ci 전에 네이티브 모듈 락 해제(EPERM 방지) ──
   // «업데이트 중» 표식 — 멈춘 사이 무엇이 감독자를 띄워도 데몬은 안 뜬다(`activeUpdateLock`). 재가동 직전·중단·종료 때 지운다.
+  // ★멈추기 전에 데몬의 결과 배달이 끝났는지 본다 — 표식을 세우기 **전에**(대기하다 그만두면 세운 적 없는 표식을 지우지 않게, §15 D5 #5).
+  if (wasRunning && !resultsSettled()) {
+    // 사유는 관측한 만큼만 — 기한 안에 결과 처리가 끝났음을 확인하지 못했다(I3 #2).
+    const notSettled = `could not confirm within ${UPDATE_SLOT_WAIT_MS / 1000} seconds that the daemon had finished delivering the previous update's results`;
+    console.error(`update: ${notSettled} — not stopping it now.`);
+    abortBeforeStop("stop", notSettled, { restart: false, revert: true });
+    return;
+  }
   try {
     writeFileSync(updateLockPath(c), JSON.stringify({ pid: process.pid, ts: Date.now() }));
+    wroteUpdateLock = true;
     process.on("exit", () => rmSync(updateLockPath(c), { force: true }));
   } catch (e) {
     console.warn(`   ⚠ could not write the update-in-progress marker: ${e instanceof Error ? e.message : String(e)}`);
@@ -3292,16 +3771,12 @@ const runUpdate = (c) => {
   // 최종 fresh 확인과 동일 boot/revision을 확정한 뒤에만 새 부팅 소비자가 성공을 알린다.
   // 지연된 legacy 소비자가 가로채지 못하도록 .update-complete로 다시 공개하지 않는다.
   c.launchExpectation = { ...expectFreshLaunch(c, updateOldBootIds), instanceId: instanceIdFor({ home: c.homeAbs, repoRoot: c.repoRoot, runtime: c.runtime }), revision: newSha };
-  const notifyChannel = process.env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL;
   let pending = null;
-  if (notifyChannel || existsSync(pendingPath)) {
-    /** @type {{notify?: {channel?: string, target?: string | null}}} */
-    let inherited = {};
-    try { inherited = JSON.parse(readFileSync(pendingPath, "utf8")); } catch { /* absent */ }
+  if (envNotifyChannel || existsSync(pendingPath)) {
     pending = {
       from: reportFrom.slice(0, 7), to: newSha.slice(0, 7), changedFiles: 0, ts: Date.now(),
       mode: "cli", state: "pending", expected: c.launchExpectation,
-      notify: notifyChannel ? { channel: notifyChannel, target: process.env.TIGUCLAW_UPDATE_NOTIFY_TARGET || null } : inherited.notify,
+      attempt: origin.attempt, notify: origin.notify,
     };
     // Must exist before boot; failure here cannot promise a completion later.
     try { writeFileSync(pendingPath, JSON.stringify(pending)); }
@@ -3336,7 +3811,17 @@ const runUpdate = (c) => {
   const restartFailed = process.exitCode === 1 || (wasRunning && !finalLaunch?.verified);
   if (restartFailed) {
     process.exitCode = 1;
-    writeFailedMarker("restart", "final fresh boot/revision was not confirmed", "needs-check");
+    // 실제로 일어난 일대로 — 되돌리기는 시도하지 않았다(새 판은 디스크에 있다). 최종 확인이 새 부팅을 봤는데도 실패면 기동 명령 쪽 오류다.
+    const verified = finalLaunch?.verified === true;
+    writeFailedMarker(
+      "restart",
+      finalLaunch === undefined
+        ? "the restart command failed before the final check"
+        : verified
+          ? `the new version ${newSha.slice(0, 7)} answered, but the start command reported an error — check the autostart registration`
+          : `the new version ${newSha.slice(0, 7)} was not confirmed as a fresh boot in the final check (${finalLaunch.healthWhy})`,
+      verified ? "restart-error" : "restart-unconfirmed",
+    );
   }
   if (pending) {
     try {
@@ -3371,10 +3856,16 @@ const runUpdate = (c) => {
   //  (성공 메시지 + 죽은 데몬) 문자 그대로 재현 가능했다. `start` 가 exitCode 1 을 세웠으면
   //  코드는 적용됐어도 **재가동은 실패**라고 말한다.
   if (restartFailed) {
+    // ★마커(`restart-error`/`restart-unconfirmed`)와 같은 판정으로 말한다 (2026-11-25 구현 검토 I1 #6) — 요청 대화엔 «실행 중», 여기엔
+    //  «재시작 실패·스스로 안 돌아온다» 가 동시에 남았다. 최종 확인이 새 판을 봤으면 기동 명령 오류이고, 못 봤으면 «확인 못 함» 이지 «영영 안 뜸» 이 아니다.
     console.error(
-      `🔴 The update was applied, but **the daemon failed to restart**: ` +
-        `${reportFrom.slice(0, 7)} → ${newSha.slice(0, 7)} (runtime=${c.runtime}).\n` +
-        `   Check the error above and start it manually — it will not come back on its own.`,
+      finalLaunch?.verified === true
+        ? `🔴 The update was applied and the new version is running, but **the start command reported an error**: ` +
+            `${reportFrom.slice(0, 7)} → ${newSha.slice(0, 7)} (runtime=${c.runtime}).\n` +
+            `   Check the error above (autostart registration). No rollback was attempted.`
+        : `🔴 The update was applied, but **the restart could not be confirmed**: ` +
+            `${reportFrom.slice(0, 7)} → ${newSha.slice(0, 7)} (runtime=${c.runtime}).\n` +
+            `   Check the error above; if the daemon does not come up, start it manually. No rollback was attempted.`,
     );
     return;
   }
@@ -3424,8 +3915,12 @@ export const runDaemonCommand = (cmd) => {
 
   // update = dep-free 자가 갱신(stop→npm ci→build→start). known-check *앞*에 분기 — logs 처럼
   //   OS handlers 테이블과 무관한 자체 루틴이다.
-  if (cmd === "update") {
-    runUpdate(c);
+  // update-delegated = 현 판 데몬이 넘긴 요청(§15 — 옛 CLI 는 이 명령을 모른다: 아래 표에 없어 아무것도 안 하고 끝난다).
+  if (cmd === "update" || cmd === "update-delegated") {
+    void runUpdateCommand(c, cmd).catch((/** @type {unknown} */ e) => {
+      console.error(`update: failed — ${e instanceof Error ? e.message : String(e)}`);
+      process.exitCode = 1;
+    });
     return;
   }
 

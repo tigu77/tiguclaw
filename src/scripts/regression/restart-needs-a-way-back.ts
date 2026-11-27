@@ -358,16 +358,7 @@ const run = async (): Promise<Assertion[]> => {
         su.ok ? "통지 확인" : `누락 ${su.missing.join(" ")}`,
       ),
     );
-    const tg = await sourceHas("../../index.ts", [
-      /if \(restartDaemon\(`telegram:\$\{msg\.channel\}`\)\) return;/,
-    ]);
-    out.push(
-      assert(
-        "텔레그램 /restart 도 중단을 말한다",
-        tg.ok,
-        tg.ok ? "통지 확인" : `누락 ${tg.missing.join(" ")}`,
-      ),
-    );
+    // 채팅 /restart 중단 통지는 ephemeral-wiring 의 실제 CLI·HTTP 요청으로 확인한다.
   }
 
   return out;

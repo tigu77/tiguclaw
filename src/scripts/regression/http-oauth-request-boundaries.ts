@@ -425,16 +425,26 @@ export const check: RegressionCheck = {
       out.push(assert(`init existing=${exists} consent=${answer} preserves/generates`, allowed ? generated === 1 && written.includes("HTTP_BRIDGE_TOKEN=" + Buffer.from("synthetic-token").toString("hex")) && asked === (exists ? 1 : 0) : generated === 0 && written === "" && asked === 1, { generated, asked, wrote: written !== "" }));
     }
     // Health consumes identity, preserving all old payload fields and passing canonical input sources.
+    // handleHealth's dynamic import becomes require(<specifier>) after CommonJS transpile: stub only that specifier, reject any other.
     const ops = source("plugins/http-bridge/routes-ops.ts");
-    let health: any; let identityInput: any;
+    const selfUpdateSpecifier = "../../src/core/self-update.js";
+    let health: any; let identityInput: any; let pending = false;
     const healthModule = evaluate(ops.slice(ops.indexOf("export const handleHealth"), ops.indexOf("export const handleLogStatus")), {
+      require: (specifier: string) => {
+        if (specifier !== selfUpdateSpecifier) throw new Error(`unexpected require in handleHealth: ${specifier}`);
+        return { bootUpdateResultsPending: () => pending };
+      },
       writeJson: (_: unknown, __: number, payload: unknown) => { health = payload; }, VERSION: "test",
       getProcessIdentity: (input: unknown) => { identityInput = input; return { instanceId: "instance", bootId: "boot", startedAt: 10 }; },
       resolveHome: () => "/synthetic/home", sourceRoot: () => "/synthetic/repo", process: { env: { TIGUCLAW_RUNTIME: "source" }, uptime: () => 2 },
       getInflightTurns: () => ({ count: 1, keys: ["thread"] }), listProjectRuns: () => ["run"],
       ATTACH_MAX_FILE_BYTES: 1, ATTACH_MAX_TOTAL_BYTES: 2, ATTACH_MAX_COUNT: 3,
     });
-    await healthModule.handleHealth({ res: {}, bus: { history: () => [1] }, sseClients: new Set([1]), channelHandler: null });
+    for (const state of [true, false]) {
+      pending = state; health = undefined;
+      await healthModule.handleHealth({ res: {}, bus: { history: () => [1] }, sseClients: new Set([1]), channelHandler: null });
+      out.push(assert(`health updateResultsPending=${state} reported`, health?.updateResultsPending === state, { updateResultsPending: health?.updateResultsPending }));
+    }
     out.push(assert("health identity serializes with sourceRoot input", health.instanceId === "instance" && health.bootId === "boot" && health.startedAt === 10 && identityInput?.home === "/synthetic/home" && identityInput.repoRoot === "/synthetic/repo" && identityInput.runtime === "source", { health, identityInput }));
     out.push(assert("health old fields preserved", health.ok && health.version === "test" && health.uptime_ms === 2000 && health.buffer_size === 1 && health.subscribers === 1 && health.channel_handler === false && health.active_turns === 1 && health.active_turn_threads[0] === "thread" && health.active_runs[0] === "run" && health.limits.attachment_count === 3, health));
     return out;

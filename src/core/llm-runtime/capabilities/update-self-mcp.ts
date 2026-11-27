@@ -32,7 +32,9 @@ import {
   type McpSdkServerConfigWithInstance,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+  formatSelfUpdateResult,
   restartNotice,
+  selfUpdateBusyText,
   runSelfUpdate,
   type SelfUpdateNotifyDest,
   type SelfUpdateResult,
@@ -67,7 +69,10 @@ export const renderResult = (r: SelfUpdateResult): string => {
       return `업데이트 적용했습니다 (${span}${files}${npm}). ${restartNotice(r)}`;
     }
     case "busy":
-      return "이미 업데이트가 진행 중입니다. 잠시 후 완료 알림이 옵니다.";
+      // 사유는 슬래시·HTTP 와 같은 문구 함수(2026-11-27 §15) — 종전 «잠시 후 완료 알림이 옵니다» 는 좌표 없는 실행엔 거짓이었다.
+      return selfUpdateBusyText(r);
+    case "unconfirmed":
+      return formatSelfUpdateResult(r); // 슬래시와 같은 렌더(판단 한 곳)
     case "failed": {
       const rolled =
         r.rolledBack === true

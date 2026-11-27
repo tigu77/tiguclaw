@@ -156,10 +156,12 @@ import {
 } from "./core/worker-jobs.js";
 import {
   runSelfUpdate,
+  endBootUpdateResults,
   setSelfUpdateRestart,
   getUpdateBoot,
   UPDATE_FAILED_MARKER,
   updateFailedText,
+  updateOriginSession,
   formatSelfUpdateResult,
   type SelfUpdateNotifyDest,
 } from "./core/self-update.js";
@@ -1460,7 +1462,7 @@ const handler: MessageHandler = async (msg) => {
 //  생성 + ping 지연 + 숨김 스크립트)을 악성으로 막았다. 재기동 책임을 죽는 쪽에서 **살아
 //  있는 쪽**(감독자)으로 옮기자 그 갈래가 통째로 사라졌다. 여기서 코드가 줄어든 게 그 결과다.
 // 재시작 완료 알림은 reboot 스케줄(id=3)이 부팅 후 자동 발화.
-const restartDaemon = (source: string): boolean => {
+const restartDaemon = (source: string, beforeExit?: () => Promise<unknown>): boolean => {
   // ★재기동이 보장될 때만 죽는다 (2026-08-15). "spawn 실패해도 최소한 종료는 보장" 이라는
   //  종전 근거가 **거꾸로**였다: supervisor 가 있으면 확실한 종료가 곧 확실한 재기동이지만,
   //  없으면 **확실한 사망**이다. 이 가드가 08-22 Defender 차단 때 데몬을 살렸다.
@@ -1481,17 +1483,22 @@ const restartDaemon = (source: string): boolean => {
         : "detached helper respawn") +
       ")",
   );
-  void shutdown("RESTART");
-  // force-exit 백스톱 — 이 경로의 존재 이유는 "멈춘 턴에서도 무조건 죽는 탈출구"다.
-  // graceful shutdown 의 server.close() 는 미추적 keep-alive 연결(예: in-flight
-  // POST /messages)을 기다리며 지연될 수 있으므로, 열린 연결과 무관하게 종료를 보장한다.
-  // unref() — 정상 graceful 종료가 더 빠르면 이 타이머는 프로세스를 붙잡지 않는다.
-  setTimeout(() => {
-    // 동기 기록 — 바로 아래 exit(0)이 비동기 큐를 버린다(위 crash 핸들러와 같은 이유).
-    // 어느 단계에서 멈췄는지 같이 적는다(2026-11-17) — 종전엔 통지 뒤로 기록이 없어 지연 자리를 가를 수 없었다.
-    logFatal(`daemon: graceful shutdown 지연 — force exit (${shutdownProgress.describe()})`);
-    process.exit(0);
-  }, 1500).unref();
+  const exit = () => {
+    void shutdown("RESTART");
+    // force-exit 백스톱 — 이 경로의 존재 이유는 "멈춘 턴에서도 무조건 죽는 탈출구"다.
+    // graceful shutdown 의 server.close() 는 미추적 keep-alive 연결(예: in-flight
+    // POST /messages)을 기다리며 지연될 수 있으므로, 열린 연결과 무관하게 종료를 보장한다.
+    // unref() — 정상 graceful 종료가 더 빠르면 이 타이머는 프로세스를 붙잡지 않는다.
+    setTimeout(() => {
+      // 동기 기록 — 바로 아래 exit(0)이 비동기 큐를 버린다(위 crash 핸들러와 같은 이유).
+      // 어느 단계에서 멈췄는지 같이 적는다(2026-11-17) — 종전엔 통지 뒤로 기록이 없어 지연 자리를 가를 수 없었다.
+      logFatal(`daemon: graceful shutdown 지연 — force exit (${shutdownProgress.describe()})`);
+      process.exit(0);
+    }, 1500).unref();
+  };
+  // 채팅의 수락 안내는 기존처럼 송신을 시도한 뒤 종료한다. 거부 때는 이 안내를 만들지 않는다.
+  if (beforeExit) void beforeExit().finally(exit).catch(() => {});
+  else exit();
   return true;
 };
 
@@ -1518,7 +1525,7 @@ const notifyDestFromMessage = (
   // (1) 캡처된 배달 좌표 우선(telegram=chatId, http=sessionId).
   const captured = channelAddress?.trim();
   if (captured !== undefined && captured !== "") {
-    return { channel, target: captured };
+    return { channel, target: captured, threadKey };
   }
   // (2) 세션 메타 폴백 — 인입 턴이 setSessionChannelMeta 로 적재한 last_channel_target.
   // 실채널이 이 통지 채널과 같을 때만(다른 채널 좌표를 잘못 쓰지 않게). 조회 실패는 무해.
@@ -1530,7 +1537,7 @@ const notifyDestFromMessage = (
       meta.lastChannelTarget !== null &&
       meta.lastChannelTarget !== ""
     ) {
-      return { channel, target: meta.lastChannelTarget };
+      return { channel, target: meta.lastChannelTarget, threadKey };
     }
   } catch {
     /* 세션 메타 조회 실패 — 아래 파싱 폴백으로 */
@@ -1547,6 +1554,7 @@ const notifyDestFromMessage = (
           channel !== "cli"
           ? threadKey
           : null,
+    threadKey,
   };
 };
 
@@ -1605,18 +1613,12 @@ const queueHandler: MessageHandler = (msg) => {
     // 않으므로 이중발행 걱정 없음).
     console.log(inboundLine(msg, "command"));
     publishInboundEcho(msg);
-    void msg
-      .reply(translate("srv.restart.soon"))
-      .catch(() => {})
-      .finally(() => {
-        if (restartDaemon(`telegram:${msg.channel}`)) return;
-        // ★재시작을 중단했으면 **말한다**. 안 그러면 "곧 재시작합니다" 만 남고 아무 일도
-        //  안 일어나 사용자가 먹통으로 오해한다(이번 사고의 사용자 체감이 정확히 그것).
-        void msg
-          .reply(translate("srv.restart.cancelled"))
-          .catch(() => {});
-      });
-    return Promise.resolve();
+    const accepted = restartDaemon(`telegram:${msg.channel}`, () =>
+      msg.reply(translate("srv.restart.soon")),
+    );
+    if (accepted) return Promise.resolve();
+    // HTTP 의 replyText 뿐 아니라 원 대화의 실시간 답변·이력도 남긴다.
+    return replyCommand(msg, translate("srv.restart.cancelled")).then(() => {});
   }
   // ─── 아웃오브밴드 `/logs` · `/diagnose` — 진단은 큐를 타면 안 된다 ─────────────
   //  ★검토 지적(2026-07-31): 이 둘을 in-band 로 뒀더니 **직렬 큐 뒤에 섰다.** 턴이 멈춰
@@ -2017,55 +2019,113 @@ await recoverInterruptedJobs();
 // 자가 업데이트 실패 통지 — 위임 CLI update(telegram /update)가 실패·롤백하면 조용히 옛
 // 버전으로 재가동될 뿐 요청자는 원인을 못 봤다(윈도우 "빌드 실패"). CLI 가 롤백 전 남긴
 // <home>/.update-failed 마커를 부팅 시 1회 소비해 실패 단계+로그 경로를 요청자에게 통지 후
-// 삭제(멱등). .update-complete 소비와 대칭. best-effort — 파싱·발송 실패해도 마커는 삭제.
-const updateFailedNotified = await (async (): Promise<boolean> => {
-  const markerPath = path.join(getPaths().home, UPDATE_FAILED_MARKER);
-  let raw: string;
-  let observedFailure = false;
+// 삭제(멱등). best-effort — 파싱·발송 실패해도 마커는 삭제(재시도 루프 없음).
+// ★귀속은 마커의 요청 세션(`notify.threadKey`)이다 (2026-11-25 Windows 관측: 실패가 요청 대화 대신 `dashboard:default` 에 기록됐다).
+//  세션이 없는 옛 마커는 종전대로 기본 세션 — 지어내지 않는다. 판정은 `updateOriginSession` 하나(직접 모드 즉시 통지와 같이 쓴다).
+// ★«읽었다» 와 «배달됐다» 를 가른다 — 배달 결과(`delivered`)를 보고, 안 갔으면 그렇다고 남긴다.
+const deliverUpdateNotice = async (notify: unknown, text: string, what: string): Promise<boolean> => {
+  const n = (notify ?? {}) as { channel?: unknown; target?: unknown };
+  const origin = updateOriginSession(notify);
   try {
-    raw = await fsp.readFile(markerPath, "utf8");
-  } catch (e) {
-    return observedFailure || (e as NodeJS.ErrnoException).code !== "ENOENT"; // 마커 없음 = 실패 아님.
-  }
-  try {
-    const data = JSON.parse(raw) as {
-      stage?: string;
-      outcome?: string;
-      detail?: string;
-      logPath?: string | null;
-      notify?: { channel?: string; target?: string | null };
-    };
-    const text = updateFailedText(data);
-    await deliverOutbound({
-      channel: data.notify?.channel ?? "cli",
-      target: data.notify?.target ?? null,
+    const r = await deliverOutbound({
+      channel: typeof n.channel === "string" ? n.channel : "cli",
+      target: typeof n.target === "string" ? n.target : null,
       text,
       bus,
-      observeThreadKey: DEFAULT_SESSION_ID,
+      observeThreadKey: origin ?? DEFAULT_SESSION_ID,
+      ...(origin !== undefined ? { originThreadKey: origin } : {}),
     });
+    if (r?.delivered === true) return true;
+    console.error(`self-update: ${what} 기록은 읽었지만 통지는 배달되지 않았습니다: ${r?.reason ?? "unknown"}`);
   } catch (e) {
-    console.error(
-      `self-update: 부팅 실패 통지 실패(마커는 삭제): ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    );
-  } finally {
-    try {
-      await fsp.unlink(markerPath);
-    } catch {
-      /* 이미 없음/권한 — 무시 */
-    }
+    console.error(`self-update: ${what} 기록은 읽었지만 통지 배달이 실패했습니다: ${e instanceof Error ? e.message : String(e)}`);
   }
-  return true;
-})();
+  return false;
+};
+/**
+ * 실패 마커 하나를 소비·통지한다. 고정 경로를 **원자적 rename 으로 선점**한 뒤 선점한 파일만 읽고·통지하고·지운다 — 비교 뒤 지우는 사이에
+ *  CLI 가 새 기록을 쓰면 그것까지 지웠다(설계 R2-1). 선점 뒤 쓰인 기록은 고정 경로에 남아 다음 소비자 몫이다. 한 홈의 소비자는 하나다(홈 잠금).
+ * `observed` = 대기 중 이 시도의 실패를 이미 봤다 — 그 사이 기록이 옮겨졌어도(`.unsent-*` 보존) «실패였다» 는 사실로 성공·일반 통지를 막는다.
+ * consumed: 실패 기록이 있었다(읽기 오류 포함 — 성공·일반 재시작 통지를 억제) · failure: 시도 판정용({}=못 읽음/깨짐) · attempted: 배달을 시도했다(읽고 해석함) · delivered: 실제 배달(`delivered:true`).
+ */
+const deliverUpdateFailure = async (
+  observed = false,
+  source = path.join(getPaths().home, UPDATE_FAILED_MARKER),
+  tag = "",
+): Promise<{ consumed: boolean; failure: Record<string, unknown> | null; attempted: boolean; delivered: boolean }> => {
+  const markerPath = source;
+  const claim = `${path.join(getPaths().home, UPDATE_FAILED_MARKER)}.claim-${process.pid}-${Date.now()}${tag}`;
+  try {
+    await fsp.rename(markerPath, claim);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      // 마커 없음 = 실패 아님. 대기 중 봤던 기록이 그 사이 옮겨졌으면 옆 보존본이다 — 아래 쓸기가 그 좌표로 따로 보낸다.
+      if (observed) console.error("self-update: 대기 중 본 실패 기록이 통지 전에 옆 보존본(.update-failed.unsent-*)으로 옮겨졌습니다 — 보존본 쓸기에서 따로 배달합니다.");
+      return { consumed: observed, failure: observed ? {} : null, attempted: false, delivered: false };
+    }
+    console.error(`self-update: 실패 기록을 선점하지 못했습니다(성공 통지는 보류, 파일은 그대로): ${e instanceof Error ? e.message : String(e)}`);
+    return { consumed: true, failure: {}, attempted: false, delivered: false };
+  }
+  let raw: string;
+  // ★디렉터리 기록(2026-11-27 §15 G3) — POSIX 에서 link 를 못 쓰는 홈의 옆 보존은 «완성본 `record.json` 을 담은 디렉터리» 다(대체하지 않는 공개 수단).
+  let isDir = false;
+  // ★symlink 공개(2026-11-27 §16 b) — POSIX 에서 link 를 못 쓰는 홈의 고정 슬롯은 같은 폴더의 완성 임시본(`.update-failed.next-*`)을 가리키는 상대 링크일 수 있다.
+  //  선점은 링크 자체를 옮기고 읽기는 따라간다. 배달 뒤 그 임시본도 지운다(옛 판 소비자는 링크만 지워 임시본이 남는다 — 다시 나가지는 않는다).
+  let linkTarget: string | null = null;
+  try {
+    const t = await fsp.readlink(claim);
+    if (/^\.update-failed\.next-[^/\\]+$/.test(t)) linkTarget = path.join(path.dirname(claim), t);
+    else console.error(`self-update: 실패 기록 링크의 대상이 임시본 이름이 아니라 대상은 지우지 않습니다(${t}).`);
+  } catch {
+    /* 링크가 아니다(EINVAL) — 파일·디렉터리 기록 */
+  }
+  try {
+    try {
+      raw = await fsp.readFile(claim, "utf8");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EISDIR") throw e;
+      isDir = true;
+      raw = await fsp.readFile(path.join(claim, "record.json"), "utf8");
+    }
+  } catch (e) {
+    // ★못 읽은 것과 읽어서 깨진 것은 다르다(구현 검토 I1 #3) — 유일한 기록을 지우지 않는다. 성공·일반 통지는 막는다.
+    console.error(`self-update: 선점한 실패 기록을 읽지 못했습니다(${claim} 에 보존, 통지 안 함): ${e instanceof Error ? e.message : String(e)}`);
+    return { consumed: true, failure: {}, attempted: false, delivered: false };
+  }
+  let data: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === "object") data = parsed as Record<string, unknown>;
+  } catch {
+    /* 아래에서 남긴다 */
+  }
+  let delivered = false;
+  if (data === null) console.error("self-update: 실패 기록이 깨져 통지하지 못했습니다(선점본은 지웁니다).");
+  else delivered = await deliverUpdateNotice(data.notify, updateFailedText(data as Parameters<typeof updateFailedText>[0]), "업데이트 실패");
+  try {
+    // 디렉터리 기록은 소비한 `record.json` 만 지우고 빈 디렉터리만 치운다 — 다른 항목이 있으면 선점본째 보존(재귀 삭제하지 않는다 — §15 I1 #6).
+    if (isDir) {
+      await fsp.unlink(path.join(claim, "record.json"));
+      await fsp.rmdir(claim).catch((e: unknown) => console.error(`self-update: 소비한 디렉터리 기록에 다른 항목이 있어 남겨 둡니다(${claim}): ${e instanceof Error ? e.message : String(e)}`));
+    } else await fsp.unlink(claim);
+    if (linkTarget !== null) await fsp.unlink(linkTarget);
+  } catch {
+    /* 권한 — 선점본이 남을 뿐 고정 경로는 비어 있다 */
+  }
+  return { consumed: true, failure: data ?? {}, attempted: data !== null, delivered };
+};
+const bootUpdateFailure = await deliverUpdateFailure();
+const updateFailedNotified = bootUpdateFailure.consumed;
 
 // 성공 통지는 현재 boot/revision 증거만 허용한다. legacy/비성공 기록의 보존과
 // 이번 boot의 일반 재시작 알림은 별개다. pending 대기 소진은 별도 receipt로 남겨
 // 생산자가 원문 CAS로 늦게 confirmed를 쓰는 경로를 막지 않는다.
+// ★다른 시도의 실패는 이 시도의 성공을 막지 않는다(`sameUpdateAttempt`) — 대기 중 이 시도의 실패가 나타나면 **이번 부팅에** 그 원문을 통지한다
+//  (종전엔 대기만 끝내고 실패는 다음 부팅까지 남았다).
 const updateNotified = await (async (): Promise<boolean> => {
   const result = await consumeUpdateMarker({
     boot: getUpdateBoot(),
-    failed: updateFailedNotified,
+    failure: bootUpdateFailure.consumed ? bootUpdateFailure.failure : null,
     read: async (name: string) => {
       try { return await fsp.readFile(path.join(getPaths().home, name), "utf8"); }
       catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; throw e; }
@@ -2078,20 +2138,42 @@ const updateNotified = await (async (): Promise<boolean> => {
       if (await fsp.readFile(file, "utf8") === raw) await fsp.unlink(file);
     },
   });
-  if (result.data) {
-    try {
-      await deliverOutbound({
-        channel: result.data.notify?.channel ?? "cli",
-        target: result.data.notify?.target ?? null,
-        text: translate("srv.update.complete"),
-        bus,
-        observeThreadKey: DEFAULT_SESSION_ID,
-      });
-    } catch (e) { console.error(`self-update: completion delivery failed: ${String(e)}`); }
-  }
+  if (result.data) await deliverUpdateNotice(result.data.notify, translate("srv.update.complete"), "업데이트 완료");
+  // 대기 중 이 시도의 실패를 봤다 — 이번 부팅에 통지한다(선점한 원문으로). 그때 `handled` 는 이미 참이다.
+  if (typeof result.failureRaw === "string") await deliverUpdateFailure(true);
   // Only this boot's success, failure or first bounded wait suppresses Restart complete.
   return result.handled;
 })();
+
+// ★옆 보존본도 각자 한 번 (2026-11-25 §14). 미소비 실패가 겹치면 생산자는 앞선 기록을 덮지 않고 `.update-failed.unsent-*` 로 옮긴다 —
+//  그 이름엔 완성본만 들어간다(빈 예약을 rename 으로 덮는다). 종전엔 «보존만» 이라 두 요청 중 하나는 결과를 영영 못 받았다(승인된 손실이 아니었다).
+//  고정 경로와 **같은 함수**(선점 → 읽기 → 그 기록의 좌표로 배달 → 삭제)로 하나씩 보낸다. 성공 판정 뒤에 돈다 — 같은 시도에 성공과 실패가 함께 있을 수 없다
+//  (생산자는 재가동 실패일 때만 실패를 쓰고 pending 을 failed 로 바꾼다). 일반 재시작 통지는 고정 경로와 같은 규칙: 실패 기록을 소비했으면 보내지 않는다.
+//  `.claim-*`(중단된 소비 — 배달됐는지 모른다)·`.next-*`(쓰는 중·공개 미확정)는 대상이 아니다. 옛 판 소비자는 이 이름을 읽지 않는다 — 현 판 이상의 첫 부팅이 보낸다.
+const updateAsideNotified = await (async (): Promise<boolean> => {
+  const unsentPrefix = `${UPDATE_FAILED_MARKER}.unsent-`;
+  let names: string[] = [];
+  try {
+    names = (await fsp.readdir(getPaths().home)).filter((n) => n.startsWith(unsentPrefix) && !n.includes(".claim-")).sort();
+  } catch (e) {
+    console.error(`self-update: 옆 보존 실패 기록 목록을 읽지 못했습니다(배달 안 함, 파일은 그대로): ${e instanceof Error ? e.message : String(e)}`);
+  }
+  let tried = 0;
+  let sent = 0;
+  let consumed = false;
+  for (const [i, n] of names.entries()) {
+    const r = await deliverUpdateFailure(false, path.join(getPaths().home, n), `-u${i}`);
+    if (r.consumed) consumed = true;
+    if (r.attempted) tried++;
+    if (r.delivered) sent++;
+  }
+  // 발견·시도·배달을 가른다 — 빈 예약·깨짐·읽기 실패는 시도가 아니다(설계 D2 구현 검토 I1-1).
+  if (names.length > 0) console.error(`self-update: 옆 보존 실패 기록 — 발견 ${names.length}건 · 요청 좌표로 배달 시도 ${tried}건 · 배달 ${sent}건.`);
+  return consumed;
+})();
+// ★부팅 결과 처리 끝 (2026-11-27 §15 G1 (2)) — 여기까지는 `/update` 를 받지 않고(`runSelfUpdate` busy) `/health` 가 처리 중이라 알린다(터미널 CLI 가
+//  정지·재시작 직전에 본다). 단조: 한 번 끝이면 이 부팅에선 다시 처리 중이 되지 않는다. 일반 재시작 통지는 업데이트 결과와 무관해 이 구간 밖이다.
+endBootUpdateResults();
 
 // 매 부팅 재시작 통지 — 업데이트 통지가 없었던 부팅(=일반 /restart · 크래시 · launchd
 // 자동재시작)이면 가장 최근 텔레그램 상대에게 "✅ Restart complete" 1회. 대상은 DB 의 최근
@@ -2101,7 +2183,7 @@ const updateNotified = await (async (): Promise<boolean> => {
 // ★사용자가 자기 reboot 스케줄로 재시작 통지를 이미 굴리면(대개 이름 들어간 개인화 문구)
 // built-in 은 물러나 중복을 피한다. 그런 스케줄이 없을 때(신규 설치 등)만 built-in 이 기본
 // 통지를 담당 — /restart '완료 알림' 약속을 제로 셋업으로 충족하면서 중복 0.
-if (!updateNotified && !updateFailedNotified) {
+if (!updateNotified && !updateFailedNotified && !updateAsideNotified) {
   try {
     const hasRebootSchedule =
       listSchedules({ onlyEnabled: true, triggerType: "reboot" }).length > 0;

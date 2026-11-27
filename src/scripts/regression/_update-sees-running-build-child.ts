@@ -11,7 +11,9 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { getPaths } from "../../core/paths.js";
-import { BUILD_COMMIT_FILE, UPDATE_PENDING_MARKER, runSelfUpdate } from "../../core/self-update.js";
+import { BUILD_COMMIT_FILE, UPDATE_PENDING_MARKER, endBootUpdateResults, runSelfUpdate } from "../../core/self-update.js";
+// 이 자식은 데몬 부팅이 아니다 — 부팅 결과 처리 구간(기본 «처리 중», §15)을 먼저 끝낸다.
+endBootUpdateResults();
 import { translate } from "../../core/i18n.js";
 
 const NO_SUPERVISOR_KEY = "srv.update.err.staleNoSupervisor";
@@ -226,7 +228,8 @@ try {
   };
   cleanupLinks = links;
   // measure = 감독자 여부도 주입하지 않는다 — 이 자식은 launchd 작업이 아니므로 측정은 거짓이어야 한다(리눅스는 측정 수단 없음 = 거짓).
-  const bootRun = async (m: { runSelfUpdate: typeof runSelfUpdate }, layout: string, measure = false): Promise<Record<string, unknown>> => {
+  const bootRun = async (m: { runSelfUpdate: typeof runSelfUpdate; endBootUpdateResults?: () => void }, layout: string, measure = false): Promise<Record<string, unknown>> => {
+    m.endBootUpdateResults?.(); // 따로 실은 모듈 사본마다 제 상태를 가진다
     rmSync(npmLog, { force: true });
     rmSync(marker, { force: true });
     process.env.TIGUCLAW_RUNTIME = "built";

@@ -1,0 +1,114 @@
+// 자가 업데이트 실패 통지 — 위임 CLI update(telegram /update)가 실패·롤백하면 조용히 옛
+// 버전으로 재가동될 뿐 요청자는 원인을 못 봤다(윈도우 "빌드 실패"). CLI 가 롤백 전 남긴
+// <home>/.update-failed 마커를 부팅 시 1회 소비해 실패 단계+로그 경로를 요청자에게 통지 후
+// 삭제(멱등). .update-complete 소비와 대칭. best-effort — 파싱·발송 실패해도 마커는 삭제.
+const updateFailedNotified = await (async (): Promise<boolean> => {
+  const markerPath = path.join(getPaths().home, UPDATE_FAILED_MARKER);
+  let raw: string;
+  let observedFailure = false;
+  try {
+    raw = await fsp.readFile(markerPath, "utf8");
+  } catch (e) {
+    return observedFailure || (e as NodeJS.ErrnoException).code !== "ENOENT"; // 마커 없음 = 실패 아님.
+  }
+  try {
+    const data = JSON.parse(raw) as {
+      stage?: string;
+      outcome?: string;
+      detail?: string;
+      logPath?: string | null;
+      notify?: { channel?: string; target?: string | null };
+    };
+    const text = updateFailedText(data);
+    await deliverOutbound({
+      channel: data.notify?.channel ?? "cli",
+      target: data.notify?.target ?? null,
+      text,
+      bus,
+      observeThreadKey: DEFAULT_SESSION_ID,
+    });
+  } catch (e) {
+    console.error(
+      `self-update: 부팅 실패 통지 실패(마커는 삭제): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  } finally {
+    try {
+      await fsp.unlink(markerPath);
+    } catch {
+      /* 이미 없음/권한 — 무시 */
+    }
+  }
+  return true;
+})();
+
+// 성공 통지는 현재 boot/revision 증거만 허용한다. legacy/비성공 기록의 보존과
+// 이번 boot의 일반 재시작 알림은 별개다. pending 대기 소진은 별도 receipt로 남겨
+// 생산자가 원문 CAS로 늦게 confirmed를 쓰는 경로를 막지 않는다.
+const updateNotified = await (async (): Promise<boolean> => {
+  const result = await consumeUpdateMarker({
+    boot: getUpdateBoot(),
+    failed: updateFailedNotified,
+    read: async (name: string) => {
+      try { return await fsp.readFile(path.join(getPaths().home, name), "utf8"); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; throw e; }
+    },
+    write: async (name: string, raw: string) => {
+      await fsp.writeFile(path.join(getPaths().home, name), raw, "utf8");
+    },
+    remove: async (name: string, raw: string) => {
+      const file = path.join(getPaths().home, name);
+      if (await fsp.readFile(file, "utf8") === raw) await fsp.unlink(file);
+    },
+  });
+  if (result.data) {
+    try {
+      await deliverOutbound({
+        channel: result.data.notify?.channel ?? "cli",
+        target: result.data.notify?.target ?? null,
+        text: translate("srv.update.complete"),
+        bus,
+        observeThreadKey: DEFAULT_SESSION_ID,
+      });
+    } catch (e) { console.error(`self-update: completion delivery failed: ${String(e)}`); }
+  }
+  // Only this boot's success, failure or first bounded wait suppresses Restart complete.
+  return result.handled;
+})();
+
+// 매 부팅 재시작 통지 — 업데이트 통지가 없었던 부팅(=일반 /restart · 크래시 · launchd
+// 자동재시작)이면 가장 최근 텔레그램 상대에게 "✅ Restart complete" 1회. 대상은 DB 의 최근
+// 대화(설정·seed 불필요 — /restart 명령자도 최근 thread 라 자동 커버). best-effort —
+// 대상 없거나(설치 직후) 발송 실패해도 부팅 무영향. v1: 디바운스 없음(크래시 루프는
+// launchd/schtasks respawn 스로틀에 의존, "계속 죽는다" 신호로도 유용).
+// ★사용자가 자기 reboot 스케줄로 재시작 통지를 이미 굴리면(대개 이름 들어간 개인화 문구)
+// built-in 은 물러나 중복을 피한다. 그런 스케줄이 없을 때(신규 설치 등)만 built-in 이 기본
+// 통지를 담당 — /restart '완료 알림' 약속을 제로 셋업으로 충족하면서 중복 0.
+if (!updateNotified && !updateFailedNotified) {
+  try {
+    const hasRebootSchedule =
+      listSchedules({ onlyEnabled: true, triggerType: "reboot" }).length > 0;
+    if (!hasRebootSchedule) {
+      const chatId = getMostRecentTelegramChatId();
+      const text = translate("srv.restart.complete");
+      // 단일 통로 — telegram 이면 발송+관측(대시보드 표시), 대상 없으면(설치 직후) cli 로 콘솔만.
+      // 세션 귀속 = 기본 세션(재시작 통지 = 세션 없는 시스템 발화 → dashboard:default 표시).
+      await deliverOutbound({
+        channel: chatId !== null ? "telegram" : "cli",
+        target: chatId,
+        text,
+        bus,
+        observeThreadKey: DEFAULT_SESSION_ID,
+      });
+    }
+  } catch (e) {
+    console.error(
+      `restart-notify: 부팅 통지 실패: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+}
+
+// 모델 풀 단일-provider 소프트 경고 (부팅 1회) — 폴백 그물 부재 가시화.

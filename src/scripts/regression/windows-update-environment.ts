@@ -11,7 +11,10 @@ import * as fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatSelfUpdateResult, updateFailedText } from "../../core/self-update.js";
+import { randomUUID } from "node:crypto";
+import ts from "typescript";
+import { delegatedUpdateSpawnArgs, formatSelfUpdateResult, notifyDestFromCoords, updateDelegationEnv, updateFailedText, updateOriginSession } from "../../core/self-update.js";
+import { makeBootRunner } from "./_update-boot-harness.js";
 import { renderResult as renderUpdateSelfResult } from "../../core/llm-runtime/capabilities/update-self-mcp.js";
 import { translate } from "../../core/i18n.js";
 import { type Assertion, type RegressionCheck } from "./_framework.js";
@@ -109,9 +112,27 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
 
     // ── runUpdate 를 가짜 OS 경계 위에서 실제로 돈다 ─────────────────────────────────────────────
     const source = fs.readFileSync(path.join(repo, "bin/daemon.mjs"), "utf8");
-    const body = source.slice(source.indexOf("const runUpdate = (c) => {"), source.indexOf("\n/**\n * @param {Ctx} c\n * @param {string} cmd", source.indexOf("const runUpdate = (c) => {")));
+    // 시그니처가 `(c)`(수정 전 대조 사본) · `(c, gate = {})`(§15) 둘 다 — 같은 실행기로 수정 전 빨강을 잰다.
+    const runUpdateAt = source.search(/const runUpdate = \(c(, gate = \{\})?\) => \{/);
+    const body = source.slice(runUpdateAt, source.indexOf("\n/**\n * @param {Ctx} c\n * @param {string} cmd", runUpdateAt));
     type Scenario = "success" | "npm-fail" | "dirty" | "lock-only" | "rollback-dirty" | "corrupt-env" | "pull-fail";
     type SimOpts = { legacyComplete?: boolean; privateDirect?: boolean; wrongRevision?: boolean; staleAfterResume?: boolean; notify?: boolean; handoff?: string; reportFrom?: string; resetFails?: boolean; stopFails?: boolean; startFails?: "exit" | "throw"; revivedDuringCi?: boolean; platform?: "win32" | "darwin" | "linux";
+      // ★2026-11-25 — 늦은 기동: 진짜 winStart 모양(기동 명령 → 안쪽 대기 → reportLaunch)을 지나는 동안엔 아직 안 떴다가 그 뒤 뜬다(late) · 끝내 안 뜬다(never) · 포트는 열렸지만 health 가 안 맞는다(healthDown).
+      boot?: "late" | "never"; healthDown?: boolean; thread?: string; seedAttempt?: string; preFailed?: string; claimBeforeUnsent?: boolean; claimBeforeLink?: boolean; healthPendingWaits?: number; healthCostMs?: number; logOpenFail?: boolean; healthPendingUntilMs?: number; gate?: Record<string, unknown>; delegate?: { channel: string; threadKey: string; address?: string; base?: Record<string, string> }; stagedWriteFail?: boolean; linkFail?: boolean; symlinkFail?: boolean; racePublish?: string;
+      // v4(§12, 미배포)의 공개 잠금 디렉터리가 남아 있다(lockHeld — 잠금을 쥔 채 강제 종료된 생산자의 잔류물).
+      lockHeld?: boolean;
+      // Windows 비대체 이동(`winMoveNoReplace` — 실제 PowerShell 대신 같은 의미의 대역): lost-reply = 옮긴 뒤 응답만 잃음(시한) · fail = 못 옮김(접근 거부).
+      psMove?: "lost-reply" | "fail";
+      // 이동이 성공을 알리지 않은 뒤 임시본 확인(lstat)이 ENOENT 외로 실패한다(공유 끊김·권한) — 공개됐는지 모른다.
+      stagedStatFail?: boolean;
+      // rename 실패에 코드를 단다 · 옆 보존 이름이 이미 있다(D2 #5).
+      renameFailCode?: string; precreateUnsent?: "first" | "first3" | "all"; precreateStaged?: string; raceEach?: boolean; seedPending?: unknown; prePlaced?: Record<string, string>;
+      // ★혼합 link 경합(§13): 이 생산자의 link 가 EEXIST 외로 실패한 뒤, 대체 공개(link 아닌 수단)로 고정 경로를 **만들기 직전**에 다른 생산자의 link 가 성공한다.
+      otherPublishesBeforeFallback?: string;
+      // §14 — 앞선 실행이 남긴 홈을 그대로 이어 쓴다(같은 홈의 두 번째 요청).
+      reuseHome?: string;
+      // §14 — 생산자가 옆 보존 이름을 빈 예약(`wx`)으로 만들 때마다, rename 으로 채우기 **전에** 부팅 소비자가 그 이름을 선점해 간다(소비자의 선점과 같은 rename).
+      claimReservations?: boolean;
       // ★2026-10-29 — 포트와 무관한 존재 판정 · 의존성 트리 옮겨 두기. `deps` 를 주면 이 케이스만의 레포에 진짜 `node_modules` 를 만든다
       //  (tree = 폴더 · link = 다른 폴더를 가리키는 링크). fs 는 진짜이고, 실패만 골라 주입한다.
       presence?: "running" | "stopped" | "unknown"; portClosed?: boolean; registered?: boolean; deps?: "tree" | "link"; leftovers?: string[];
@@ -123,7 +144,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
     const presenceSrc = source.slice(source.indexOf("const winPresence = (c) => {"), source.indexOf("\n};\n", source.indexOf("const winPresence = (c) => {")) + 3);
     const handlerNames = [...new Set([...handlersSrc.matchAll(/:\s*([a-z][A-Za-z]+),/g)].map((m) => m[1] as string))].filter((n) => n !== "undefined");
     const simulate = (scenario: Scenario, opts: SimOpts = {}) => {
-      const h = fs.mkdtempSync(path.join(home, "case-")); fs.writeFileSync(path.join(h, "dist.js"), "ok");
+      const h = opts.reuseHome ?? fs.mkdtempSync(path.join(home, "case-")); fs.writeFileSync(path.join(h, "dist.js"), "ok");
       // 의존성 케이스는 자기 레포를 쓴다(공유 fakeRepo 에 node_modules 를 만들면 다른 케이스가 오염된다).
       const repoRoot = opts.deps !== undefined || opts.leftovers !== undefined ? path.join(h, "repo") : fakeRepo;
       const shared = path.join(h, "shared-deps");
@@ -141,7 +162,12 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const nm = path.join(repoRoot, "node_modules");
       const short = (p: string) => path.basename(p).replace(/-\d+$/, "-N");
       const marker = path.join(h, ".update-failed");
-      if(opts.legacyComplete || opts.privateDirect) fs.writeFileSync(path.join(h,opts.legacyComplete?".update-complete":".update-pending"),JSON.stringify({mode:"direct",state:"ready",notify:{channel:"legacy-destination",target:"original-target"}}));
+      if(opts.legacyComplete || opts.privateDirect) fs.writeFileSync(path.join(h,opts.legacyComplete?".update-complete":".update-pending"),JSON.stringify({mode:"direct",state:"ready",...(opts.seedAttempt?{attempt:opts.seedAttempt}:{}),notify:{channel:"legacy-destination",target:"original-target"}}));
+      if(opts.preFailed!==undefined)fs.writeFileSync(marker,opts.preFailed);
+      if(opts.seedPending!==undefined)fs.writeFileSync(path.join(h,".update-pending"),JSON.stringify(opts.seedPending));
+      for(const [n,v] of Object.entries(opts.prePlaced??{}))fs.writeFileSync(path.join(h,n),v);
+      const publishLock = path.join(h, ".update-failed.lock");
+      if (opts.lockHeld === true) fs.mkdirSync(publishLock);
       const markerObservations: {legacy:boolean;pending:any}[]=[];
       const observeMarker=()=>{let pending;try{pending=JSON.parse(fs.readFileSync(path.join(h,".update-pending"),"utf8"));}catch{}markerObservations.push({legacy:fs.existsSync(path.join(h,".update-complete")),pending});};
       const calls: string[] = []; let rev = 0, status = 0, ci = 0, build = 0; let lockDirty = scenario === "lock-only";
@@ -152,8 +178,10 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const lockState = () => (fs.existsSync(lockFile) ? "lock" : "no-lock");
       const processFake = { platform: opts.platform ?? "win32", execPath: process.execPath, pid: process.pid, exitCode: 0, stdout: { write: () => {} },
         on: (ev: string, fn: () => void) => { if (ev === "exit") exitHandlers.push(fn); },
-        env: { HTTP_BRIDGE_TOKEN: "opaque-fixture-secret", ...(opts.notify ? { TIGUCLAW_UPDATE_NOTIFY_CHANNEL: "fixture" } : {}),
-          ...(opts.handoff ? { TIGUCLAW_UPDATE_PREV_SHA: opts.handoff } : {}), ...(opts.reportFrom !== undefined ? { TIGUCLAW_UPDATE_REPORT_FROM: opts.reportFrom } : {}) } };
+        env: { HTTP_BRIDGE_TOKEN: "opaque-fixture-secret", ...(opts.notify ? { TIGUCLAW_UPDATE_NOTIFY_CHANNEL: "fixture", TIGUCLAW_UPDATE_NOTIFY_TARGET: "original-target", ...(opts.thread !== undefined ? { TIGUCLAW_UPDATE_NOTIFY_THREAD: opts.thread } : {}) } : {}),
+          ...(opts.handoff ? { TIGUCLAW_UPDATE_PREV_SHA: opts.handoff } : {}),
+          // 실제 요청 좌표(`notifyDestFromCoords`) → 실제 위임 env 함수가 만든 **그 객체**를 CLI 가 받는다(구현 검토 I1 #7).
+          ...(opts.delegate !== undefined ? delegatedUpdateSpawnArgs({ notify: notifyDestFromCoords(opts.delegate.channel, opts.delegate.threadKey, opts.delegate.address) }, "1111111", "1111111", opts.delegate.base ?? {}).options.env : {}), ...(opts.reportFrom !== undefined ? { TIGUCLAW_UPDATE_REPORT_FROM: opts.reportFrom } : {}) } };
       const spawnSync = (cmd: string, args: string[]) => {
         observeMarker(); calls.push([cmd, ...args].join(" ")); let stdout = "", stderr = "", code = 0;
         if (cmd === "git" && args[0] === "rev-parse") stdout = ++rev === 1 ? "1111111" : "2".repeat(40);
@@ -185,10 +213,33 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
         }
         return { status: code, stdout, stderr };
       };
+      // 다른 생산자의 link 공개가 이 생산자의 대체 공개 직전에 끼어든다(한 번) — 그 이름을 만드는 것은 link 와 같은 «새 이름 생성» 이다.
+      // 옆 보존 이름이 이미 있다(D2 #5) — 그 원문은 그대로여야 하고 이번 것은 다른 이름으로(파일 · 디렉터리 기록이면 비지 않은 디렉터리로 미리 둔다).
+      const precreateAside = (to: string, asDir = false) => {
+        if (opts.precreateUnsent === undefined || !to.includes(".update-failed.unsent-") || fs.existsSync(to)) return;
+        if (opts.precreateUnsent !== "all" && calls.filter((x) => x.startsWith("PRECREATED-UNSENT:")).length >= (opts.precreateUnsent === "first3" ? 3 : 1)) return;
+        if (asDir) { fs.mkdirSync(to); fs.writeFileSync(path.join(to, "record.json"), `preserved-${path.basename(to)}`); } else fs.writeFileSync(to, `preserved-${path.basename(to)}`);
+        calls.push(`PRECREATED-UNSENT:${path.basename(to)}`);
+      };
+      // 쓸기 대상 이름(`.unsent-*`)에 나타난 순간의 내용 — 완성본만 보여야 한다(빈 예약 0 — §15 D1 #8).
+      const asideSeen: { name: string; complete: boolean }[] = [];
+      const observeAside = (to: string) => {
+        if (!to.includes(".update-failed.unsent-")) return;
+        const file = fs.statSync(to).isDirectory() ? path.join(to, "record.json") : to;
+        let complete = false; try { complete = typeof JSON.parse(fs.readFileSync(file, "utf8")).stage === "string"; } catch { /* 빈/깨진 */ }
+        asideSeen.push({ name: path.basename(to), complete });
+      };
+      const otherLinks = () => { if (opts.otherPublishesBeforeFallback !== undefined && !fs.existsSync(marker) && !calls.includes("OTHER-LINKED")) { fs.writeFileSync(marker, opts.otherPublishesBeforeFallback); calls.push("OTHER-LINKED"); } };
       // 진짜 fs 위에 실패만 골라 넣는다 — 무엇을 옮기고 지웠는지 기록한다.
       const renameW = (a: string, b: string) => {
-        if (opts.renameFail?.(a, b) === true) { calls.push(`MV-FAIL:${short(a)}>${short(b)}`); throw new Error(`EPERM: operation not permitted, rename '${short(a)}'`); }
+        // 생산자가 옛 실패를 읽은 뒤 옮기기 직전에 부팅 소비자가 먼저 선점했다 — 실제 ENOENT(code 포함)로 흉내.
+        if (opts.claimBeforeUnsent === true && a.endsWith(".update-failed") && b.includes(".unsent-")) { fs.renameSync(a, `${a}.claim-sim`); calls.push("CLAIMED-BY-CONSUMER"); throw Object.assign(new Error("ENOENT: no such file or directory, rename"), { code: "ENOENT" }); }
+        if (opts.renameFail?.(a, b) === true) { calls.push(`MV-FAIL:${short(a)}>${short(b)}`); throw Object.assign(new Error(`${opts.renameFailCode ?? "EPERM"}: rename failed '${short(a)}' (fixture)`), opts.renameFailCode !== undefined ? { code: opts.renameFailCode } : {}); }
+        // 완성본을 고정 경로로 옮기는(link 불가 폴백) 순간 공개 잠금이 있었나 — 잠금 밖 rename 공개는 I3-1 의 덮어쓰기다.
+        if (a.includes(".update-failed.next-") && b.endsWith(".update-failed")) { otherLinks(); calls.push(`PUBLISH-BY-RENAME:${fs.existsSync(publishLock) ? "locked" : "UNLOCKED"}`); }
+        if (a.endsWith(".d") && b.includes(".update-failed.unsent-")) precreateAside(b, true);
         fs.renameSync(a, b); calls.push(`MV:${short(a)}>${short(b)}`);
+        observeAside(b);
       };
       const rmW = (p: string, o?: fs.RmOptions) => {
         if (path.basename(p).startsWith(".node_modules") || p === nm) { if (opts.rmFail?.(p) === true) { calls.push(`RM-FAIL:${short(p)}`); throw new Error("EBUSY fixture"); } calls.push(`RM:${short(p)}`); }
@@ -203,12 +254,14 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       // ★`lstatSync`·`readdirSync`·`renameSync`·`unlinkSync`·`sleepSync` 를 **반드시** 넘긴다 — 안 넘기면 본문의 try/catch 가 ReferenceError 를
       //  삼켜 «node_modules 없음» 으로 조용히 통과한다(2026-10-29 실측: 넘기기 전에도 47건이 초록이었다).
       const names = ["process", "console", "path", "existsSync", "mkdirSync", "openSync", "writeSync", "writeFileSync", "spawnSync", "isDaemonRunning", "isRegistered", "handlers", "warnWinServiceToken", "saveWinServiceEnv", "redactUpdateLog", "rmSync", "updateLockPath",
-        "lstatSync", "readdirSync", "renameSync", "unlinkSync", "sleepSync", "healthSaysOurs", "listeningOnBridge", "expectFreshLaunch", "waitForListening", "reportLaunch", "UPDATE_PENDING_MARKER", "updateBootMatches", "updateMarkerMatches", "instanceIdFor", "readFileSync"];
+        "lstatSync", "readdirSync", "renameSync", "unlinkSync", "sleepSync", "healthSaysOurs", "UPDATE_SLOT_WAIT_MS", "monoNow", "listeningOnBridge", "expectFreshLaunch", "waitForListening", "reportLaunch", "UPDATE_PENDING_MARKER", "updateBootMatches", "updateMarkerMatches", "instanceIdFor", "readFileSync", "randomUUID", "linkSync", "rmdirSync", "winMoveNoReplace", "symlinkSync"];
       // 마커가 재가동 **전에** 있었나 — 다시 뜬 데몬이 부팅 때 읽어 통지한다.
       const startMark = (what: string) => () => calls.push(`${what}:${fs.existsSync(marker) ? "marker" : "no-marker"}`, `${what}@${lockState()}`);
       const presenceFake = opts.presence === undefined ? {} : { presence: () => { calls.push("PRESENCE"); return { state: opts.presence, pids: opts.presence === "running" ? ["777"] : [], why: "fixture: process list query failed" }; } };
       // 재가동 실패 — 진짜 start 는 `reportLaunch` 로 exitCode 1 을 세우거나(launch 확인 실패) `execFileSync` 가 던진다(launchctl·systemctl).
-      const launch = (what: string) => () => { observeMarker(); startMark(what)(); running = true; launched = true; generation = "fresh"; processStartedAt = opts.staleAfterResume ? 1 : Date.now(); if (opts.startFails === "exit") processFake.exitCode = 1; if (opts.startFails === "throw") throw new Error("fixture: launchctl load failed"); };
+      const launch = (what: string) => () => { observeMarker(); startMark(what)();
+        if (opts.boot !== undefined) { report(context, wait(context, probe, 0), "started", "inner"); calls.push(`INNER:${processFake.exitCode}`); if (opts.boot === "never") { if (opts.startFails === "exit") processFake.exitCode = 1; return; } }
+        running = true; launched = true; generation = "fresh"; processStartedAt = opts.staleAfterResume ? 1 : Date.now(); if (opts.startFails === "exit") processFake.exitCode = 1; if (opts.startFails === "throw") throw new Error("fixture: launchctl load failed"); };
       const ops = { stop: () => { calls.push("STOP"); if (opts.stopFails !== true) running = false; return opts.stopFails === true ? false : true; }, reenable: () => calls.push("REENABLE"), start: launch("START"), restart: launch("RESTART") };
       // 진짜 표: 표에 적힌 이름마다 가짜를 넣되 정지·기동은 위 기록기로, 존재 판정만 진짜 본문(스캔 결과 주입)으로.
       const realTable = () => {
@@ -219,30 +272,80 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       };
       const table = opts.scan !== undefined ? realTable() : ((t: unknown) => ({ win32: t, darwin: t, linux: t }))({ ...ops, ...presenceFake });
       const one = (name: string) => source.slice(source.indexOf(`const ${name} = (`), source.indexOf("\n};", source.indexOf(`const ${name} = (`)) + 3);
-      const health = () => ({ ok: running && (launched || opts.portClosed !== true), why: "fixture health", instanceId: identity.instanceIdFor({home:context.homeAbs,repoRoot:context.repoRoot,runtime:context.runtime}), revision: (opts.wrongRevision && launched ? "3" : "2").repeat(40), bootId: ({old:"11111111-1111-4111-8111-111111111111",intermediate:"22222222-2222-4222-8222-222222222222",fresh:"33333333-3333-4333-8333-333333333333"} as Record<string,string>)[generation], startedAt: processStartedAt });
+      // 데몬이 직전 업데이트 결과를 처리 중 — 정지 직전 확인의 대기(SETTLE-WAIT)가 이 횟수에 닿을 때까지 참(§15).
+      // 가상 단조 시계 — 수면은 그만큼, `/health` 조회는 `healthCostMs` 만큼 흐른다(조회가 느려도 상한은 실제 경과로 — §15 I1 #4).
+      const clock = { t: 0 };
+      const health = () => ({ ...((clock.t += opts.healthCostMs ?? 0), {}), ...(opts.healthPendingWaits !== undefined ? { updateResultsPending: calls.filter((x) => x === "SETTLE-WAIT").length < opts.healthPendingWaits } : {}),
+        ...(opts.healthPendingUntilMs !== undefined ? { updateResultsPending: clock.t < opts.healthPendingUntilMs } : {}), ok: running && (launched || opts.portClosed !== true) && !(opts.healthDown === true && launched), why: running ? "fixture health" : "no answer (ECONNREFUSED)", instanceId: identity.instanceIdFor({home:context.homeAbs,repoRoot:context.repoRoot,runtime:context.runtime}), revision: (opts.wrongRevision && launched ? "3" : "2").repeat(40), bootId: ({old:"11111111-1111-4111-8111-111111111111",intermediate:"22222222-2222-4222-8222-222222222222",fresh:"33333333-3333-4333-8333-333333333333"} as Record<string,string>)[generation], startedAt: processStartedAt });
       const probe = () => ({ pids: running && opts.portClosed !== true ? ["777"] : [] });
       const capture = new Function("healthSaysOurs", one("expectFreshLaunch") + ";return expectFreshLaunch;")(health);
       const wait = new Function("healthSaysOurs", "sleepSync", "updateBootMatches", one("waitForListening") + ";return waitForListening;")(health, () => {}, contract.updateBootMatches);
       const report = new Function("process", "console", "winPort", one("reportLaunch") + ";return reportLaunch;")(processFake, fakeConsole, () => "7021");
       const invoke = new Function(...names, body + "; return runUpdate;")(...[
-        processFake, fakeConsole, path, fs.existsSync, fs.mkdirSync, (p: string, flags: string) => { const fd = fs.openSync(p, flags); fds.push(fd); return fd; }, fs.writeSync, fs.writeFileSync, spawnSync, () => running && opts.portClosed !== true, () => opts.registered !== false,
+        processFake, fakeConsole, path, fs.existsSync, (p: string, ...a: unknown[]) => { if (String(p).endsWith(".update-failed.lock")) calls.push("MKDIR-LOCK"); return (fs.mkdirSync as (...x: unknown[]) => unknown)(p, ...a); }, (p: string, flags: string) => { if (opts.logOpenFail === true && p.includes(`${path.sep}logs${path.sep}update-`)) throw Object.assign(new Error("EACCES: permission denied, open (fixture)"), { code: "EACCES" }); const fd = fs.openSync(p, flags); fds.push(fd); return fd; }, fs.writeSync,
+        (p: string, ...a: unknown[]) => {
+          if (opts.stagedWriteFail === true && p.includes(".update-failed.next-")) throw new Error("ENOSPC: no space left on device (fixture)");
+          // 고정 경로를 직접 쓰는 공개는 없어야 한다(쓰는 중인 원문이 보이거나 덮는다) — 있으면 남겨 단언이 잡게 한다.
+          if (p === marker) calls.push(`PUBLISH-BY-WRITE:${(a[1] as { flag?: string } | undefined)?.flag ?? "w"}`);
+          // 계산된 바로 그 임시 경로에 앞선 원문이 이미 있다 — 배타 생성이면 그 바이트가 그대로여야 한다.
+          if (opts.precreateStaged !== undefined && p.includes(".update-failed.next-") && !fs.existsSync(p)) { fs.writeFileSync(p, opts.precreateStaged); calls.push(`PRECREATED:${path.basename(p)}`); }
+          if (opts.precreateUnsent !== undefined && p.includes(".update-failed.unsent-") && !fs.existsSync(p) && (opts.precreateUnsent === "all" || calls.filter((x) => x.startsWith("PRECREATED-UNSENT:")).length < (opts.precreateUnsent === "first3" ? 3 : 1))) { fs.writeFileSync(p, `preserved-${path.basename(p)}`); calls.push(`PRECREATED-UNSENT:${path.basename(p)}`); }
+          (fs.writeFileSync as (...x: unknown[]) => void)(p, ...a);
+          // 쓸기 이름에 직접 쓰는 순간도 관측한다 — 빈 예약(종전 `moveAside`)이면 미완성으로 잡힌다.
+          if (p.includes(".update-failed.unsent-")) { let complete = false; try { complete = typeof JSON.parse(String(a[0])).stage === "string"; } catch { /* 빈·깨진 */ } asideSeen.push({ name: path.basename(p), complete }); }
+          if (opts.claimReservations === true && p.includes(".update-failed.unsent-") && a[0] === "") { const n = calls.filter((x) => x.startsWith("CLAIMED-RESERVATION:")).length; fs.renameSync(p, `${marker}.claim-sim-res-${n}`); calls.push(`CLAIMED-RESERVATION:${n}`); }
+        }, spawnSync, () => running && opts.portClosed !== true, () => opts.registered !== false,
         table, () => {}, () => calls.push("SAVE_ENV"), (text: string) => d.redactUpdateLog(text, processFake.env),
         rmW, d.updateLockPath,
-        fs.lstatSync, fs.readdirSync, renameW, unlinkW, () => {}, health, probe,
+        (p: string, ...a: unknown[]) => { if (p.endsWith(".update-failed")) calls.push("LSTAT-FIXED");
+          if (opts.stagedStatFail === true && p.includes(".update-failed.next-")) { calls.push(`LSTAT-STAGED-FAIL:${p}`); throw Object.assign(new Error("EACCES: permission denied, lstat (fixture)"), { code: "EACCES" }); }
+          return (fs.lstatSync as (...x: unknown[]) => unknown)(p, ...a); },
+        fs.readdirSync, renameW, unlinkW,
+        // 잠은 즉시 — 100ms 잠(v4 의 공개 잠금 대기 간격)은 남겨 «기다리지 않는다» 를 단언한다.
+        (ms: number) => { clock.t += ms; if (ms === 100) calls.push("LOCK-WAIT"); if (ms === 250) calls.push("SETTLE-WAIT"); }, health, contract.UPDATE_SLOT_WAIT_MS, () => clock.t, probe,
         (ctx: unknown, old: string[]) => { calls.push(`CAPTURE:${build}:${generation}`); return capture(ctx, old); },
         (ctx: unknown, p: unknown) => wait(ctx, p, 0), report,
-        contract.UPDATE_PENDING_MARKER, contract.updateBootMatches, contract.updateMarkerMatches, identity.instanceIdFor, fs.readFileSync,
+        contract.UPDATE_PENDING_MARKER, contract.updateBootMatches, contract.updateMarkerMatches, identity.instanceIdFor, fs.readFileSync, randomUUID,
+        (a: string, b: string) => {
+          // 다른 생산자가 «비어 있음» 을 본 뒤 먼저 공개했다 — 대체하지 않는 공개라면 EEXIST 가 나야 한다(link 실패와도 겹쳐 본다).
+          if (opts.racePublish !== undefined && b.endsWith(".update-failed") && !fs.existsSync(b) && !calls.includes("RACE")) { fs.writeFileSync(b, opts.racePublish); calls.push("RACE"); }
+          // 공개할 때마다 다른 생산자가 먼저 채운다(재시도마다 EEXIST).
+          if (opts.raceEach === true && b.endsWith(".update-failed") && !fs.existsSync(b)) { const n = calls.filter((x) => x.startsWith("RACE-")).length + 1; fs.writeFileSync(b, JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: `race-${n}` })); calls.push(`RACE-${n}`); }
+          // 공개 직전 부팅 소비자가 고정 경로의 앞선 기록을 선점해 간다(rename) — 비었으니 이번 것이 고정 경로에 놓여야 한다.
+          if (opts.claimBeforeLink === true && b.endsWith(".update-failed") && fs.existsSync(b) && !calls.includes("CLAIMED-BY-CONSUMER")) { fs.renameSync(b, `${b}.claim-sim`); calls.push("CLAIMED-BY-CONSUMER"); }
+          precreateAside(b);
+          if (opts.linkFail === true) { calls.push("LINK-FAIL"); throw Object.assign(new Error("EPERM: operation not permitted, link (fixture)"), { code: "EPERM" }); }
+          fs.linkSync(a, b); calls.push(`LINK:${path.basename(a).replace(/\.next-.*/, ".next-*")}>${path.basename(b).replace(/\.unsent-.*/, ".unsent-*")}`);
+          observeAside(b);
+        },
+        (p: string) => { calls.push(`RMDIR:${path.basename(p)}`); fs.rmdirSync(p); },
+        // Windows 비대체 이동의 대역 — `MoveFileEx`(REPLACE_EXISTING 없이)와 같은 뜻: 자리가 차 있으면 «exists», 아니면 원자적으로 옮긴다(단일 스레드라 확인+이동이 끊기지 않는다).
+        //  실제 PowerShell 스크립트의 문자열은 아래 별도 검사가, 실제 의미는 Windows 인계 검증이 본다.
+        (from: string, to: string) => {
+          otherLinks(); precreateAside(to); calls.push(`PS-MOVE:${path.basename(from).replace(/\.next-.*/, ".next-*")}>${path.basename(to).replace(/\.unsent-.*/, ".unsent-*")}`);
+          if (opts.psMove === "fail") return "Access to the path is denied. (exit 1)";
+          if (fs.existsSync(to)) return "exists";
+          fs.renameSync(from, to); observeAside(to);
+          return opts.psMove === "lost-reply" ? "PowerShell did not respond — gave up after 30s (exit none)" : "moved";
+        },
+        // 상대 symlink 공개(§16 b — POSIX link 불가 홈). symlinkFail = 링크도 못 만드는 볼륨(Linux vfat 등) — EPERM.
+        (target: string, at: string) => {
+          if (opts.racePublish !== undefined && at.endsWith(".update-failed") && !fs.existsSync(at) && !calls.includes("RACE")) { fs.writeFileSync(at, opts.racePublish); calls.push("RACE"); }
+          if (opts.symlinkFail === true) { calls.push("SYMLINK-FAIL"); throw Object.assign(new Error("EPERM: operation not permitted, symlink (fixture)"), { code: "EPERM" }); }
+          fs.symlinkSync(target, at); calls.push(`SYMLINK:${target.replace(/\.next-.*/, ".next-*")}>${path.basename(at)}`);
+        },
       ]);
-      try { invoke(context); } finally { for (const fd of fds) fs.closeSync(fd); }
+      let returned: unknown;
+      try { returned = invoke(context, opts.gate === undefined ? undefined : { env: processFake.env, ...opts.gate }); } finally { for (const fd of fds) fs.closeSync(fd); }
       const lockAfterRun = lockState(); for (const fn of exitHandlers) fn(); const lockAfterExit = lockState();
-      const log = fs.readdirSync(path.join(h, "logs")).find((x) => x.startsWith("update-")); assert(log);
+      const log = fs.existsSync(path.join(h, "logs")) ? fs.readdirSync(path.join(h, "logs")).find((x) => x.startsWith("update-")) : undefined; assert(log !== undefined || opts.logOpenFail === true);
       const mk = fs.existsSync(marker) ? JSON.parse(fs.readFileSync(marker, "utf8")) : undefined;
       const read = (p: string) => { try { return fs.readFileSync(p, "utf8"); } catch { return "(none)"; } };
       const markerIn = (dir: string) => (fs.existsSync(path.join(dir, "sdk", "marker.txt")) ? read(path.join(dir, "sdk", "marker.txt")) : read(path.join(dir, "marker.txt")));
       const entries = repoRoot === fakeRepo ? [] : fs.readdirSync(repoRoot).filter((x) => x.startsWith(".node_modules")).map((x) => ({ name: x.replace(/-\d+$/, "-N"), marker: markerIn(path.join(repoRoot, x)) }));
       const depsNow = repoRoot === fakeRepo ? "(n/a)" : read(path.join(nm, "sdk", "marker.txt"));
       const sharedNow = opts.deps === "link" ? { marker: read(path.join(shared, "sdk", "marker.txt")), files: fs.readdirSync(shared).join(",") } : undefined;
-      return { markerObservations, completion: JSON.parse(read(path.join(h,".update-pending")) === "(none)" ? "null" : read(path.join(h,".update-pending"))), calls, messages, exitCode: processFake.exitCode, log: fs.readFileSync(path.join(h, "logs", log), "utf8"), home: h, marker: mk, lockAfterRun, lockAfterExit, depsNow, entries, sharedNow, ci, build };
+      return { returned, asideSeen, markerObservations, completion: JSON.parse(read(path.join(h,".update-pending")) === "(none)" ? "null" : read(path.join(h,".update-pending"))), calls, messages, exitCode: processFake.exitCode, log: log === undefined ? "" : fs.readFileSync(path.join(h, "logs", log), "utf8"), home: h, marker: mk, lockAfterRun, lockAfterExit, depsNow, entries, sharedNow, ci, build };
     };
     test("actual CLI completion: private pending before boot, exact final boot and destination; legacy never exposed", () => {
       for(const seed of [{legacyComplete:true},{privateDirect:true}]) {
@@ -270,6 +373,636 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       assert.equal(rollback.marker?.notify.target,"original-target");
       assert(!contract.updateMarkerMatches(rollback.completion,rollback.completion?.confirmed));
       return "revision/cutoff/start rejection + rollback, original destination";
+    });
+    // ── 2026-11-25 Windows 운영 관측: 안쪽 대기 뒤 늦게 뜬 새 데몬 — 최종 판정·귀속·이음매 ─────────────────────────
+    const bootRunner = await makeBootRunner(repo);
+    const fspReal = { readFile: (n: string) => fs.promises.readFile(n, "utf8"), writeFile: (n: string, raw: string) => fs.promises.writeFile(n, raw, "utf8"),
+      unlink: (n: string) => fs.promises.unlink(n), rename: (a: string, b: string) => fs.promises.rename(a, b), readdir: (dir: string) => fs.promises.readdir(dir) };
+    // 실제 runUpdate 가 쓴 홈 파일을 실제 부팅 소비 영역(실제 발원 세션 판정·실제 실패 문구)으로 넘긴다. 시계는 가상.
+    const consumeAt = async (r: ReturnType<typeof simulate>, boot: unknown) => {
+      const k = { t: 0 };
+      return bootRunner({ fsp: fspReal, home: r.home, boot, updateOriginSession, updateFailedText, translate, now: () => k.t, sleep: async (ms) => { k.t += ms; } });
+    };
+    const laterBoot = (r: ReturnType<typeof simulate>) => ({ instanceId: r.completion?.expected?.instanceId, bootId: "44444444-4444-4444-8444-444444444444", startedAt: Date.now(), revision: "2".repeat(40) });
+    test("★늦은 기동: 안쪽 대기 미확인 뒤 최종 대기가 새 부팅을 확인하면 exit 0 · confirmed · 실패 마커 0 → 요청 세션에 성공 1·실패 0", () => {
+      const r = simulate("success", { notify: true, thread: "dashboard:side", boot: "late", deps: "tree" });
+      assert(r.calls.includes("INNER:0"), `안쪽 대기가 실패 코드를 세웠다: ${r.calls.join(" | ")}`);
+      assert(r.messages.some((m) => /not confirmed yet/.test(m)), r.messages.join("\n"));
+      assert.equal(r.exitCode, 0, r.messages.join("\n")); assert.equal(r.completion?.state, "confirmed"); assert.equal(r.marker, undefined);
+      assert(!r.messages.some((m) => m.includes("🔴")), r.messages.join("\n"));
+      assert(!r.entries.some((e) => e.marker === "old-tree"), "성공인데 옛 트리를 남겼다");
+      return "exit0·confirmed";
+    });
+    test("★이음매: 위임 env(실제 함수) → 실제 CLI 가 쓴 원문 → 실제 부팅 소비 — 늦은 성공·무응답·포트만·구 revision·런처 오류", () => {
+      const env = updateDelegationEnv({ STALE: "x" }, { prevSha: "1111111", reportFrom: "1111111", notify: { channel: "fixture", target: "original-target", threadKey: "dashboard:side" } });
+      assert.equal(env.TIGUCLAW_UPDATE_NOTIFY_THREAD, "dashboard:side"); assert.equal(env.TIGUCLAW_UPDATE_NOTIFY_CHANNEL, "fixture"); assert.equal(env.TIGUCLAW_UPDATE_NOTIFY_TARGET, "original-target");
+      const noThread = updateDelegationEnv({ TIGUCLAW_UPDATE_NOTIFY_THREAD: "leaked" }, { prevSha: "1111111", reportFrom: "1111111", notify: { channel: "fixture", target: null } });
+      assert.equal(noThread.TIGUCLAW_UPDATE_NOTIFY_THREAD, "", "데몬 환경에 남은 세션이 새어 들었다");
+      // 좌표 없는 요청(HTTP `/update`)은 데몬이 물려받은 옛 좌표를 싣지 않는다(구현 검토 I1 #2).
+      const bare = updateDelegationEnv({ TIGUCLAW_UPDATE_NOTIFY_CHANNEL: "telegram", TIGUCLAW_UPDATE_NOTIFY_TARGET: "old-chat", TIGUCLAW_UPDATE_NOTIFY_THREAD: "dashboard:old", PATH: "keep" }, { prevSha: "1111111", reportFrom: "1111111" });
+      assert(bare.TIGUCLAW_UPDATE_NOTIFY_CHANNEL === undefined && bare.TIGUCLAW_UPDATE_NOTIFY_TARGET === undefined && bare.TIGUCLAW_UPDATE_NOTIFY_THREAD === undefined && bare.PATH === "keep", JSON.stringify(bare));
+      // `/update` 의 좌표 함수(index.ts)를 실제로 돌린다 — 세 갈래 모두 요청 세션을 싣는다.
+      const idx = fs.readFileSync(path.join(repo, "src/index.ts"), "utf8");
+      const nd = idx.slice(idx.indexOf("const notifyDestFromMessage = ("), idx.indexOf("\n};\n", idx.indexOf("const notifyDestFromMessage = (")) + 3);
+      const js = ts.transpileModule(nd, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+      const mk = (meta: unknown) => new Function("getSessionChannelMeta", "SESSION_STORAGE_CHANNEL", "telegramTargetFor", js + ";return notifyDestFromMessage;")(() => meta, "fixture-store", () => "tg-chat");
+      const cap = mk(null)("telegram", "dashboard:side", "chat-9"), viaMeta = mk({ lastChannel: "telegram", lastChannelTarget: "chat-8" })("telegram", "dashboard:side"), fb = mk(null)("telegram", "dashboard:side");
+      assert(cap.threadKey === "dashboard:side" && cap.target === "chat-9" && viaMeta.threadKey === "dashboard:side" && viaMeta.target === "chat-8" && fb.threadKey === "dashboard:side" && fb.target === "tg-chat", JSON.stringify({ cap, viaMeta, fb }));
+      return "env ok";
+    });
+    const seam: Array<[string, SimOpts, "success" | "restart-unconfirmed" | "restart-error"]> = [
+      ["late boot", { boot: "late" }, "success"],
+      ["never answers", { boot: "never" }, "restart-unconfirmed"],
+      ["port only (health mismatch)", { healthDown: true }, "restart-unconfirmed"],
+      ["old revision", { wrongRevision: true }, "restart-unconfirmed"],
+      ["launcher error then verified", { boot: "late", startFails: "exit" }, "restart-error"],
+      ["launcher error, never answers", { boot: "never", startFails: "exit" }, "restart-unconfirmed"],
+    ];
+    for (const [label, fault, want] of seam) {
+      checks.push(await (async () => {
+        const name = `★이음매 ${label}: CLI exit·마커·부팅 소비 (성공,실패) 개수와 귀속`;
+        try {
+          const r = simulate("success", { delegate: { channel: "fixture", threadKey: "dashboard:side", address: "original-target", base: { TIGUCLAW_UPDATE_NOTIFY_CHANNEL: "stale", TIGUCLAW_UPDATE_NOTIFY_TARGET: "stale-chat", TIGUCLAW_UPDATE_NOTIFY_THREAD: "dashboard:stale" } }, ...fault });
+          const boot = want === "success" ? r.completion?.confirmed : laterBoot(r);
+          const b = await consumeAt(r, boot);
+          const success = b.deliveries.filter((d) => /Update complete/.test(d.text)), failure = b.deliveries.filter((d) => /Update failed/.test(d.text));
+          assert.equal(r.exitCode, want === "success" ? 0 : 1, r.messages.join("\n"));
+          assert.equal(success.length, want === "success" ? 1 : 0, JSON.stringify(b.deliveries)); assert.equal(failure.length, want === "success" ? 0 : 1, JSON.stringify(b.deliveries));
+          assert.equal(b.restart.length, 0);
+          for (const d of b.deliveries) { assert.equal(d.channel, "fixture"); assert.equal(d.target, "original-target"); assert.equal(d.observeThreadKey, "dashboard:side"); assert.equal(d.originThreadKey, "dashboard:side"); }
+          if (want !== "success") {
+            assert.equal(r.marker?.outcome, want); assert.equal(r.marker?.stage, "restart"); assert.equal(r.marker?.attempt, r.completion?.attempt);
+            assert(failure[0]!.text.includes("No rollback was attempted") && !/could not be fully restored/.test(failure[0]!.text), failure[0]!.text);
+            // CLI 마지막 요약도 같은 판정(구현 검토 I1 #6) — «실행 중» 과 «영영 안 뜸» 을 동시에 말하지 않는다.
+            const summary = r.messages.find((m) => m.startsWith("🔴 The update was applied")) ?? "";
+            assert(want === "restart-error" ? /new version is running/.test(summary) : /could not be confirmed/.test(summary), summary);
+            assert(!/will not come back on its own/.test(summary), summary);
+          }
+          assert(!fs.existsSync(path.join(r.home, ".update-failed")), "실패 마커가 소비되지 않았다");
+          const again = await consumeAt(r, { ...laterBoot(r), bootId: "55555555-5555-4555-8555-555555555555" });
+          assert.equal(again.deliveries.filter((d) => /Update (complete|failed)/.test(d.text)).length, 0, "같은 시도를 다음 부팅이 또 보냈다");
+          return { name, ok: true, got: `exit=${r.exitCode} (${success.length},${failure.length}) outcome=${r.marker?.outcome ?? "-"}` };
+        } catch (err) { return { name, ok: false, got: String(err) }; }
+      })());
+    }
+    test("옛 데몬에서 시작한 업데이트(세션 env 없음) · 옛 pending(시도 없음) 계승 — 세션을 지어내지 않고, 새 시도 id 를 쓴다", () => {
+      const r = simulate("success", { notify: true, boot: "never" });
+      assert.equal(r.marker?.notify?.threadKey, undefined); assert.equal(r.completion?.notify?.threadKey, undefined);
+      assert(typeof r.marker?.attempt === "string" && r.marker.attempt === r.completion?.attempt, JSON.stringify(r.marker));
+      const inherited = simulate("success", { privateDirect: true, seedAttempt: "seed-attempt", boot: "never" });
+      assert.equal(inherited.marker?.attempt, "seed-attempt", "env 없이 물려받은 좌표면 그 시도 id 를 잇는다");
+      const fresh = simulate("success", { privateDirect: true, seedAttempt: "seed-attempt", notify: true, boot: "never" });
+      assert(fresh.marker?.attempt !== "seed-attempt" && fresh.marker?.notify?.channel === "fixture", "새 env 좌표에 옛 시도 id 를 붙였다");
+      const legacySeed = simulate("success", { privateDirect: true, boot: "never" });
+      assert(typeof legacySeed.marker?.attempt === "string" && legacySeed.marker.attempt.length > 0);
+      return "ok";
+    });
+    test("★롤백 뒤 재가동 미확인·명령 예외 — 마커는 rolled-back(재기동 단정 없음) · CLI 로그가 미확인을 가른다 · 예외가 CLI 밖으로 안 나간다", () => {
+      const un = simulate("npm-fail", { notify: true, boot: "never" });
+      assert.equal(un.marker?.outcome, "rolled-back"); assert.equal(un.exitCode, 1);
+      assert(un.messages.some((m) => /rolled back to 1111111, but the restart was not confirmed/.test(m)), un.messages.join("\n"));
+      const th = simulate("npm-fail", { notify: true, startFails: "throw" });
+      assert.equal(th.exitCode, 1); assert(th.messages.some((m) => /but the restart command failed/.test(m)), th.messages.join("\n"));
+      const ok = simulate("npm-fail", { notify: true, boot: "late" });
+      assert(!ok.messages.some((m) => /restart was not confirmed/.test(m)), ok.messages.join("\n"));
+      return "ok";
+    });
+    test("★다른 시도의 미소비 실패는 그 자리에 그대로(§15 G3) — 이번 실패만 옆 보존(완성본)·로그", () => {
+      const pre = JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "earlier" });
+      const r = simulate("npm-fail", { notify: true, preFailed: pre } as SimOpts);
+      assert.equal(fs.readFileSync(path.join(r.home, ".update-failed"), "utf8"), pre, "앞선 기록을 옮기거나 바꿨다");
+      const kept = fs.readdirSync(r.home).filter((n) => n.startsWith(".update-failed.unsent-"));
+      assert.equal(kept.length, 1, fs.readdirSync(r.home).join(","));
+      const ours = JSON.parse(fs.readFileSync(path.join(r.home, kept[0]!), "utf8"));
+      assert(ours.attempt !== "earlier" && ours.outcome === "rolled-back", JSON.stringify(ours));
+      assert(!r.calls.some((x) => /^MV:\.update-failed>/.test(x)), `앞선 기록을 옮겼다: ${r.calls.join(" | ")}`);
+      assert(r.messages.some((m) => m.includes("holds another update's notice — left as it is")) && r.messages.some((m) => m.endsWith(`this notice is kept at ${path.join(r.home, kept[0]!)}; a daemon of this version or later picks it up and tries to send it to its requester.`)), r.messages.join("\n"));
+      assert(r.asideSeen.length === 1 && r.asideSeen.every((a) => a.complete), JSON.stringify(r.asideSeen));
+      return kept[0]!;
+    });
+    test("★실패 마커는 완성본만 공개(임시 파일 → link)", () => {
+      const r = simulate("npm-fail", { notify: true });
+      assert(r.calls.includes("LINK:.update-failed.next-*>.update-failed"), r.calls.filter((x) => x.includes("update-failed")).join(" | ") || "(no publish)");
+      assert.deepEqual(fs.readdirSync(r.home).filter((n) => n.startsWith(".update-failed")), [".update-failed"]);
+      return "link";
+    });
+    test("★이번 실패를 다 쓰기 전엔 옛 실패를 옮기지 않는다 · 공개(rename) 실패는 남은 경로와 함께 로그", () => {
+      const pre = JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "earlier" });
+      const noWrite = simulate("npm-fail", { notify: true, preFailed: pre, stagedWriteFail: true });
+      assert.equal(JSON.parse(fs.readFileSync(path.join(noWrite.home, ".update-failed"), "utf8")).attempt, "earlier", "쓰지도 못했는데 옛 실패를 옮겼다");
+      assert.equal(fs.readdirSync(noWrite.home).filter((n) => n.includes(".unsent-")).length, 0);
+      assert(noWrite.messages.some((m) => /could not write the failure notice/.test(m)), noWrite.messages.join("\n"));
+      // 공개 수단이 모두 막힘(link 불가 + Windows 비대체 이동도 실패) — 이번 원문은 임시 이름 그대로·경로·두 사유와 함께 로그 · 옆 보존 0.
+      const noPub = simulate("npm-fail", { notify: true, linkFail: true, psMove: "fail" });
+      const staged = fs.readdirSync(noPub.home).filter((n) => n.startsWith(".update-failed.next-"));
+      assert(staged.length === 1 && !fs.existsSync(path.join(noPub.home, ".update-failed")), fs.readdirSync(noPub.home).join(","));
+      assert(noPub.messages.some((m) => m.includes(`it is kept at ${path.join(noPub.home, staged[0]!)}`)), noPub.messages.join("\n"));
+      assert(!noPub.calls.some((x) => x.includes(".unsent-")), noPub.calls.join(" | "));
+      assert(noPub.messages.some((m) => /could not publish the failure notice \(EPERM: operation not permitted, link \(fixture\); the no-replace move did not report success: Access to the path is denied/.test(m)), noPub.messages.join("\n"));
+      return "order ok";
+    });
+    test("★두 생산자가 둘 다 «비어 있음» 을 본 뒤 공개해도 먼저 것을 덮지 않는다(대체하지 않는 공개) · 같은 PID 의 앞선 보존본도 그대로", () => {
+      const other = JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "concurrent" });
+      const r = simulate("npm-fail", { notify: true, racePublish: other });
+      assert(r.calls.includes("RACE"), r.calls.join(" | "));
+      // 먼저 공개된 기록이 고정 경로에 그대로(§15 G3 — 옛 판 소비자가 지금 읽고 있을 수 있다) · 이번 것은 옆 보존.
+      assert.equal(fs.readFileSync(path.join(r.home, ".update-failed"), "utf8"), other, "먼저 공개된 기록을 옮기거나 덮었다");
+      const kept = fs.readdirSync(r.home).filter((n) => n.startsWith(".update-failed.unsent-"));
+      assert(kept.length === 1 && JSON.parse(fs.readFileSync(path.join(r.home, kept[0]!), "utf8")).attempt !== "concurrent", fs.readdirSync(r.home).join(","));
+      // link 불가 + 경쟁 공개: Windows 비대체 이동이 «exists» → 이번 것은 옆 보존(비대체 이동으로) · 먼저 것은 그대로.
+      const lf = simulate("npm-fail", { notify: true, racePublish: other, linkFail: true });
+      assert.equal(fs.readFileSync(path.join(lf.home, ".update-failed"), "utf8"), other, `link 불가 경로가 먼저 공개된 기록을 바꿨다: ${fs.readdirSync(lf.home).join(",")}`);
+      const lfKept = fs.readdirSync(lf.home).filter((n) => n.startsWith(".update-failed.unsent-"));
+      assert(lfKept.length === 1 && JSON.parse(fs.readFileSync(path.join(lf.home, lfKept[0]!), "utf8")).outcome === "rolled-back", fs.readdirSync(lf.home).join(","));
+      assert.deepEqual(lf.calls.filter((x) => /^PS-MOVE/.test(x)), ["PS-MOVE:.update-failed.next-*>.update-failed", "PS-MOVE:.update-failed.next-*>.update-failed.unsent-*"], lf.calls.join(" | "));
+      // 같은 경로에 앞선 원문이 있으면 배타 생성이 실패하고 그 바이트는 그대로(옛 «PID 이름» 보존본 + 새 이름 충돌 둘 다).
+      const stale = `.update-failed.next-${process.pid}`;
+      const p = simulate("npm-fail", { notify: true, precreateStaged: "earlier-preserved", prePlaced: { [stale]: "older-pid-preserved" } } as SimOpts);
+      const pre = p.calls.find((x) => x.startsWith("PRECREATED:"))?.slice("PRECREATED:".length);
+      assert(pre !== undefined && fs.readFileSync(path.join(p.home, pre), "utf8") === "earlier-preserved", `배타 생성이 아니다: ${pre}`);
+      assert.equal(fs.readFileSync(path.join(p.home, stale), "utf8"), "older-pid-preserved");
+      assert(p.messages.some((m) => /could not write the failure notice/.test(m)), p.messages.join("\n"));
+      // 다른 생산자가 고정 경로를 먼저 채우면(경합) 그 기록이 그대로 — 재시도로 비우지 않는다.
+      const ra = simulate("npm-fail", { notify: true, raceEach: true });
+      assert.equal(JSON.parse(fs.readFileSync(path.join(ra.home, ".update-failed"), "utf8")).attempt, "race-1", fs.readdirSync(ra.home).join(","));
+      const aside = fs.readdirSync(ra.home).filter((n) => n.startsWith(".update-failed.unsent-")).map((n) => JSON.parse(fs.readFileSync(path.join(ra.home, n), "utf8")).attempt);
+      assert(aside.length === 1 && !String(aside[0]).startsWith("race-"), JSON.stringify(aside));
+      return kept[0]!;
+    });
+    // ── §12 hard link 불가 홈(FAT·일부 공유): 실패 기록을 완성본으로 공개해 배달까지 ─────────────────────────────
+    const homeNames = (h: string) => fs.readdirSync(h).filter((n) => n.startsWith(".update-failed")).sort();
+    for (const [label, scenario, fault, want] of [
+      ["재가동 미확인(늦은 기동 사고 모양)", "success", { boot: "never" }, "restart-unconfirmed"],
+      ["롤백", "npm-fail", {}, "rolled-back"],
+    ] as const) {
+      checks.push(await (async () => {
+        const name = `★link 불가 홈 — ${label}: 실패 기록이 고정 경로에 완성본으로 공개 → 실제 부팅 소비가 요청 세션에 실패 1 · 다음 부팅 0`;
+        try {
+          const r = simulate(scenario, { delegate: { channel: "fixture", threadKey: "dashboard:side", address: "original-target" }, linkFail: true, ...fault });
+          assert(r.calls.includes("LINK-FAIL"), r.calls.join(" | "));
+          // 공개는 Windows 비대체 이동 한 번(§13) — 대체하는 rename·직접 쓰기 공개·잠금·대기는 없다.
+          assert.deepEqual(r.calls.filter((x) => /^(PUBLISH-BY-|MKDIR-LOCK|LOCK-WAIT|RMDIR|PS-MOVE)/.test(x)), ["PS-MOVE:.update-failed.next-*>.update-failed"], r.calls.filter((x) => /update-failed|PUBLISH|LOCK/.test(x)).join(" | "));
+          assert.equal(r.marker?.outcome, want); assert.equal(r.marker?.notify?.threadKey, "dashboard:side");
+          assert.deepEqual(homeNames(r.home), [".update-failed"], "임시본·보존본이 남았다");
+          const b = await consumeAt(r, laterBoot(r));
+          const failure = b.deliveries.filter((d) => /Update failed/.test(d.text));
+          assert.equal(failure.length, 1, JSON.stringify(b.deliveries)); assert.equal(b.boot.delivered, true);
+          assert(failure[0]!.channel === "fixture" && failure[0]!.target === "original-target" && failure[0]!.observeThreadKey === "dashboard:side" && failure[0]!.originThreadKey === "dashboard:side", JSON.stringify(failure[0]));
+          assert.equal(b.deliveries.filter((d) => /Update complete/.test(d.text)).length, 0);
+          const again = await consumeAt(r, { ...laterBoot(r), bootId: "55555555-5555-4555-8555-555555555555" });
+          assert.equal(again.deliveries.filter((d) => /Update (complete|failed)/.test(d.text)).length, 0, "같은 실패를 다음 부팅이 또 보냈다");
+          return { name, ok: true, got: `outcome=${r.marker?.outcome} · 배달 1 · 다음 부팅 0` };
+        } catch (err) { return { name, ok: false, got: String(err) }; }
+      })());
+    }
+    test("★link 불가 홈 경합(§15 G3) — 같은 시도 기록·소비자 선점: 기존 기록은 그 자리, 이번 것은 비대체 이동으로만(고정 경로가 비면 거기, 차 있으면 옆)", () => {
+      const preSame = JSON.stringify({ stage: "earlier-stage", outcome: "rolled-back", attempt: "live-attempt" });
+      const same = simulate("npm-fail", { seedPending: { mode: "direct", state: "ready", attempt: "live-attempt", notify: { channel: "telegram", target: "live-chat" } }, preFailed: preSame, linkFail: true });
+      assert.equal(fs.readFileSync(path.join(same.home, ".update-failed"), "utf8"), preSame, "같은 시도의 앞선 기록도 바꾸지 않는다");
+      const sameKept = fs.readdirSync(same.home).filter((n) => n.startsWith(".update-failed.unsent-")).map((n) => JSON.parse(fs.readFileSync(path.join(same.home, n), "utf8")));
+      assert(sameKept.length === 1 && sameKept[0].attempt === "live-attempt" && sameKept[0].stage !== "earlier-stage", JSON.stringify(sameKept));
+      // 공개 직전 소비자가 앞선 기록을 선점(rename) — 고정 경로가 비었으니 이번 것은 고정 경로, 옆 보존 0.
+      const claimed = simulate("npm-fail", { notify: true, preFailed: JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "earlier" }), claimBeforeLink: true, linkFail: true });
+      assert.equal(JSON.parse(fs.readFileSync(path.join(claimed.home, ".update-failed.claim-sim"), "utf8")).attempt, "earlier");
+      assert.notEqual(JSON.parse(fs.readFileSync(path.join(claimed.home, ".update-failed"), "utf8")).attempt, "earlier");
+      assert.equal(fs.readdirSync(claimed.home).filter((n) => n.includes(".unsent-") || n.includes(".next-")).length, 0, fs.readdirSync(claimed.home).join(","));
+      for (const r of [same, claimed]) assert(r.calls.filter((x) => /^(PUBLISH-BY-|MKDIR-LOCK|LOCK-WAIT|RMDIR|LSTAT-FIXED|MV:\.update-failed>)/.test(x)).length === 0, r.calls.join(" | "));
+      return "same→aside(ours) · claim→publish · 잠금·점유 확인·대체 rename·옮기기 0";
+    });
+    test("★공개에 잠금이 없다(§13) — 남은 v4 잠금 디렉터리는 보지도 지우지도 않는다(link 되는 홈·안 되는 홈) · 대기 0", () => {
+      for (const linkFail of [false, true]) {
+        const r = simulate("npm-fail", { notify: true, lockHeld: true, linkFail });
+        assert(r.marker?.outcome === "rolled-back", `linkFail=${linkFail}: ${r.calls.join(" | ")}`);
+        assert(fs.existsSync(path.join(r.home, ".update-failed.lock")), "남의 잠금 디렉터리를 지웠다");
+        assert(!r.calls.some((x) => /^(MKDIR-LOCK|LOCK-WAIT|RMDIR|PUBLISH-BY-|LSTAT-FIXED)/.test(x)), `linkFail=${linkFail}: ${r.calls.join(" | ")}`);
+        assert.deepEqual(r.calls.filter((x) => /^(LINK:|PS-MOVE)/.test(x)), linkFail ? ["PS-MOVE:.update-failed.next-*>.update-failed"] : ["LINK:.update-failed.next-*>.update-failed"], r.calls.join(" | "));
+      }
+      return "잠금 무시 · link 홈=link · 불가 홈=비대체 이동";
+    });
+    test("★옆 보존 자리도 대체하지 않는다 — 계산한 .unsent-* 이름이 이미 있으면 그 원문은 그대로, 다른 이름으로(link 홈·Windows link 불가·POSIX 디렉터리 기록)", () => {
+      const pre = JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "earlier" });
+      for (const [label, o] of [["link", {}], ["win link 불가", { linkFail: true }], ["darwin 디렉터리", { linkFail: true, platform: "darwin" as const }]] as const) {
+        const r = simulate("npm-fail", { notify: true, preFailed: pre, precreateUnsent: "first", ...o } as SimOpts);
+        const first = r.calls.find((x) => x.startsWith("PRECREATED-UNSENT:"))?.slice("PRECREATED-UNSENT:".length);
+        assert(first !== undefined, `${label}: 충돌 fixture 가 안 걸렸다 ${r.calls.join(" | ")}`);
+        const firstPath = path.join(r.home, first);
+        const firstRaw = fs.statSync(firstPath).isDirectory() ? fs.readFileSync(path.join(firstPath, "record.json"), "utf8") : fs.readFileSync(firstPath, "utf8");
+        assert.equal(firstRaw, `preserved-${first}`, `${label}: 옆 보존 자리를 대체했다`);
+        assert.equal(fs.readFileSync(path.join(r.home, ".update-failed"), "utf8"), pre, `${label}: 앞선 고정 기록을 바꿨다`);
+        const ours = fs.readdirSync(r.home).filter((n) => n.startsWith(".update-failed.unsent-") && n !== first);
+        assert.equal(ours.length, 1, `${label}: ${homeNames(r.home).join(",")}`);
+        const oursPath = path.join(r.home, ours[0]!);
+        const oursRec = JSON.parse(fs.statSync(oursPath).isDirectory() ? fs.readFileSync(path.join(oursPath, "record.json"), "utf8") : fs.readFileSync(oursPath, "utf8"));
+        assert(oursRec.outcome === "rolled-back" && oursRec.attempt !== "earlier", `${label}: ${JSON.stringify(oursRec)}`);
+      }
+      // 이름 후보 셋이 모두 차 있다 — 그 셋은 그대로, 이번 것은 임시본 그대로(쓸기 대상 아님) · 경로 로그.
+      const all = simulate("npm-fail", { notify: true, preFailed: pre, precreateUnsent: "all" });
+      for (const n of fs.readdirSync(all.home).filter((x) => x.startsWith(".update-failed.unsent-"))) assert.equal(fs.readFileSync(path.join(all.home, n), "utf8"), `preserved-${n}`, n);
+      const staged = fs.readdirSync(all.home).filter((n) => n.startsWith(".update-failed.next-"));
+      assert.equal(staged.length, 1, homeNames(all.home).join(","));
+      assert(all.messages.some((m) => m.includes("could not keep the failure notice aside") && m.endsWith(`it is kept at ${path.join(all.home, staged[0]!)} (not sent).`)), all.messages.join("\n"));
+      return "occupied aside names untouched";
+    });
+    // ── §13 v4 의 남은 두 반례: 혼합 link 경합 · 강제 종료 잔류물 ─────────────────────────────────────────
+    const recordFiles = (h: string) => homeNames(h).filter((n) => fs.statSync(path.join(h, n)).isFile()).map((n) => ({ n, raw: fs.readFileSync(path.join(h, n), "utf8") }));
+    const side = { channel: "fixture", threadKey: "dashboard:side", address: "original-target" };
+    const nextBoot = (r: ReturnType<typeof simulate>) => ({ ...laterBoot(r), bootId: "55555555-5555-4555-8555-555555555555" });
+    checks.push(await (async () => {
+      const name = "★혼합 link 경합(§13) — link 가 EEXIST 외로 실패한 생산자의 대체 공개 직전에 다른 생산자의 link 가 성공해도 그 기록을 덮지 않는다 · 두 기록이 각자 좌표로 1회(§14) · 다음 부팅 0";
+      try {
+        const other = JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "linked-other", notify: { channel: "fixture", target: "other-target" } });
+        const r = simulate("npm-fail", { delegate: side, linkFail: true, otherPublishesBeforeFallback: other });
+        assert(r.calls.includes("OTHER-LINKED"), r.calls.filter((x) => /update-failed|OTHER|PUBLISH/.test(x)).join(" | "));
+        const now = recordFiles(r.home);
+        assert.equal(now.filter((f) => f.raw === other).length, 1, `다른 생산자의 link 공개를 덮었다: ${now.map((f) => f.n).join(",")}`);
+        assert(now.some((f) => f.n === ".update-failed" && f.raw === other), `먼저 놓인 기록은 고정 경로에 그대로(§15 G3): ${now.map((f) => f.n).join(",")}`);
+        assert(r.marker === undefined || r.marker.attempt === "linked-other", "고정 경로는 다른 생산자 기록");
+        const oursAside = now.filter((f) => f.n.startsWith(".update-failed.unsent-")).map((f) => JSON.parse(f.raw));
+        assert(oursAside.length === 1 && oursAside[0].outcome === "rolled-back" && oursAside[0].notify?.threadKey === "dashboard:side", JSON.stringify(oursAside));
+        const b = await consumeAt(r, laterBoot(r));
+        const failure = b.deliveries.filter((d) => /Update failed/.test(d.text));
+        const ours = failure.filter((d) => d.target === "original-target"), theirs = failure.filter((d) => d.target === "other-target");
+        assert(failure.length === 2 && ours.length === 1 && ours[0]!.observeThreadKey === "dashboard:side" && theirs.length === 1 && theirs[0]!.observeThreadKey === "dashboard:default", JSON.stringify(b.deliveries));
+        assert.equal((await consumeAt(r, nextBoot(r))).deliveries.filter((d) => /Update (complete|failed)/.test(d.text)).length, 0, "다음 부팅이 또 보냈다");
+        assert.deepEqual(homeNames(r.home), [], "소비 뒤 기록이 남았다");
+        return { name, ok: true, got: "덮음 0 · 두 기록 각자 1 · 다음 부팅 0" };
+      } catch (err) { return { name, ok: false, got: String(err) }; }
+    })());
+    for (const [label, leftover] of [
+      ["v4 공개 잠금 + 임시본(잠금을 쥔 채 강제 종료)", { lockHeld: true, prePlaced: { ".update-failed.next-killed": JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "killed" }) } }],
+      ["임시본만(공개 전에 강제 종료)", { prePlaced: { ".update-failed.next-killed": JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "killed" }) } }],
+    ] as const) {
+      checks.push(await (async () => {
+        const name = `★강제 종료 잔류물(§13) — ${label}: link 불가 홈의 다음 생산자 실패가 요청 세션에 1회 배달 · 다음 부팅 0 · 잔류 원문 보존`;
+        try {
+          const r = simulate("npm-fail", { delegate: side, linkFail: true, ...leftover } as SimOpts);
+          const b = await consumeAt(r, laterBoot(r));
+          const failure = b.deliveries.filter((d) => /Update failed/.test(d.text));
+          assert(failure.length === 1 && failure[0]!.target === "original-target" && failure[0]!.observeThreadKey === "dashboard:side" && b.boot.delivered === true,
+            `다음 통지가 배달되지 않았다: ${JSON.stringify(b.deliveries)} · ${homeNames(r.home).join(",")} · ${r.messages.filter((m) => /failure notice/.test(m)).join(" / ")}`);
+          assert.equal((await consumeAt(r, nextBoot(r))).deliveries.filter((d) => /Update (complete|failed)/.test(d.text)).length, 0, "다음 부팅이 또 보냈다");
+          const killed = (leftover as { prePlaced?: Record<string, string> }).prePlaced?.[".update-failed.next-killed"];
+          if (killed !== undefined) assert.equal(recordFiles(r.home).filter((f) => f.raw === killed).length, 1, "잔류 원문을 지웠다");
+          return { name, ok: true, got: `배달 1 · 다음 부팅 0 · 남은 이름 ${homeNames(r.home).join(",") || "-"}` };
+        } catch (err) { return { name, ok: false, got: String(err) }; }
+      })());
+    }
+    // ── §14 승인 없이 줄었던 배달 복원: 두 시도 각각 1 · POSIX link 불가 단일 1 ─────────────────────────────────
+    for (const linkFail of [false, true]) {
+      checks.push(await (async () => {
+        const name = `★두 시도 각각(§14) — Windows 위임 두 요청의 실패가 같은 홈에 겹쳐도 다음 부팅이 각 요청 좌표로 1씩 · 다음 부팅 0 (${linkFail ? "link 불가 홈" : "link 홈"})`;
+        try {
+          const sideA = { channel: "fixture", threadKey: "dashboard:side-a", address: "target-a" }, sideB = { channel: "fixture", threadKey: "dashboard:side-b", address: "target-b" };
+          const a = simulate("success", { delegate: sideA, boot: "never", linkFail });
+          assert.equal(a.marker?.outcome, "restart-unconfirmed");
+          const b = simulate("npm-fail", { delegate: sideB, linkFail, reuseHome: a.home });
+          // A 는 고정 경로에 그대로(§15 G3) · B 는 옆 보존(완성본).
+          assert.equal(b.marker?.attempt, a.marker?.attempt, `A 의 고정 기록이 바뀌었다: ${homeNames(a.home).join(",")}`);
+          const aside = homeNames(a.home).filter((n) => n.startsWith(".update-failed.unsent-"));
+          const bRec = aside.length === 1 ? JSON.parse(fs.readFileSync(path.join(a.home, aside[0]!), "utf8")) : null;
+          assert(bRec?.outcome === "rolled-back" && bRec?.notify?.threadKey === "dashboard:side-b", homeNames(a.home).join(","));
+          const boot = await consumeAt(b, laterBoot(b));
+          const failure = boot.deliveries.filter((d) => /Update failed/.test(d.text));
+          const toA = failure.filter((d) => d.target === "target-a"), toB = failure.filter((d) => d.target === "target-b");
+          assert(failure.length === 2 && toA.length === 1 && toB.length === 1, `원 요청별 배달: A=${toA.length} B=${toB.length} · ${JSON.stringify(boot.deliveries)}`);
+          assert(toA[0]!.observeThreadKey === "dashboard:side-a" && toA[0]!.originThreadKey === "dashboard:side-a" && toB[0]!.observeThreadKey === "dashboard:side-b" && toB[0]!.originThreadKey === "dashboard:side-b", JSON.stringify(failure));
+          assert(/restart could not be confirmed|No rollback was attempted/.test(toA[0]!.text) && !/No rollback was attempted/.test(toB[0]!.text), `${toA[0]!.text} / ${toB[0]!.text}`);
+          assert.equal(boot.success.length, 0); assert.equal(boot.restart.length, 0);
+          assert.deepEqual(homeNames(a.home), [], "소비 뒤 기록이 남았다");
+          const again = await consumeAt(b, nextBoot(b));
+          assert.equal(again.deliveries.filter((d) => /Update (complete|failed)/.test(d.text)).length, 0, "다음 부팅이 또 보냈다");
+          return { name, ok: true, got: `A=${toA.length} B=${toB.length} · 다음 부팅 0` };
+        } catch (err) { return { name, ok: false, got: String(err) }; }
+      })());
+    }
+    checks.push(await (async () => {
+      const name = "★쓸기 이름엔 완성본만(§15 G3, D1 #8) — 옆 보존 이름이 나타나는 순간마다 완성된 기록 · 빈 예약 파일 0 → 다음 부팅이 두 요청 각자 1 · 그다음 0";
+      try {
+        const other = JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "earlier", notify: { channel: "fixture", target: "other-target" } });
+        for (const o of [{}, { linkFail: true }, { linkFail: true, platform: "darwin" as const }]) {
+          const r = simulate("npm-fail", { delegate: side, preFailed: other, ...o } as SimOpts);
+          assert(r.asideSeen.length === 1 && r.asideSeen.every((a) => a.complete), `${JSON.stringify(o)}: ${JSON.stringify(r.asideSeen)} · ${r.calls.filter((x) => /unsent|PS-|LINK/.test(x)).join(" | ")}`);
+          assert(!r.calls.some((x) => /^PUBLISH-BY-WRITE/.test(x)), r.calls.join(" | "));
+          const b = await consumeAt(r, laterBoot(r));
+          const failure = b.deliveries.filter((d) => /Update failed/.test(d.text));
+          const ours = failure.filter((d) => d.target === "original-target"), theirs = failure.filter((d) => d.target === "other-target");
+          assert(failure.length === 2 && ours.length === 1 && ours[0]!.observeThreadKey === "dashboard:side" && theirs.length === 1, `${JSON.stringify(o)}: ${JSON.stringify(b.deliveries)}`);
+          assert.equal((await consumeAt(r, nextBoot(r))).deliveries.filter((d) => /Update (complete|failed)/.test(d.text)).length, 0, "다음 부팅이 또 보냈다");
+          assert.deepEqual(homeNames(r.home), [], `소비 뒤 남음: ${homeNames(r.home).join(",")}`);
+        }
+        return { name, ok: true, got: "link·Windows 비대체 이동·POSIX 디렉터리 — 완성본만 · 각자 1 · 다음 0" };
+      } catch (err) { return { name, ok: false, got: String(err) }; }
+    })());
+    for (const platform of ["darwin", "linux"] as const) for (const [label, scenario, fault, want] of [
+      ["재가동 미확인", "success", { boot: "never" }, "restart-unconfirmed"],
+      ["롤백", "npm-fail", {}, "rolled-back"],
+    ] as const) {
+      // §16 b — symlink 되는 볼륨: 고정 슬롯에 완성 임시본을 가리키는 상대 링크로(대체 0) → 현 판 부팅 1 · 임시본까지 치움 · 다음 0
+      checks.push(await (async () => {
+        const name = `★POSIX link 불가 단일(§16 b) ${platform} ${label} — symlink 되면 고정 슬롯에 완성본 링크로 공개(대체·잠금·이동 0) → 현 판 부팅이 요청 좌표로 1 · 링크 대상 임시본까지 치움 · 다음 부팅 0`;
+        try {
+          const live = { mode: "direct", state: "ready", attempt: "live-attempt", notify: { channel: "telegram", target: "live-chat", threadKey: "dashboard:side" } };
+          const r = simulate(scenario, { platform, linkFail: true, seedPending: live, ...fault });
+          assert(r.calls.includes("LINK-FAIL") && r.calls.some((x) => x === "SYMLINK:.update-failed.next-*>.update-failed") && !r.calls.some((x) => /^(PUBLISH-BY-|PS-MOVE|MKDIR-LOCK)/.test(x)), r.calls.filter((x) => /update-failed|PUBLISH|LINK|PS-/.test(x)).join(" | "));
+          const fixed = path.join(r.home, ".update-failed");
+          const names = homeNames(r.home);
+          assert(fs.lstatSync(fixed).isSymbolicLink() && /^\.update-failed\.next-/.test(fs.readlinkSync(fixed)) && names.length === 2 && names.includes(fs.readlinkSync(fixed)), names.join(","));
+          assert(r.marker?.outcome === want && r.marker?.attempt === "live-attempt" && r.marker?.notify?.target === "live-chat", JSON.stringify(r.marker));
+          const b = await consumeAt(r, laterBoot(r));
+          const failure = b.deliveries.filter((d) => /Update failed/.test(d.text));
+          assert(failure.length === 1 && b.boot.consumed === true && failure[0]!.channel === "telegram" && failure[0]!.target === "live-chat" && failure[0]!.observeThreadKey === "dashboard:side", JSON.stringify(b.deliveries));
+          assert.deepEqual(homeNames(r.home), [], `소비 뒤 남음(링크 대상 임시본 포함): ${homeNames(r.home).join(",")}`);
+          assert.equal(b.success.length, 0);
+          assert.equal((await consumeAt(r, nextBoot(r))).deliveries.filter((d) => /Update (complete|failed)/.test(d.text)).length, 0, "다음 부팅이 또 보냈다");
+          return { name, ok: true, got: `outcome=${want} · 링크 공개 · 배달 1 · 다음 부팅 0 · 잔류 0` };
+        } catch (err) { return { name, ok: false, got: String(err) }; }
+      })());
+      checks.push(await (async () => {
+        const name = `★POSIX link·symlink 모두 불가 단일(§15 G3) ${platform} ${label} — 고정 경로는 대체하지 않는다: 직접 모드 요청을 이은 CLI 의 실패가 디렉터리 기록(옆 보존)으로 → 요청 좌표로 1 · 다음 부팅 0`;
+        try {
+          const live = { mode: "direct", state: "ready", attempt: "live-attempt", notify: { channel: "telegram", target: "live-chat", threadKey: "dashboard:side" } };
+          const r = simulate(scenario, { platform, linkFail: true, symlinkFail: true, seedPending: live, ...fault });
+          assert(r.calls.includes("LINK-FAIL") && r.calls.includes("SYMLINK-FAIL") && !r.calls.some((x) => /^(PUBLISH-BY-|PS-MOVE)/.test(x)), r.calls.filter((x) => /update-failed|PUBLISH|LINK|PS-/.test(x)).join(" | "));
+          const names = homeNames(r.home);
+          assert(names.length === 1 && names[0]!.startsWith(".update-failed.unsent-") && fs.statSync(path.join(r.home, names[0]!)).isDirectory(), names.join(","));
+          r.marker = JSON.parse(fs.readFileSync(path.join(r.home, names[0]!, "record.json"), "utf8"));
+          assert(r.marker?.outcome === want && r.marker?.attempt === "live-attempt" && r.marker?.notify?.target === "live-chat" && r.marker?.notify?.threadKey === "dashboard:side", JSON.stringify(r.marker));
+          const b = await consumeAt(r, laterBoot(r));
+          const failure = b.deliveries.filter((d) => /Update failed/.test(d.text));
+          // 고정 슬롯은 비어 있다 — 옆 보존 쓸기가 그 좌표로 한 번(§14·§15).
+          assert(failure.length === 1 && b.boot.consumed === false && failure[0]!.channel === "telegram" && failure[0]!.target === "live-chat" && failure[0]!.observeThreadKey === "dashboard:side", JSON.stringify(b.deliveries));
+          assert.deepEqual(homeNames(r.home), [], `소비 뒤 남음: ${homeNames(r.home).join(",")}`);
+          assert.equal(b.success.length, 0);
+          assert.equal((await consumeAt(r, nextBoot(r))).deliveries.filter((d) => /Update (complete|failed)/.test(d.text)).length, 0, "다음 부팅이 또 보냈다");
+          return { name, ok: true, got: `outcome=${want} · 배달 1 · 다음 부팅 0` };
+        } catch (err) { return { name, ok: false, got: String(err) }; }
+      })());
+    }
+    test("★§16 거절 갈래(`runUpdate` gate.refused.record) 반환 = 놓인 곳 → 놓였는지 모르면 후보 → 쓸기 대상에 없음이 확실할 때만 null — 거절 보고의 record", () => {
+      const refusedGate = { gate: { refused: { reason: "fixture refusal", record: true } }, delegate: side } as SimOpts;
+      const asideOf = (h: string) => homeNames(h).filter((n) => n.startsWith(".update-failed.unsent-"));
+      // 정상(link) — 놓인 옆 보존 경로
+      const ok = simulate("success", { ...refusedGate });
+      assert(typeof ok.returned === "string" && asideOf(ok.home).length === 1 && ok.returned === path.join(ok.home, asideOf(ok.home)[0]!), `${String(ok.returned)} | ${homeNames(ok.home).join(",")}`);
+      // Windows link 불가 + 비대체 이동 응답 유실 + 임시본 확인 실패 — 실제로는 옮겨졌다: 후보(그 이름)를 돌려준다
+      const unk = simulate("success", { ...refusedGate, linkFail: true, psMove: "lost-reply", stagedStatFail: true });
+      assert(typeof unk.returned === "string" && asideOf(unk.home).length === 1 && unk.returned === path.join(unk.home, asideOf(unk.home)[0]!), `${String(unk.returned)} | ${homeNames(unk.home).join(",")}`);
+      // 이동 실패(임시본 확인 성공 — 임시본 그대로) · 임시본 쓰기 실패 — 쓸기 대상에 없음이 확실: null
+      const fail = simulate("success", { ...refusedGate, linkFail: true, psMove: "fail" });
+      assert(fail.returned === null && asideOf(fail.home).length === 0 && homeNames(fail.home).some((n) => n.startsWith(".update-failed.next-")), `${String(fail.returned)} | ${homeNames(fail.home).join(",")}`);
+      const nowrite = simulate("success", { ...refusedGate, stagedWriteFail: true });
+      assert(nowrite.returned === null && homeNames(nowrite.home).length === 0, `${String(nowrite.returned)} | ${homeNames(nowrite.home).join(",")}`);
+      // 거절 갈래는 변경 전에 끝난다 — git·정지 0
+      assert(![ok, unk, fail, nowrite].some((r) => r.calls.some((x) => /^git |^STOP|^npm /.test(x))), ok.calls.join(" | "));
+      return "놓임=경로 · 불명=후보 · 실패=null";
+    });
+    test("★Windows 비대체 이동(§13) — 응답만 잃어도 옮겨졌으면 공개로 본다 · POSIX link 불가 홈은 고정 경로 대체 rename(§14 — 이동·잠금·직접 쓰기 0) · 스크립트는 대체하지 않는 File.Move", () => {
+      const lost = simulate("npm-fail", { notify: true, linkFail: true, psMove: "lost-reply" });
+      assert(lost.marker?.outcome === "rolled-back" && homeNames(lost.home).join(",") === ".update-failed" && !lost.messages.some((m) => /could not (publish|confirm)|failure notice/.test(m)), `${homeNames(lost.home).join(",")} · ${lost.messages.filter((m) => /failure notice/.test(m)).join(" / ")}`);
+      for (const platform of ["darwin", "linux"] as const) {
+        const px = simulate("npm-fail", { notify: true, linkFail: true, symlinkFail: true, platform });
+        const names = homeNames(px.home);
+        assert(names.length === 1 && names[0]!.startsWith(".update-failed.unsent-") && fs.statSync(path.join(px.home, names[0]!)).isDirectory() && px.marker === undefined, `${platform}: ${names.join(",")} | ${px.calls.join(" | ")}`);
+        assert(!px.calls.some((x) => /^(PS-MOVE|PUBLISH-BY-|MKDIR-LOCK|LOCK-WAIT|LSTAT-FIXED)/.test(x)), `${platform}: ${px.calls.join(" | ")}`);
+        assert(px.messages.some((m) => /can neither hard-link nor symlink — the notice cannot be put in the shared slot without replacing/.test(m)), px.messages.join("\n"));
+        // §16 b — 링크가 되면 고정 슬롯에 링크(대체·이동·잠금·직접 쓰기 0) · 차 있으면(EEXIST — 다른 생산자가 먼저) 그 원문 그대로·이번 것은 디렉터리 옆 보존.
+        const sl = simulate("npm-fail", { notify: true, linkFail: true, platform });
+        assert(fs.lstatSync(path.join(sl.home, ".update-failed")).isSymbolicLink() && sl.marker?.outcome === "rolled-back" && !sl.calls.some((x) => /^(PS-MOVE|PUBLISH-BY-|MKDIR-LOCK|LOCK-WAIT|LSTAT-FIXED)/.test(x)) && !sl.messages.some((m) => /hard-link|symlink/.test(m)), `${platform}: ${homeNames(sl.home).join(",")} | ${sl.calls.join(" | ")}`);
+        const otherRaw = JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "racer" });
+        const rc = simulate("npm-fail", { notify: true, linkFail: true, platform, racePublish: otherRaw });
+        const rcAside = homeNames(rc.home).filter((n) => n.startsWith(".update-failed.unsent-"));
+        assert(rc.calls.includes("RACE") && !fs.lstatSync(path.join(rc.home, ".update-failed")).isSymbolicLink() && fs.readFileSync(path.join(rc.home, ".update-failed"), "utf8") === otherRaw && rcAside.length === 1 && fs.statSync(path.join(rc.home, rcAside[0]!)).isDirectory() &&
+          JSON.parse(fs.readFileSync(path.join(rc.home, rcAside[0]!, "record.json"), "utf8")).outcome === "rolled-back" && !homeNames(rc.home).some((n) => n.includes(".next-")), `${platform}: ${homeNames(rc.home).join(",")} | ${rc.calls.join(" | ")}`);
+        // 디렉터리 기록마저 못 옮기면 임시 디렉터리 그대로(쓸기 대상 아님) — 경로 로그.
+        const stuck = simulate("npm-fail", { notify: true, linkFail: true, symlinkFail: true, platform, renameFail: (a: string, b: string) => a.endsWith(".d") && b.includes(".update-failed.unsent-") } as SimOpts);
+        const sn = homeNames(stuck.home);
+        assert(sn.length === 1 && sn[0]!.startsWith(".update-failed.next-") && sn[0]!.endsWith(".d"), `${platform}: ${sn.join(",")}`);
+        assert(stuck.messages.some((m) => m.includes("could not keep the failure notice aside") && m.endsWith(`it is kept at ${path.join(stuck.home, sn[0]!)} (not sent).`)), stuck.messages.join("\n"));
+      }
+      // 이동 응답 없음 + 임시본 확인 실패(EACCES) — 공개됐는지 모른다: 성공으로도 «보존·미발송» 으로도 말하지 않는다(옆 보존 0).
+      for (const psMove of ["fail", "lost-reply"] as const) {
+        const un = simulate("npm-fail", { notify: true, linkFail: true, psMove, stagedStatFail: true });
+        const stagedPath = un.calls.find((x) => x.startsWith("LSTAT-STAGED-FAIL:"))?.slice("LSTAT-STAGED-FAIL:".length);
+        assert(stagedPath !== undefined && !un.calls.some((x) => x.includes(".unsent-")), `${psMove}: ${un.calls.join(" | ")}`);
+        // 두 경로를 정확히 — 고정 경로는 임시본 경로의 접두사라 포함 검사로는 한쪽만 찍어도 통과한다(I2).
+        assert(un.messages.some((m) => m.startsWith("update: could not confirm whether the failure notice was published (") && m.includes("the staged notice could not be checked (EACCES")
+          && m.endsWith(`check ${path.join(un.home, ".update-failed")} and ${stagedPath}.`)) && !un.messages.some((m) => /\(not sent\)/.test(m)), `${psMove}: ${un.messages.join("\n")}`);
+      }
+      // 경로는 데이터(UTF-8 base64)로 — 굽은 작은따옴표·작은따옴표·비ASCII 가 있는 홈도 그 경로 그대로 넘어간다.
+      const odd = ["C:\\Users\\O’Brien‘s it's 홈\\.update-failed.next-1", "C:\\Users\\O’Brien‘s it's 홈\\.update-failed"];
+      const script = d.winMoveNoReplaceScript(odd[0]!, odd[1]!);
+      const enc = [...script.matchAll(/FromBase64String\('([A-Za-z0-9+/=]+)'\)/g)].map((m) => Buffer.from(m[1]!, "base64").toString("utf8"));
+      assert.deepEqual(enc, odd, script);
+      assert(/\[System\.IO\.File\]::Move\(\[Text\.Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String\('[^']+'\)\), \[Text\.Encoding\]::UTF8\.GetString\(\[Convert\]::FromBase64String\('[^']+'\)\)\); 'MOVED'/.test(script), script);
+      assert(!/[’‘]|it's|-Force|Move-Item|\$true/.test(script), script);
+      assert(/-band 0xFFFF\) -in 80, 183\) \{ 'EXISTS' \} else \{ throw/.test(script) && script.includes("'MOVED'") && script.includes("$ErrorActionPreference = 'Stop'"), script);
+      // 결과 읽기: 정상 종료의 마지막 줄만 — 오류·시한·엉뚱한 출력은 사유 문자열(호출자가 임시본 존재로 가른다).
+      const rd = (status: number | null, stdout: string, stderr = "") => d.winMoveNoReplaceResult({ status, stdout, stderr });
+      assert.equal(rd(0, "MOVED"), "moved"); assert.equal(rd(0, "noise\r\nEXISTS\r\n".trim()), "exists"); assert.equal(rd(0, "line\nMOVED"), "moved");
+      for (const [st, out, err] of [[0, "", ""], [0, "MOVED?", ""], [1, "MOVED", "boom"], [null, "", "PowerShell did not respond — gave up after 30s"], [1, "", "#< CLIXML\r\n<Objs><S S=\"Error\">Access to the path is denied._x000D__x000A_</S></Objs>"]] as const) {
+        const v = rd(st, out, err);
+        assert(v !== "moved" && v !== "exists" && v.includes(`(exit ${st ?? "none"})`), `${JSON.stringify([st, out, err])} → ${v}`);
+      }
+      assert(rd(1, "", "#< CLIXML\r\n<Objs><S S=\"Error\">Access to the path is denied._x000D__x000A_</S></Objs>").startsWith("Access to the path is denied."));
+      return "lost-reply→공개 · POSIX→보존 · 스크립트 비대체 · 결과 읽기";
+    });
+    test("★좌표 없는 새 위임은 남은 옛 pending(실패·확정)의 좌표·시도를 잇지 않는다 — 살아 있는 직접 모드 ready 만 잇는다", () => {
+      for (const [mode, state] of [["cli", "failed"], ["cli", "confirmed"], ["cli", "pending"], ["direct", "failed"]] as const) {
+        const r = simulate("success", { seedPending: { mode, state, attempt: "old-attempt", notify: { channel: "telegram", target: "old-chat", threadKey: "dashboard:old" } }, boot: "never" });
+        // 새 기록이 **있고** 새 시도 id 를 가진 뒤에야 «상속 안 함» 이 뜻을 갖는다(기록이 없어도 아래 두 조건은 참이다 — I4).
+        assert(r.completion !== null && typeof r.completion?.attempt === "string" && r.completion.attempt.length > 0 && r.completion.expected?.revision === "2".repeat(40), `${mode}/${state}: ${JSON.stringify(r.completion)}`);
+        assert(r.completion?.notify === undefined && r.completion?.attempt !== "old-attempt", `${mode}/${state}: ${JSON.stringify(r.completion)}`);
+      }
+      const live = simulate("success", { seedPending: { mode: "direct", state: "ready", attempt: "live-attempt", notify: { channel: "telegram", target: "live-chat" } }, boot: "late" });
+      assert(live.completion?.attempt === "live-attempt" && live.completion?.notify?.target === "live-chat", JSON.stringify(live.completion));
+      return "ok";
+    });
+    test("★공개 직전 소비자가 앞선 기록을 선점했으면 이번 실패는 고정 경로 — 옆 보존 없음(§15 G3)", () => {
+      const r = simulate("npm-fail", { notify: true, preFailed: JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "earlier" }), claimBeforeLink: true });
+      assert(r.calls.includes("CLAIMED-BY-CONSUMER"), r.calls.join(" | "));
+      assert.equal(JSON.parse(fs.readFileSync(path.join(r.home, ".update-failed.claim-sim"), "utf8")).attempt, "earlier");
+      const fixed = JSON.parse(fs.readFileSync(path.join(r.home, ".update-failed"), "utf8"));
+      assert(fixed.attempt !== "earlier" && fixed.outcome === "rolled-back", JSON.stringify(fixed));
+      assert.equal(fs.readdirSync(r.home).filter((n) => n.includes(".unsent-")).length, 0, fs.readdirSync(r.home).join(","));
+      return "claim=A · fixed=B · unsent 0";
+    });
+    // ── §15 — 실행권을 못 얻은 실행은 변경 전에 끝난다 · 옛 판 부모 세션 키 · 정지·재시작 직전 확인 · 부팅 결과 처리 끝 ─────────────
+    test("★§15 거절된 실행(gate.refused): git·정지·재시작·pending 잇기·옛 표식 격리 0 · record 면 요청 좌표로 not-started 옆 보존 1, 아니면 0", () => {
+      const live = { mode: "direct", state: "ready", attempt: "live-attempt", notify: { channel: "telegram", target: "live-chat" } };
+      // 실행 빌드(표시값)가 checkout 과 다른 경우 — 기록의 «checkout» 과 `from` 엔 checkout(앵커)만 남는다(I3 #4)
+      const rec = simulate("success", { delegate: side, reportFrom: "0abcdef9", gate: { refused: { reason: "another update is already running in this home", record: true } }, seedPending: live, legacyComplete: false } as SimOpts);
+      assert.deepEqual(rec.calls.filter((x) => /^(git|npm|STOP|START|RESTART)/.test(x)), [], rec.calls.join(" | "));
+      assert.deepEqual(rec.completion, live, "pending 을 잇거나 바꿨다");
+      const aside = homeNames(rec.home).filter((n) => n.startsWith(".update-failed.unsent-"));
+      assert(aside.length === 1 && !fs.existsSync(path.join(rec.home, ".update-failed")), homeNames(rec.home).join(","));
+      const a = JSON.parse(fs.readFileSync(path.join(rec.home, aside[0]!), "utf8"));
+      assert(a.outcome === "not-started" && a.stage === "start" && a.notify?.target === "original-target" && a.notify?.threadKey === "dashboard:side" && /did not start the install: another update is already running/.test(a.detail) && /checkout was at 1111111 before it fetched/.test(a.detail) && !/0abcdef/.test(a.detail) && a.from === "1111111", JSON.stringify(a));
+      assert.equal(rec.exitCode, 1);
+      const quiet = simulate("success", { delegate: side, gate: { refused: { reason: "x", record: false } } } as SimOpts);
+      assert(homeNames(quiet.home).length === 0 && quiet.calls.filter((x) => /^(git|npm|STOP)/.test(x)).length === 0, `${homeNames(quiet.home).join(",")} ${quiet.calls.join(" | ")}`);
+      // 진단 로그를 못 열어도 거절 기록은 남는다(I1 #2) — 로그·git 에 기대지 않는다.
+      const noLog = simulate("success", { delegate: side, logOpenFail: true, gate: { refused: { reason: "another update is already running in this home", record: true } } } as SimOpts);
+      const noLogAside = homeNames(noLog.home).filter((n) => n.startsWith(".update-failed.unsent-"));
+      const noLogRec = noLogAside.length === 1 ? JSON.parse(fs.readFileSync(path.join(noLog.home, noLogAside[0]!), "utf8")) : null;
+      assert(noLogRec?.outcome === "not-started" && noLogRec?.logPath === null && !updateFailedText(noLogRec).includes(translate("srv.update.logLine", { path: "" }).trim().replace(/\s*$/, "")) && noLog.calls.filter((x) => /^git/.test(x)).length === 0, `${homeNames(noLog.home).join(",")} ${JSON.stringify(noLogRec)} ${noLog.calls.join(" | ")}`);
+      const legacy = simulate("success", { legacyComplete: true, gate: { refused: { reason: "x", record: false } } } as SimOpts);
+      assert(fs.existsSync(path.join(legacy.home, ".update-complete")) && !fs.existsSync(path.join(legacy.home, ".update-pending")), "옛 표식을 격리했다");
+      return "refused → 변경 0";
+    });
+    test("★§15 옛 판 부모의 자식(gate.dropThread): 세션 키는 버린다 — 채널·대상은 env 그대로", () => {
+      const r = simulate("npm-fail", { delegate: side, gate: { dropThread: true } } as SimOpts);
+      assert(r.marker?.notify?.target === "original-target" && r.marker?.notify?.threadKey === undefined, JSON.stringify(r.marker?.notify));
+      const keep = simulate("npm-fail", { delegate: side, gate: {} } as SimOpts);
+      assert.equal(keep.marker?.notify?.threadKey, "dashboard:side");
+      return "dropThread → threadKey 없음";
+    });
+    test("★§15 정지 직전 확인: 데몬이 결과를 처리 중이면 끝날 때까지 기다린 뒤 정지 · 끝까지면 정지 0·표식 0·코드 되돌림", () => {
+      const ok = simulate("success", { notify: true, healthPendingWaits: 2 });
+      const i = ok.calls.indexOf("STOP"), waits = ok.calls.slice(0, Math.max(i, 0)).filter((x) => x === "SETTLE-WAIT").length;
+      assert(i > 0 && waits === 2 && ok.exitCode === 0, ok.calls.join(" | "));
+      const stuck = simulate("success", { notify: true, healthPendingWaits: Infinity });
+      assert(!stuck.calls.includes("STOP") && !stuck.calls.some((x) => /^npm ci/.test(x)), stuck.calls.join(" | "));
+      assert(stuck.calls.filter((x) => x === "SETTLE-WAIT").length === 480 && stuck.calls.some((x) => /^git reset --keep/.test(x)), `waits=${stuck.calls.filter((x) => x === "SETTLE-WAIT").length}`);
+      assert(stuck.marker?.outcome === "unchanged" && stuck.marker?.stage === "stop" && stuck.lockAfterRun === "no-lock" && stuck.exitCode === 1, JSON.stringify(stuck.marker));
+      // 기록의 사유도 관측한 만큼만(I3 #2)
+      const notSettled = "could not confirm within 120 seconds that the daemon had finished delivering the previous update's results";
+      assert(stuck.marker?.detail === notSettled, JSON.stringify(stuck.marker));
+      // 조회가 느려도(한 번 2초) 상한은 실제 경과로 — 횟수(480)가 아니라 120초에 닿으면 멈춘다(I1 #4).
+      const slow = simulate("success", { notify: true, healthPendingWaits: Infinity, healthCostMs: 2000 });
+      const slowWaits = slow.calls.filter((x) => x === "SETTLE-WAIT").length;
+      assert(!slow.calls.includes("STOP") && slowWaits > 0 && slowWaits < 60, `waits=${slowWaits} · ${slow.calls.includes("STOP")}`);
+      // 마감에 닿은 뒤 처음으로 «처리 끝» 이 보여도 정지 근거가 아니다(I2 #5).
+      //  조회 1초 · 잠 250ms — 96번째 잠 뒤의 조회가 마감(120초)을 넘겨 끝나는데 그 조회가 처음으로 «처리 끝» 을 보인다.
+      const after = simulate("success", { notify: true, healthPendingWaits: 96, healthCostMs: 1000 });
+      assert(!after.calls.includes("STOP") && after.marker?.stage === "stop" && after.marker?.detail === notSettled, `${after.calls.slice(-6).join(" | ")} · ${JSON.stringify(after.marker)}`);
+      return `대기 ${waits} 뒤 정지 · 만료 → 정지 0 · 느린 조회 ${slowWaits}회에 상한 · 마감 뒤 관측 불인정`;
+    });
+    test("★§15 abortBeforeStop: 결과 처리 중이면 재시작하지 않는다(기록이 놓였으면 «다음 재시작에서 전달») · 남의 감독자 표식은 지우지 않는다", () => {
+      const pend = simulate("pull-fail", { notify: true, healthPendingWaits: Infinity, prePlaced: { ".update-in-progress": "other-run" } } as SimOpts);
+      assert(!pend.calls.includes("RESTART") && fs.readFileSync(path.join(pend.home, ".update-in-progress"), "utf8") === "other-run", pend.calls.join(" | "));
+      // 사유는 관측한 만큼만 — «배달 중» 이 아니라 «기한 안에 끝났음을 확인하지 못했다»(I3 #2)
+      assert(pend.messages.some((m) => m.includes("not restarting the daemon: could not confirm within 120 seconds that it had finished delivering earlier results — this notice (") && m.endsWith(".update-failed) is tried for delivery when the daemon next starts.")) && !pend.messages.some((m) => /is delivered when|while it delivers/.test(m)), pend.messages.join("\n"));
+      const done = simulate("pull-fail", { notify: true, healthPendingWaits: 0, prePlaced: { ".update-in-progress": "other-run" } } as SimOpts);
+      assert(done.calls.some((x) => x.startsWith("RESTART")) && fs.readFileSync(path.join(done.home, ".update-in-progress"), "utf8") === "other-run", done.calls.join(" | "));
+      // 기록을 놓지 못했으면 «전달» 을 말하지 않는다(D7 #5).
+      const lost = simulate("pull-fail", { notify: true, healthPendingWaits: Infinity, stagedWriteFail: true } as SimOpts);
+      assert(lost.messages.some((m) => m.includes("where this notice is (or why it could not be kept) is logged above")) && !lost.messages.some((m) => /tried for delivery|is delivered/.test(m)), lost.messages.join("\n"));
+      return "재시작 0 · 표식 보존";
+    });
+    checks.push(await (async () => {
+      const name = "★§15 부팅 결과 처리 끝(`endBootUpdateResults`)은 업데이트 결과 배달(실패·성공·옆 보존) 뒤, 일반 재시작 통지 전에 한 번";
+      try {
+        const late = simulate("success", { notify: true, boot: "late" });
+        const b = await consumeAt(late, late.completion?.confirmed);
+        assert(b.success.length === 1 && b.ends.length === 1 && b.ends[0] === b.deliveries.length, JSON.stringify({ ends: b.ends, d: b.deliveries.length }));
+        const plain = await consumeAt({ ...late, home: fs.mkdtempSync(path.join(home, "plain-")) } as ReturnType<typeof simulate>, laterBoot(late));
+        assert(plain.restart.length === 1 && plain.ends.length === 1 && plain.ends[0] === 0, JSON.stringify({ ends: plain.ends, restart: plain.restart.length }));
+        return { name, ok: true, got: `ends=${JSON.stringify(b.ends)} · 일반 재시작 전 ${JSON.stringify(plain.ends)}` };
+      } catch (err) { return { name, ok: false, got: String(err) }; }
+    })());
+    // ── §15 옛 판 소비자 겹침(`evidence/c6-old-consumer.log` overlap — 현행 v6 = A 2·B 0) ─────────────────────────
+    checks.push(await (async () => {
+      const name = "★§15 옛 판 소비자 겹침: 옛 판(4c8bd246)이 고정 기록 A 를 읽는 동안 현 판 CLI B 가 실패를 공개 → B 는 A 를 바꾸지 않는다 · A 는 옛 판이 1회 · B 는 현 판 부팅이 1회 · 다음 부팅 0";
+      const fx = path.join(repo, "src/scripts/regression/fixtures/legacy-update-consumer-4c8bd246");
+      const legacyRoot = fs.mkdtempSync(path.join(home, "legacy-4c8bd246-"));
+      try {
+        fs.mkdirSync(path.join(legacyRoot, "src")); fs.mkdirSync(path.join(legacyRoot, "bin"));
+        fs.copyFileSync(path.join(fx, "index-region.ts.txt"), path.join(legacyRoot, "src", "index.ts"));
+        fs.copyFileSync(path.join(fx, "update-marker.mjs.txt"), path.join(legacyRoot, "bin", "update-marker.mjs"));
+        const oldRunner = await makeBootRunner(legacyRoot);
+        const sideA = { channel: "fixture", threadKey: "dashboard:side-a", address: "target-a" }, sideB = { channel: "fixture", threadKey: "dashboard:side-b", address: "target-b" };
+        const a = simulate("npm-fail", { delegate: sideA });
+        const aRaw = fs.readFileSync(path.join(a.home, ".update-failed"), "utf8");
+        let fired = false; let bAside: string[] = []; let fixedDuringB = "";
+        const hooked = { ...fspReal, readFile: async (n: string) => { const v = await fspReal.readFile(n); if (!fired && n === path.join(a.home, ".update-failed")) { fired = true; simulate("npm-fail", { delegate: sideB, reuseHome: a.home }); fixedDuringB = fs.readFileSync(n, "utf8"); bAside = homeNames(a.home).filter((x) => x.startsWith(".update-failed.unsent-")); } return v; } };
+        const k = { t: 0 };
+        const oldBoot = await oldRunner({ fsp: hooked, home: a.home, boot: laterBoot(a), updateOriginSession, updateFailedText, translate, now: () => k.t, sleep: async (ms) => { k.t += ms; } });
+        assert(fired && fixedDuringB === aRaw && bAside.length === 1, `B 가 A 를 바꿨거나 옆에 두지 않았다: fixed=${fixedDuringB === aRaw} aside=${bAside.join(",")}`);
+        const newBoot = await consumeAt(a, { ...nextBoot(a), bootId: "66666666-6666-4666-8666-666666666666" });
+        const last = await consumeAt(a, { ...nextBoot(a), bootId: "77777777-7777-4777-8777-777777777777" });
+        const all = [...oldBoot.deliveries, ...newBoot.deliveries, ...last.deliveries].filter((x) => /Update failed/.test(x.text));
+        const toA = all.filter((x) => x.target === "target-a"), toB = all.filter((x) => x.target === "target-b");
+        assert(toA.length === 1 && toB.length === 1 && oldBoot.failure.length === 1 && oldBoot.failure[0]!.target === "target-a" && newBoot.failure.length === 1 && newBoot.failure[0]!.target === "target-b" && newBoot.failure[0]!.observeThreadKey === "dashboard:side-b" && last.failure.length === 0,
+          `A=${toA.length} B=${toB.length} · old=${JSON.stringify(oldBoot.failure.map((x) => x.target))} new=${JSON.stringify(newBoot.failure.map((x) => x.target))} last=${last.failure.length}`);
+        return { name, ok: true, got: `A=${toA.length}(옛 판) · B=${toB.length}(현 판) · 다음 0` };
+      } catch (err) { return { name, ok: false, got: String(err) }; } finally { fs.rmSync(legacyRoot, { recursive: true, force: true }); }
+    })());
+    // ── §16 b 옛 판 소비자(롤백 부팅) — POSIX link 불가 홈의 단일 실패가 고정 슬롯에 링크로: 옛 판이 바로 1회(§15 의 지연 회귀 해소) ─────────────
+    for (const platform of ["darwin", "linux"] as const) checks.push(await (async () => {
+      const name = `★§16 b 옛 판 소비자(롤백 부팅, ${platform}) — link 불가 홈의 단일 실패가 symlink 로 고정 슬롯에 → 옛 판(4c8bd246)이 링크를 따라 요청 대상에 1 · 링크만 지움 → 다음 현 판 부팅 실패 0 · 링크 대상 임시본 1 남음(다시 안 나감)`;
+      const fx = path.join(repo, "src/scripts/regression/fixtures/legacy-update-consumer-4c8bd246");
+      const legacyRoot = fs.mkdtempSync(path.join(home, "legacy-4c8bd246-"));
+      try {
+        fs.mkdirSync(path.join(legacyRoot, "src")); fs.mkdirSync(path.join(legacyRoot, "bin"));
+        fs.copyFileSync(path.join(fx, "index-region.ts.txt"), path.join(legacyRoot, "src", "index.ts"));
+        fs.copyFileSync(path.join(fx, "update-marker.mjs.txt"), path.join(legacyRoot, "bin", "update-marker.mjs"));
+        const oldRunner = await makeBootRunner(legacyRoot);
+        const live = { mode: "direct", state: "ready", attempt: "live-attempt", notify: { channel: "telegram", target: "live-chat", threadKey: "dashboard:side" } };
+        const r = simulate("npm-fail", { platform, linkFail: true, seedPending: live });
+        assert(fs.lstatSync(path.join(r.home, ".update-failed")).isSymbolicLink(), homeNames(r.home).join(","));
+        const k = { t: 0 };
+        const oldBoot = await oldRunner({ fsp: fspReal, home: r.home, boot: laterBoot(r), updateOriginSession, updateFailedText, translate, now: () => k.t, sleep: async (ms) => { k.t += ms; } });
+        const left = homeNames(r.home);
+        const newBoot = await consumeAt(r, nextBoot(r));
+        assert(oldBoot.failure.length === 1 && oldBoot.failure[0]!.channel === "telegram" && oldBoot.failure[0]!.target === "live-chat" && /Update failed/.test(oldBoot.failure[0]!.text) &&
+          left.length === 1 && left[0]!.startsWith(".update-failed.next-") && newBoot.failure.length === 0 && JSON.stringify(homeNames(r.home)) === JSON.stringify(left),
+          `old=${JSON.stringify(oldBoot.failure)} left=${left.join(",")} new=${JSON.stringify(newBoot.failure)}`);
+        return { name, ok: true, got: `옛 판 1 · 다음 현 판 0 · 남은 임시본 ${left[0]}` };
+      } catch (err) { return { name, ok: false, got: String(err) }; } finally { fs.rmSync(legacyRoot, { recursive: true, force: true }); }
+    })());
+    checks.push(await (async () => {
+      const name = "★§16 b 현 판 소비자: 고정 슬롯 링크의 대상이 같은 폴더 임시본(`.update-failed.next-*`)이 아니면 배달은 하되 그 대상은 지우지 않는다(홈 밖 파일 그대로) · 링크 선점본은 치움 · 다음 0";
+      try {
+        const h = fs.mkdtempSync(path.join(home, "foreign-link-"));
+        const outside = path.join(path.dirname(h), `${path.basename(h)}-outside.json`);
+        fs.writeFileSync(outside, JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "x", notify: { channel: "fixture", target: "t-link", threadKey: "dashboard:side" } }));
+        fs.symlinkSync(path.join("..", path.basename(outside)), path.join(h, ".update-failed"));
+        const r0 = { home: h } as ReturnType<typeof simulate>;
+        const b = await consumeAt(r0, laterBoot({ ...r0, completion: null } as ReturnType<typeof simulate>));
+        const f = b.deliveries.filter((x) => /Update failed/.test(x.text));
+        assert(f.length === 1 && f[0]!.target === "t-link" && fs.existsSync(outside) && homeNames(h).length === 0, JSON.stringify({ f, names: fs.readdirSync(h), outside: fs.existsSync(outside) }));
+        const again = await consumeAt(r0, { ...laterBoot({ ...r0, completion: null } as ReturnType<typeof simulate>), bootId: "55555555-5555-4555-8555-555555555555" });
+        assert.equal(again.deliveries.filter((x) => /Update failed/.test(x.text)).length, 0);
+        fs.rmSync(outside, { force: true });
+        return { name, ok: true, got: "배달 1 · 대상 그대로 · 다음 0" };
+      } catch (err) { return { name, ok: false, got: String(err) }; }
+    })());
+    test("★§15 healthSaysOurs 는 `/health` 의 updateResultsPending 을 그대로 돌려준다(불리언만 — 옛 판은 없음)", () => {
+      const src = source.slice(source.indexOf("const healthSaysOurs = (c) => {"), source.indexOf("\n};", source.indexOf("const healthSaysOurs = (c) => {")) + 3);
+      const id = "a".repeat(64);
+      const mk = (extra: Record<string, unknown>) => new Function("winPort", "spawnSync", "process", "instanceIdFor", src + ";return healthSaysOurs;")(
+        () => "7021", () => ({ status: 0, stdout: JSON.stringify({ ok: true, instanceId: id, bootId: "33333333-3333-4333-8333-333333333333", startedAt: Date.now() - 10, revision: "2".repeat(40), ...extra }), stderr: "HTTP 200" }), process, () => id);
+      const t = mk({ updateResultsPending: true })({}), f = mk({ updateResultsPending: false })({}), none = mk({})({}), str = mk({ updateResultsPending: "yes" })({});
+      assert(t.ok && t.updateResultsPending === true && f.updateResultsPending === false && none.updateResultsPending === undefined && str.updateResultsPending === undefined, JSON.stringify({ t, f, none, str }));
+      return "true/false/없음/형식 오류";
+    });
+    checks.push(await (async () => {
+      const name = "★§15 쓸기의 디렉터리 기록: record.json 만 소비하고 빈 디렉터리만 치운다 — 다른 항목이 있으면 선점본째 보존(재귀 삭제 0) · 배달 1 · 다음 0";
+      try {
+        const h = fs.mkdtempSync(path.join(home, "dirrec-"));
+        const dir = path.join(h, ".update-failed.unsent-fixture");
+        fs.mkdirSync(dir);
+        fs.writeFileSync(path.join(dir, "record.json"), JSON.stringify({ stage: "build", outcome: "rolled-back", attempt: "x", notify: { channel: "fixture", target: "t-dir", threadKey: "dashboard:side" } }));
+        fs.writeFileSync(path.join(dir, "keep-me.txt"), "extra bytes");
+        const r0 = { home: h } as ReturnType<typeof simulate>;
+        const b = await consumeAt(r0, laterBoot({ ...r0, completion: null } as ReturnType<typeof simulate>));
+        const f = b.deliveries.filter((x) => /Update failed/.test(x.text));
+        const claims = fs.readdirSync(h).filter((n) => n.includes(".claim-"));
+        assert(f.length === 1 && f[0]!.target === "t-dir" && claims.length === 1 && fs.readFileSync(path.join(h, claims[0]!, "keep-me.txt"), "utf8") === "extra bytes" && !fs.existsSync(path.join(h, claims[0]!, "record.json")), JSON.stringify({ f, names: fs.readdirSync(h) }));
+        const again = await consumeAt(r0, { ...laterBoot({ ...r0, completion: null } as ReturnType<typeof simulate>), bootId: "55555555-5555-4555-8555-555555555555" });
+        assert.equal(again.deliveries.filter((x) => /Update failed/.test(x.text)).length, 0);
+        return { name, ok: true, got: `배달 1 · 보존 ${claims[0]}` };
+      } catch (err) { return { name, ok: false, got: String(err) }; }
+    })());
+    test("수동 start/restart 는 지연이 새지 않는다 — 업데이트 밖 reportLaunch 미확인은 여전히 exit 1", () => {
+      const src = source.slice(source.indexOf("const reportLaunch = ("), source.indexOf("\n};", source.indexOf("const reportLaunch = (")) + 3);
+      const proc = { exitCode: 0 as number | undefined }; const msgs: string[] = [];
+      const rep = new Function("process", "console", "winPort", src + ";return reportLaunch;")(proc, { log: () => {}, warn: (m: string) => msgs.push(m), error: (m: string) => msgs.push(m) }, () => "7021");
+      const w = { pids: [], last: { pids: [], health: { ok: false, why: "x" } }, lastKnown: null, everSeen: false, probeFailures: 0, waitedMs: 20000, verified: false, healthWhy: "x" };
+      rep({}, w, "started", "h"); assert.equal(proc.exitCode, 1);
+      proc.exitCode = 0; rep({ deferLaunchVerdict: false }, w, "started", "h"); assert.equal(proc.exitCode, 1);
+      proc.exitCode = 0; rep({ deferLaunchVerdict: true }, w, "started", "h"); assert.equal(proc.exitCode, 0);
+      return "plain=1 · deferred=0";
     });
     const has = (calls: string[], re: RegExp) => calls.some((x) => re.test(x));
     test("멈춘 뒤 실패(npm): stderr·단계 로그 보존·비밀 제거 · 되돌리고 «rolled-back» 마커를 재가동 **전에** 쓴다", () => {
@@ -314,7 +1047,12 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       assert.equal(done(plain).from, "1111111"); assert.equal(done(junk).from, "1111111");
       // 생산자: 위임 env 에 실행 빌드를 따로 싣는다(앵커 키와 다른 키).
       const su = fs.readFileSync(path.join(repo, "src/core/self-update.ts"), "utf8");
-      assert(/TIGUCLAW_UPDATE_PREV_SHA: prevSha,/.test(su) && /TIGUCLAW_UPDATE_REPORT_FROM: reportFrom,/.test(su), "self-update 위임 env");
+      // 위임 env 는 spawn 과 같은 함수로 만든다 — 함수의 값과 spawn 배선을 따로 본다.
+      const de = updateDelegationEnv({}, { prevSha: "1111111", reportFrom: "0abcdef9" });
+      assert(de.TIGUCLAW_UPDATE_PREV_SHA === "1111111" && de.TIGUCLAW_UPDATE_REPORT_FROM === "0abcdef9" && /const d = delegatedUpdateSpawnArgs\(deps, prevSha, reportFrom, process\.env, handoffToken\);[\s\S]{0,400}const child = \(deps\.spawnChild \?\? spawn\)\(d\.command, d\.args, d\.options\);/.test(su), "self-update 위임 env");
+      // 위임 인자 함수가 요청 좌표를 env 로 옮긴다(호출부는 deps 를 그대로 넘긴다 — 위 정규식).
+      const sp = delegatedUpdateSpawnArgs({ notify: { channel: "fixture", target: "t", threadKey: "dashboard:side" } }, "1111111", "0abcdef9", { TIGUCLAW_UPDATE_NOTIFY_THREAD: "stale" });
+      assert(sp.options.env.TIGUCLAW_UPDATE_NOTIFY_THREAD === "dashboard:side" && sp.options.env.TIGUCLAW_UPDATE_NOTIFY_TARGET === "t" && sp.options.detached === true && sp.args.at(-1) === "update", JSON.stringify(sp));
       return `마커 from=${done(ok).from} · 실패 reset=1111111 · 없음/형식 오류=앵커`;
     });
     test("★Windows 위임 응답은 재시작 시각을 지어내지 않는다 — «약 5초» 는 직접 예약한 경로에서만 (실측 약 2분 49초)", () => {
@@ -482,7 +1220,7 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
         assert(/node_modules only/.test(kept) && kept.includes("1111111"), `${k}: ${all}`);
         // 복구됐다·되돌릴 수 있다고 말하지 않는다(의존성뿐이라 지금 코드와 짝이 아니다).
         assert(!/restor|roll(ed)? ?back|revert/i.test(kept), `${k}: ${kept}`);
-        assert(r.messages.some((m) => /failed to restart/.test(m)) && !r.messages.some((m) => /update complete/.test(m)), `${k}: ${all}`);
+        assert(r.messages.some((m) => /🔴 The update was applied/.test(m)) && !r.messages.some((m) => /update complete/.test(m)), `${k}: ${all}`);
       }
       assert(has(cases.revived.calls, /^RESTART/) && has(cases.revivedThrow.calls, /^RESTART/) && cases.throw.messages.some((m) => /restart command failed: fixture: launchctl load failed/.test(m)), cases.throw.messages.join(" | "));
       // 다음 업데이트는 그 트리를 지우지 않고 알린다(종전 «prev 는 남긴다» 규칙 그대로).
@@ -1031,14 +1769,19 @@ export const check: RegressionCheck = { guards: "Windows 업데이트 후 별도
       const rb = updateFailedText({ stage: "build", outcome: "rolled-back" });
       const nc = updateFailedText({ stage: "build", outcome: "needs-check" });
       const old = updateFailedText({ stage: "build" });
-      const claims = (t: string) => /rolled back to the previous version and restarted/.test(t);
+      const claims = (t: string) => /rolled back to the previous version/.test(t);
       assert(!claims(un) && /nothing was changed/.test(un), un);
-      assert(claims(rb), rb);
+      // ★롤백 마커는 재기동 **전**에 쓴다 — «재가동했다» 를 단정하지 않는다(2026-11-25 설계 R1 #4).
+      assert(claims(rb) && !/restarted/.test(rb), rb);
+      const ru = updateFailedText({ stage: "restart", outcome: "restart-unconfirmed" });
+      const re = updateFailedText({ stage: "restart", outcome: "restart-error" });
+      assert(!claims(ru) && /No rollback was attempted/.test(ru) && /could not be confirmed/.test(ru) && !/could not be fully restored/.test(ru), ru);
+      assert(!claims(re) && /No rollback was attempted/.test(re) && /start command reported an error/.test(re), re);
       assert(!claims(nc) && /tiguclaw update/.test(nc), nc);
       assert(!claims(old), old); // outcome 없는 옛 마커 — 무엇을 했는지 모른다
       // 배선 — 부팅 때 마커를 읽는 자리가 이 함수를 쓴다(고정 문장이 남아 있으면 위 판정이 아무 데도 안 간다).
       const idx = fs.readFileSync(path.join(repo, "src/index.ts"), "utf8");
-      assert(/updateFailedText\(data\)/.test(idx) && !/rolled back to the previous version and restarted/.test(idx), "index.ts 가 고정 문장을 쓴다");
+      assert(/updateFailedText\(data[ )]/.test(idx) && !/rolled back to the previous version and restarted/.test(idx), "index.ts 가 고정 문장을 쓴다");
       return [un, nc].map((t) => t.slice(0, 70)).join(" | ");
     });
   } finally { fs.rmSync(home, { recursive: true, force: true }); }

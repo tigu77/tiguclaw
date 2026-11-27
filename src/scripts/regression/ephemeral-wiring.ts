@@ -36,6 +36,13 @@ interface Probe {
   rows?: string[];
   sse?: Array<{ type: string; text: string; ephemeral: boolean }>;
   tail?: string;
+  restart?: {
+    error?: string;
+    status?: number; replyText?: string; historyStatus?: number;
+    history?: Array<{ role: string; text: string }>;
+    sse?: Array<{ type: string; text: string }>;
+    cliCancelled?: number; cliSoon?: boolean; alive?: boolean;
+  };
 }
 
 const run = async (): Promise<Assertion[]> => {
@@ -151,6 +158,22 @@ const run = async (): Promise<Assertion[]> => {
     );
   }
 
+  const r = got.restart;
+  const reply = r?.replyText ?? "";
+  const facts = r?.error ?? JSON.stringify(r);
+  out.push(
+    assert("/restart 거부: HTTP 200 + 재기동 수단 부재·데몬 유지 안내", r?.status === 200 &&
+      reply.startsWith("🔴 Restart cancelled — there was no way to bring the daemon back up.") &&
+      reply.includes("This OS has no automatic restart (supervisor)") &&
+      reply.includes("The daemon is still running"), facts),
+    assert("/restart 거부: 원 대화 SSE 에 입력·답 각각 한 번", JSON.stringify(r?.sse) === JSON.stringify([
+      { type: "channel.message.in", text: "/restart" }, { type: "channel.message.out", text: reply },
+    ]), facts),
+    assert("/restart 거부: 원 대화 이력에 입력·답 각각 한 번", r?.historyStatus === 200 && JSON.stringify(r.history) === JSON.stringify([
+      { role: "user", text: "/restart" }, { role: "assistant", text: reply },
+    ]), facts),
+    assert("/restart 거부: CLI 에 거부만 한 번 전송하고 데몬 유지", r?.alive === true && r.cliCancelled === 1 && r.cliSoon === false, facts),
+  );
   return out;
 };
 

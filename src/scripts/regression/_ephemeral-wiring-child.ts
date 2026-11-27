@@ -47,7 +47,9 @@ const main = async (): Promise<void> => {
     HTTP_BRIDGE_TOKEN: token,
     DASHBOARD_PORT: dashPort,
   });
-  const child = spawn(process.execPath, ["--import", "tsx", path.join(REPO, "src/index.ts")], {
+  const vetoLoader = new URL("./_restart-veto-loader.mjs", import.meta.url).href;
+  const preload = `data:text/javascript,${encodeURIComponent(`import {register} from "node:module"; register(${JSON.stringify(vetoLoader)});`)}`;
+  const child = spawn(process.execPath, ["--import", "tsx", "--import", preload, path.join(REPO, "src/index.ts")], {
     cwd: REPO,
     detached: true, // 대시보드 등 손자까지 한 번에 거둘 수 있게 프로세스 그룹으로.
     env: {
@@ -97,7 +99,9 @@ const main = async (): Promise<void> => {
   const booted = verdict.ok;
 
   // ── SSE 관측 — 대시보드가 보는 것과 **같은 스트림** ─────────────────────────────
-  const seen: Array<{ type: string; text: string; ephemeral: boolean }> = [];
+  const seen: Array<{ type: string; text: string; ephemeral: boolean; threadKey?: string }> = [];
+  const restartThread = "dashboard:restart-veto-probe";
+  let restart: unknown;
   let sseErr = "";
   const ac = new AbortController();
   if (booted) {
@@ -128,13 +132,14 @@ const main = async (): Promise<void> => {
             try {
               const ev = JSON.parse(line.slice(5).trim()) as {
                 type?: string;
-                payload?: { text?: string; ephemeral?: boolean };
+                payload?: { text?: string; ephemeral?: boolean; threadKey?: string };
               };
               if (typeof ev.type !== "string") continue;
               if (!ev.type.startsWith("channel.message")) continue;
               seen.push({
                 type: ev.type,
-                text: String(ev.payload?.text ?? "").slice(0, 80),
+                text: String(ev.payload?.text ?? ""),
+                threadKey: ev.payload?.threadKey,
                 ephemeral: ev.payload?.ephemeral === true,
               });
             } catch {
@@ -170,7 +175,38 @@ const main = async (): Promise<void> => {
     //    한다(없는 세션이면 "그런 세션이 없습니다" 가 그 답이다).
     child.stdin.write("/sessions archive dashboard:no-such-session-xyz\n");
     await until(() => out.includes("no-such-session-xyz"), 20_000);
-    await sleep(800);
+    // 설치 로그가 없으면 채팅 /restart 를 보내지 않는다: 실제 종료는 검사의 목적이 아니다.
+    if (out.includes("[fixture] restart veto installed")) {
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+        const r = await fetch(`${base}/messages`, {
+          method: "POST", headers, signal: AbortSignal.timeout(5000),
+          body: JSON.stringify({ threadKey: restartThread, text: "/restart" }),
+        });
+        const { replyText } = await r.json() as { replyText?: string };
+        const mark = out.length;
+        child.stdin.write("/restart\n");
+        await until(() => out.slice(mark).includes("Restart cancelled"), 3000);
+        await sleep(500);
+        const h = await fetch(`${base}/chat-history?threadKey=${encodeURIComponent(restartThread)}`, {
+          headers, signal: AbortSignal.timeout(5000),
+        });
+        const { entries } = await h.json() as { entries: Array<{ role: string; text: string }> };
+        restart = {
+          status: r.status, replyText, historyStatus: h.status,
+          history: entries.map(({ role, text }) => ({ role, text })),
+          sse: seen.filter((e) => e.threadKey === restartThread).map(({ type, text }) => ({ type, text })),
+          cliCancelled: out.slice(mark).match(/Restart cancelled/g)?.length ?? 0,
+          cliSoon: out.slice(mark).includes("Restarting shortly"),
+          alive: !childGone,
+        };
+      } catch (e) {
+        restart = { error: String(e) };
+      }
+    } else {
+      restart = { error: "restart veto not installed; request was not sent" };
+    }
   }
   ac.abort();
   child.stdin.end();
@@ -202,6 +238,7 @@ const main = async (): Promise<void> => {
       sseErr,
       rows: rows.map((r) => `${r.role}:${r.text.slice(0, 60)}`),
       sse: seen,
+      restart,
       tail: out.slice(-300),
     }),
   );

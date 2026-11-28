@@ -8,6 +8,21 @@
 
 ## [Unreleased]
 
+## [0.88.0] - 2026-11-28
+
+### 추가
+- Claude 모델의 자동 압축 기준이 되는 컨텍스트 창 크기를 `settings.json` 의 `models.limits.<provider:model>.autoCompactWindow` 로 모델별로 정할 수 있습니다(토큰, 100,000~1,000,000 사이 정수 — 예: `{ "models": { "limits": { "anthropic:claude-opus-5-5": { "autoCompactWindow": 400000 } } } }`). 값을 적지 않으면 Claude 는 지금까지와 똑같이 자동 압축합니다. 모델 풀에 적힌 표기와 똑같은 모델 키에만 걸리고 다음 턴부터 적용됩니다. 프로젝트 설정에서 `null` 로 적으면 홈 설정에서 물려받은 창 크기만 그 프로젝트에서 해제되며, 자동 압축 자체는 꺼지지 않습니다. 시험용 선택 설정이며 비용·답변 품질에 주는 효과는 측정하지 않았습니다.
+- 대시보드가 보여 주는 텍스트에 문법 강조를 더 넓게 적용합니다. 티구클로 Read 도구의 미리보기(파일 형식과 줄 범위를 알 수 있을 때 — Claude 기본 Read 는 그대로), JSON·git diff 도구 출력, 텍스트 첨부 미리보기, 계획 카드에서 언어를 적은 코드 블록이 대상입니다. 형식이 분명할 때만 칠하고 그 밖은 평문으로 둡니다. 바뀌는 것은 색뿐이며, 화면의 글자와 복사할 때 선택되는 글자는 그대로입니다.
+
+### 변경
+- 승인에 관한 비서 지침이 바뀌었습니다. 승인은 사용자가 밝힌 대상·조건·범위에 한정합니다. 반복 적용하라고 명시한 승인은 그 범위 안에서만 다시 묻지 않고 따르며, 새 위험이 생기거나 범위가 불분명하면 그 부분만 확인합니다. 이후의 변경·철회와 진행 중인 작업의 보존·중단 지시가 우선합니다.
+- 다른 업데이트가 진행 중이거나 이전 업데이트의 결과를 처리하는 중이라 업데이트 요청을 거절할 때, 완료 알림을 예고하는 대신 이번 요청을 시작하지 않은 이유를 알립니다. 이전 결과가 전달되지 않고 남아 있으면 재시작하면 전달을 다시 시도한다고 안내합니다.
+
+### 수정
+- Windows 에서 `/update` 후 새 버전의 응답이 늦었을 뿐인데 롤백 실패(«이전 버전을 완전히 되돌리지 못했습니다»)로 알리던 문제를 수정했습니다. 이제 «제한 시간 안에 재시작을 확인하지 못함»과 «새 버전은 실행 중이지만 기동 명령이 오류를 냄»을 구분해 알리고, 어느 쪽이든 시도하지 않은 롤백을 말하지 않습니다. 업데이트를 업데이트 프로세스에 넘겼지만 시작을 확인하지 못한 경우는 거절과 구분해 표시합니다. 채팅에서 요청한 업데이트의 알림은 요청한 대화로 보냅니다.
+- 대시보드 채팅에서 `/restart` 가 거부되면 그 사유가 대화에 나타나지 않던 문제를 수정했습니다. 이제 그 대화에 한 번 표시됩니다.
+- 대시보드 플러그인 상세 카드에서 긴 인증 안내가 플러그인 정보 칸을 좁게 눌러 버리던 문제를 수정했습니다. 자리가 모자라면 안내가 아래로 내려갑니다.
+
 ## [0.87.0] - 2026-11-26
 
 ### 추가
@@ -2919,7 +2934,8 @@ First public release.
 - **HTTP bridge** — call the assistant from other local apps; data-driven custom endpoints and commands.
 - **Bilingual README** (English + 한국어) with step-by-step key/token guides and an uninstall guide.
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.87.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.88.0...HEAD
+[0.88.0]: https://github.com/tigu77/tiguclaw/compare/v0.87.0...v0.88.0
 [0.87.0]: https://github.com/tigu77/tiguclaw/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/tigu77/tiguclaw/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...v0.85.0

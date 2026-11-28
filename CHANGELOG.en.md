@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.88.0] - 2026-11-28
+
+### Added
+- For Claude models, you can now set the context window size used for automatic compaction per model with `models.limits.<provider:model>.autoCompactWindow` in `settings.json` (tokens, an integer from 100,000 to 1,000,000 — for example `{ "models": { "limits": { "anthropic:claude-opus-5-5": { "autoCompactWindow": 400000 } } } }`). If you don't set it, Claude keeps its usual automatic compaction exactly as before. It applies only to the model key written exactly as in your model pool and takes effect from the next turn. Setting it to `null` in a project's settings clears a window size inherited from your home settings for that project; automatic compaction itself stays on. This is an option for testing; its effect on cost and answer quality has not been measured.
+- The dashboard now applies syntax highlighting to more of the text it shows: tiguclaw's Read tool previews when the file type and line range are known (Claude's built-in Read is unchanged), JSON and git diff tool output, text attachment previews, and code blocks with a stated language in plan cards. Highlighting is applied only when the format is clear and anything else stays plain text. Only the colors change; the text shown and the text selected for copying stay the same.
+
+### Changed
+- The assistant's guidance on approvals now limits an approval to the target, conditions, and scope you stated. An approval you explicitly say applies repeatedly is reused only within that scope; if a new risk appears or the scope is unclear, the assistant asks about that part only. Later changes and withdrawals, and instructions to preserve or stop current work, take precedence.
+- When an update request is declined because another update is running or an earlier update's result is still being handled, the message now explains why this request did not start, instead of promising a completion notice. If an earlier result is still waiting, it says that restarting will retry its delivery.
+
+### Fixed
+- On Windows, `/update` reported a rollback failure ("the previous version could not be fully restored") when the new version was simply slow to respond. The notice now separates "the restart could not be confirmed in time" from "the new version is running, but the start command reported an error", and neither claims a rollback that wasn't attempted. If a request was handed to the update process but its start could not be confirmed, that is shown separately from a declined request. Notices for updates requested in chat now go to the conversation that requested them.
+- In the dashboard, when a chat `/restart` was declined, the reason did not appear in the conversation. It now appears once in that conversation.
+- In the dashboard's plugin details card, a long sign-in notice could squeeze the plugin details into a narrow column. The notice now moves below them when there isn't enough room.
+
 ## [0.87.0] - 2026-11-26
 
 ### Added
@@ -1369,7 +1384,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries before 0.40.0 are available in Korean only — see [CHANGELOG.ko.md](CHANGELOG.ko.md).
 
-[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.87.0...HEAD
+[Unreleased]: https://github.com/tigu77/tiguclaw/compare/v0.88.0...HEAD
+[0.88.0]: https://github.com/tigu77/tiguclaw/compare/v0.87.0...v0.88.0
 [0.87.0]: https://github.com/tigu77/tiguclaw/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/tigu77/tiguclaw/compare/v0.85.0...v0.86.0
 [0.85.0]: https://github.com/tigu77/tiguclaw/compare/v0.84.0...v0.85.0

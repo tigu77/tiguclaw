@@ -205,7 +205,14 @@
             pre.textContent = "…";
             fetch("/api/attachments/" + a.rel)
               .then((r) => (r.ok ? r.text() : Promise.reject(new Error("fetch"))))
-              .then((t) => { pre.textContent = t.slice(0, 800) + (t.length > 800 ? "\n…" : ""); })
+              .then((t) => {
+                // 문법 색 — 파일 이름 확장자(Edit/Write 카드와 같은 판별), 없으면 명시된 `application/json` 일 때만. 이미 받은 글자만 칠한다(다시 받지 않는다).
+                const shown = t.slice(0, 800);
+                const lang = typeof hlLangFromName === "function" ? hlLangFromName(name) || (mime === "application/json" ? "json" : null) : null;
+                const html = typeof hlHtml === "function" ? hlHtml(shown, lang) : null;
+                if (html !== null) pre.innerHTML = html; else pre.textContent = shown;
+                if (t.length > 800) pre.appendChild(document.createTextNode("\n…"));
+              })
               .catch(() => { pre.remove(); });
             cell.appendChild(pre);
           }

@@ -67,6 +67,25 @@ export const claudeSpeedSettings = (
 ): { settings?: { fastMode: true } } =>
   speed === "fast" ? { settings: { fastMode: true } } : {};
 
+/**
+ * Claude SDK `options.settings`(flag settings 층) **한 곳 조립** — «빠름» 과 자동 압축 창(2026-11-28).
+ *
+ * ★둘 다 같은 `settings` 객체에 산다. 따로 펼치면 뒤 것이 앞 것을 통째로 덮는다(빠름 + 압축 창을 같이
+ *  적으면 한쪽이 조용히 죽는다). 그래서 `options` 리터럴은 이 함수 하나만 펼친다.
+ * ★아무것도 없으면 `settings` 키 자체가 없다 — 현행과 같은 옵션(`claudeSpeedSettings` 의 같은 규칙).
+ * ★`autoCompactWindow` 검증은 로더(`loadModelAutoCompactWindows`)가 한다 — 여기는 받은 값을 싣기만 한다.
+ */
+export const claudeFlagSettings = (
+  speed: string | undefined,
+  autoCompactWindow: number | undefined,
+): { settings?: { fastMode?: true; autoCompactWindow?: number } } => {
+  const settings = {
+    ...claudeSpeedSettings(speed).settings,
+    ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
+  };
+  return Object.keys(settings).length === 0 ? {} : { settings };
+};
+
 /** 이 턴을 연 트리거 실행 — `RegionASdkInput.triggerRun`. `path` 는 감지한 경로(여럿이면 줄바꿈으로, 실행기가 개수를 바운드한다). */
 export type TriggerRun =
   /**

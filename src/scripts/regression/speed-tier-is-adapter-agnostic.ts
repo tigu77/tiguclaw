@@ -72,11 +72,13 @@ const spreadsSpeedIntoOptions = (): boolean => {
         const e = prop.expression;
         // 스프레드의 **최상위**가 그 호출이어야 한다 — 감싸면 여기서 걸린다.
         const arg = ts.isCallExpression(e) ? e.arguments[0] : undefined;
+        // ★2026-11-28: 자동 압축 창과 같은 `settings` 객체를 쓰게 되어 조립 함수 `claudeFlagSettings(speed, 창)` 하나를
+        //  펼친다(둘을 따로 펼치면 뒤 것이 앞 것을 덮는다). 그 함수가 빠름을 실제로 싣는지는 아래 ①에서 **돌려서** 잰다.
         if (
           ts.isCallExpression(e) &&
           ts.isIdentifier(e.expression) &&
-          e.expression.text === "claudeSpeedSettings" &&
-          e.arguments.length === 1 &&
+          e.expression.text === "claudeFlagSettings" &&
+          e.arguments.length === 2 &&
           arg !== undefined &&
           // ★인자는 «`input` 의 `speed` 를 읽는가» 로 본다 — `input.speed` 문자열 동일성에
           //  묶으면 `input?.speed` 같은 **동작이 같은 리팩터**에 빨개진다(2026-09-11 N4).
@@ -219,7 +221,7 @@ export const check: RegressionCheck = {
     "없는 비용이 화면에 뜨는 반대 사고가 같이 걸린다",
   async run(): Promise<Assertion[]> {
     const out: Assertion[] = [];
-    const { claudeSpeedSettings, SPEED_TIER_COST } = await import(
+    const { claudeSpeedSettings, claudeFlagSettings, SPEED_TIER_COST } = await import(
       "../../core/llm-runtime/types.js"
     );
     const { poolToSpecs, adapterInputFor, speedCostKeyFor } = await import(
@@ -373,6 +375,13 @@ export const check: RegressionCheck = {
         "★★`speed:\"fast\"` 가 claude 백엔드의 낱말로 옮겨진다 — 이게 없으면 프로파일에 적어도 claude 턴은 표준 속도로 돌고 사용자는 이유를 모른다",
         JSON.stringify(claudeSpeedSettings("fast")) === JSON.stringify({ settings: { fastMode: true } }),
         JSON.stringify(claudeSpeedSettings("fast")),
+      ),
+      assert(
+        "★옵션이 펼치는 조립 함수 `claudeFlagSettings` 도 빠름을 **그대로 싣고**(압축 창이 있어도 · 없어도) 둘 다 없으면 키가 없다 — 감싼 함수가 빠름을 버리면 위 번역이 맞아도 턴은 표준 속도다",
+        JSON.stringify(claudeFlagSettings("fast", undefined)) === JSON.stringify({ settings: { fastMode: true } }) &&
+          JSON.stringify(claudeFlagSettings("fast", 400_000)) === JSON.stringify({ settings: { fastMode: true, autoCompactWindow: 400_000 } }) &&
+          Object.keys(claudeFlagSettings(undefined, undefined)).length === 0,
+        `${JSON.stringify(claudeFlagSettings("fast", undefined))} · ${JSON.stringify(claudeFlagSettings("fast", 400_000))} · ${JSON.stringify(claudeFlagSettings(undefined, undefined))}`,
       ),
       assert(
         "★안 켠 턴엔 **키 자체가 없다** — `settings: undefined` 를 넘기면 SDK 가 «설정을 비우라» 로 읽을 수 있고, 그건 사용자의 settings.json 을 건드리는 일이다",

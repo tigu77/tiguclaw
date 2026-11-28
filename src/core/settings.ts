@@ -733,6 +733,61 @@ export const loadModelInputLimits = (
   return out;
 };
 
+/** SDK 가 받는 `autoCompactWindow` 범위(토큰) — `sdk.d.ts` modelSettings 설명. 밖이면 SDK 가 조용히 기본으로 돌린다(실측 2026-11-28). */
+export const AUTO_COMPACT_WINDOW_MIN = 100_000;
+export const AUTO_COMPACT_WINDOW_MAX = 1_000_000;
+const warnedAutoCompact = new Set<string>();
+
+/**
+ * 모델별 **Claude 자동 압축 창**(토큰) — settings.json `models.limits.<provider:model>.autoCompactWindow`.
+ *
+ * ```json
+ * { "models": { "limits": { "anthropic:claude-opus-5-5": { "autoCompactWindow": 400000 } } } }
+ * ```
+ *
+ * ★`maxInputChars` 와 **다른 계약**이다 — 저건 «이만큼 넘으면 이 모델을 건너뛴다»(입력 상한), 이건
+ *  «SDK 가 이 창 크기 기준(− 3.3만)에서 스스로 접는다»(압축 시점). 그래서 로더를 따로 두고 모델 선별은
+ *  이 값을 읽지 않는다. 읽는 쪽은 Claude 어댑터뿐이다.
+ * ★기본은 **넘기지 않음**(맵에 없음) = SDK 기본 압축 그대로. Claude 자동 압축을 끄는 손잡이가 아니다.
+ * ★층 순서는 `loadSettingsLayers` 그대로, 뒤 층이 **이 필드 단위로** 이긴다. `null` = 해제(앞 층 값을
+ *  지우고 SDK 기본). 정수 100,000~1,000,000 밖은 그 층만 무시하고 경고 한 번 — 오타로 조용히 기본이
+ *  되지도, 앞 층 값이 조용히 사라지지도 않게.
+ * ★키는 `provider:model` 풀 표기 그대로(`maxInputChars`·`models.reasoning` 과 같은 규칙). 별칭·`[1m]` 을
+ *  정규화하지 않는다 — 명시한 대상에만 걸린다. 설계: docs/decisions/2026-11-28-claude-compaction-window-design.md §4.
+ */
+export const loadModelAutoCompactWindows = (
+  cwd: string = process.cwd(),
+): Map<string, number> => {
+  const out = new Map<string, number>();
+  for (const { path, settings } of loadSettingsLayersWithSource(cwd)) {
+    const limits = settings.models?.limits;
+    if (limits === null || typeof limits !== "object" || Array.isArray(limits)) continue;
+    for (const [key, val] of Object.entries(limits as Record<string, unknown>)) {
+      if (val === null || typeof val !== "object" || Array.isArray(val)) continue;
+      if (!Object.prototype.hasOwnProperty.call(val, "autoCompactWindow")) continue;
+      const n = (val as Record<string, unknown>).autoCompactWindow;
+      if (n === null) {
+        out.delete(key);
+      } else if (
+        typeof n === "number" && Number.isInteger(n) &&
+        n >= AUTO_COMPACT_WINDOW_MIN && n <= AUTO_COMPACT_WINDOW_MAX
+      ) {
+        out.set(key, n);
+      } else {
+        const sig = `${path}\u0000${key}\u0000${JSON.stringify(n)}`;
+        if (!warnedAutoCompact.has(sig)) {
+          warnedAutoCompact.add(sig);
+          console.warn(
+            `[settings] models.limits.${key}.autoCompactWindow=${JSON.stringify(n)} 무시(${path}) — ` +
+              `정수 ${AUTO_COMPACT_WINDOW_MIN}~${AUTO_COMPACT_WINDOW_MAX} 또는 null(해제)만 받는다.`,
+          );
+        }
+      }
+    }
+  }
+  return out;
+};
+
 /**
  * 모델별 **추론 강도**(reasoning effort) 덮어쓰기 — settings.json `models.reasoning`.
  *

@@ -163,9 +163,11 @@ try {
   // Run the production helper, not a replica; renderer is intentionally pure (no HTTP/read fallback).
   const ui = fs.readFileSync(new URL("../../../packages/dashboard/js/virtualization.js", import.meta.url), "utf8");
   const helper = ui.slice(ui.indexOf("      const buildReadBlock ="), ui.indexOf("      // ExitPlanMode 계획 카드"));
+  // Read 행 문법 색이 부르는 이웃(경로→언어·hljs 줄 자르기) — 진짜 소스. hljs 가 없는 이 컨텍스트에선 평문이어야 한다(색 자체는 tool-output-syntax-highlight).
+  const hlHelpers = ui.slice(ui.indexOf("      // 파일 확장자 → highlight.js 언어"), ui.indexOf("      // 리치 diff 블록(Edit/Write"));
   const document = new MiniDocument();
   const context = vm.createContext({ document, queueMicrotask, i18n: (k: string, v?: unknown) => k + (v ? JSON.stringify(v) : ""), buildOutputBlock: () => document.createElement("div") });
-  vm.runInContext(helper + "\nglobalThis.renderRead = buildReadBlock; globalThis.bindRead = wireReadToggle;", context);
+  vm.runInContext(hlHelpers + helper + "\nglobalThis.renderRead = buildReadBlock; globalThis.bindRead = wireReadToggle;", context);
   const render = context.renderRead as (o: unknown, f?: unknown) => ReturnType<MiniDocument["createElement"]>;
   const step = document.createElement("div");
   document.body.appendChild(step);
@@ -186,7 +188,9 @@ try {
   check("actual blank row gets a row; empty/EOF get no manufactured rows", blankCard.querySelectorAll(".act-read-line").length === 1 && blankCard.querySelector(".act-read-text")?.textContent === "" && render(empty.output).querySelectorAll(".act-read-line").length === 0 && render(eof.output).querySelectorAll(".act-read-line").length === 0);
   check("unsupported native-like numbering remains literal escaped text", unknownCard.querySelectorAll(".act-read-num").length === 0 && unknownCard.querySelector("pre")?.textContent === "  17→<script>not markup</script>" && unknownCard.querySelector("script") === null);
   check("UI separates true returned range from clipped displayed range", render(l41).querySelector(".act-output-lbl")?.textContent.includes('"end":41') && render(l41).querySelector(".act-read-caption")?.textContent.includes('"end":40'));
-  check("Read helper contains no file/http/innerHTML fallback", !/\bfetch\s*\(|\.innerHTML\s*=|readFile|\/api\//.test(helper));
+  // innerHTML 은 이제 hljs 가 이스케이프한 줄(`painted[...]`)에만 쓴다 — 원문을 HTML 로 넣는 자리가 없는지 대입을 전부 센다(이스케이프 실측은 tool-output-syntax-highlight).
+  check("Read helper contains no file/http fallback; innerHTML only from escaped highlight rows", !/\bfetch\s*\(|readFile|\/api\//.test(helper) &&
+    (helper.match(/\.innerHTML\s*=/g) || []).length === 1 && /\.innerHTML\s*=\s*painted\[index\];/.test(helper));
   check("network attempts are zero", networkAttempts === 0, networkAttempts);
 } catch (error) {
   check("child execution", false, error instanceof Error ? error.stack : String(error));

@@ -875,6 +875,60 @@
         const ext = (p.split(/[\\/]/).pop() || "").split(".").pop().toLowerCase();
         return HL_EXT[ext] || null;
       };
+      /**
+       * 새 강조 자리(Read·첨부)의 판별 — 위 판별기 그대로, 단 **이름에 확장자가 있을 때만**. 점 없는 이름(`docs/go`)·숨김 이름(`.bashrc`)을 언어로 읽지 않는다(GPT R1).
+       *  ★위 `hlLangFromPath` 는 고치지 않는다 — 기존 Edit/Write 카드·⤢ 파일 보기의 동작을 바꾸지 않으려고(GPT R2). 그 둘의 점 없는 이름 처리는 따로 정할 일이다.
+       */
+      const hlLangFromName = (p) => {
+        const base = typeof p === "string" ? p.split(/[\\/]/).pop() || "" : "";
+        return base.lastIndexOf(".") > 0 ? hlLangFromPath(base) : null;
+      };
+
+      /** 아래 강조 자리(Read·도구 출력·첨부 미리보기)가 칠하는 글자 상한 — 넘으면 평문. 생산자 캡(출력 4,000자·첨부 800자)을 벗어난 입력에도 화면을 멈추지 않게. */
+      const HL_TEXT_MAX = 20000;
+      /** 언어가 정해진 글자를 hljs 로 — 결과는 hljs 가 이스케이프한 HTML. 언어·hljs·글자 중 하나라도 없거나 상한을 넘거나 실패하면 null(호출부는 평문). */
+      const hlHtml = (text, lang) => {
+        const hl = typeof window !== "undefined" ? window.hljs : undefined;
+        if (!lang || !hl || typeof text !== "string" || text === "" || text.length > HL_TEXT_MAX) return null;
+        // ★CR·NUL 은 평문 — HTML 파서가 CR(LF)을 LF 로 바꾸고 NUL 을 버려, innerHTML 로 넣으면 글자가 원문과 달라진다(GPT R1). textContent 는 그대로 둔다.
+        if (/[\r\0]/.test(text)) return null;
+        try { return hl.highlight(text, { language: lang, ignoreIllegal: true }).value; } catch { return null; }
+      };
+      /**
+       * 줄마다 따로 그리는 칸(Read 행)용 — **한 번에 칠한 뒤 줄로 자른다**(줄마다 칠하면 여러 줄 주석·문자열의 색이 첫 줄에서 끊긴다).
+       *  줄 끝에서 열린 span 을 닫고 다음 줄 앞에서 다시 연다. 자른 조각이 원래 HTML 과 글자 하나라도 다르거나 줄 수가 다르면 null(평문).
+       */
+      const hlLines = (text, lang) => {
+        const html = hlHtml(text, lang);
+        if (html === null) return null;
+        const toks = html.match(/<span[^>]*>|<\/span>|\n|[^<\n]+/g) || [];
+        if (toks.join("").length !== html.length) return null; // 모르는 태그 — 글자를 흘리지 않는다
+        const out = [];
+        const open = [];
+        let cur = "";
+        for (const tok of toks) {
+          if (tok === "\n") { out.push(cur + "</span>".repeat(open.length)); cur = open.join(""); }
+          else if (tok === "</span>") { open.pop(); cur += tok; }
+          else { if (tok.startsWith("<span")) open.push(tok); cur += tok; }
+        }
+        out.push(cur);
+        return out.length === text.split("\n").length ? out : null;
+      };
+      /**
+       * 도구 출력의 언어 — **구조로 확인되는 형식만**: 통째로 `JSON.parse` 되는 JSON · 머리 줄과 메타데이터 줄이 확인되는 git diff.
+       *  오류·잘린 JSON·로그·자연어·모르는 형식은 null(평문) — 명령어나 내용 모양으로 언어를 짐작하지 않는다.
+       */
+      const outputLangOf = (output) => {
+        // 길이 상한을 판별(trim·JSON.parse)보다 먼저 — 칠하지도 않을 긴 글자를 파싱하지 않는다.
+        if (!output || output.isError || typeof output.text !== "string" || output.text.length > HL_TEXT_MAX) return null;
+        const head = output.text.trimStart();
+        // git diff — 첫 줄부터 **이어진 구조**일 때만(GPT R1~R4): `diff --git …` → git 확장 머리 줄 0개 이상(**값 형식까지** — `index <해시>..<해시>[ 모드]`·
+        //  `… mode <6자리>`·`similarity index <N>%`·`rename/copy from/to <경로>`) → `--- ` → `+++ ` → hunk 머리(`@@ -a[,b] +c[,d] @@`).
+        //  사이에 설명문이 끼거나 hunk 전에 잘린 출력은 평문. 경로는 토큰으로 나누지 않는다(공백 든 경로).
+        if (/^diff --git [^\n]+\n(?:(?:index [0-9a-f]{7,}\.\.[0-9a-f]{7,}(?: [0-7]{6})?|(?:old|new|deleted file|new file) mode [0-7]{6}|(?:dis)?similarity index \d{1,3}%|(?:rename|copy) (?:from|to) [^\n]+)\n)*--- [^\n]+\n\+\+\+ [^\n]+\n@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(head)) return "diff";
+        if (output.truncated || (head[0] !== "{" && head[0] !== "[")) return null;
+        try { JSON.parse(output.text); return "json"; } catch { return null; }
+      };
 
       // 리치 diff 블록(Edit/Write, ADR 2026-07-09) — 접이식 초록·빨강 diff. 라이브 스텝·
       // 이력 줄 공용. 캡처(런타임)가 구조화한 diff 를 여기선 *렌더*만(초록/빨강 뷰=채널 몫).
@@ -1102,7 +1156,10 @@
         body.className = "act-diff-body";
         const pre = document.createElement("pre");
         pre.className = "act-output-pre";
-        pre.textContent = (output.text != null ? output.text : "") + (output.truncated ? i18n("stream.truncated.nl") : "");
+        const text = output.text != null ? output.text : "";
+        const html = hlHtml(text, outputLangOf(output)); // 형식이 확인될 때만 색 — 글자는 그대로
+        if (html !== null) pre.innerHTML = html; else pre.textContent = text;
+        if (output.truncated) pre.appendChild(document.createTextNode(i18n("stream.truncated.nl")));
         body.appendChild(pre);
         // 토글은 스텝(부모) 단위 — 헤더는 접힘 시 요약("출력")만. (클릭 핸들러 없음.)
         wrap.appendChild(head); wrap.appendChild(body);
@@ -1143,10 +1200,13 @@
         if (!missing) body.appendChild(caption);
         if (known) {
           const grid = document.createElement("div"); grid.className = "act-read-lines";
+          // 문법 색 — Edit/Write 카드와 같은 판별(경로 확장자). 저장된 프리뷰 글자만 칠한다(파일을 다시 읽지 않는다).
+          const painted = hlLines(visible.join("\n"), hlLangFromName(file && file.path));
           visible.forEach((line, index) => {
             const row = document.createElement("div"); row.className = "act-read-line";
             const num = document.createElement("span"); num.className = "act-read-num"; num.textContent = String(read.startLine + index);
-            const code = document.createElement("span"); code.className = "act-read-text"; code.textContent = line;
+            const code = document.createElement("span"); code.className = "act-read-text";
+            if (painted !== null) code.innerHTML = painted[index]; else code.textContent = line;
             row.appendChild(num); row.appendChild(code); grid.appendChild(row);
           });
           body.appendChild(grid);
@@ -1191,6 +1251,13 @@
             ? renderMarkdown(String(plan))
             : "";
           if (!body.innerHTML) body.textContent = String(plan); // 폴백(마크다운 실패=평문).
+          // 코드블록 색 — **언어를 적은 펜스만**(```ts). 답변 말풍선의 자동 감지(markdown.js `highlightCodeBlocks`)는 쓰지 않는다 — 언어 없는 로그까지 칠한다(GPT R1).
+          else body.querySelectorAll("pre code").forEach((el) => {
+            // 언어 이름은 정화가 허락한 `language-…` **한 토큰 전체**(`ts.custom` 을 `ts` 로 자르지 않는다 — 번들에 없으면 평문, GPT R2).
+            const m = /^language-(\S+)$/.exec(String(el.className || "").trim());
+            const html = m ? hlHtml(el.textContent, m[1]) : null;
+            if (html !== null) { el.innerHTML = html; el.classList.add("hljs"); }
+          });
         } catch { body.textContent = String(plan); }
         wrap.appendChild(head); wrap.appendChild(body);
         return wrap;

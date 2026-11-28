@@ -40,7 +40,8 @@ vm.runInContext(ts.transpileModule(miniOnly, { compilerOptions: {
 } }).outputText, miniCtx, { timeout: 1000, filename: "mini-dom-only.vm.js" });
 
 const names = {
-  virtual: ["buildOutputBlock", "buildReadBlock", "wireReadToggle", "buildToolOutputBlock", "buildActivityLine"],
+  // 출력·Read 블록이 부르는 문법 색 이웃(진짜 소스 — hljs 가 없는 이 VM 에선 평문).
+  virtual: ["HL_EXT", "hlLangFromPath", "hlLangFromName", "HL_TEXT_MAX", "hlHtml", "hlLines", "outputLangOf", "buildOutputBlock", "buildReadBlock", "wireReadToggle", "buildToolOutputBlock", "buildActivityLine"],
   history: ["buildHistStepLine"],
   drawer: ["applyDurationBadge", "markStepRunning", "clearStepRunning", "annotateToolDuration", "toggleWorkerStepRich", "ensureStepExpandable", "handleWorkerActivity"],
 };

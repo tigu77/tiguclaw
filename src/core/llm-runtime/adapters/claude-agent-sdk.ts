@@ -187,7 +187,8 @@ import type {
   RegionASdkInput,
   RegionASdkOutput,
 } from "../types.js";
-import { claudeSpeedSettings } from "../types.js";
+import { claudeFlagSettings } from "../types.js";
+import { loadModelAutoCompactWindows } from "../../settings.js";
 
 // payload 사이즈 가드 — tool_use input · result text 등이 큰 경우 truncate.
 // in-memory ring buffer 라 토큰/비용 영향 0 이지만 buffer 점유 보호.
@@ -629,6 +630,11 @@ export const runClaude = async (
   // 턴 시작에 «이 모델 · 이 강도» — 보낼 변수 그대로(`turn-meta.ts`). 없으면 실행기가 모델 기본을 보낸다.
   // 화면·기록에 싣는 값 — 안 보냈으면 «실행기 기본» 을 **명시**한다(없는 것은 «모름» 이라 화면이 아무것도 안 붙인다).
   const shownEffort = claudeEffort ?? REASONING_NOT_SENT;
+  // 자동 압축 창(토큰) — `models.limits.<provider:model>.autoCompactWindow` 를 **적은 모델에만** 넘긴다.
+  //  없으면 넘기지 않는다 = SDK 기본 압축 그대로(끄는 것이 아니다). 키는 풀 표기 그대로(정규화 없음).
+  //  매 턴 읽는다 — 새 세션·resume·resume 실패 뒤 새 세션 모두 이 턴의 `options` 를 쓴다. 설계 §4.
+  const compactKey = input.model === undefined ? undefined : `${input.provider ?? "anthropic"}:${input.model}`;
+  const autoCompactWindow = compactKey === undefined ? undefined : loadModelAutoCompactWindows(cwd).get(compactKey);
   publishTurnMeta({ threadKey: input.threadKey, internal: input.internal, adapter: "claude", model: input.model, reasoning: shownEffort });
   const depth = input.subagentDepth ?? 0;
   // ★**도구 노출 사다리** (2026-08-28) — 어느 칸의 턴인가를 **한 번** 도출한다.
@@ -1210,7 +1216,9 @@ export const runClaude = async (
     //  실제로 켠다 — 장벽은 계정의 추가 사용량 하나뿐이었고 그 뒤엔 아무것도 없었다.
     //  그래도 아래에서 **사유를 로그에 남긴다**: 계정 설정은 사용자마다 다르고, 꺼져 있으면
     //  «적었는데 왜 안 빨라지지» 를 답할 길이 그것뿐이다.
-    ...claudeSpeedSettings(input.speed),
+    // ★자동 압축 창(위 `autoCompactWindow`)도 **같은 `settings` 객체**에 합친다(2026-11-28) — 따로 펼치면
+    //  뒤 것이 앞 것을 덮는다. 둘 다 없으면 `settings` 키 자체가 없다(현행과 같은 옵션).
+    ...claudeFlagSettings(input.speed, autoCompactWindow),
     abortController: effectiveAc,
     // AskUserQuestion 차단(2026-07-17) — claude 전용 SDK 네이티브 도구. tiguclaw 인터랙티브
     // 선택지는 자체 prompt_options(prompt.options 이벤트)만 렌더(축1, 2026-06-25) — 네이티브로
@@ -1324,6 +1332,11 @@ export const runClaude = async (
     }),
     ...(resumable ? { resume: prior.claudeSessionId } : {}),
   };
+  // 압축 창을 **실제로 실은 때만** 한 줄 — 옵션에서 읽는다(계산값을 찍으면 싣지 못한 턴도 «적용» 으로 남는다).
+  const sentCompactWindow = (options.settings as { autoCompactWindow?: unknown } | undefined)?.autoCompactWindow;
+  if (sentCompactWindow !== undefined) {
+    console.log(`[claude] autoCompactWindow=${String(sentCompactWindow)} (models.limits.${compactKey ?? "?"}) thread=${input.threadKey}`);
+  }
 
   // resume 세션 부재/손상은 SDK 가 "process exited with code 1" 로 종료시킨다 →
   // resume 없이 fresh 세션으로 1회 graceful 폴백 (본질 수정: 마이그레이션·세션 만료·
